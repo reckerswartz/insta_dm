@@ -1,0 +1,19 @@
+<% content_for :title, "Job Failure Logs" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Job Failure Logs</h1>
+    <p class="meta">Application-level failure records (persisted on exception).</p>
+  </header>
+
+  <section class="card">
+    <p class="meta">Use built-in header filters/sorting in the table. Pagination and page size are built in.</p>
+    <div class="actions-row">
+      <%= link_to "Back to Dashboard", admin_background_jobs_path, class: "btn secondary" %>
+    </div>
+
+    <div data-controller="background-job-failures-table" data-background-job-failures-table-url-value="<%= admin_background_job_failures_path(format: :json) %>">
+      <div data-background-job-failures-table-target="table"></div>
+    </div>
+  </section>
+</div>

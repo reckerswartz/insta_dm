@@ -1,0 +1,27 @@
+<% content_for :title, "Feed Posts" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Feed Posts</h1>
+    <p class="meta">Captured from your home feed during feed capture runs. Analyze results and decide manual interactions.</p>
+  </header>
+
+  <section class="card">
+    <h2>Capture</h2>
+    <p class="meta">Queues a short capture run that scrolls periodically and records visible posts (no auto-like/comment).</p>
+
+    <div class="actions-row">
+      <%= button_to "Capture Feed (Background)", feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20), method: :post %>
+      <%= link_to "Account Dashboard", instagram_account_path(current_account), class: "btn secondary" %>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Posts Data Table</h2>
+    <p class="meta">Use built-in header filters/sorting in the table. Pagination and page size are built in.</p>
+
+    <div data-controller="posts-table" data-posts-table-url-value="<%= instagram_posts_path(format: :json) %>">
+      <div data-posts-table-target="table"></div>
+    </div>
+  </section>
+</div>

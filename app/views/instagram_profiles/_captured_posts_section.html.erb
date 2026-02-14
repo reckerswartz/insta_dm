@@ -1,0 +1,129 @@
+<% visible_posts = profile_posts.first(20) %>
+
+<section id="captured_profile_posts_section" class="card">
+  <h2>Captured Profile Posts (AI Input)</h2>
+  <p class="meta">Shows the latest 20 captured image posts with comments/likes and per-image AI suggestions. Click an image to open details.</p>
+
+  <% if visible_posts.any? %>
+    <div data-controller="profile-post-modal">
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Image</th>
+              <th>Post</th>
+              <th>Taken</th>
+              <th>Likes</th>
+              <th>Comments</th>
+              <th>AI</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% visible_posts.each do |pp| %>
+              <% comments = pp.instagram_profile_post_comments.recent_first.limit(12).map { |c| "#{c.author_username.presence || 'user'}: #{c.body}" } %>
+              <% analysis = pp.analysis.is_a?(Hash) ? pp.analysis : {} %>
+              <% suggestions = Array(analysis["comment_suggestions"]) %>
+              <% comment_gen_status = analysis["comment_generation_status"].to_s.presence || "unknown" %>
+              <% comment_gen_source = analysis["comment_generation_source"].to_s.presence || "unknown" %>
+              <% comment_gen_fallback = ActiveModel::Type::Boolean.new.cast(analysis["comment_generation_fallback_used"]) %>
+              <% comment_gen_error = analysis["comment_generation_error"].to_s.presence %>
+              <% image_url = pp.media.attached? ? rails_blob_path(pp.media, only_path: true) : nil %>
+              <% download_url = pp.media.attached? ? rails_blob_path(pp.media, disposition: "attachment") : nil %>
+              <tr>
+                <td>
+                  <% if pp.media.attached? %>
+                    <button
+                      class="btn small secondary"
+                      data-action="profile-post-modal#open"
+                      data-shortcode="<%= pp.shortcode %>"
+                      data-caption="<%= h(pp.caption.to_s) %>"
+                      data-likes="<%= pp.likes_count %>"
+                      data-comments-count="<%= pp.comments_count %>"
+                      data-taken-at="<%= pp.taken_at&.strftime('%Y-%m-%d %H:%M:%S') %>"
+                      data-image-url="<%= image_url %>"
+                      data-download-url="<%= download_url %>"
+                      data-permalink="<%= pp.permalink_url %>"
+                      data-ai-status="<%= pp.ai_status %>"
+                      data-ai-provider="<%= pp.ai_provider %>"
+                      data-ai-model="<%= pp.ai_model %>"
+                      data-comment-gen-status="<%= comment_gen_status %>"
+                      data-comment-gen-source="<%= comment_gen_source %>"
+                      data-comment-gen-fallback="<%= comment_gen_fallback %>"
+                      data-comment-gen-error="<%= h(comment_gen_error.to_s) %>"
+                      data-forward-url="<%= forward_comment_instagram_profile_instagram_profile_post_path(profile, pp) %>"
+                      data-comments-json="<%= h(comments.to_json) %>"
+                      data-suggestions-json="<%= h(suggestions.to_json) %>"
+                    >
+                      View
+                    </button>
+                  <% else %>
+                    <span class="meta">No image</span>
+                  <% end %>
+                </td>
+                <td class="meta">
+                  <code><%= pp.shortcode %></code><br>
+                  <%= pp.caption.to_s.truncate(80) %>
+                </td>
+                <td><%= relative_time_with_tooltip(pp.taken_at) %></td>
+                <td><%= pp.likes_count %></td>
+                <td><%= pp.comments_count %></td>
+                <td>
+                  <span class="pill <%= pp.ai_status == "failed" ? "failed" : (pp.ai_status == "analyzed" ? "sent" : "queued") %>"><%= pp.ai_status %></span>
+                  <% if pp.ai_status == "analyzed" %>
+                    <% if comment_gen_fallback %>
+                      <div class="meta" style="color: #b45309;">Comments: fallback (<%= comment_gen_status %>)</div>
+                      <% if comment_gen_error.present? %>
+                        <div class="meta" style="color: #b91c1c;"><%= comment_gen_error.truncate(90) %></div>
+                      <% end %>
+                    <% else %>
+                      <div class="meta">Comments: <%= comment_gen_source %> (<%= comment_gen_status %>)</div>
+                    <% end %>
+                  <% end %>
+                </td>
+                <td class="table-actions">
+                  <%= link_to "Open", pp.permalink_url, target: "_blank", rel: "noreferrer", class: "btn small secondary" %>
+                  <% if pp.ai_status != "analyzed" %>
+                    <%= button_to "Analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small" %>
+                  <% else %>
+                    <%= button_to "Re-analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small secondary" %>
+                  <% end %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+
+      <dialog data-profile-post-modal-target="dialog" class="modal">
+        <div class="modal-header">
+          <h3 data-profile-post-modal-target="title">Post</h3>
+          <button class="btn small secondary" data-action="profile-post-modal#close" type="button">Close</button>
+        </div>
+        <div class="modal-grid">
+          <div>
+            <img data-profile-post-modal-target="image" alt="Post image" style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line);" />
+            <p class="meta" data-profile-post-modal-target="stats"></p>
+            <p class="meta" data-profile-post-modal-target="meta"></p>
+            <p class="meta" data-profile-post-modal-target="generation"></p>
+            <div class="actions-row">
+              <a data-profile-post-modal-target="download" class="btn secondary" href="#" target="_blank" rel="noreferrer">Download image</a>
+              <a data-profile-post-modal-target="permalink" class="btn secondary" href="#" target="_blank" rel="noreferrer">Open on Instagram</a>
+            </div>
+          </div>
+          <div>
+            <h4>Caption</h4>
+            <p class="meta" data-profile-post-modal-target="caption"></p>
+            <h4>Comments</h4>
+            <div data-profile-post-modal-target="comments"></div>
+            <h4>Suggested comments</h4>
+            <p class="meta">Click <strong>Forward Comment</strong> to queue posting on this exact Instagram post.</p>
+            <div data-profile-post-modal-target="suggestions"></div>
+          </div>
+        </div>
+      </dialog>
+    </div>
+  <% else %>
+    <p class="meta">No captured profile posts yet. Run Analyze Profile to collect all available image posts and comments.</p>
+  <% end %>
+</section>

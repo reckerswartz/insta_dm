@@ -1,0 +1,169 @@
+<% content_for :title, @profile.username %>
+
+<%= turbo_stream_from @account %>
+<% analyzed_posts_count = @profile_posts.count { |post| post.ai_status == "analyzed" } %>
+<% pending_posts_count = @profile_posts.count { |post| post.ai_status != "analyzed" } %>
+
+<div class="page">
+  <header class="page-header">
+    <h1><%= @profile.username %></h1>
+    <p class="meta">
+      Following: <strong><%= @profile.following ? "Yes" : "No" %></strong>
+      | Follows you: <strong><%= @profile.follows_you ? "Yes" : "No" %></strong>
+      | Mutual: <strong><%= @profile.mutual? ? "Yes" : "No" %></strong>
+      | Can message: <strong><%= @profile.can_message.nil? ? "Unknown" : (@profile.can_message ? "Yes" : "No") %></strong>
+      | Last active: <strong><%= relative_time_with_tooltip(@profile.last_active_at) %></strong>
+    </p>
+  </header>
+
+  <section class="card">
+    <h2>At a Glance</h2>
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="stat-label">Profile</div>
+        <div class="stat-kv"><span class="muted">Name</span><strong><%= @profile.display_name.presence || "-" %></strong></div>
+        <div class="stat-kv"><span class="muted">Messageability</span><strong><%= @profile.can_message.nil? ? "Unknown" : (@profile.can_message ? "Yes" : "No") %></strong></div>
+        <div class="stat-kv"><span class="muted">Restriction</span><strong><%= @profile.restriction_reason.presence || "-" %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Posts (Image Input)</div>
+        <div class="stat-kv"><span class="muted">Captured</span><strong><%= @profile_posts.size %></strong></div>
+        <div class="stat-kv"><span class="muted">AI analyzed</span><strong><%= analyzed_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Pending analysis</span><strong><%= pending_posts_count %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Activity</div>
+        <div class="stat-kv"><span class="muted">Messages</span><strong><%= @messages.size %></strong></div>
+        <div class="stat-kv"><span class="muted">Action logs</span><strong><%= @action_logs.size %></strong></div>
+        <div class="stat-kv"><span class="muted">Last analyzed</span><strong><%= relative_time_with_tooltip(@profile.ai_last_analyzed_at) %></strong></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="profile-header">
+      <% if @profile.avatar.attached? %>
+        <%= image_tag @profile.avatar, class: "avatar large", alt: @profile.username %>
+      <% elsif @profile.profile_pic_url.present? %>
+        <img class="avatar large" src="<%= @profile.profile_pic_url %>" alt="<%= @profile.username %>">
+      <% else %>
+        <%= image_tag "default_avatar.svg", class: "avatar large", alt: @profile.username %>
+      <% end %>
+
+      <div>
+        <h2 class="profile-title"><%= @profile.display_label %></h2>
+        <p class="meta">
+          Instagram: <%= link_to "#{Instagram::Client::INSTAGRAM_BASE_URL}/#{@profile.username}/", "#{Instagram::Client::INSTAGRAM_BASE_URL}/#{@profile.username}/", target: "_blank", rel: "noreferrer" %>
+        </p>
+        <% if @profile.avatar.attached? %>
+          <p class="meta">
+            Avatar: <%= link_to "download", rails_blob_path(@profile.avatar, disposition: "attachment"), class: "btn small secondary" %>
+          </p>
+        <% end %>
+        <% if @profile.restriction_reason.present? %>
+          <p class="meta">Restriction: <strong><%= @profile.restriction_reason %></strong></p>
+        <% end %>
+
+        <p class="meta">
+          Tags:
+          <% if @profile.profile_tags.any? %>
+            <strong><%= @profile.profile_tags.pluck(:name).sort.join(", ") %></strong>
+          <% else %>
+            <span class="muted">none</span>
+          <% end %>
+        </p>
+
+        <div class="actions-row">
+          <%= button_to "Fetch Profile Details (Background)", fetch_details_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          <%= button_to "Verify Messageability (Background)", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          <%= button_to "Sync Avatar (Background)", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          <%= button_to "Analyze Stories (10) (Background)", sync_stories_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          <%= button_to "Force Analyze All Stories (10) (Background)", sync_stories_force_instagram_profile_path(@profile), method: :post, class: "btn secondary", data: { turbo_confirm: "Force re-analysis for up to 10 latest stories?" } %>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <%= render "profile_tags_section", profile: @profile, available_tags: @available_tags %>
+
+  <section class="card">
+    <h2>Send Message</h2>
+    <div id="message_form">
+      <%= render "instagram_messages/form", profile: @profile, message: @new_message %>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>AI Profile Analysis</h2>
+    <p class="meta">
+      Generates an AI summary from locally captured profile details, image posts, and comments. Demographic values are stored as AI estimates with confidence.
+    </p>
+
+    <div class="actions-row">
+      <%= button_to "Analyze Profile (Active AI Provider) (Background)", analyze_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="stat-label">Demographic Estimates</div>
+        <div class="stat-kv"><span class="muted">Age</span><strong><%= @profile.ai_estimated_age.presence || "-" %></strong></div>
+        <div class="stat-kv"><span class="muted">Gender</span><strong><%= @profile.ai_estimated_gender.presence || "-" %></strong></div>
+        <div class="stat-kv"><span class="muted">Location</span><strong><%= @profile.ai_estimated_location.presence || "-" %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Analysis Status</div>
+        <div class="stat-kv"><span class="muted">Last analyzed</span><strong><%= relative_time_with_tooltip(@profile.ai_last_analyzed_at) %></strong></div>
+        <div class="stat-kv"><span class="muted">Analyzed posts</span><strong><%= analyzed_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Needs analysis</span><strong><%= pending_posts_count %></strong></div>
+      </div>
+    </div>
+
+    <% if @latest_analysis.present? && @latest_analysis.status == "succeeded" %>
+      <p class="meta">
+        Last analysis: <strong><%= relative_time_with_tooltip(@latest_analysis.created_at) %></strong>
+        <% if @latest_analysis.provider.present? %>
+          | Provider: <strong><%= @latest_analysis.provider %></strong>
+        <% end %>
+        <% if @latest_analysis.model.present? %>
+          | Model: <strong><%= @latest_analysis.model %></strong>
+        <% end %>
+      </p>
+
+      <details class="details-box">
+        <summary>Show Full Analysis JSON</summary>
+        <div class="table-scroll">
+          <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(@latest_analysis.analysis || {}) rescue (@latest_analysis.analysis || {}).to_json %></pre>
+        </div>
+      </details>
+    <% elsif @latest_analysis.present? && @latest_analysis.status == "failed" %>
+      <p class="meta">Last analysis failed: <strong><%= @latest_analysis.error_message %></strong></p>
+    <% else %>
+      <p class="meta">No AI analysis saved yet.</p>
+    <% end %>
+  </section>
+
+  <%= render "captured_posts_section", profile: @profile, profile_posts: @profile_posts %>
+
+  <section class="card">
+    <h2>Message History</h2>
+    <div id="messages">
+      <% @messages.each do |m| %>
+        <%= render "instagram_messages/row", message: m %>
+      <% end %>
+    </div>
+  </section>
+
+  <%= render "action_history_section", action_logs: @action_logs %>
+
+  <section class="card">
+    <h2>Profile History</h2>
+    <p class="meta">Use built-in header filters/sorting in the table. Pagination and page size are built in.</p>
+    <div data-controller="profile-events-table" data-profile-events-table-url-value="<%= events_instagram_profile_path(@profile, format: :json) %>">
+      <div data-profile-events-table-target="table"></div>
+    </div>
+  </section>
+
+  <div class="actions-row">
+    <%= link_to "Back to Profiles", instagram_profiles_path, class: "btn secondary" %>
+  </div>
+</div>

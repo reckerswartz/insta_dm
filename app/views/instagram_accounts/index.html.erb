@@ -1,0 +1,176 @@
+<% content_for :title, "Accounts" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Accounts</h1>
+    <p>Manage multiple Instagram accounts and monitor background workload.</p>
+  </header>
+
+  <section class="card">
+    <h2>Add Account</h2>
+    <%= form_with url: instagram_accounts_path, method: :post, scope: :instagram_account, class: "filters" do |f| %>
+      <label>
+        Username
+        <%= f.text_field :username, placeholder: "instagram_username", required: true %>
+      </label>
+      <div class="actions-row">
+        <%= f.submit "Add" %>
+      </div>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Operational Metrics</h2>
+
+    <div class="stat-grid">
+      <div class="stat">
+        <% q = @metrics[:queue] || {} %>
+        <% if q[:backend].to_s == "sidekiq" %>
+          <div class="stat-label">Sidekiq</div>
+          <div class="stat-value"><%= q[:processes].to_i %> processes</div>
+          <% total = q.values_at(:enqueued, :scheduled, :retries, :dead).sum.to_i %>
+          <% total = 1 if total <= 0 %>
+          <div class="bar-group">
+            <div class="bar-row">
+              <span class="bar-label">Enqueued</span>
+              <div class="bar"><div class="bar-fill ok" style="width:<%= (q[:enqueued].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:enqueued].to_i %></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Scheduled</span>
+              <div class="bar"><div class="bar-fill" style="width:<%= (q[:scheduled].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:scheduled].to_i %></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Retries</span>
+              <div class="bar"><div class="bar-fill warn" style="width:<%= (q[:retries].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:retries].to_i %></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Dead</span>
+              <div class="bar"><div class="bar-fill bad" style="width:<%= (q[:dead].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:dead].to_i %></span>
+            </div>
+          </div>
+        <% else %>
+          <div class="stat-label">Solid Queue</div>
+          <div class="stat-value"><%= q[:processes].to_i %> processes</div>
+          <% total = q.values_at(:ready, :scheduled, :claimed, :blocked, :failed).sum.to_i %>
+          <% total = 1 if total <= 0 %>
+          <div class="bar-group">
+            <div class="bar-row">
+              <span class="bar-label">Ready</span>
+              <div class="bar"><div class="bar-fill ok" style="width:<%= (q[:ready].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:ready] %></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Scheduled</span>
+              <div class="bar"><div class="bar-fill" style="width:<%= (q[:scheduled].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:scheduled] %></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Claimed</span>
+              <div class="bar"><div class="bar-fill" style="width:<%= (q[:claimed].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:claimed] %></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Blocked</span>
+              <div class="bar"><div class="bar-fill warn" style="width:<%= (q[:blocked].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:blocked] %></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Failed</span>
+              <div class="bar"><div class="bar-fill bad" style="width:<%= (q[:failed].to_f / total * 100).round(1) %>%"></div></div>
+              <span class="bar-num"><%= q[:failed] %></span>
+            </div>
+          </div>
+        <% end %>
+      </div>
+
+      <div class="stat">
+        <div class="stat-label">App Totals</div>
+        <div class="stat-kv"><span class="muted">Accounts</span><strong><%= @metrics.dig(:app, :accounts) %></strong></div>
+        <div class="stat-kv"><span class="muted">Profiles</span><strong><%= @metrics.dig(:app, :profiles) %></strong></div>
+        <div class="stat-kv"><span class="muted">Messages</span><strong><%= @metrics.dig(:app, :messages) %></strong></div>
+        <div class="stat-kv"><span class="muted">Events</span><strong><%= @metrics.dig(:app, :profile_events) %></strong></div>
+        <div class="stat-kv"><span class="muted">AI analyses</span><strong><%= @metrics.dig(:app, :ai_analyses) %></strong></div>
+        <div class="stat-kv"><span class="muted">AI API calls</span><strong><%= @metrics.dig(:app, :ai_api_calls) %></strong></div>
+        <div class="stat-kv"><span class="muted">Feed posts</span><strong><%= @metrics.dig(:app, :posts) %></strong></div>
+        <div class="stat-kv"><span class="muted">Failures (24h)</span><strong><%= @metrics.dig(:app, :failures_24h) %></strong></div>
+      </div>
+    </div>
+
+    <% usage = @metrics[:api_usage_24h] || {} %>
+    <div class="stat-grid" style="margin-top: 12px;">
+      <div class="stat">
+        <div class="stat-label">AI API Usage (24h)</div>
+        <div class="stat-kv"><span class="muted">Total calls</span><strong><%= usage[:total_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Image analysis</span><strong><%= usage[:image_analysis_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Report generation</span><strong><%= usage[:report_generation_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Text generation</span><strong><%= usage[:text_generation_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Failed calls</span><strong><%= usage[:failed_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Avg latency</span><strong><%= usage[:avg_latency_ms].to_i %> ms</strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Top API Operations (24h)</div>
+        <% operations = usage[:top_operations] || {} %>
+        <% if operations.any? %>
+          <% operations.each do |op, count| %>
+            <div class="stat-kv"><span class="muted"><%= op %></span><strong><%= count %></strong></div>
+          <% end %>
+        <% else %>
+          <p class="meta">No API calls recorded in the last 24 hours.</p>
+        <% end %>
+      </div>
+    </div>
+
+    <div class="actions-row">
+      <%= link_to "AI Providers", admin_ai_providers_path, class: "btn secondary" %>
+      <%= link_to "Jobs Console", admin_background_jobs_path, class: "btn secondary" %>
+      <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
+      <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Accounts</h2>
+
+    <% if @accounts.any? %>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Status</th>
+              <th>Cookies</th>
+              <th>Last sync</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @accounts.each do |a| %>
+              <tr>
+                <td><code><%= a.username %></code></td>
+                <td>
+                  <% if a.login_state == "authenticated" %>
+                    <span class="yes">Authenticated</span>
+                  <% else %>
+                    <span class="no"><%= a.login_state %></span>
+                  <% end %>
+                </td>
+                <td><%= a.cookies.any? ? "Yes" : "No" %></td>
+                <td><%= relative_time_with_tooltip(a.last_synced_at) %></td>
+                <td class="table-actions">
+                  <%= button_to "Select", select_instagram_account_path(a), method: :post, class: "btn small secondary" %>
+                  <%= link_to "Open", instagram_account_path(a), class: "btn small" %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No accounts added yet.</p>
+    <% end %>
+  </section>
+</div>

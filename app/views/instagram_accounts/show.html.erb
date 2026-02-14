@@ -1,0 +1,243 @@
+<% content_for :title, @account.username %>
+
+<%= turbo_stream_from @account %>
+<%= turbo_stream_from [@account, :story_archive] %>
+
+<div class="page">
+  <header class="page-header">
+    <h1><%= @account.username %></h1>
+    <p class="meta">
+      Login state: <strong><%= @account.login_state %></strong>
+      <% if @account.last_synced_at %>
+        | Last sync: <strong><%= relative_time_with_tooltip(@account.last_synced_at) %></strong>
+      <% end %>
+    </p>
+  </header>
+
+  <section class="card">
+    <h2>Account Health</h2>
+
+    <% if @issues.any? %>
+      <ul class="issue-list">
+        <% @issues.each do |i| %>
+          <li class="issue <%= i[:level] %>"><%= i[:message] %></li>
+        <% end %>
+      </ul>
+    <% else %>
+      <p class="meta">No issues detected.</p>
+    <% end %>
+
+    <div class="actions-row">
+      <%= button_to "Select This Account", select_instagram_account_path(@account), method: :post, class: "btn secondary" %>
+      <%= link_to "Profiles", instagram_profiles_path, class: "btn" %>
+      <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
+      <%= link_to "Background Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
+      <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Authentication</h2>
+
+    <%= form_with model: @account, url: instagram_account_path(@account), method: :patch, class: "filters" do |f| %>
+      <label>
+        Instagram username
+        <%= f.text_field :username, required: true %>
+      </label>
+      <div class="actions-row">
+        <%= f.submit "Save" %>
+      </div>
+    <% end %>
+
+    <div class="actions-row">
+      <%= link_to "Manual Browser Login (3 min)", manual_login_instagram_account_path(@account, timeout_seconds: 180), data: { turbo_method: :post, turbo: false }, class: "btn secondary" %>
+      <%= link_to "Validate Session", validate_session_instagram_account_path(@account), data: { turbo_method: :post }, class: "btn secondary" %>
+      <%= link_to "Export Stored Cookies", export_cookies_instagram_account_path(@account), class: "btn secondary" %>
+    </div>
+
+    <%= form_with url: import_cookies_instagram_account_path(@account), method: :post, class: "stack" do |f| %>
+      <label>
+        Import cookies JSON
+        <%= f.text_area :cookies_json, rows: 6, placeholder: '[{\"name\":\"sessionid\",\"value\":\"...\",\"domain\":\".instagram.com\",\"path\":\"/\"}]' %>
+      </label>
+      <div class="actions-row">
+        <%= f.submit "Import Cookies" %>
+      </div>
+    <% end %>
+
+    <% snap = @account.auth_snapshot %>
+    <p class="meta">
+      Cookies stored: <strong><%= @account.cookies.any? ? "Yes" : "No" %></strong>
+      <% if snap["captured_at"].present? %>
+        | Bundle captured: <strong><%= snap["captured_at"] %></strong>
+      <% end %>
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Sync & Workload</h2>
+
+    <div class="actions-row">
+      <%= button_to "Sync Followers/Following (Background)", follow_graph_sync_path, method: :post %>
+      <%= button_to "Sync Next 10 Stories", sync_profile_stories_instagram_account_path(@account, story_limit: InstagramAccountsController::STORY_SYNC_LIMIT), method: :post, class: "btn secondary" %>
+      <%= button_to "Sync Next 10 Stories (Auto Reply Enabled)", sync_stories_with_comments_instagram_account_path(@account, story_limit: InstagramAccountsController::STORY_SYNC_LIMIT), method: :post, class: "btn secondary" %>
+      <%= button_to "Sync All Stories (Continuous Auto Reply)", sync_all_stories_continuous_instagram_account_path(@account), method: :post, class: "btn secondary" %>
+      <%= button_to "Download Missing Avatars (Background)", download_missing_avatars_instagram_profiles_path, method: :post, class: "btn secondary" %>
+      <%= button_to "Capture Feed (Background)", feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20), method: :post, class: "btn secondary" %>
+    </div>
+
+    <div id="sync_status">
+      <%= render "sync_runs/status", sync_run: @latest_sync_run %>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="stat-label">Account Totals</div>
+        <div class="stat-kv"><span class="muted">Profiles</span><strong><%= @metrics.dig(:app, :profiles) %></strong></div>
+        <div class="stat-kv"><span class="muted">Followers</span><strong><%= @metrics.dig(:app, :followers) %></strong></div>
+        <div class="stat-kv"><span class="muted">Following</span><strong><%= @metrics.dig(:app, :following) %></strong></div>
+        <div class="stat-kv"><span class="muted">Mutuals</span><strong><%= @metrics.dig(:app, :mutuals) %></strong></div>
+        <div class="stat-kv"><span class="muted">Messages</span><strong><%= @metrics.dig(:app, :messages) %></strong></div>
+        <div class="stat-kv"><span class="muted">AI analyses</span><strong><%= @metrics.dig(:app, :ai_analyses) %></strong></div>
+        <div class="stat-kv"><span class="muted">AI API calls</span><strong><%= @metrics.dig(:app, :ai_api_calls) %></strong></div>
+        <div class="stat-kv"><span class="muted">Feed posts</span><strong><%= @metrics.dig(:app, :posts) %></strong></div>
+      </div>
+
+      <div class="stat">
+        <div class="stat-label">Work (24h)</div>
+        <div class="stat-kv"><span class="muted">Failures</span><strong><%= @metrics.dig(:app, :failures_24h) %></strong></div>
+        <div class="stat-kv"><span class="muted">Sync runs</span><strong><%= @metrics.dig(:app, :sync_runs) %></strong></div>
+        <div class="stat-kv"><span class="muted">Events</span><strong><%= @metrics.dig(:app, :profile_events) %></strong></div>
+      </div>
+    </div>
+
+    <div class="stat-grid" style="margin-top: 12px;">
+      <div class="stat">
+        <div class="stat-label">Sync Runs By Status</div>
+        <% counts = (@metrics[:sync_runs_by_status] || {}).transform_keys(&:to_s) %>
+        <% total = counts.values.sum.to_i; total = 1 if total <= 0 %>
+        <% counts.sort_by { |k, _| k }.each do |k, v| %>
+          <div class="bar-row">
+            <span class="bar-label"><%= k %></span>
+            <div class="bar"><div class="bar-fill" style="width:<%= (v.to_f / total * 100).round(1) %>%"></div></div>
+            <span class="bar-num"><%= v %></span>
+          </div>
+        <% end %>
+        <% if counts.empty? %>
+          <p class="meta">No sync runs recorded yet.</p>
+        <% end %>
+      </div>
+
+      <div class="stat">
+        <div class="stat-label">AI Analyses By Status</div>
+        <% counts = (@metrics[:analyses_by_status] || {}).transform_keys(&:to_s) %>
+        <% total = counts.values.sum.to_i; total = 1 if total <= 0 %>
+        <% counts.sort_by { |k, _| k }.each do |k, v| %>
+          <div class="bar-row">
+            <span class="bar-label"><%= k %></span>
+            <div class="bar"><div class="bar-fill" style="width:<%= (v.to_f / total * 100).round(1) %>%"></div></div>
+            <span class="bar-num"><%= v %></span>
+          </div>
+        <% end %>
+        <% if counts.empty? %>
+          <p class="meta">No analyses recorded yet.</p>
+        <% end %>
+      </div>
+    </div>
+
+    <% usage = @metrics[:api_usage_24h] || {} %>
+    <div class="stat-grid" style="margin-top: 12px;">
+      <div class="stat">
+        <div class="stat-label">AI API Usage (24h)</div>
+        <div class="stat-kv"><span class="muted">Total calls</span><strong><%= usage[:total_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Image analysis</span><strong><%= usage[:image_analysis_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Report generation</span><strong><%= usage[:report_generation_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Text generation</span><strong><%= usage[:text_generation_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Failed calls</span><strong><%= usage[:failed_calls].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Total tokens</span><strong><%= usage[:total_tokens].to_i %></strong></div>
+      </div>
+
+      <div class="stat">
+        <div class="stat-label">API Providers (24h)</div>
+        <% providers = usage[:by_provider] || {} %>
+        <% if providers.any? %>
+          <% providers.sort_by { |k, _| k }.each do |provider, count| %>
+            <div class="stat-kv"><span class="muted"><%= provider %></span><strong><%= count %></strong></div>
+          <% end %>
+        <% else %>
+          <p class="meta">No provider activity in the last 24 hours.</p>
+        <% end %>
+      </div>
+    </div>
+  </section>
+
+  <%= render "actions_to_be_done_section", actions_todo_posts: @actions_todo_posts %>
+
+  <%= render "skip_diagnostics_section", skip_diagnostics: @skip_diagnostics %>
+
+  <%= render "audit_logs_section", recent_audit_entries: @recent_audit_entries %>
+
+  <section
+    class="card"
+    data-controller="story-media-archive"
+    data-story-media-archive-url-value="<%= story_media_archive_instagram_account_path(@account) %>"
+  >
+    <h2>Downloaded Story Archive</h2>
+    <p class="meta">Dynamically loads archived story media with infinite scrolling. Filter by date to review what was downloaded on a specific day.</p>
+
+    <div class="actions-row">
+      <label>
+        Date filter
+        <input type="date" data-story-media-archive-target="dateInput" data-action="change->story-media-archive#changeDate" />
+      </label>
+      <button type="button" class="btn secondary" data-action="story-media-archive#refresh">Refresh</button>
+      <span class="meta">Max cycles per continuous run: <strong><%= InstagramAccountsController::CONTINUOUS_STORY_SYNC_CYCLE_LIMIT %></strong></span>
+    </div>
+
+    <div class="story-media-scroll" data-story-media-archive-target="scroll" data-action="scroll->story-media-archive#onScroll">
+      <div class="story-media-grid" data-story-media-archive-target="gallery"></div>
+      <p class="meta" data-story-media-archive-target="empty" hidden>No archived stories found for the selected date.</p>
+      <p class="meta" data-story-media-archive-target="loader">Loading story media…</p>
+    </div>
+    <div id="story_media_archive_refresh_signal" data-story-media-archive-target="refreshSignal" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2>Recent Failures (This Account)</h2>
+
+    <% if @recent_failures.any? %>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Job</th>
+              <th>Error</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @recent_failures.each do |f| %>
+              <tr>
+                <td><%= relative_time_with_tooltip(f.occurred_at) %></td>
+                <td><code><%= f.job_class %></code></td>
+                <td class="meta"><%= "#{f.error_class}: #{f.error_message}".truncate(180) %></td>
+                <td><%= link_to "open", admin_background_job_failure_path(f), class: "btn small secondary" %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No recent failures tied to this account.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Danger Zone</h2>
+    <p class="meta">Deleting an account will delete its profiles, messages, and history.</p>
+    <div class="actions-row">
+      <%= button_to "Delete Account", instagram_account_path(@account), method: :delete, class: "btn secondary", data: { turbo_confirm: "Delete #{@account.username} and all related data?" } %>
+    </div>
+  </section>
+</div>

@@ -1,0 +1,9 @@
+:concurrency: <%= ENV.fetch("SIDEKIQ_CONCURRENCY", 8) %>
+:timeout: 25
+
+:queues:
+  - [sync, 4]
+  - [profiles, 3]
+  - [messages, 2]
+  - [avatars, 1]
+  - [default, 1]

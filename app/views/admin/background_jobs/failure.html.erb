@@ -1,0 +1,46 @@
+<% content_for :title, "Job Failure" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Job Failure</h1>
+    <p class="meta"><code><%= @failure.job_class %></code> at <strong><%= relative_time_with_tooltip(@failure.occurred_at) %></strong></p>
+  </header>
+
+  <section class="card">
+    <div class="actions-row">
+      <%= link_to "Back to Failures", admin_background_job_failures_path, class: "btn secondary" %>
+      <%= link_to "Dashboard", admin_background_jobs_path, class: "btn secondary" %>
+    </div>
+
+    <p class="meta">
+      ActiveJob ID: <code><%= @failure.active_job_id %></code><br>
+      Queue: <strong><%= @failure.queue_name %></strong><br>
+      Scope:
+      <strong>
+        <% if @failure.instagram_profile_id.present? %>
+          profile
+        <% elsif @failure.instagram_account_id.present? %>
+          account
+        <% else %>
+          system
+        <% end %>
+      </strong><br>
+      Account ID: <code><%= @failure.instagram_account_id.presence || "-" %></code><br>
+      Profile ID: <code><%= @failure.instagram_profile_id.presence || "-" %></code><br>
+      Provider job id: <code><%= @failure.provider_job_id.presence || "-" %></code><br>
+      SolidQueue job id (if applicable): <code><%= @failure.solid_queue_job_id.presence || "-" %></code>
+    </p>
+
+    <h2>Error</h2>
+    <pre><%= "#{@failure.error_class}: #{@failure.error_message}" %></pre>
+
+    <h2>Arguments</h2>
+    <pre><%= @failure.arguments_json.to_s %></pre>
+
+    <h2>Metadata</h2>
+    <pre><%= (@failure.metadata || {}).to_json %></pre>
+
+    <h2>Backtrace</h2>
+    <pre><%= @failure.backtrace.to_s %></pre>
+  </section>
+</div>

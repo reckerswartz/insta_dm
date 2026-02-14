@@ -1,0 +1,38 @@
+# Deprecated for Sidekiq installs.
+# Worker config now lives in config/sidekiq.yml.
+
+default: &default
+  dispatchers:
+    - polling_interval: 1
+      batch_size: 500
+  workers:
+    # Ensure sync jobs don't starve message sending / UI-triggered profile fetches.
+    - queues: [sync]
+      threads: <%= ENV.fetch("SYNC_JOB_THREADS", 1) %>
+      processes: <%= ENV.fetch("SYNC_JOB_CONCURRENCY", 1) %>
+      polling_interval: 0.2
+
+    - queues: [messages]
+      threads: <%= ENV.fetch("MESSAGE_JOB_THREADS", 1) %>
+      processes: <%= ENV.fetch("MESSAGE_JOB_CONCURRENCY", 1) %>
+      polling_interval: 0.1
+
+    - queues: [profiles, avatars]
+      threads: <%= ENV.fetch("PROFILE_JOB_THREADS", 2) %>
+      processes: <%= ENV.fetch("PROFILE_JOB_CONCURRENCY", 1) %>
+      polling_interval: 0.15
+
+    # Fallback worker for everything else (including solid_queue_recurring jobs).
+    - queues: "*"
+      threads: <%= ENV.fetch("JOB_THREADS", 2) %>
+      processes: <%= ENV.fetch("JOB_CONCURRENCY", 1) %>
+      polling_interval: 0.2
+
+development:
+  <<: *default
+
+test:
+  <<: *default
+
+production:
+  <<: *default

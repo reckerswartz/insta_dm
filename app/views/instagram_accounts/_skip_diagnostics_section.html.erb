@@ -1,0 +1,37 @@
+<section id="skip_diagnostics_section" class="card">
+  <h2>Skipped Cases Diagnostics</h2>
+  <p class="meta">Recent skip/failure reasons and whether they look valid or need review.</p>
+
+  <% rows = Array(skip_diagnostics[:by_reason]) %>
+  <% if rows.any? %>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Reason</th>
+            <th>Count (Last <%= skip_diagnostics[:window_hours] %>h)</th>
+            <th>Assessment</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% rows.each do |row| %>
+            <tr>
+              <td><code><%= row[:reason] %></code></td>
+              <td><strong><%= row[:count] %></strong></td>
+              <td>
+                <% if row[:classification] == "valid" %>
+                  <span class="pill sent">valid skip</span>
+                <% else %>
+                  <span class="pill queued">needs review</span>
+                <% end %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+    <p class="meta">Total skips/failures analyzed: <strong><%= skip_diagnostics[:total] %></strong></p>
+  <% else %>
+    <p class="meta">No recent skipped cases in the selected window.</p>
+  <% end %>
+</section>

@@ -1,0 +1,15 @@
+<div class="message-row" id="<%= dom_id(message) %>">
+  <div class="message-meta">
+    <span class="pill <%= message.status %>"><%= message.status %></span>
+    <span class="muted"><%= relative_time_with_tooltip(message.created_at) %></span>
+    <% if message.sent_at %>
+      <span class="muted">sent: <%= relative_time_with_tooltip(message.sent_at) %></span>
+    <% end %>
+  </div>
+
+  <div class="message-body"><%= message.body %></div>
+
+  <% if message.error_message.present? %>
+    <div class="message-error">Error: <%= message.error_message %></div>
+  <% end %>
+</div>

@@ -1,0 +1,63 @@
+<section id="actions_to_be_done_section" class="card">
+  <h2>Actions to Be Done</h2>
+  <p class="meta">Latest recent posts (up to 5 days old) from recently active users that still need manual review.</p>
+
+  <% if actions_todo_posts.any? %>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Profile</th>
+            <th>Preview</th>
+            <th>Post</th>
+            <th>Posted</th>
+            <th>Suggestions</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% actions_todo_posts.each do |item| %>
+            <% post = item[:post] %>
+            <% profile = item[:profile] %>
+            <% suggestions = item[:suggestions] %>
+            <tr>
+              <td>
+                <%= link_to "@#{profile.username}", instagram_profile_path(profile), class: "link-inline" %>
+              </td>
+              <td>
+                <% if post.media.attached? %>
+                  <%= image_tag rails_blob_path(post.media, only_path: true), alt: "Post preview", style: "width: 54px; height: 54px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line);" %>
+                <% else %>
+                  <span class="meta">-</span>
+                <% end %>
+              </td>
+              <td class="meta">
+                <code><%= post.shortcode %></code><br>
+                <%= post.caption.to_s.truncate(90) %><br>
+                <%= link_to "Open Post", post.permalink_url, target: "_blank", rel: "noopener noreferrer", class: "link-inline" %>
+              </td>
+              <td><%= relative_time_with_tooltip(post.taken_at) %></td>
+              <td>
+                <ol style="margin: 0; padding-left: 18px;">
+                  <% suggestions.each do |text| %>
+                    <li class="meta"><%= text %></li>
+                  <% end %>
+                </ol>
+              </td>
+              <td class="table-actions">
+                <% suggestions.each_with_index do |text, idx| %>
+                  <%= button_to "Post ##{idx + 1}",
+                        forward_comment_instagram_profile_instagram_profile_post_path(profile, post, comment: text),
+                        method: :post,
+                        class: "btn small secondary" %>
+                <% end %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% else %>
+    <p class="meta">No pending post-review actions. New analyzed posts will appear here automatically.</p>
+  <% end %>
+</section>

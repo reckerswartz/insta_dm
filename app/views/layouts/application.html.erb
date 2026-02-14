@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title><%= content_for(:title) || "Insta Dm" %></title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+    <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
+    <%= stylesheet_link_tag "tabulator.min", "data-turbo-track": "reload" %>
+    <%= javascript_importmap_tags %>
+  </head>
+
+  <body>
+    <div class="topbar">
+      <div class="topbar-inner">
+        <div class="nav">
+          <%= top_nav_link_to "Accounts", instagram_accounts_path, section: :accounts %>
+          <%= top_nav_link_to "Profiles", instagram_profiles_path, section: :profiles %>
+          <%= top_nav_link_to "AI Providers", admin_ai_providers_path, section: :ai_providers %>
+          <%= top_nav_link_to "Jobs", admin_background_jobs_path, section: :jobs %>
+          <%= top_nav_link_to "Failures", admin_background_job_failures_path, section: :failures %>
+        </div>
+        <div class="topbar-right">
+          <% if current_account %>
+            <span class="muted">Current:</span>
+            <%= link_to current_account.username, instagram_account_path(current_account), class: "nav-link strong" %>
+          <% else %>
+            <span class="muted">No account selected</span>
+          <% end %>
+        </div>
+      </div>
+    </div>
+
+    <% if flash[:notice] %>
+      <div class="flash notice"><%= flash[:notice] %></div>
+    <% end %>
+
+    <% if flash[:alert] %>
+      <div class="flash alert"><%= flash[:alert] %></div>
+    <% end %>
+
+    <div id="notifications"></div>
+
+    <%= yield %>
+  </body>
+</html>

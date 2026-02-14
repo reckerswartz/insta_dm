@@ -1,0 +1,41 @@
+<section id="action_history_section" class="card">
+  <h2>Action History</h2>
+  <p class="meta">Tracks profile actions such as fetch details, messageability verification, AI analysis, and avatar sync.</p>
+
+  <% if action_logs.any? %>
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Action</th>
+            <th>Status</th>
+            <th>Source</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% action_logs.each do |log| %>
+            <tr>
+              <td><%= relative_time_with_tooltip(log.occurred_at) %></td>
+              <td><code><%= log.action %></code></td>
+              <td><span class="pill <%= log.status == "failed" ? "failed" : (log.status == "succeeded" ? "sent" : (log.status == "queued" ? "queued" : "")) %>"><%= log.status %></span></td>
+              <td><%= log.trigger_source.presence || "-" %></td>
+              <td class="meta">
+                <% if log.error_message.present? %>
+                  <strong><%= log.error_message %></strong>
+                <% elsif log.log_text.present? %>
+                  <%= log.log_text %>
+                <% else %>
+                  -
+                <% end %>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% else %>
+    <p class="meta">No profile action history yet.</p>
+  <% end %>
+</section>

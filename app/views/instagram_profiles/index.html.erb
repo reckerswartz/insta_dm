@@ -1,0 +1,43 @@
+<% content_for :title, "Instagram Profiles" %>
+
+<%= turbo_stream_from @account %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Profiles</h1>
+    <p>
+      Browse profiles for <strong><%= @account.username %></strong>. Manage authentication and account-level tools on the
+      <%= link_to "account dashboard", instagram_account_path(@account) %>.
+    </p>
+  </header>
+
+  <section class="card">
+    <h2>Sync</h2>
+    <p>Primary source is your Followers + Following lists (not inbox/stories). Sync runs in the background and will notify here when complete.</p>
+
+    <div class="actions-row">
+      <%= button_to "Sync Followers/Following (Background)", follow_graph_sync_path, method: :post %>
+      <%= button_to "Download Missing Avatars (Background)", download_missing_avatars_instagram_profiles_path, method: :post, class: "btn secondary" %>
+    </div>
+
+    <div id="sync_status">
+      <%= render "sync_runs/status", sync_run: @latest_sync_run %>
+    </div>
+
+    <p class="meta">
+      Profiles: <strong><%= @counts[:total] %></strong>
+      | Followers: <strong><%= @counts[:followers] %></strong>
+      | Following: <strong><%= @counts[:following] %></strong>
+      | Mutuals: <strong><%= @counts[:mutuals] %></strong>
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Profiles Data Table</h2>
+    <p class="meta">Use column filters directly in the table header. Pagination and page size are built in.</p>
+
+    <div data-controller="profiles-table" data-profiles-table-url-value="<%= instagram_profiles_path(format: :json) %>">
+      <div data-profiles-table-target="table"></div>
+    </div>
+  </section>
+</div>

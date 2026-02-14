@@ -1,0 +1,78 @@
+# Deprecated for Sidekiq installs.
+# Schedules are now loaded from config/sidekiq_schedule.yml via sidekiq-cron.
+#
+# examples:
+#   periodic_cleanup:
+#     class: CleanSoftDeletedRecordsJob
+#     queue: background
+#     args: [ 1000, { batch_size: 500 } ]
+#     schedule: every hour
+#   periodic_cleanup_with_command:
+#     command: "SoftDeletedRecord.due.delete_all"
+#     priority: 2
+#     schedule: at 5am every day
+
+production:
+  clear_solid_queue_finished_jobs:
+    command: "SolidQueue::Job.clear_finished_in_batches(sleep_between_batches: 0.3)"
+    schedule: every hour at minute 12
+
+  purge_expired_post_media:
+    class: PurgeExpiredInstagramPostMediaJob
+    queue: profiles
+    args: [{ limit: 500 }]
+    schedule: every hour at minute 37
+
+  follow_graph_sync_all_accounts:
+    class: EnqueueFollowGraphSyncForAllAccountsJob
+    queue: sync
+    schedule: every day at 3:15am
+
+  avatar_sync_all_accounts:
+    class: EnqueueAvatarSyncForAllAccountsJob
+    queue: avatars
+    args: [{ limit: 500 }]
+    schedule: every day at 4:05am
+
+  profile_refresh_all_accounts:
+    class: EnqueueProfileRefreshForAllAccountsJob
+    queue: profiles
+    args: [{ limit_per_account: 20 }]
+    schedule: every 2 hours
+
+  story_auto_reply_all_accounts:
+    class: EnqueueStoryAutoRepliesForAllAccountsJob
+    queue: profiles
+    args: [{ max_stories: 10, force_analyze_all: false }]
+    schedule: every hour at minute 22
+
+  feed_auto_engagement_all_accounts:
+    class: EnqueueFeedAutoEngagementForAllAccountsJob
+    queue: sync
+    args: [{ max_posts: 3, include_story: true, story_hold_seconds: 18 }]
+    schedule: every hour at minute 44
+
+  profile_recent_posts_scan_all_accounts:
+    class: EnqueueRecentProfilePostScansForAllAccountsJob
+    queue: profiles
+    args: [{ limit_per_account: 8, posts_limit: 3, comments_limit: 8 }]
+    schedule: every hour at minute 8
+
+development:
+  story_auto_reply_all_accounts:
+    class: EnqueueStoryAutoRepliesForAllAccountsJob
+    queue: profiles
+    args: [{ max_stories: 10, force_analyze_all: false }]
+    schedule: every 2 hours
+
+  feed_auto_engagement_all_accounts:
+    class: EnqueueFeedAutoEngagementForAllAccountsJob
+    queue: sync
+    args: [{ max_posts: 2, include_story: true, story_hold_seconds: 18 }]
+    schedule: every 2 hours
+
+  profile_recent_posts_scan_all_accounts:
+    class: EnqueueRecentProfilePostScansForAllAccountsJob
+    queue: profiles
+    args: [{ limit_per_account: 5, posts_limit: 3, comments_limit: 8 }]
+    schedule: every 2 hours

@@ -1,0 +1,109 @@
+<% content_for :title, "Instagram Messaging Console" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Instagram Messaging Console</h1>
+    <p>Authenticate once, sync conversations/stories, review who is messageable, then send only to selected users.</p>
+  </header>
+
+  <section class="card">
+    <h2>Account & Authentication</h2>
+
+    <%= form_with model: @account, url: instagram_account_path, method: :patch, class: "stack" do |f| %>
+      <label>
+        Instagram username
+        <%= f.text_field :username, required: true %>
+      </label>
+      <%= f.submit "Save Username" %>
+    <% end %>
+
+    <div class="actions-row">
+      <%= button_to "Manual Browser Login (3 min)", manual_login_instagram_account_path(timeout_seconds: 180), method: :post %>
+      <%= link_to "Export Stored Cookies", export_cookies_instagram_account_path, class: "btn" %>
+    </div>
+
+    <%= form_with url: import_cookies_instagram_account_path, method: :post, class: "stack" do |f| %>
+      <label>
+        Import cookies JSON
+        <%= f.text_area :cookies_json, rows: 6, placeholder: '[{"name":"sessionid","value":"...","domain":".instagram.com","path":"/"}]' %>
+      </label>
+      <%= f.submit "Import Cookies" %>
+    <% end %>
+
+    <p class="hint">
+      Cookie transfer guide: open browser DevTools on instagram.com -> Application -> Cookies -> copy as JSON,
+      then paste above. Include keys such as <code>name</code>, <code>value</code>, <code>domain</code>, and <code>path</code>.
+    </p>
+
+    <p class="meta">
+      Login state: <strong><%= @account.login_state %></strong>
+      <% if @account.last_synced_at %>
+        | Last sync: <strong><%= relative_time_with_tooltip(@account.last_synced_at) %></strong>
+      <% end %>
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Data Sync</h2>
+    <p>Loads DM conversations + visible stories and computes messaging eligibility per user profile.</p>
+    <%= button_to "Sync Conversations and Stories", sync_path, method: :post %>
+
+    <p class="meta">
+      Recipients: <strong><%= @recipients.count %></strong>
+      | Eligible: <strong><%= @eligible_count %></strong>
+      | Selected: <strong><%= @selected_count %></strong>
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Recipients</h2>
+
+    <%= form_with url: update_all_recipients_path, method: :patch do %>
+      <table>
+        <thead>
+          <tr>
+            <th>Select</th>
+            <th>Username</th>
+            <th>Source</th>
+            <th>Can message</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @recipients.each do |recipient| %>
+            <tr>
+              <td>
+                <%= check_box_tag "selected_ids[]", recipient.id, recipient.selected, disabled: !recipient.can_message %>
+              </td>
+              <td><%= recipient.username %></td>
+              <td><%= recipient.source %></td>
+              <td>
+                <% if recipient.can_message %>
+                  <span class="yes">Yes</span>
+                <% else %>
+                  <span class="no">No</span>
+                <% end %>
+              </td>
+              <td><%= recipient.restriction_reason.presence || "-" %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+
+      <div class="actions-row">
+        <%= submit_tag "Save Selections" %>
+      </div>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Send Message</h2>
+    <%= form_with url: messages_path, method: :post, class: "stack" do |f| %>
+      <label>
+        Message text
+        <%= f.text_area :message_text, rows: 4, required: true %>
+      </label>
+      <%= f.submit "Send to Selected Eligible Users" %>
+    <% end %>
+  </section>
+</div>

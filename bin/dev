@@ -1,0 +1,29 @@
+#!/usr/bin/env ruby
+require "bundler/setup"
+
+env = ENV.to_h
+env["REDIS_URL"] ||= "redis://127.0.0.1:6379/0"
+
+web = ["./bin/rails", "server", *ARGV]
+jobs = ["./bin/jobs"]
+
+pids = []
+
+begin
+  pids << Process.spawn(env, *web)
+  pids << Process.spawn(env, *jobs)
+
+  Signal.trap("INT")  { pids.each { |pid| Process.kill("TERM", pid) rescue nil } }
+  Signal.trap("TERM") { pids.each { |pid| Process.kill("TERM", pid) rescue nil } }
+
+  _, status = Process.wait2
+  exit(status.exitstatus || 0)
+ensure
+  pids.each do |pid|
+    begin
+      Process.kill("TERM", pid)
+    rescue StandardError
+      nil
+    end
+  end
+end

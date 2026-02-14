@@ -1,0 +1,8 @@
+<%= form_with model: message, url: instagram_profile_instagram_profile_messages_path(profile), class: "stack" do |f| %>
+  <label>
+    Message text
+    <%= f.text_area :body, rows: 4, required: true %>
+  </label>
+  <%= f.submit "Queue Message" %>
+<% end %>
+

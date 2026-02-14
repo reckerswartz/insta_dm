@@ -1,0 +1,29 @@
+<div class="sync-status">
+  <% if sync_run.nil? %>
+    <p class="meta">No sync has been run yet.</p>
+  <% else %>
+    <p class="meta">
+      Sync: <strong><%= sync_run.kind %></strong>
+      | Status: <strong><%= sync_run.status %></strong>
+      <% if sync_run.started_at %>
+        | Started: <strong><%= relative_time_with_tooltip(sync_run.started_at) %></strong>
+      <% end %>
+      <% if sync_run.finished_at %>
+        | Finished: <strong><%= relative_time_with_tooltip(sync_run.finished_at) %></strong>
+      <% end %>
+    </p>
+
+    <% if sync_run.status == "failed" %>
+      <p class="meta">Error: <strong><%= sync_run.error_message %></strong></p>
+    <% end %>
+
+    <% if sync_run.stats.present? %>
+      <p class="meta">
+        Followers: <strong><%= sync_run.stats["followers"] || sync_run.stats[:followers] %></strong>
+        | Following: <strong><%= sync_run.stats["following"] || sync_run.stats[:following] %></strong>
+        | Mutuals: <strong><%= sync_run.stats["mutuals"] || sync_run.stats[:mutuals] %></strong>
+        | Profiles: <strong><%= sync_run.stats["profiles_total"] || sync_run.stats[:profiles_total] %></strong>
+      </p>
+    <% end %>
+  <% end %>
+</div>

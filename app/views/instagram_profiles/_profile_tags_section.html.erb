@@ -1,0 +1,25 @@
+<section id="profile_tags_section" class="card">
+  <h2>Profile Tags</h2>
+  <p class="meta">Tags guide automation decisions (for example, `relative` or `excluded` should be ignored).</p>
+
+  <%= form_with url: tags_instagram_profile_path(profile), method: :patch, class: "stack" do %>
+    <div class="filters">
+      <% selected = profile.profile_tags.pluck(:name) %>
+      <% available_tags.each do |t| %>
+        <label class="checkbox">
+          <%= check_box_tag "tag_names[]", t, selected.include?(t) %>
+          <%= t %>
+        </label>
+      <% end %>
+    </div>
+
+    <label>
+      Custom tags (comma or newline separated)
+      <%= text_area_tag :custom_tags, "", rows: 2, placeholder: "e.g. colleague, vip" %>
+    </label>
+
+    <div class="actions-row">
+      <%= submit_tag "Save Tags" %>
+    </div>
+  <% end %>
+</section>

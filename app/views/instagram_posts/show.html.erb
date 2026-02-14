@@ -1,0 +1,73 @@
+<% content_for :title, "Post #{@post.shortcode}" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Post <code><%= @post.shortcode %></code></h1>
+    <p class="meta">
+      Author: <strong><%= @post.author_username.presence || "-" %></strong>
+      | Detected: <strong><%= relative_time_with_tooltip(@post.detected_at) %></strong>
+      | Status: <strong><%= @post.status %></strong>
+    </p>
+  </header>
+
+  <section class="card">
+    <div class="actions-row">
+      <%= link_to "Back to Posts", instagram_posts_path, class: "btn secondary" %>
+      <%= link_to "Open on Instagram", @post.permalink, target: "_blank", rel: "noreferrer", class: "btn" %>
+      <% if @post.instagram_profile %>
+        <%= link_to "Open Profile", instagram_profile_path(@post.instagram_profile), class: "btn secondary" %>
+      <% end %>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Media</h2>
+    <% if @post.media.attached? %>
+      <div class="actions-row">
+        <%= link_to "download", rails_blob_path(@post.media, disposition: "attachment"), class: "btn secondary" %>
+      </div>
+
+      <% if @post.media.blob&.content_type.to_s.start_with?("video/") %>
+        <%= video_tag rails_blob_path(@post.media), controls: true, style: "max-width: 100%; border-radius: 12px; border: 1px solid var(--line);" %>
+      <% else %>
+        <%= image_tag @post.media, style: "max-width: 100%; border-radius: 12px; border: 1px solid var(--line);" %>
+      <% end %>
+    <% else %>
+      <p class="meta">No media attached yet.</p>
+      <% if @post.media_url.present? %>
+        <p class="meta">Media URL present, download is queued during capture.</p>
+      <% end %>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>AI Analysis</h2>
+    <% if @latest_analysis.present? %>
+      <p class="meta">
+        Provider: <strong><%= @latest_analysis.provider %></strong>
+        <% if @latest_analysis.model.present? %>
+          | Model: <strong><%= @latest_analysis.model %></strong>
+        <% end %>
+        | Status: <strong><%= @latest_analysis.status %></strong>
+      </p>
+
+      <% if @latest_analysis.analysis.present? %>
+        <div class="table-scroll">
+          <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(@latest_analysis.analysis) rescue @latest_analysis.analysis.to_json %></pre>
+        </div>
+      <% else %>
+        <p class="meta">No parsed analysis payload for the latest run.</p>
+      <% end %>
+    <% elsif @post.analysis.present? %>
+      <div class="table-scroll">
+        <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(@post.analysis) rescue @post.analysis.to_json %></pre>
+      </div>
+    <% else %>
+      <p class="meta">Not analyzed yet.</p>
+    <% end %>
+  </section>
+
+  <div class="actions-row">
+    <%= link_to "Back", instagram_posts_path, class: "btn secondary" %>
+  </div>
+</div>

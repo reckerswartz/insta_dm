@@ -1,0 +1,240 @@
+<% content_for :title, "Background Jobs" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Background Jobs</h1>
+    <p class="meta">Unified jobs view: Mission Control + queue backend state + app failure logs with account/system categorization.</p>
+  </header>
+
+  <section class="card">
+    <h2>Mission Control</h2>
+    <p class="meta">Open the full Mission Control UI for queue operations and inspection.</p>
+    <div class="actions-row">
+      <%= link_to "Open Mission Control", "/admin/jobs", class: "btn secondary", target: "_blank", rel: "noreferrer" %>
+      <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Queue State</h2>
+    <% if @backend == "sidekiq" %>
+      <div class="stack">
+        <div class="meta">
+          Backend: <strong>Sidekiq</strong>
+          | Enqueued: <strong><%= @counts[:enqueued] %></strong>
+          | Scheduled: <strong><%= @counts[:scheduled] %></strong>
+          | Retries: <strong><%= @counts[:retries] %></strong>
+          | Dead: <strong><%= @counts[:dead] %></strong>
+          | Processes: <strong><%= @counts[:processes] %></strong>
+        </div>
+        <% if Array(@counts[:queues]).any? %>
+          <div class="meta">
+            Queues:
+            <% @counts[:queues].sort_by { |row| row[:name].to_s }.each do |row| %>
+              <code><%= row[:name] %>=<%= row[:size] %></code>
+            <% end %>
+          </div>
+        <% end %>
+      </div>
+    <% else %>
+      <div class="stack">
+        <div class="meta">
+          Backend: <strong>Solid Queue</strong>
+          | Jobs total: <strong><%= @counts[:jobs_total] %></strong>
+          | Ready: <strong><%= @counts[:ready] %></strong>
+          | Scheduled: <strong><%= @counts[:scheduled] %></strong>
+          | Claimed: <strong><%= @counts[:claimed] %></strong>
+          | Blocked: <strong><%= @counts[:blocked] %></strong>
+          | Failed: <strong><%= @counts[:failed] %></strong>
+          | Paused queues: <strong><%= @counts[:pauses] %></strong>
+        </div>
+      </div>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Recent Jobs (All)</h2>
+    <% if @recent_jobs.any? %>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Job</th>
+              <th>Queue</th>
+              <th>Scope</th>
+              <th>Context</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if @backend == "sidekiq" %>
+              <% @recent_jobs.each do |j| %>
+                <tr>
+                  <td><%= relative_time_with_tooltip(j[:created_at]) %></td>
+                  <td><code><%= j[:class_name] %></code></td>
+                  <td><%= j[:queue_name] %></td>
+                  <td><span class="pill"><%= j[:job_scope] %></span></td>
+                  <td class="meta"><%= j[:context_label] %></td>
+                  <td><%= j[:status] %></td>
+                </tr>
+              <% end %>
+            <% else %>
+              <% @recent_jobs.each do |j| %>
+                <% ctx = Jobs::ContextExtractor.from_solid_queue_job_arguments(j.arguments) %>
+                <tr>
+                  <td><%= relative_time_with_tooltip(j.created_at) %></td>
+                  <td><code><%= j.class_name %></code></td>
+                  <td><%= j.queue_name %></td>
+                  <td><span class="pill"><%= ctx[:job_scope] %></span></td>
+                  <td class="meta"><%= ctx[:context_label] %></td>
+                  <td><%= j.finished_at.present? ? "finished" : "running/scheduled" %></td>
+                </tr>
+              <% end %>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No jobs found yet.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Active Processes</h2>
+    <% if @processes.any? %>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Kind</th>
+              <th>PID</th>
+              <th>Host</th>
+              <th>Last heartbeat</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if @backend == "sidekiq" %>
+              <% @processes.each do |p| %>
+                <tr>
+                  <td><code><%= p[:identity] %></code></td>
+                  <td>sidekiq</td>
+                  <td><%= p[:pid] %></td>
+                  <td><%= p[:hostname] %></td>
+                  <td><%= relative_time_with_tooltip(p[:beat]) %></td>
+                </tr>
+              <% end %>
+            <% else %>
+              <% @processes.each do |p| %>
+                <tr>
+                  <td><code><%= p.name %></code></td>
+                  <td><%= p.kind %></td>
+                  <td><%= p.pid %></td>
+                  <td><%= p.hostname %></td>
+                  <td><%= relative_time_with_tooltip(p.last_heartbeat_at) %></td>
+                </tr>
+              <% end %>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No worker processes found. Ensure `bin/jobs` is running.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Recent Queue Failures</h2>
+    <% if @recent_failed.any? %>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Job</th>
+              <th>Queue</th>
+              <th>Scope</th>
+              <th>Context</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if @backend == "sidekiq" %>
+              <% @recent_failed.each do |f| %>
+                <tr>
+                  <td><%= relative_time_with_tooltip(f[:created_at]) %></td>
+                  <td><code><%= f[:class_name] %></code></td>
+                  <td><%= f[:queue_name] %></td>
+                  <td><span class="pill"><%= f[:job_scope] %></span></td>
+                  <td class="meta"><%= f[:context_label] %></td>
+                  <td class="meta"><%= f[:error_message].to_s.truncate(180) %></td>
+                </tr>
+              <% end %>
+            <% else %>
+              <% @recent_failed.each do |f| %>
+                <% j = f.try(:job) %>
+                <% ctx = Jobs::ContextExtractor.from_solid_queue_job_arguments(j&.arguments || {}) %>
+                <tr>
+                  <td><%= relative_time_with_tooltip(f.created_at) %></td>
+                  <td><code><%= j&.class_name || "?" %></code></td>
+                  <td><%= j&.queue_name || "-" %></td>
+                  <td><span class="pill"><%= ctx[:job_scope] %></span></td>
+                  <td class="meta"><%= ctx[:context_label] %></td>
+                  <td class="meta"><%= f.error.to_s.truncate(180) %></td>
+                </tr>
+              <% end %>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No failed executions found in queue backend.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Recent App Failure Logs</h2>
+    <% if @failure_logs.any? %>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Job</th>
+              <th>Queue</th>
+              <th>Scope</th>
+              <th>Context</th>
+              <th>Error</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @failure_logs.each do |f| %>
+              <% scope = if f.instagram_profile_id.present? then "profile" elsif f.instagram_account_id.present? then "account" else "system" end %>
+              <tr>
+                <td><%= relative_time_with_tooltip(f.occurred_at) %></td>
+                <td><code><%= f.job_class %></code></td>
+                <td><%= f.queue_name %></td>
+                <td><span class="pill"><%= scope %></span></td>
+                <td class="meta">
+                  <% if scope == "profile" %>
+                    Profile #<%= f.instagram_profile_id %> (Account #<%= f.instagram_account_id || "?" %>)
+                  <% elsif scope == "account" %>
+                    Account #<%= f.instagram_account_id %>
+                  <% else %>
+                    System
+                  <% end %>
+                </td>
+                <td class="meta"><%= f.error_message.to_s.truncate(160) %></td>
+                <td><%= link_to "open", admin_background_job_failure_path(f), class: "btn small secondary" %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No app-level failures recorded yet.</p>
+    <% end %>
+  </section>
+</div>

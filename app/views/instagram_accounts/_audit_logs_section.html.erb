@@ -1,0 +1,103 @@
+<section id="account_audit_logs_section" class="card">
+  <h2>Audit Logs (Latest First)</h2>
+  <p class="meta">Tracks automated actions and events such as story viewed, story analyzed, and comment posting activity.</p>
+
+  <% if recent_audit_entries.any? %>
+    <div data-controller="audit-media-modal">
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Type</th>
+              <th>Profile</th>
+              <th>Activity</th>
+              <th>Status</th>
+              <th>Details</th>
+              <th>Media</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% recent_audit_entries.each do |entry| %>
+              <tr>
+                <td><%= relative_time_with_tooltip(entry[:occurred_at]) %></td>
+                <td><%= entry[:type] %></td>
+                <td>
+                  <% if entry[:profile_username].present? %>
+                    <% if entry[:profile_id].present? %>
+                      <%= link_to "@" + entry[:profile_username].to_s, instagram_profile_path(entry[:profile_id]), class: "link-inline" %>
+                    <% else %>
+                      <code>@<%= entry[:profile_username] %></code>
+                    <% end %>
+                    <span class="meta">
+                      <%= link_to "IG", "https://www.instagram.com/#{entry[:profile_username]}/", target: "_blank", rel: "noopener noreferrer", class: "link-inline" %>
+                    </span>
+                  <% else %>
+                    <code>-</code>
+                  <% end %>
+                </td>
+                <td><%= entry[:kind].to_s.tr("_", " ").titleize %></td>
+                <td><span class="pill <%= entry[:status] == "failed" ? "failed" : (entry[:status] == "succeeded" ? "sent" : "queued") %>"><%= entry[:status] %></span></td>
+                <td class="meta">
+                  <%= entry[:detail].to_s.truncate(180) %>
+                  <% if entry[:comment_text].present? %>
+                    <details>
+                      <summary>View Comment</summary>
+                      <pre class="meta" style="white-space: pre-wrap; margin-top: 0.4rem;"><%= entry[:comment_text] %></pre>
+                    </details>
+                  <% end %>
+                </td>
+                <td>
+                  <% if entry[:media_attached] %>
+                    <button
+                      type="button"
+                      class="btn small secondary"
+                      data-action="audit-media-modal#open"
+                      data-media-url="<%= entry[:media_url] %>"
+                      data-media-download-url="<%= entry[:media_download_url] %>"
+                      data-media-content-type="<%= entry[:media_content_type] %>"
+                      data-profile-id="<%= entry[:profile_id] %>"
+                      data-profile-username="<%= entry[:profile_username] %>"
+                      data-activity-kind="<%= entry[:kind] %>"
+                      data-occurred-at="<%= entry[:occurred_at]&.strftime("%Y-%m-%d %H:%M:%S") %>"
+                    >
+                      View
+                    </button>
+                  <% else %>
+                    <span class="meta">-</span>
+                  <% end %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+      <dialog data-audit-media-modal-target="dialog" class="modal">
+        <div class="modal-header">
+          <h3 data-audit-media-modal-target="title">Audit Media</h3>
+          <button class="btn small secondary" data-action="audit-media-modal#close" type="button">Close</button>
+        </div>
+        <div class="modal-grid">
+          <div>
+            <img data-audit-media-modal-target="image" alt="Audit media preview" style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line);" />
+            <video data-audit-media-modal-target="video" controls style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line); display:none;"></video>
+          </div>
+          <div>
+            <p class="meta">
+              Profile:
+              <a data-audit-media-modal-target="appProfileLink" href="#">-</a>
+              <span class="meta">|</span>
+              <a data-audit-media-modal-target="instagramProfileLink" href="#" target="_blank" rel="noopener noreferrer">IG</a>
+            </p>
+            <p class="meta" data-audit-media-modal-target="meta"></p>
+            <div class="actions-row">
+              <a data-audit-media-modal-target="download" class="btn secondary" href="#" target="_blank" rel="noreferrer">Download media</a>
+            </div>
+          </div>
+        </div>
+      </dialog>
+    </div>
+  <% else %>
+    <p class="meta">No audit activity recorded yet.</p>
+  <% end %>
+</section>
