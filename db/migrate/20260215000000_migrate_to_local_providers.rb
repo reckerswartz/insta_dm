@@ -1,4 +1,4 @@
-class MigrateToProviders < ActiveRecord::Migration[8.1]
+class MigrateToLocalProviders < ActiveRecord::Migration[8.1]
   def up
     # This migration helps users switch from cloud to local providers
     # It doesn't change data structure, just provides guidance
