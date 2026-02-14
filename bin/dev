@@ -7,14 +7,105 @@ env["REDIS_URL"] ||= "redis://127.0.0.1:6379/0"
 web = ["./bin/rails", "server", *ARGV]
 jobs = ["./bin/jobs"]
 
+# Check if local AI services should be started
+start_ai_services = ENV.fetch("START_LOCAL_AI", "true") == "true"
+ai_services_pids = []
+
+if start_ai_services
+  puts "🤖 Starting Local AI Services..."
+  
+  # Start Ollama if not running
+  ollama_running = system("curl -s http://localhost:11434/api/tags > /dev/null 2>&1")
+  unless ollama_running
+    puts "🔥 Starting Ollama..."
+    ai_services_pids << Process.spawn("sudo systemctl start ollama 2>/dev/null || ollama serve &")
+    sleep 3
+  end
+  
+  # Start AI Microservice if not running
+  microservice_running = system("curl -s http://localhost:8000/health > /dev/null 2>&1")
+  unless microservice_running
+    puts "🧠 Starting AI Microservice..."
+    
+    # Setup microservice if needed
+    unless Dir.exist?("ai_microservice/ai_microservice_env")
+      puts "📦 Setting up AI Microservice environment..."
+      system("cd ai_microservice && ./setup.sh > /dev/null 2>&1")
+    end
+    
+    # Ensure directories exist
+    system("mkdir -p tmp log")
+    
+    # Test basic setup first
+    puts "🧪 Testing microservice setup..."
+    test_result = system("cd ai_microservice && ai_microservice_env/bin/python test_setup.py > /dev/null 2>&1")
+    
+    if test_result
+      puts "✅ Microservice setup looks good"
+      # Try full version first
+      ai_services_pids << Process.spawn(
+        {"PYTHONPATH" => "ai_microservice"},
+        "ai_microservice/ai_microservice_env/bin/python",
+        "ai_microservice/main.py",
+        out: "log/ai_microservice.log",
+        err: "log/ai_microservice.log"
+      )
+    else
+      puts "⚠️  Using simplified microservice (some features may be limited)"
+      # Use simplified version
+      ai_services_pids << Process.spawn(
+        {"PYTHONPATH" => "ai_microservice"},
+        "ai_microservice/ai_microservice_env/bin/python",
+        "ai_microservice/main_simple.py",
+        out: "log/ai_microservice.log",
+        err: "log/ai_microservice.log"
+      )
+    end
+    
+    # Store PID for management
+    File.write("tmp/ai_microservice.pid", ai_services_pids.last.to_s)
+    sleep 5
+  end
+  
+  # Verify services are running
+  ollama_ok = system("curl -s http://localhost:11434/api/tags > /dev/null 2>&1")
+  microservice_ok = system("curl -s http://localhost:8000/health > /dev/null 2>&1")
+  
+  if ollama_ok && microservice_ok
+    puts "✅ Local AI Services started successfully!"
+  else
+    puts "⚠️  Some AI services may not be running. Run './bin/local_ai_services status' to check."
+  end
+end
+
 pids = []
 
 begin
   pids << Process.spawn(env, *web)
   pids << Process.spawn(env, *jobs)
+  pids.concat(ai_services_pids)
 
-  Signal.trap("INT")  { pids.each { |pid| Process.kill("TERM", pid) rescue nil } }
-  Signal.trap("TERM") { pids.each { |pid| Process.kill("TERM", pid) rescue nil } }
+  Signal.trap("INT") do 
+    puts "\n🛑 Shutting down services..."
+    pids.each { |pid| Process.kill("TERM", pid) rescue nil }
+    
+    # Clean up AI services
+    if start_ai_services
+      puts "🤖 Stopping Local AI Services..."
+      system("./bin/local_ai_services stop > /dev/null 2>&1")
+    end
+  end
+  
+  Signal.trap("TERM") do 
+    puts "\n🛑 Shutting down services..."
+    pids.each { |pid| Process.kill("TERM", pid) rescue nil }
+    
+    # Clean up AI services
+    if start_ai_services
+      puts "🤖 Stopping Local AI Services..."
+      system("./bin/local_ai_services stop > /dev/null 2>&1")
+    end
+  end
 
   _, status = Process.wait2
   exit(status.exitstatus || 0)
@@ -25,5 +116,11 @@ ensure
     rescue StandardError
       nil
     end
+  end
+  
+  # Clean up AI services on exit
+  if start_ai_services
+    puts "🤖 Stopping Local AI Services..."
+    system("./bin/local_ai_services stop > /dev/null 2>&1")
   end
 end

@@ -65,6 +65,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
             skip_targets: Array(story[:api_external_profile_targets])
           )
         )
+        downloaded_count += 1 if download_skipped_story!(account: account, profile: profile, story: story, skip_reason: story[:api_external_profile_reason].to_s.presence || "api_external_profile_indicator")
         next
       end
 
@@ -81,6 +82,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
             total_stories: stories.size
           )
         )
+        downloaded_count += 1 if download_skipped_story!(account: account, profile: profile, story: story, skip_reason: "already_processed")
         next
       end
 
@@ -171,7 +173,8 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
             account: account,
             profile: profile,
             story: story,
-            analysis: analysis
+            analysis: analysis,
+            downloaded_event: downloaded_event
           )
           reply_queued_count += 1 if queued
         else
@@ -408,7 +411,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     profile.instagram_profile_events.where(kind: "story_reply_sent", external_id: "story_reply_sent:#{story_id}").exists?
   end
 
-  def queue_story_reply!(account:, profile:, story:, analysis:)
+  def queue_story_reply!(account:, profile:, story:, analysis:, downloaded_event: nil)
     story_id = story[:story_id].to_s
     suggestion = select_unique_story_comment(profile: profile, suggestions: Array(analysis[:comment_suggestions]))
     return false if suggestion.blank?
@@ -441,6 +444,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         provider_message_id: result[:provider_message_id]
       )
     )
+    attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: suggestion)
     true
   rescue StandardError => e
     account.instagram_messages.create!(
@@ -455,6 +459,41 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
 
   def official_messaging_service
     @official_messaging_service ||= Messaging::IntegrationService.new
+  end
+
+  def attach_reply_comment_to_downloaded_event!(downloaded_event:, comment_text:)
+    return if downloaded_event.blank? || comment_text.blank?
+
+    meta = downloaded_event.metadata.is_a?(Hash) ? downloaded_event.metadata.deep_dup : {}
+    meta["reply_comment"] = comment_text.to_s
+    downloaded_event.update!(metadata: meta)
+  end
+
+  def download_skipped_story!(account:, profile:, story:, skip_reason:)
+    media_url = story[:media_url].to_s.strip
+    return false if media_url.blank?
+
+    bytes, content_type, filename = download_story_media(url: media_url, user_agent: account.user_agent)
+    downloaded_at = Time.current
+    story_id = story[:story_id].to_s
+    event = profile.record_event!(
+      kind: "story_downloaded",
+      external_id: "story_downloaded:#{story_id}:#{downloaded_at.utc.iso8601(6)}",
+      occurred_at: downloaded_at,
+      metadata: base_story_metadata(profile: profile, story: story).merge(
+        skipped: true,
+        skip_reason: skip_reason.to_s,
+        downloaded_at: downloaded_at.iso8601,
+        media_filename: filename,
+        media_content_type: content_type,
+        media_bytes: bytes.bytesize
+      )
+    )
+    event.media.attach(io: StringIO.new(bytes), filename: filename, content_type: content_type)
+    InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
+    true
+  rescue StandardError
+    false
   end
 
   def recent_story_history_context(profile:)

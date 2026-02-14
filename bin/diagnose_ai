@@ -1,0 +1,139 @@
+#!/bin/bash
+
+# Local AI Services Diagnostic Script
+
+echo "🔍 Local AI Services Diagnostic"
+echo "=============================="
+
+# Check Python environment
+echo "🐍 Python Environment:"
+if command -v python3 &> /dev/null; then
+    echo "✅ Python3 available: $(python3 --version)"
+else
+    echo "❌ Python3 not found"
+    exit 1
+fi
+
+# Check virtual environment
+echo ""
+echo "📦 Virtual Environment:"
+if [ -d "ai_microservice/ai_microservice_env" ]; then
+    echo "✅ Virtual environment exists"
+    
+    # Check if key packages are installed
+    echo "📚 Checking packages..."
+    source ai_microservice/ai_microservice_env/bin/activate
+    
+    packages=("fastapi" "uvicorn" "numpy" "pillow")
+    for package in "${packages[@]}"; do
+        if python -c "import $package" 2>/dev/null; then
+            echo "✅ $package installed"
+        else
+            echo "❌ $package missing"
+        fi
+    done
+    
+    deactivate
+else
+    echo "❌ Virtual environment not found"
+    echo "💡 Run: cd ai_microservice && ./setup.sh"
+fi
+
+# Check services
+echo ""
+echo "🔗 Service Connectivity:"
+if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+    echo "✅ AI Microservice responding on port 8000"
+else
+    echo "❌ AI Microservice not responding on port 8000"
+fi
+
+if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+    echo "✅ Ollama responding on port 11434"
+else
+    echo "❌ Ollama not responding on port 11434"
+fi
+
+# Check directories
+echo ""
+echo "📁 Directory Structure:"
+dirs=("tmp" "log" "ai_microservice/services")
+for dir in "${dirs[@]}"; do
+    if [ -d "$dir" ]; then
+        echo "✅ $dir/ exists"
+    else
+        echo "❌ $dir/ missing"
+    fi
+done
+
+# Check files
+echo ""
+echo "📄 Key Files:"
+files=("ai_microservice/main.py" "ai_microservice/main_simple.py" "ai_microservice/test_setup.py")
+for file in "${files[@]}"; do
+    if [ -f "$file" ]; then
+        echo "✅ $file exists"
+    else
+        echo "❌ $file missing"
+    fi
+done
+
+# Check logs
+echo ""
+echo "📋 Recent Logs:"
+if [ -f "log/ai_microservice.log" ]; then
+    echo "📄 AI Microservice log (last 10 lines):"
+    tail -n 10 log/ai_microservice.log 2>/dev/null || echo "Log file empty"
+else
+    echo "❌ No AI Microservice log found"
+fi
+
+# Check processes
+echo ""
+echo "⚙️ Running Processes:"
+if pgrep -f "python.*main.py" > /dev/null; then
+    echo "✅ AI Microservice process running (PID: $(pgrep -f 'python.*main.py'))"
+else
+    echo "❌ AI Microservice process not found"
+fi
+
+if pgrep ollama > /dev/null; then
+    echo "✅ Ollama process running (PID: $(pgrep ollama))"
+else
+    echo "❌ Ollama process not found"
+fi
+
+# Test basic functionality
+echo ""
+echo "🧪 Quick Tests:"
+echo "Testing AI Microservice health endpoint..."
+if curl -s http://localhost:8000/health | python -m json.tool 2>/dev/null; then
+    echo "✅ Health endpoint working"
+else
+    echo "❌ Health endpoint failed"
+fi
+
+echo ""
+echo "Testing Ollama API..."
+if curl -s http://localhost:11434/api/tags | python -m json.tool 2>/dev/null; then
+    echo "✅ Ollama API working"
+else
+    echo "❌ Ollama API failed"
+fi
+
+echo ""
+echo "🎯 Recommendations:"
+if ! curl -s http://localhost:8000/health > /dev/null; then
+    echo "💡 Start AI Microservice: ./bin/local_ai_services start"
+fi
+
+if ! curl -s http://localhost:11434/api/tags > /dev/null; then
+    echo "💡 Start Ollama: sudo systemctl start ollama"
+fi
+
+if [ ! -d "ai_microservice/ai_microservice_env" ]; then
+    echo "💡 Setup Python environment: cd ai_microservice && ./setup.sh"
+fi
+
+echo ""
+echo "🔧 For detailed logs: ./bin/local_ai_services logs"

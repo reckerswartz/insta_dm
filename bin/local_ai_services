@@ -1,0 +1,248 @@
+#!/bin/bash
+
+# Local AI Services Management Script
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_status() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_header() {
+    echo -e "${BLUE}=== $1 ===${NC}"
+}
+
+# Check if service is running
+check_service() {
+    local service_name=$1
+    local port=$2
+    local url=$3
+    
+    if curl -s "http://localhost:$port/health" > /dev/null 2>&1; then
+        print_status "$service_name is running on port $port"
+        return 0
+    else
+        print_warning "$service_name is not running on port $port"
+        return 1
+    fi
+}
+
+# Start Ollama
+start_ollama() {
+    print_header "Starting Ollama"
+    
+    if check_service "Ollama" 11434; then
+        print_status "Ollama is already running"
+        return 0
+    fi
+    
+    print_status "Starting Ollama service..."
+    sudo systemctl start ollama 2>/dev/null || {
+        print_warning "Could not start Ollama via systemctl, trying direct command..."
+        ollama serve &
+        sleep 3
+    }
+    
+    if check_service "Ollama" 11434; then
+        print_status "Ollama started successfully"
+        
+        # Check if model is available
+        if ! ollama list | grep -q "mistral:7b"; then
+            print_status "Pulling mistral:7b model (this may take a while)..."
+            ollama pull mistral:7b
+        fi
+    else
+        print_error "Failed to start Ollama"
+        return 1
+    fi
+}
+
+# Start AI Microservice
+start_microservice() {
+    print_header "Starting AI Microservice"
+    
+    if check_service "AI Microservice" 8000; then
+        print_status "AI Microservice is already running"
+        return 0
+    fi
+    
+    cd "$PROJECT_ROOT/ai_microservice"
+    
+    # Check if virtual environment exists
+    if [ ! -d "ai_microservice_env" ]; then
+        print_status "Setting up Python environment..."
+        ./setup.sh
+    fi
+    
+    # Ensure directories exist
+    mkdir -p "$PROJECT_ROOT/tmp" "$PROJECT_ROOT/log"
+    
+    # Start microservice using virtual environment's Python directly
+    print_status "Starting AI Microservice..."
+    cd "$PROJECT_ROOT"
+    PYTHONPATH="ai_microservice" nohup ai_microservice/ai_microservice_env/bin/python ai_microservice/main.py > log/ai_microservice.log 2>&1 &
+    MICROSERVICE_PID=$!
+    echo $MICROSERVICE_PID > tmp/ai_microservice.pid
+    
+    sleep 5
+    
+    if check_service "AI Microservice" 8000; then
+        print_status "AI Microservice started successfully (PID: $MICROSERVICE_PID)"
+    else
+        print_error "Failed to start AI Microservice"
+        return 1
+    fi
+}
+
+# Stop services
+stop_services() {
+    print_header "Stopping Local AI Services"
+    
+    # Stop AI Microservice
+    if [ -f "tmp/ai_microservice.pid" ]; then
+        PID=$(cat tmp/ai_microservice.pid)
+        if kill -0 $PID 2>/dev/null; then
+            print_status "Stopping AI Microservice (PID: $PID)..."
+            kill $PID
+            rm tmp/ai_microservice.pid
+        fi
+    fi
+    
+    # Stop Ollama
+    print_status "Stopping Ollama..."
+    sudo systemctl stop ollama 2>/dev/null || pkill -f "ollama serve" || true
+    
+    print_status "All services stopped"
+}
+
+# Check status
+status() {
+    print_header "Local AI Services Status"
+    
+    echo ""
+    print_status "Service Health Checks:"
+    check_service "AI Microservice" 8000
+    check_service "Ollama" 11434
+    
+    echo ""
+    print_status "Model Availability:"
+    if ollama list 2>/dev/null | grep -q "mistral:7b"; then
+        echo "✅ mistral:7b model available"
+    else
+        echo "❌ mistral:7b model not found"
+    fi
+    
+    echo ""
+    print_status "Configuration:"
+    echo "LOCAL_AI_SERVICE_URL: ${LOCAL_AI_SERVICE_URL:-http://localhost:8000}"
+    echo "OLLAMA_URL: ${OLLAMA_URL:-http://localhost:11434}"
+    echo "OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}"
+}
+
+# Test services
+test_services() {
+    print_header "Testing Local AI Services"
+    
+    # Test AI Microservice
+    print_status "Testing AI Microservice..."
+    if curl -s "http://localhost:8000/health" | grep -q "healthy"; then
+        print_status "✅ AI Microservice health check passed"
+    else
+        print_error "❌ AI Microservice health check failed"
+    fi
+    
+    # Test Ollama
+    print_status "Testing Ollama..."
+    if ollama list > /dev/null 2>&1; then
+        print_status "✅ Ollama is responding"
+        
+        # Test model generation
+        echo "test" | ollama run mistral:7b > /dev/null 2>&1 && \
+            print_status "✅ Ollama model generation works" || \
+            print_error "❌ Ollama model generation failed"
+    else
+        print_error "❌ Ollama is not responding"
+    fi
+}
+
+# Show logs
+logs() {
+    print_header "Service Logs"
+    
+    if [ -f "log/ai_microservice.log" ]; then
+        echo "=== AI Microservice Logs ==="
+        tail -n 50 log/ai_microservice.log
+    else
+        print_warning "AI Microservice logs not found"
+    fi
+    
+    echo ""
+    echo "=== Ollama Service Status ==="
+    sudo systemctl status ollama --no-pager 2>/dev/null || print_warning "Ollama systemd service not found"
+}
+
+# Main script logic
+case "${1:-help}" in
+    start)
+        start_ollama
+        start_microservice
+        print_status "All local AI services started!"
+        ;;
+    stop)
+        stop_services
+        ;;
+    restart)
+        stop_services
+        sleep 2
+        start_ollama
+        start_microservice
+        print_status "All local AI services restarted!"
+        ;;
+    status)
+        status
+        ;;
+    test)
+        test_services
+        ;;
+    logs)
+        logs
+        ;;
+    help|*)
+        echo "Local AI Services Management Script"
+        echo ""
+        echo "Usage: $0 {start|stop|restart|status|test|logs|help}"
+        echo ""
+        echo "Commands:"
+        echo "  start   - Start all local AI services (Ollama + AI Microservice)"
+        echo "  stop    - Stop all local AI services"
+        echo "  restart - Restart all local AI services"
+        echo "  status  - Show status of all services"
+        echo "  test    - Test service connectivity"
+        echo "  logs    - Show service logs"
+        echo "  help    - Show this help message"
+        echo ""
+        echo "Services:"
+        echo "  - Ollama (LLM inference) on http://localhost:11434"
+        echo "  - AI Microservice (Vision/OCR/Whisper) on http://localhost:8000"
+        exit 1
+        ;;
+esac

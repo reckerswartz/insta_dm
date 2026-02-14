@@ -1113,6 +1113,7 @@ module Instagram
                         submission_method: comment_result[:method]
                       }
                     )
+                    attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: comment_text)
                   else
                     profile.record_event!(
                       kind: "story_reply_skipped",
@@ -4561,6 +4562,7 @@ module Instagram
               analysis: analysis
             }
           )
+          attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: comment_text)
         end
       rescue StandardError
         next
@@ -6218,6 +6220,14 @@ module Instagram
       )
     rescue StandardError
       nil
+    end
+
+    def attach_reply_comment_to_downloaded_event!(downloaded_event:, comment_text:)
+      return if downloaded_event.blank? || comment_text.blank?
+
+      meta = downloaded_event.metadata.is_a?(Hash) ? downloaded_event.metadata.deep_dup : {}
+      meta["reply_comment"] = comment_text.to_s
+      downloaded_event.update!(metadata: meta)
     end
 
     def wait_for_comment_textbox(driver:, timeout: 10)

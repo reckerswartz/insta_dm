@@ -136,6 +136,12 @@ export default class extends Controller {
     const storyLink = item.story_url
       ? `<a href="${this.esc(item.story_url)}" target="_blank" rel="noopener noreferrer">Story Link</a>`
       : ""
+    const replyCommentBlock = item.reply_comment
+      ? `<p class="story-reply-comment" title="Exact reply sent to this story"><strong>Reply sent:</strong> ${this.esc(item.reply_comment)}</p>`
+      : ""
+    const skippedBlock = item.skipped && item.skip_reason
+      ? `<p class="meta story-skipped-badge">Skipped (not analyzed): ${this.esc(item.skip_reason)}</p>`
+      : ""
 
     return `
       <article class="story-media-card">
@@ -144,6 +150,8 @@ export default class extends Controller {
           <p><strong>${profileHtml}</strong> ${igProfile}</p>
           <p class="meta">${this.esc(occurred)}</p>
           <p class="meta">Type: ${this.esc(contentType || "-")} | Size: ${this.esc(sizeKb)} | Dim: ${this.esc(dimensions)}</p>
+          ${skippedBlock}
+          ${replyCommentBlock}
           <div class="actions-row">
             <a class="btn small secondary" href="${this.esc(item.media_download_url)}" target="_blank" rel="noreferrer">Download</a>
             ${storyLink ? `<span class="meta">${storyLink}</span>` : ""}

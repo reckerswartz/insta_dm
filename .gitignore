@@ -33,3 +33,165 @@
 # Ignore key files for decrypting credentials and more.
 /config/*.key
 
+# AI Microservice - Python and ML files
+/ai_microservice/__pycache__/
+/ai_microservice/*/__pycache__/
+/ai_microservice/*/*/__pycache__/
+/ai_microservice/*.pyc
+/ai_microservice/*/*.pyc
+/ai_microservice/*/*/*.pyc
+/ai_microservice/*.pyo
+/ai_microservice/*/*.pyo
+/ai_microservice/*/*/*.pyo
+/ai_microservice/$py.class
+/ai_microservice/*/$py.class
+/ai_microservice/*/*/$py.class
+
+# AI Microservice - Virtual Environment
+/ai_microservice/ai_microservice_env/
+/ai_microservice/venv/
+/ai_microservice/env/
+/ai_microservice/.env
+/ai_microservice/.venv
+
+# AI Microservice - Models and Data
+/ai_microservice/models/
+/ai_microservice/*.weights
+/ai_microservice/*.pt
+/ai_microservice/*.pth
+/ai_microservice/*.onnx
+/ai_microservice/*.trt
+/ai_microservice/yolo*/**/weights/
+/ai_microservice/ultralytics/cache/
+/ai_microservice/.ultralytics/
+
+# AI Microservice - Logs and Runtime
+/ai_microservice/*.log
+/ai_microservice/logs/
+/ai_microservice/nohup.out
+/ai_microservice/.coverage
+/ai_microservice/htmlcov/
+/ai_microservice/.pytest_cache/
+/ai_microservice/.mypy_cache/
+
+# AI Microservice - Temporary Files
+/ai_microservice/temp/
+/ai_microservice/tmp/
+/ai_microservice/cache/
+/ai_microservice/uploads/
+/ai_microservice/downloads/
+/ai_microservice/test_images/
+/ai_microservice/test_audio/
+/ai_microservice/test_video/
+
+# AI Microservice - IDE and Editor Files
+/ai_microservice/.vscode/
+/ai_microservice/.idea/
+/ai_microservice/*.swp
+/ai_microservice/*.swo
+/ai_microservice/.*.swp
+/ai_microservice/.*.swo
+/ai_microservice*~
+
+# AI Microservice - OS Files
+/ai_microservice.DS_Store
+/ai_microservice/.DS_Store
+/ai_microservice/Thumbs.db
+/ai_microservice/ehthumbs.db
+/ai_microservice/Desktop.ini
+
+# AI Microservice - Package Files
+/ai_microservice/build/
+/ai_microservice/dist/
+/ai_microservice/*.egg-info/
+/ai_microservice/wheels/
+/ai_microservice/.tox/
+/ai_microservice/.coverage.*
+
+# Ollama - Models and Data
+/.ollama/
+/ollama/
+/ollama_models/
+*.ollama
+
+# Whisper - Models and Cache
+/whisper_models/
+/whisper_cache/
+*.whisper
+
+# System and Service Files
+*.pid
+*.lock
+*.sock
+*.service
+*.timer
+
+# Test and Validation Files
+/test_image*
+/test_audio*
+/test_video*
+/installation.log
+/validation_results.json
+/diagnostic_output.json
+
+# Backup and Archive Files
+*.backup
+*.bak
+*.old
+*.orig
+*.rej
+~*
+.~*
+
+# Large Binary Files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wav
+*.mp3
+*.flac
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Node.js (if any frontend tools)
+/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Database Files
+*.sqlite
+*.sqlite3
+*.db
+
+# Rails Specific
+/public/packs
+/public/packs-test
+/node_modules
+/yarn-error.log
+/binstubs
+/.byebug_history
+
+# Environment specific
+.env.local
+.env.development
+.env.test
+.env.production
+.env.staging
+
+# IDE and Editor Files (global)
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# System Files
+*.log
+*.tmp
+*.temp

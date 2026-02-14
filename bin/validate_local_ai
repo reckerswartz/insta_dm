@@ -1,0 +1,311 @@
+#!/usr/bin/env ruby
+
+# Local AI Services Validation Script
+# Tests all local AI components and compares with cloud services
+
+require 'net/http'
+require 'json'
+require 'base64'
+require 'tempfile'
+
+class LocalAIValidator
+  def initialize
+    @microservice_url = ENV.fetch('LOCAL_AI_SERVICE_URL', 'http://localhost:8000')
+    @ollama_url = ENV.fetch('OLLAMA_URL', 'http://localhost:11434')
+    @results = { passed: 0, failed: 0, tests: [] }
+  end
+
+  def run_all_tests
+    puts "🧪 Local AI Services Validation"
+    puts "=" * 50
+    
+    test_microservice_health
+    test_ollama_health
+    test_image_analysis
+    test_face_recognition
+    test_ocr
+    test_whisper
+    test_llm_generation
+    test_rails_integration
+    
+    print_summary
+  end
+
+  private
+
+  def test(name, &block)
+    print "Testing #{name}... "
+    begin
+      result = block.call
+      if result[:success]
+        puts "✅ PASS"
+        @results[:passed] += 1
+        @results[:tests] << { name: name, status: 'PASS', details: result[:details] }
+      else
+        puts "❌ FAIL"
+        puts "   Error: #{result[:error]}"
+        @results[:failed] += 1
+        @results[:tests] << { name: name, status: 'FAIL', error: result[:error] }
+      end
+    rescue => e
+      puts "❌ ERROR"
+      puts "   Exception: #{e.message}"
+      @results[:failed] += 1
+      @results[:tests] << { name: name, status: 'ERROR', error: e.message }
+    end
+  end
+
+  def test_microservice_health
+    test("AI Microservice Health") do
+      response = http_get("#{@microservice_url}/health")
+      data = JSON.parse(response.body)
+      
+      if data['status'] == 'healthy'
+        { success: true, details: "Services: #{data['services'].keys.join(', ')}" }
+      else
+        { success: false, error: "Service not healthy" }
+      end
+    end
+  end
+
+  def test_ollama_health
+    test("Ollama Health") do
+      response = http_get("#{@ollama_url}/api/tags")
+      data = JSON.parse(response.body)
+      
+      models = data['models'] || []
+      mistral_available = models.any? { |m| m['name'].include?('mistral:7b') }
+      
+      if mistral_available
+        { success: true, details: "Models available: #{models.map { |m| m['name'] }.join(', ')}" }
+      else
+        { success: false, error: "mistral:7b model not found" }
+      end
+    end
+  end
+
+  def test_image_analysis
+    test("Image Analysis") do
+      # Create a simple test image (1x1 pixel)
+      test_image = create_test_image
+      
+      response = upload_file("#{@microservice_url}/analyze/image", test_image, 
+                           { features: 'labels,text,faces,safe_search' })
+      data = JSON.parse(response.body)
+      
+      if data['success'] && data['results']
+        { success: true, details: "Detected: #{data['results'].keys.join(', ')}" }
+      else
+        { success: false, error: "Image analysis failed" }
+      end
+    end
+  end
+
+  def test_face_recognition
+    test("Face Recognition") do
+      test_image = create_test_image
+      
+      response = upload_file("#{@microservice_url}/face/embedding", test_image)
+      data = JSON.parse(response.body)
+      
+      if data['success']
+        embedding_size = data['metadata']['embedding_size']
+        if embedding_size > 0
+          { success: true, details: "Embedding size: #{embedding_size}" }
+        else
+          { success: false, error: "No face detected (expected for test image)" }
+        end
+      else
+        { success: false, error: "Face embedding failed" }
+      end
+    end
+  end
+
+  def test_ocr
+    test("OCR (Text Recognition)") do
+      # Create a simple image with text (this is a basic test)
+      test_image = create_test_image_with_text
+      
+      response = upload_file("#{@microservice_url}/analyze/image", test_image, 
+                           { features: 'text' })
+      data = JSON.parse(response.body)
+      
+      if data['success'] && data['results']['text']
+        { success: true, details: "OCR service responding" }
+      else
+        { success: false, error: "OCR service not responding" }
+      end
+    end
+  end
+
+  def test_whisper
+    test("Whisper Speech-to-Text") do
+      # Create a silent audio file (basic test)
+      test_audio = create_test_audio
+      
+      response = upload_file("#{@microservice_url}/transcribe/audio", test_audio,
+                           { model: 'base' })
+      data = JSON.parse(response.body)
+      
+      if data['success']
+        { success: true, details: "Whisper service responding" }
+      else
+        { success: false, error: "Whisper service not responding" }
+      end
+    end
+  end
+
+  def test_llm_generation
+    test("LLM Text Generation") do
+      payload = {
+        model: 'mistral:7b',
+        prompt: 'Respond with just the word: SUCCESS',
+        options: { temperature: 0.1, num_predict: 10 }
+      }
+      
+      response = http_post("#{@ollama_url}/api/generate", payload)
+      data = JSON.parse(response.body)
+      
+      if data['response']&.include?('SUCCESS')
+        { success: true, details: "LLM generation working" }
+      else
+        { success: false, error: "LLM generation failed: #{data['response']}" }
+      end
+    end
+  end
+
+  def test_rails_integration
+    test("Rails Integration") do
+      # Test if Rails can access the local provider
+      begin
+        # This would be run in Rails context
+        provider = Ai::Providers::LocalProvider.new
+        result = provider.test_key!
+        
+        if result[:ok]
+          { success: true, details: result[:message] }
+        else
+          { success: false, error: result[:message] }
+        end
+      rescue NameError
+        { success: false, error: "Rails not loaded or LocalProvider not available" }
+      end
+    end
+
+  def create_test_image
+    # Create a simple 1x1 red pixel PNG
+    png_data = Base64.decode64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+P6X8AAAAASUVORK5CYII=")
+    Tempfile.new(['test_image', '.png']).tap do |f|
+      f.binmode
+      f.write(png_data)
+      f.flush
+    end
+  end
+
+  def create_test_image_with_text
+    # For this test, we'll use the same simple image
+    # In a real scenario, you'd create an image with actual text
+    create_test_image
+  end
+
+  def create_test_audio
+    # Create a minimal WAV file (silent)
+    wav_header = [
+      'RIFF',  # ChunkID
+      [36].pack('V'),  # ChunkSize (36 bytes)
+      'WAVE',  # Format
+      'fmt ',  # Subchunk1ID
+      [16].pack('V'),  # Subchunk1Size
+      [1].pack('v'),   # AudioFormat (PCM)
+      [1].pack('v'),   # NumChannels (mono)
+      [8000].pack('V'), # SampleRate
+      [8000].pack('V'), # ByteRate
+      [1].pack('v'),   # BlockAlign
+      [8].pack('v'),   # BitsPerSample
+      'data',  # Subchunk2ID
+      [0].pack('V')    # Subchunk2Size (no data)
+    ].join
+    
+    Tempfile.new(['test_audio', '.wav']).tap do |f|
+      f.binmode
+      f.write(wav_header)
+      f.flush
+    end
+  end
+
+  def http_get(url)
+    uri = URI(url)
+    Net::HTTP.get_response(uri)
+  end
+
+  def http_post(url, payload)
+    uri = URI(url)
+    http = Net::HTTP.new(uri.host, uri.port)
+    request = Net::HTTP::Post.new(uri.request_uri)
+    request['Content-Type'] = 'application/json'
+    request.body = payload.to_json
+    http.request(request)
+  end
+
+  def upload_file(url, file, params = {})
+    uri = URI(url)
+    boundary = "----WebKitFormBoundary#{SecureRandom.hex(16)}"
+    
+    post_body = []
+    post_body << "--#{boundary}\r\n"
+    post_body << "Content-Disposition: form-data; name=\"file\"; filename=\"#{File.basename(file.path)}\"\r\n"
+    post_body << "Content-Type: application/octet-stream\r\n\r\n"
+    post_body << File.read(file.path)
+    post_body << "\r\n"
+    
+    params.each do |key, value|
+      post_body << "--#{boundary}\r\n"
+      post_body << "Content-Disposition: form-data; name=\"#{key}\"\r\n\r\n"
+      post_body << value.to_s
+      post_body << "\r\n"
+    end
+    
+    post_body << "--#{boundary}--\r\n"
+    
+    http = Net::HTTP.new(uri.host, uri.port)
+    request = Net::HTTP::Post.new(uri.request_uri)
+    request['Content-Type'] = "multipart/form-data; boundary=#{boundary}"
+    request.body = post_body.join
+    
+    http.request(request)
+  ensure
+    file.close
+    file.unlink
+  end
+
+  def print_summary
+    puts "\n" + "=" * 50
+    puts "🏁 Test Summary"
+    puts "=" * 50
+    puts "✅ Passed: #{@results[:passed]}"
+    puts "❌ Failed: #{@results[:failed]}"
+    puts "📊 Total:  #{@results[:passed] + @results[:failed]}"
+    
+    if @results[:failed] > 0
+      puts "\n❌ Failed Tests:"
+      @results[:tests].select { |t| t[:status] == 'FAIL' || t[:status] == 'ERROR' }.each do |test|
+        puts "  • #{test[:name]}: #{test[:error] || test[:details]}"
+      end
+    end
+    
+    puts "\n💡 Next Steps:"
+    if @results[:failed] == 0
+      puts "✅ All tests passed! Your local AI setup is ready."
+      puts "   Run: rails runner 'Ai::Providers::LocalProvider.new.test_key!'"
+    else
+      puts "🔧 Some services need attention:"
+      puts "   • Check service logs: ./bin/local_ai_services logs"
+      puts "   • Restart services: ./bin/local_ai_services restart"
+      puts "   • Check configuration: config/local_ai.env.example"
+    end
+  end
+end
+
+# Run the validator
+validator = LocalAIValidator.new
+validator.run_all_tests

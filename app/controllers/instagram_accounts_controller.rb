@@ -330,7 +330,10 @@ class InstagramAccountsController < ApplicationController
       media_width: metadata["media_width"],
       media_height: metadata["media_height"],
       story_id: metadata["story_id"].to_s,
-      story_url: metadata["story_url"].to_s
+      story_url: metadata["story_url"].to_s.presence || metadata["permalink"].to_s.presence,
+      reply_comment: metadata["reply_comment"].to_s.presence,
+      skipped: ActiveModel::Type::Boolean.new.cast(metadata["skipped"]),
+      skip_reason: metadata["skip_reason"].to_s.presence
     }
   end
 

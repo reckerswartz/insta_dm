@@ -1,0 +1,24 @@
+# Local AI Microservice Requirements
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+pillow==10.1.0
+numpy==1.24.3
+opencv-python==4.8.1.78
+
+# Computer Vision
+ultralytics==8.0.196
+retinaface-pytorch==0.0.1
+insightface==0.2.1
+
+# OCR
+paddlepaddle==2.5.2
+paddleocr==2.7.0
+easyocr==1.7.0
+
+# Audio processing
+faster-whisper==0.10.0
+
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
