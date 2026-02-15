@@ -1,9 +1,7 @@
 class MigrateToLocalProviders < ActiveRecord::Migration[8.1]
   def up
-    # This migration helps users switch from cloud to local providers
-    # It doesn't change data structure, just provides guidance
+    # This migration ensures local AI provider is properly configured
     
-    # Add a note to check current provider settings
     puts "🔄 Migration: Local AI Provider Setup"
     puts ""
     puts "✅ pgvector is already enabled and configured"
@@ -20,19 +18,15 @@ class MigrateToLocalProviders < ActiveRecord::Migration[8.1]
     puts "     enabled: true"
     puts "   )"
     puts ""
-    puts "3. Set local as default provider:"
-    puts "   AiProviderSetting.where(provider: 'google_cloud').update_all(enabled: false)"
-    puts ""
-    puts "4. Test the setup:"
+    puts "3. Test the setup:"
     puts "   Ai::Providers::LocalProvider.new.test_key!"
     puts ""
   end
   
   def down
-    puts "🔄 Rollback: Cloud Provider Restoration"
+    puts "🔄 Rollback: Local Provider Removal"
     puts ""
-    puts "To restore cloud providers:"
-    puts "1. AiProviderSetting.where(provider: 'google_cloud').update_all(enabled: true)"
-    puts "2. AiProviderSetting.where(provider: 'local').update_all(enabled: false)"
+    puts "To rollback local provider setup:"
+    puts "1. AiProviderSetting.where(provider: 'local').update_all(enabled: false)"
   end
 end

@@ -50,6 +50,20 @@ class Admin::BackgroundJobsController < Admin::BaseController
     @failure = BackgroundJobFailure.find(params[:id])
   end
 
+  def clear_all_jobs
+    backend = queue_backend
+    
+    if backend == "sidekiq"
+      clear_sidekiq_jobs!
+    else
+      clear_solid_queue_jobs!
+    end
+
+    redirect_to admin_background_jobs_path, notice: "All jobs have been stopped and queue cleared successfully."
+  rescue StandardError => e
+    redirect_to admin_background_jobs_path, alert: "Failed to clear jobs: #{e.message}"
+  end
+
   private
 
   def queue_backend
@@ -323,5 +337,39 @@ class Admin::BackgroundJobsController < Admin::BaseController
     end
   rescue StandardError
     []
+  end
+
+  def clear_sidekiq_jobs!
+    require "sidekiq/api"
+    
+    # Clear all queues
+    Sidekiq::Queue.all.each(&:clear)
+    
+    # Clear scheduled jobs
+    Sidekiq::ScheduledSet.new.clear
+    
+    # Clear retry jobs
+    Sidekiq::RetrySet.new.clear
+    
+    # Clear dead jobs
+    Sidekiq::DeadSet.new.clear
+    
+    # Stop all processes by sending quiet signal
+    Sidekiq::ProcessSet.new.each do |process|
+      process.quiet! if process.alive?
+    end
+  end
+
+  def clear_solid_queue_jobs!
+    # Clear all job executions
+    SolidQueue::ReadyExecution.delete_all
+    SolidQueue::ScheduledExecution.delete_all
+    SolidQueue::ClaimedExecution.delete_all
+    SolidQueue::BlockedExecution.delete_all
+    SolidQueue::FailedExecution.delete_all
+    SolidQueue::Job.delete_all
+    
+    # Stop all processes
+    SolidQueue::Process.delete_all
   end
 end

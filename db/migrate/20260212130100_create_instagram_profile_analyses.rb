@@ -3,7 +3,7 @@ class CreateInstagramProfileAnalyses < ActiveRecord::Migration[8.1]
     create_table :instagram_profile_analyses do |t|
       t.references :instagram_profile, null: false, foreign_key: true
 
-      t.string :provider, null: false, default: "xai"
+      t.string :provider, null: false, default: "local"
       t.string :model
 
       t.string :status, null: false, default: "queued"

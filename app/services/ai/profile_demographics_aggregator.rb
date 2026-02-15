@@ -2,7 +2,7 @@ require "json"
 
 module Ai
   class ProfileDemographicsAggregator
-    DEFAULT_MODEL = "gemini-2.0-flash".freeze
+    DEFAULT_MODEL = "mistral:7b".freeze
 
     def initialize(account:, model: nil)
       @account = account
@@ -38,14 +38,8 @@ module Ai
       resp[:json].is_a?(Hash) ? resp[:json] : nil
     end
 
-    def google_client
-      setting = AiProviderSetting.find_by(provider: "google_cloud")
-      api_key = setting&.effective_api_key.to_s.presence || Rails.application.credentials.dig(:google_cloud, :api_key).to_s.presence
-      return nil if api_key.blank?
-
-      Ai::GoogleCloudClient.new(api_key: api_key, instagram_account_id: @account.id)
-    rescue StandardError
-      nil
+    def local_client
+      Ai::LocalMicroserviceClient.new
     end
 
     def build_prompt(dataset:)

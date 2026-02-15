@@ -191,7 +191,15 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
+# Screenshot capture environment
+/screenshot_env/
+
 # System Files
 *.log
 *.tmp
 *.temp
+
+# UI audit and testing files
+/tmp/ui_audit/
+/test_*.html
+/verification_*.rb

@@ -8,7 +8,7 @@ class InstagramAccountsController < ApplicationController
   before_action :set_account, only: %i[
     show update destroy select manual_login import_cookies export_cookies validate_session
     sync_next_profiles sync_profile_stories sync_stories_with_comments
-    sync_all_stories_continuous story_media_archive
+    sync_all_stories_continuous story_media_archive generate_llm_comment technical_details
   ]
 
   def index
@@ -288,6 +288,67 @@ class InstagramAccountsController < ApplicationController
     render json: { error: e.message }, status: :unprocessable_entity
   end
 
+  def generate_llm_comment
+    event_id = params.require(:event_id)
+    provider = params.fetch(:provider, :ollama).to_sym
+    model = params[:model].presence
+
+    event = InstagramProfileEvent.find(event_id)
+    
+    # Ensure this event belongs to the current account and is a story archive item
+    unless event.story_archive_item? && event.instagram_profile&.instagram_account_id == @account.id
+      render json: { error: "Event not found or not accessible" }, status: :not_found
+      return
+    end
+
+    # Generate the comment
+    result = event.generate_llm_comment!(provider: provider, model: model)
+    
+    render json: {
+      success: true,
+      llm_generated_comment: event.llm_generated_comment,
+      llm_comment_generated_at: event.llm_comment_generated_at,
+      llm_comment_model: event.llm_comment_model,
+      llm_comment_provider: event.llm_comment_provider,
+      generation_result: result
+    }
+  rescue StandardError => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  end
+
+  def technical_details
+    event_id = params.require(:event_id)
+    
+    event = InstagramProfileEvent.find(event_id)
+    
+    # Ensure this event belongs to the current account
+    unless event.instagram_profile&.instagram_account_id == @account.id
+      render json: { error: "Event not found or not accessible" }, status: :not_found
+      return
+    end
+
+    # Get technical details from metadata if available, or generate them
+    technical_details = if event.llm_comment_metadata&.dig(:technical_details)
+      event.llm_comment_metadata[:technical_details]
+    else
+      # Generate technical details on-demand if not stored
+      context = event.send(:build_comment_context)
+      event.send(:capture_technical_details, context)
+    end
+
+    render json: {
+      event_id: event.id,
+      has_llm_comment: event.has_llm_generated_comment?,
+      llm_comment: event.llm_generated_comment,
+      generated_at: event.llm_comment_generated_at,
+      model: event.llm_comment_model,
+      provider: event.llm_comment_provider,
+      technical_details: technical_details
+    }
+  rescue StandardError => e
+    render json: { error: e.message }, status: :unprocessable_entity
+  end
+
   private
 
   def set_account
@@ -333,7 +394,14 @@ class InstagramAccountsController < ApplicationController
       story_url: metadata["story_url"].to_s.presence || metadata["permalink"].to_s.presence,
       reply_comment: metadata["reply_comment"].to_s.presence,
       skipped: ActiveModel::Type::Boolean.new.cast(metadata["skipped"]),
-      skip_reason: metadata["skip_reason"].to_s.presence
+      skip_reason: metadata["skip_reason"].to_s.presence,
+      # LLM comment fields
+      llm_generated_comment: event.llm_generated_comment,
+      llm_comment_generated_at: event.llm_comment_generated_at&.iso8601,
+      llm_comment_model: event.llm_comment_model,
+      llm_comment_provider: event.llm_comment_provider,
+      llm_comment_metadata: event.llm_comment_metadata,
+      has_llm_comment: event.has_llm_generated_comment?
     }
   end
 

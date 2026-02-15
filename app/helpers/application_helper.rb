@@ -18,10 +18,36 @@ module ApplicationHelper
     )
   end
 
-  def top_nav_link_to(name, path, section:, **options)
+  def top_nav_link_to(name = nil, path = nil, section:, **options, &block)
+    if block_given?
+      path = name
+      name = capture(&block)
+    end
+    
     classes = [ "nav-link", options.delete(:class) ]
     classes << "active" if top_nav_active?(section)
     link_to name, path, **options.merge(class: classes.compact.join(" "))
+  end
+
+  def get_default_test_for_service(service)
+    case service.to_s
+    when 'vision'
+      'labels'
+    when 'face'
+      'detection'
+    when 'ocr'
+      'text_extraction'
+    when 'whisper'
+      'transcription'
+    when 'video'
+      'analysis'
+    else
+      'basic'
+    end
+  end
+
+  def ai_dashboard_path
+    ai_dashboard_index_path
   end
 
   private
@@ -37,8 +63,8 @@ module ApplicationHelper
         instagram_profile_posts
         instagram_profile_messages
       ].include?(controller_path)
-    when :ai_providers
-      controller_path == "admin/ai_providers"
+    when :ai_dashboard
+      controller_path == "ai_dashboard"
     when :jobs
       request.path.start_with?("/admin/jobs") || (controller_path == "admin/background_jobs" && action_name == "dashboard")
     when :failures

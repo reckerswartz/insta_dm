@@ -3,7 +3,7 @@ require "json"
 module Ai
   class LocalEngagementCommentGenerator
     DEFAULT_MODEL = "mistral:7b".freeze
-    MIN_SUGGESTIONS = 5
+    MIN_SUGGESTIONS = 3
     MAX_SUGGESTIONS = 8
 
     BLOCKED_TERMS = %w[].freeze

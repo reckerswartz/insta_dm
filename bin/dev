@@ -18,8 +18,17 @@ if start_ai_services
   ollama_running = system("curl -s http://localhost:11434/api/tags > /dev/null 2>&1")
   unless ollama_running
     puts "🔥 Starting Ollama..."
-    ai_services_pids << Process.spawn("sudo systemctl start ollama 2>/dev/null || ollama serve &")
-    sleep 3
+    # Check if Ollama service exists and start it
+    if system("systemctl list-unit-files | grep -q ollama.service")
+      puts "📋 Starting Ollama systemd service..."
+      system("systemctl start ollama")
+      sleep 5
+    else
+      # Start Ollama directly in background
+      puts "🔧 Starting Ollama directly..."
+      ai_services_pids << Process.spawn("ollama serve > /dev/null 2>&1")
+      sleep 8  # Give more time for Ollama to fully start
+    end
   end
   
   # Start AI Microservice if not running
@@ -81,46 +90,77 @@ end
 pids = []
 
 begin
+  puts "🚀 Starting Rails server and background jobs..."
   pids << Process.spawn(env, *web)
   pids << Process.spawn(env, *jobs)
   pids.concat(ai_services_pids)
 
-  Signal.trap("INT") do 
-    puts "\n🛑 Shutting down services..."
-    pids.each { |pid| Process.kill("TERM", pid) rescue nil }
+  # Set up signal handlers for graceful shutdown
+  shutdown_services = lambda do |signal_name|
+    puts "\n🛑 Shutting down services (#{signal_name})..."
     
-    # Clean up AI services
+    # Stop Rails and jobs first
+    pids[0..1].each { |pid| Process.kill("TERM", pid) rescue nil }
+    
+    # Give Rails time to shutdown gracefully
+    sleep 3
+    
+    # Stop AI services
     if start_ai_services
       puts "🤖 Stopping Local AI Services..."
-      system("./bin/local_ai_services stop > /dev/null 2>&1")
+      
+      # Stop microservice
+      if File.exist?("tmp/ai_microservice.pid")
+        microservice_pid = File.read("tmp/ai_microservice.pid").to_i
+        Process.kill("TERM", microservice_pid) rescue nil
+        sleep 2
+        Process.kill("KILL", microservice_pid) rescue nil
+        File.delete("tmp/ai_microservice.pid") rescue nil
+      end
+      
+      # Stop Ollama (if we started it)
+      ai_services_pids.each { |pid| Process.kill("TERM", pid) rescue nil }
     end
-  end
-  
-  Signal.trap("TERM") do 
-    puts "\n🛑 Shutting down services..."
-    pids.each { |pid| Process.kill("TERM", pid) rescue nil }
     
-    # Clean up AI services
-    if start_ai_services
-      puts "🤖 Stopping Local AI Services..."
-      system("./bin/local_ai_services stop > /dev/null 2>&1")
-    end
+    # Wait for all processes to exit
+    pids.each { |pid| Process.wait(pid) rescue nil }
+    
+    puts "👋 All services stopped. Goodbye!"
+    exit(0)
   end
 
+  Signal.trap("INT") { shutdown_services.call("SIGINT") }
+  Signal.trap("TERM") { shutdown_services.call("SIGTERM") }
+
+  puts "✅ All services started successfully!"
+  puts "📊 Service URLs:"
+  puts "   • Rails app:        http://localhost:3000"
+  puts "   • AI Microservice:  http://localhost:8000" if start_ai_services
+  puts "   • Ollama API:      http://localhost:11434" if start_ai_services
+  puts ""
+  puts "💡 Press Ctrl+C to stop all services gracefully"
+  puts ""
+
+  # Wait for any process to exit
   _, status = Process.wait2
+  puts "\n🔄 Process exited with status: #{status.exitstatus}"
   exit(status.exitstatus || 0)
-ensure
-  pids.each do |pid|
-    begin
-      Process.kill("TERM", pid)
-    rescue StandardError
-      nil
-    end
-  end
   
-  # Clean up AI services on exit
+rescue Interrupt
+  puts "\n🛑 Interrupted by user"
+  shutdown_services.call("USER_INTERRUPT")
+rescue StandardError => e
+  puts "\n❌ Error: #{e.message}"
+  puts e.backtrace.first(5)
+  shutdown_services.call("ERROR")
+ensure
+  # Final cleanup
   if start_ai_services
-    puts "🤖 Stopping Local AI Services..."
-    system("./bin/local_ai_services stop > /dev/null 2>&1")
+    puts "� Final cleanup..."
+    
+    # Clean up microservice PID file
+    if File.exist?("tmp/ai_microservice.pid")
+      File.delete("tmp/ai_microservice.pid") rescue nil
+    end
   end
 end

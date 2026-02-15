@@ -2,11 +2,11 @@ require "json"
 
 module Ai
   class ProfileAnalyzer
-    DEFAULT_MODEL = "grok-4-1-fast-reasoning".freeze
+    DEFAULT_MODEL = "mistral:7b".freeze
 
     def initialize(client: nil, model: nil)
-      @client = client || Ai::XaiClient.new
-      @model = model.presence || Rails.application.credentials.dig(:xai, :model).presence || DEFAULT_MODEL
+      @client = client || Ai::LocalMicroserviceClient.new
+      @model = model.presence || DEFAULT_MODEL
     end
 
     def analyze!(profile_payload:, images: [])

@@ -67,61 +67,50 @@ instagram:
 
 Set `headless: false` only when doing manual interactive troubleshooting. Manual login always opens a visible browser window regardless.
 
-## AI providers (multi-provider image analysis)
+## AI providers (local-only)
 
-The app uses a provider-agnostic AI architecture:
-- provider settings are managed in `Admin -> AI Providers`,
-- each provider is independent (`xai`, `google_cloud`, `azure_vision`, `aws_rekognition`),
-- outputs are consolidated into one polymorphic table (`AiAnalysis`) for profiles and posts.
+The app uses a local AI microservice architecture:
+- Local AI provider is managed through the AI microservice
+- All AI processing runs locally using Ollama models
+- Outputs are consolidated into one polymorphic table (`AiAnalysis`) for profiles and posts
+- No external/cloud AI services are used or supported
 
-### Configure credentials
+### Local AI microservice setup
 
-You can configure keys either in dashboard settings (preferred for runtime switching) or Rails credentials fallback:
+Start the local AI microservice:
 
-```yml
-xai:
-  api_key: "YOUR_XAI_API_KEY"
-  model: "grok-4-1-fast-reasoning"
-
-google_cloud:
-  api_key: "YOUR_GOOGLE_CLOUD_API_KEY"
-  comment_model: "gemini-2.0-flash"
-
-azure_vision:
-  api_key: "YOUR_AZURE_VISION_KEY"
-  endpoint: "https://<resource>.cognitiveservices.azure.com"
-
-aws:
-  access_key_id: "YOUR_AWS_ACCESS_KEY_ID"
-  secret_access_key: "YOUR_AWS_SECRET_ACCESS_KEY"
-  region: "us-east-1"
+```bash
+cd ai_microservice
+./setup.sh
+./start_microservice.sh
 ```
 
-For AWS Rekognition support, add this gem:
+The microservice provides:
+- Face detection and recognition
+- OCR (text extraction)
+- Image analysis and understanding
+- Text generation for comments
+- Embedding generation
 
-```ruby
-gem "aws-sdk-rekognition"
+### Configure local AI
+
+The local provider can be configured in the database or via Rails console:
+
+```bash
+# In Rails console
+AiProviderSetting.where(provider: 'local').first_or_create.update(
+  config: { ollama_model: 'mistral:7b' },
+  enabled: true
+)
 ```
-
-### Provider dashboard
-
-Open: `http://localhost:3000/admin/ai_providers`
-
-For each provider you can:
-- enable/disable,
-- set priority (lower number = higher priority),
-- set optional model override and endpoint/region/provider-specific config,
-- set optional `daily_limit` (provider auto-skipped after reaching that day's successful analyses),
-- save/test key (`Test Key` validates provider connectivity).
 
 ### Analysis behavior
 
 - Profile analysis and post analysis run on the `ai` queue.
 - The runner skips provider calls when the same media fingerprint has already been analyzed (`AiAnalysis` cache reuse).
-- The runner respects provider priorities and optional daily limits when selecting providers.
-- Post analysis supports both image and video paths; Google Cloud uses Vision + Video Intelligence APIs.
-- Google provider now includes a dedicated text-generation engagement assistant (Gemini) to generate contextual comments from profile/post/story context.
-- The system is designed to allow easy provider additions in `app/services/ai/providers/*`.
+- All processing uses the local AI microservice.
+- Post analysis supports both image and video paths.
+- The system includes a dedicated text-generation service to generate contextual comments from profile/post/story context.
 
 ### Materialized insight tables
 
@@ -292,8 +281,6 @@ Flow for each authenticated account:
   - Jobs/failures are categorized as `profile`, `account`, or `system`
 - Mission Control Jobs UI: `http://localhost:3000/admin/jobs`
   - Authentication is disabled for now to keep setup simple
-- AI providers dashboard: `http://localhost:3000/admin/ai_providers`
-  - Enable/disable providers, set priority, save API keys, and run key validation tests
 
 Admin auth behavior:
 - If `credentials.admin` / `ADMIN_USER`+`ADMIN_PASSWORD` are not set, admin pages remain open.
@@ -332,8 +319,8 @@ The app now persists each downloaded story into `instagram_stories` and runs a b
 
 1. `StoryIngestionService` creates/updates `InstagramStory` and enqueues `StoryProcessingJob`.
 2. `StoryProcessingService` runs:
-- `FaceDetectionService` (Google Vision face + OCR + landmarks + labels)
-- `FaceEmbeddingService` (external embedding microservice if configured, deterministic local fallback otherwise)
+- `FaceDetectionService` (local face detection + OCR + landmarks + labels)
+- `FaceEmbeddingService` (local embedding service)
 - `VectorMatchingService` (recurring person matching by cosine similarity)
 - `VideoFrameExtractionService` (FFmpeg frame sampling for video stories)
 - `VideoAudioExtractionService` (FFmpeg audio extraction for video stories)
@@ -347,10 +334,7 @@ New tables:
 - `instagram_story_faces`
 - `instagram_profile_behavior_profiles`
 
-Optional embedding endpoint:
-- `FACE_EMBEDDING_SERVICE_URL=http://localhost:8000/embed`
-- Expected response JSON: `{ "embedding": [0.01, ...] }`
-- With PostgreSQL + pgvector, embeddings are also stored in vector columns for ANN search.
+Embeddings are stored in PostgreSQL + pgvector vector columns for ANN search.
 
 ### Video support details
 

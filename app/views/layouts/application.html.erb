@@ -1,8 +1,9 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
-    <title><%= content_for(:title) || "Insta Dm" %></title>
+    <title><%= content_for(:title) || "Insta DM" %></title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="description" content="Instagram DM management and analytics platform">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
     <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
@@ -11,36 +12,84 @@
   </head>
 
   <body>
-    <div class="topbar">
+    <header class="topbar" role="banner">
       <div class="topbar-inner">
-        <div class="nav">
-          <%= top_nav_link_to "Accounts", instagram_accounts_path, section: :accounts %>
-          <%= top_nav_link_to "Profiles", instagram_profiles_path, section: :profiles %>
-          <%= top_nav_link_to "AI Providers", admin_ai_providers_path, section: :ai_providers %>
-          <%= top_nav_link_to "Jobs", admin_background_jobs_path, section: :jobs %>
-          <%= top_nav_link_to "Failures", admin_background_job_failures_path, section: :failures %>
-        </div>
-        <div class="topbar-right">
+        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle navigation" aria-expanded="false">
+          ☰
+        </button>
+        
+        <nav class="nav" id="mainNav" role="navigation" aria-label="Main navigation">
+          <%= top_nav_link_to "🏠 Dashboard", instagram_accounts_path, section: :accounts %>
+          <%= top_nav_link_to "👥 Profiles", instagram_profiles_path, section: :profiles %>
+          <%= top_nav_link_to "🤖 AI Dashboard", ai_dashboard_index_path, section: :ai_dashboard %>
+          <%= top_nav_link_to "⚙️ Jobs", admin_background_jobs_path, section: :jobs %>
+          <%= top_nav_link_to "🚨 Failures", admin_background_job_failures_path, section: :failures %>
+        </nav>
+        
+        <div class="topbar-right" role="status" aria-label="Current account status">
           <% if current_account %>
-            <span class="muted">Current:</span>
-            <%= link_to current_account.username, instagram_account_path(current_account), class: "nav-link strong" %>
+            <span class="current-account-label">Current Account:</span>
+            <%= link_to current_account.username, instagram_account_path(current_account), 
+                class: "nav-link strong current-account", 
+                aria: { current: "page" } %>
           <% else %>
-            <span class="muted">No account selected</span>
+            <span class="no-account" role="alert">⚠️ No account selected</span>
           <% end %>
         </div>
       </div>
-    </div>
+    </header>
 
     <% if flash[:notice] %>
-      <div class="flash notice"><%= flash[:notice] %></div>
+      <div class="flash notice" role="alert" aria-live="polite">
+        <div class="flash-icon" aria-hidden="true">✅</div>
+        <div class="flash-message"><%= flash[:notice] %></div>
+      </div>
     <% end %>
 
     <% if flash[:alert] %>
-      <div class="flash alert"><%= flash[:alert] %></div>
+      <div class="flash alert" role="alert" aria-live="assertive">
+        <div class="flash-icon" aria-hidden="true">⚠️</div>
+        <div class="flash-message"><%= flash[:alert] %></div>
+      </div>
     <% end %>
 
-    <div id="notifications"></div>
+    <div id="notifications" role="status" aria-live="polite" aria-label="Application notifications"></div>
 
-    <%= yield %>
+    <main class="main-content" role="main">
+      <%= yield %>
+    </main>
+
+    <script>
+      // Mobile menu toggle
+      document.getElementById('mobileMenuBtn').addEventListener('click', function() {
+        const nav = document.getElementById('mainNav');
+        const isOpen = nav.classList.contains('active');
+        
+        nav.classList.toggle('active');
+        this.setAttribute('aria-expanded', !isOpen);
+      });
+
+      // Close mobile menu when clicking outside
+      document.addEventListener('click', function(event) {
+        const nav = document.getElementById('mainNav');
+        const btn = document.getElementById('mobileMenuBtn');
+        
+        if (!nav.contains(event.target) && !btn.contains(event.target)) {
+          nav.classList.remove('active');
+          btn.setAttribute('aria-expanded', 'false');
+        }
+      });
+
+      // Auto-hide flash messages after 5 seconds
+      setTimeout(function() {
+        const flashes = document.querySelectorAll('.flash');
+        flashes.forEach(function(flash) {
+          flash.style.opacity = '0';
+          setTimeout(function() {
+            flash.remove();
+          }, 300);
+        });
+      }, 5000);
+    </script>
   </body>
 </html>

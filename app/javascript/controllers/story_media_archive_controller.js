@@ -16,6 +16,10 @@ export default class extends Controller {
     this.refresh()
   }
 
+  get application() {
+    return window.Stimulus || this.constructor.application
+  }
+
   disconnect() {
     if (this.refreshObserver) this.refreshObserver.disconnect()
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
@@ -62,7 +66,14 @@ export default class extends Controller {
         this.emptyTarget.hidden = false
       }
 
-      items.forEach((item) => this.galleryTarget.insertAdjacentHTML("beforeend", this.cardHtml(item)))
+      items.forEach((item) => {
+        this.galleryTarget.insertAdjacentHTML("beforeend", this.cardHtml(item))
+      })
+      
+      // Let Stimulus discover the new controllers
+      if (this.application) {
+        this.application.controllers.start()
+      }
       this.totalLoaded += items.length
 
       this.hasMore = Boolean(payload.has_more)
@@ -143,8 +154,13 @@ export default class extends Controller {
       ? `<p class="meta story-skipped-badge">Skipped (not analyzed): ${this.esc(item.skip_reason)}</p>`
       : ""
 
+    // LLM Comment section
+    const llmCommentSection = this.buildLlmCommentSection(item)
+    const accountId = this.getAccount_id()
+    console.log("Creating story card with account ID:", accountId)
+
     return `
-      <article class="story-media-card">
+      <article class="story-media-card" data-event-id="${this.esc(item.id.toString())}" data-controller="llm-comment technical-details" data-llm-comment-account-id-value="${this.esc(accountId || '')}" data-technical-details-account-id-value="${this.esc(accountId || '')}">
         <div class="story-media-preview">${mediaHtml}</div>
         <div class="story-media-meta">
           <p><strong>${profileHtml}</strong> ${igProfile}</p>
@@ -152,13 +168,162 @@ export default class extends Controller {
           <p class="meta">Type: ${this.esc(contentType || "-")} | Size: ${this.esc(sizeKb)} | Dim: ${this.esc(dimensions)}</p>
           ${skippedBlock}
           ${replyCommentBlock}
+          ${llmCommentSection}
           <div class="actions-row">
             <a class="btn small secondary" href="${this.esc(item.media_download_url)}" target="_blank" rel="noreferrer">Download</a>
             ${storyLink ? `<span class="meta">${storyLink}</span>` : ""}
+            <button class="btn small primary story-detail-btn" data-action="click->story-media-archive#openStoryModal">Details</button>
+            ${item.has_llm_comment ? `
+              <button class="btn small secondary technical-details-btn" 
+                      data-action="click->technical-details#showTechnicalDetails" 
+                      data-event-id="${this.esc(item.id.toString())}">
+                🔧 Technical Details
+              </button>
+            ` : ''}
           </div>
         </div>
       </article>
     `
+  }
+
+  buildLlmCommentSection(item) {
+    if (item.has_llm_comment && item.llm_generated_comment) {
+      const generatedAt = item.llm_comment_generated_at 
+        ? new Date(item.llm_comment_generated_at).toLocaleString() 
+        : "Unknown"
+      
+      return `
+        <div class="llm-comment-section">
+          <p class="llm-generated-comment" title="AI-generated comment suggestion">
+            <strong>AI Suggestion:</strong> ${this.esc(item.llm_generated_comment)}
+          </p>
+          <p class="meta llm-comment-meta">
+            Generated ${this.esc(generatedAt)} 
+            ${item.llm_comment_provider ? `via ${this.esc(item.llm_comment_provider)}` : ""}
+            ${item.llm_comment_model ? `(${this.esc(item.llm_comment_model)})` : ""}
+          </p>
+        </div>
+      `
+    } else {
+      console.log("Creating generate comment button for event:", item.id)
+      const accountId = this.getAccount_id()
+      return `
+        <div class="llm-comment-section">
+          <button class="btn small secondary generate-comment-btn" 
+                  data-action="click->llm-comment#generateComment"
+                  data-event-id="${this.esc(item.id.toString())}"
+                  onclick="window.generateCommentFallback(${this.esc(item.id.toString())}, ${this.esc(accountId || 'null')})">
+            Generate Comment Locally
+          </button>
+        </div>
+      `
+    }
+  }
+
+  openStoryModal(event) {
+    const button = event.target
+    const storyCard = button.closest(".story-media-card")
+    const eventId = storyCard?.dataset.eventId
+    
+    if (!eventId) return
+
+    // Create modal overlay
+    const modal = document.createElement("div")
+    modal.className = "story-modal-overlay"
+    modal.innerHTML = `
+      <div class="story-modal">
+        <div class="story-modal-header">
+          <h3>Story Details</h3>
+          <button class="modal-close" data-action="click->story-media-archive#closeModal">&times;</button>
+        </div>
+        <div class="story-modal-content">
+          <p>Loading story details...</p>
+        </div>
+      </div>
+    `
+    
+    document.body.appendChild(modal)
+    
+    // Load story details into modal
+    this.loadStoryDetails(eventId, modal)
+  }
+
+  async loadStoryDetails(eventId, modal) {
+    try {
+      // Find the story card data from the current page
+      const storyCard = document.querySelector(`[data-event-id="${eventId}"]`)
+      if (!storyCard) return
+
+      // Extract data from the card
+      const mediaElement = storyCard.querySelector("img, video")
+      const profileLink = storyCard.querySelector("a[href*='instagram_profiles']")
+      const llmComment = storyCard.querySelector(".llm-generated-comment")
+      
+      const content = `
+        <div class="story-detail-view">
+          <div class="story-detail-media">
+            ${mediaElement ? mediaElement.outerHTML : ""}
+          </div>
+          <div class="story-detail-info">
+            ${profileLink ? `<p><strong>Profile:</strong> ${profileLink.outerHTML}</p>` : ""}
+            ${llmComment ? `<div class="llm-comment-detail">${llmComment.outerHTML}</div>` : ""}
+            <div class="story-detail-actions">
+              <button class="btn secondary" data-action="click->story-media-archive#closeModal">Close</button>
+            </div>
+          </div>
+        </div>
+      `
+      
+      modal.querySelector(".story-modal-content").innerHTML = content
+      
+    } catch (error) {
+      console.error("Error loading story details:", error)
+      modal.querySelector(".story-modal-content").innerHTML = 
+        `<p class="error">Failed to load story details: ${error.message}</p>`
+    }
+  }
+
+  closeModal(event) {
+    const modal = event.target.closest(".story-modal-overlay")
+    if (modal) {
+      modal.remove()
+    }
+  }
+
+  getAccount_id() {
+    // Extract account ID from current URL path
+    const pathParts = window.location.pathname.split('/')
+    const accountIndex = pathParts.indexOf('instagram_accounts')
+    if (accountIndex !== -1 && pathParts[accountIndex + 1]) {
+      const accountId = pathParts[accountIndex + 1]
+      console.log("Extracted account ID:", accountId)
+      return accountId
+    }
+    console.error("Could not extract account ID from path:", window.location.pathname)
+    return null
+  }
+
+  getCsrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]')
+    return meta ? meta.getAttribute('content') : ''
+  }
+
+  showNotification(message, type = "notice") {
+    // Create notification element
+    const notification = document.createElement("div")
+    notification.className = `notification ${type}`
+    notification.textContent = message
+    
+    // Add to notifications container
+    const container = document.getElementById("notifications")
+    if (container) {
+      container.appendChild(notification)
+      
+      // Auto-remove after 5 seconds
+      setTimeout(() => {
+        notification.remove()
+      }, 5000)
+    }
   }
 
   esc(value) {

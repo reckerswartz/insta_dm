@@ -1,102 +1,155 @@
-<% content_for :title, "Accounts" %>
+<% content_for :title, "Dashboard" %>
 
 <div class="page">
   <header class="page-header">
-    <h1>Accounts</h1>
-    <p>Manage multiple Instagram accounts and monitor background workload.</p>
+    <h1>Dashboard</h1>
+    <p>Manage your Instagram accounts and monitor system performance</p>
   </header>
 
   <section class="card">
-    <h2>Add Account</h2>
-    <%= form_with url: instagram_accounts_path, method: :post, scope: :instagram_account, class: "filters" do |f| %>
+    <h2>➕ Add New Account</h2>
+    <p class="card-description">Add an Instagram account to start monitoring and managing your social media presence</p>
+    <%= form_with url: instagram_accounts_path, method: :post, scope: :instagram_account, class: "add-account-form" do |f| %>
       <label>
-        Username
-        <%= f.text_field :username, placeholder: "instagram_username", required: true %>
+        Instagram Username
+        <%= f.text_field :username, placeholder: "@username", required: true, class: "form-input" %>
       </label>
       <div class="actions-row">
-        <%= f.submit "Add" %>
+        <%= f.submit "Add Account", class: "btn btn-primary" %>
       </div>
     <% end %>
   </section>
 
   <section class="card">
-    <h2>Operational Metrics</h2>
+    <h2>📊 System Overview</h2>
+    <p class="card-description">Real-time system metrics and performance indicators</p>
 
-    <div class="stat-grid">
-      <div class="stat">
-        <% q = @metrics[:queue] || {} %>
-        <% if q[:backend].to_s == "sidekiq" %>
-          <div class="stat-label">Sidekiq</div>
-          <div class="stat-value"><%= q[:processes].to_i %> processes</div>
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-header">
+          <h3>🔄 Queue Status</h3>
+          <% q = @metrics[:queue] || {} %>
+          <% if q[:backend].to_s == "sidekiq" %>
+            <span class="metric-badge sidekiq">Sidekiq</span>
+          <% else %>
+            <span class="metric-badge solid-queue">Solid Queue</span>
+          <% end %>
+        </div>
+        <div class="metric-value"><%= q[:processes].to_i %> <span class="metric-unit">processes</span></div>
           <% total = q.values_at(:enqueued, :scheduled, :retries, :dead).sum.to_i %>
           <% total = 1 if total <= 0 %>
-          <div class="bar-group">
-            <div class="bar-row">
-              <span class="bar-label">Enqueued</span>
-              <div class="bar"><div class="bar-fill ok" style="width:<%= (q[:enqueued].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:enqueued].to_i %></span>
+        <div class="metric-details">
+          <% if q[:backend].to_s == "sidekiq" %>
+            <% total = q.values_at(:enqueued, :scheduled, :retries, :dead).sum.to_i %>
+            <% total = 1 if total <= 0 %>
+            <div class="metric-item">
+              <span class="metric-label">Enqueued</span>
+              <div class="progress-bar">
+                <div class="progress-fill ok" style="width:<%= (q[:enqueued].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:enqueued].to_i %></span>
             </div>
-            <div class="bar-row">
-              <span class="bar-label">Scheduled</span>
-              <div class="bar"><div class="bar-fill" style="width:<%= (q[:scheduled].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:scheduled].to_i %></span>
+            <div class="metric-item">
+              <span class="metric-label">Scheduled</span>
+              <div class="progress-bar">
+                <div class="progress-fill" style="width:<%= (q[:scheduled].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:scheduled].to_i %></span>
             </div>
-            <div class="bar-row">
-              <span class="bar-label">Retries</span>
-              <div class="bar"><div class="bar-fill warn" style="width:<%= (q[:retries].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:retries].to_i %></span>
+            <div class="metric-item">
+              <span class="metric-label">Retries</span>
+              <div class="progress-bar">
+                <div class="progress-fill warn" style="width:<%= (q[:retries].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:retries].to_i %></span>
             </div>
-            <div class="bar-row">
-              <span class="bar-label">Dead</span>
-              <div class="bar"><div class="bar-fill bad" style="width:<%= (q[:dead].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:dead].to_i %></span>
+            <div class="metric-item">
+              <span class="metric-label">Failed</span>
+              <div class="progress-bar">
+                <div class="progress-fill bad" style="width:<%= (q[:dead].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:dead].to_i %></span>
             </div>
-          </div>
-        <% else %>
-          <div class="stat-label">Solid Queue</div>
-          <div class="stat-value"><%= q[:processes].to_i %> processes</div>
-          <% total = q.values_at(:ready, :scheduled, :claimed, :blocked, :failed).sum.to_i %>
-          <% total = 1 if total <= 0 %>
-          <div class="bar-group">
-            <div class="bar-row">
-              <span class="bar-label">Ready</span>
-              <div class="bar"><div class="bar-fill ok" style="width:<%= (q[:ready].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:ready] %></span>
+          <% else %>
+            <% total = q.values_at(:ready, :scheduled, :claimed, :blocked, :failed).sum.to_i %>
+            <% total = 1 if total <= 0 %>
+            <div class="metric-item">
+              <span class="metric-label">Ready</span>
+              <div class="progress-bar">
+                <div class="progress-fill ok" style="width:<%= (q[:ready].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:ready] %></span>
             </div>
-            <div class="bar-row">
-              <span class="bar-label">Scheduled</span>
-              <div class="bar"><div class="bar-fill" style="width:<%= (q[:scheduled].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:scheduled] %></span>
+            <div class="metric-item">
+              <span class="metric-label">Scheduled</span>
+              <div class="progress-bar">
+                <div class="progress-fill" style="width:<%= (q[:scheduled].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:scheduled] %></span>
             </div>
-            <div class="bar-row">
-              <span class="bar-label">Claimed</span>
-              <div class="bar"><div class="bar-fill" style="width:<%= (q[:claimed].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:claimed] %></span>
+            <div class="metric-item">
+              <span class="metric-label">Claimed</span>
+              <div class="progress-bar">
+                <div class="progress-fill" style="width:<%= (q[:claimed].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:claimed] %></span>
             </div>
-            <div class="bar-row">
-              <span class="bar-label">Blocked</span>
-              <div class="bar"><div class="bar-fill warn" style="width:<%= (q[:blocked].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:blocked] %></span>
+            <div class="metric-item">
+              <span class="metric-label">Blocked</span>
+              <div class="progress-bar">
+                <div class="progress-fill warn" style="width:<%= (q[:blocked].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:blocked] %></span>
             </div>
-            <div class="bar-row">
-              <span class="bar-label">Failed</span>
-              <div class="bar"><div class="bar-fill bad" style="width:<%= (q[:failed].to_f / total * 100).round(1) %>%"></div></div>
-              <span class="bar-num"><%= q[:failed] %></span>
+            <div class="metric-item">
+              <span class="metric-label">Failed</span>
+              <div class="progress-bar">
+                <div class="progress-fill bad" style="width:<%= (q[:failed].to_f / total * 100).round(1) %>%"></div>
+              </div>
+              <span class="metric-number"><%= q[:failed] %></span>
             </div>
-          </div>
-        <% end %>
+          <% end %>
+        </div>
       </div>
 
-      <div class="stat">
-        <div class="stat-label">App Totals</div>
-        <div class="stat-kv"><span class="muted">Accounts</span><strong><%= @metrics.dig(:app, :accounts) %></strong></div>
-        <div class="stat-kv"><span class="muted">Profiles</span><strong><%= @metrics.dig(:app, :profiles) %></strong></div>
-        <div class="stat-kv"><span class="muted">Messages</span><strong><%= @metrics.dig(:app, :messages) %></strong></div>
-        <div class="stat-kv"><span class="muted">Events</span><strong><%= @metrics.dig(:app, :profile_events) %></strong></div>
-        <div class="stat-kv"><span class="muted">AI analyses</span><strong><%= @metrics.dig(:app, :ai_analyses) %></strong></div>
-        <div class="stat-kv"><span class="muted">AI API calls</span><strong><%= @metrics.dig(:app, :ai_api_calls) %></strong></div>
-        <div class="stat-kv"><span class="muted">Feed posts</span><strong><%= @metrics.dig(:app, :posts) %></strong></div>
-        <div class="stat-kv"><span class="muted">Failures (24h)</span><strong><%= @metrics.dig(:app, :failures_24h) %></strong></div>
+      <div class="metric-card">
+        <div class="metric-header">
+          <h3>📈 Application Totals</h3>
+        </div>
+        <div class="metric-grid">
+          <div class="metric-item-small">
+            <span class="metric-value-small"><%= @metrics.dig(:app, :accounts) %></span>
+            <span class="metric-label-small">Accounts</span>
+          </div>
+          <div class="metric-item-small">
+            <span class="metric-value-small"><%= @metrics.dig(:app, :profiles) %></span>
+            <span class="metric-label-small">Profiles</span>
+          </div>
+          <div class="metric-item-small">
+            <span class="metric-value-small"><%= @metrics.dig(:app, :messages) %></span>
+            <span class="metric-label-small">Messages</span>
+          </div>
+          <div class="metric-item-small">
+            <span class="metric-value-small"><%= @metrics.dig(:app, :profile_events) %></span>
+            <span class="metric-label-small">Events</span>
+          </div>
+          <div class="metric-item-small">
+            <span class="metric-value-small"><%= @metrics.dig(:app, :ai_analyses) %></span>
+            <span class="metric-label-small">AI Analyses</span>
+          </div>
+          <div class="metric-item-small">
+            <span class="metric-value-small"><%= @metrics.dig(:app, :ai_api_calls) %></span>
+            <span class="metric-label-small">API Calls</span>
+          </div>
+          <div class="metric-item-small">
+            <span class="metric-value-small"><%= @metrics.dig(:app, :posts) %></span>
+            <span class="metric-label-small">Feed Posts</span>
+          </div>
+          <div class="metric-item-small highlight">
+            <span class="metric-value-small"><%= @metrics.dig(:app, :failures_24h) %></span>
+            <span class="metric-label-small">24h Failures</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -124,53 +177,71 @@
       </div>
     </div>
 
-    <div class="actions-row">
-      <%= link_to "AI Providers", admin_ai_providers_path, class: "btn secondary" %>
-      <%= link_to "Jobs Console", admin_background_jobs_path, class: "btn secondary" %>
-      <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
-      <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
+    <div class="quick-actions">
+      <%= link_to "⚙️ Jobs Console", admin_background_jobs_path, class: "quick-action-btn" %>
+      <%= link_to "🚨 Failure Logs", admin_background_job_failures_path, class: "quick-action-btn" %>
+      <%= link_to "📱 Feed Posts", instagram_posts_path, class: "quick-action-btn" %>
     </div>
   </section>
 
   <section class="card">
-    <h2>Accounts</h2>
+    <h2>👥 Instagram Accounts</h2>
+    <p class="card-description">Manage and monitor your connected Instagram accounts</p>
 
     <% if @accounts.any? %>
-      <div class="table-scroll">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Status</th>
-              <th>Cookies</th>
-              <th>Last sync</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <% @accounts.each do |a| %>
+      <div class="accounts-table">
+        <div class="table-scroll">
+          <table class="table">
+            <thead>
               <tr>
-                <td><code><%= a.username %></code></td>
-                <td>
-                  <% if a.login_state == "authenticated" %>
-                    <span class="yes">Authenticated</span>
-                  <% else %>
-                    <span class="no"><%= a.login_state %></span>
-                  <% end %>
-                </td>
-                <td><%= a.cookies.any? ? "Yes" : "No" %></td>
-                <td><%= relative_time_with_tooltip(a.last_synced_at) %></td>
-                <td class="table-actions">
-                  <%= button_to "Select", select_instagram_account_path(a), method: :post, class: "btn small secondary" %>
-                  <%= link_to "Open", instagram_account_path(a), class: "btn small" %>
-                </td>
+                <th>Username</th>
+                <th>Status</th>
+                <th>Cookies</th>
+                <th>Last Sync</th>
+                <th>Actions</th>
               </tr>
-            <% end %>
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              <% @accounts.each do |a| %>
+                <tr>
+                  <td>
+                    <div class="account-info">
+                      <strong class="username"><%= a.username %></strong>
+                    </div>
+                  </td>
+                  <td>
+                    <% if a.login_state == "authenticated" %>
+                      <span class="status-badge authenticated">Authenticated</span>
+                    <% else %>
+                      <span class="status-badge unauthenticated"><%= a.login_state %></span>
+                    <% end %>
+                  </td>
+                  <td>
+                    <% if a.cookies.any? %>
+                      <span class="yes">✅ Stored</span>
+                    <% else %>
+                      <span class="no">❌ None</span>
+                    <% end %>
+                  </td>
+                  <td>
+                    <span class="sync-time"><%= relative_time_with_tooltip(a.last_synced_at) %></span>
+                  </td>
+                  <td class="table-actions">
+                    <%= button_to "Select", select_instagram_account_path(a), method: :post, class: "btn small secondary" %>
+                    <%= link_to "Manage", instagram_account_path(a), class: "btn small" %>
+                  </td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
       </div>
     <% else %>
-      <p class="meta">No accounts added yet.</p>
+      <div class="empty-state">
+        <div class="empty-icon">📱</div>
+        <h3>No accounts added yet</h3>
+        <p>Add your first Instagram account to get started with monitoring and management.</p>
+      </div>
     <% end %>
   </section>
 </div>

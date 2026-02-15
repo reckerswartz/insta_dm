@@ -12,6 +12,12 @@
     <div class="actions-row">
       <%= link_to "Open Mission Control", "/admin/jobs", class: "btn secondary", target: "_blank", rel: "noreferrer" %>
       <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
+      <%= button_to "Stop All Jobs & Clear Queue", admin_clear_all_background_jobs_path, 
+          method: :post, 
+          class: "btn danger",
+          data: { 
+            confirm: "Are you sure? This will immediately stop all running jobs and clear the entire queue, including failed jobs. This action cannot be undone." 
+          } %>
     </div>
   </section>
 

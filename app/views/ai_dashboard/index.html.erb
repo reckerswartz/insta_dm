@@ -1,0 +1,460 @@
+<% content_for :title, "AI Services Dashboard" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>🤖 AI Services Dashboard</h1>
+    <p>Test and monitor all locally installed AI components and services</p>
+  </header>
+
+  <section class="card">
+    <h2>Service Status</h2>
+    <div id="service-status" class="service-grid">
+      <% if @service_status[:status] == 'online' %>
+        <div class="status-indicator online">
+          <span class="status-dot"></span>
+          <span class="status-text">AI Microservice Online</span>
+          <span class="status-time"><%= relative_time_with_tooltip(@service_status[:last_check]) %></span>
+        </div>
+        
+        <% @service_status[:services].each do |service, status| %>
+          <div class="service-item <%= status ? 'active' : 'inactive' %>">
+            <div class="service-info">
+              <span class="service-name"><%= service.capitalize %></span>
+              <span class="service-status"><%= status ? '✅ Active' : '❌ Inactive' %></span>
+            </div>
+            <button class="btn btn-small test-service-btn" 
+                    data-service="<%= service %>" 
+                    data-test="<%= get_default_test_for_service(service) %>">
+              Test
+            </button>
+          </div>
+        <% end %>
+      <% else %>
+        <div class="status-indicator offline">
+          <span class="status-dot"></span>
+          <span class="status-text">AI Microservice Offline</span>
+          <span class="status-time"><%= relative_time_with_tooltip(@service_status[:last_check]) %></span>
+        </div>
+        <div class="error-message">
+          <strong>Error:</strong> <%= @service_status[:message] %>
+          <p class="hint">Please ensure the AI microservice is running on localhost:8000</p>
+        </div>
+      <% end %>
+    </div>
+    
+    <div class="actions-row">
+      <button id="refresh-status" class="btn btn-secondary">🔄 Refresh Status</button>
+      <button id="test-all-services" class="btn btn-primary">🧪 Test All Services</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Service Test Results</h2>
+    <div id="test-results" class="test-results">
+      <% if @test_results.present? %>
+        <% @test_results.each do |service, result| %>
+          <div class="test-result <%= result[:success] ? 'success' : 'error' %>">
+            <div class="test-header">
+              <span class="test-service"><%= service.to_s.capitalize %></span>
+              <span class="test-status"><%= result[:success] ? '✅ Passed' : '❌ Failed' %></span>
+            </div>
+            <div class="test-details">
+              <% if result[:success] %>
+                <p class="test-message"><%= result[:message] %></p>
+                <% if result[:result].present? %>
+                  <div class="test-output">
+                    <strong>Output:</strong>
+                    <pre><%= JSON.pretty_generate(result[:result]) rescue result[:result].to_s %></pre>
+                  </div>
+                <% end %>
+              <% else %>
+                <p class="test-error"><strong>Error:</strong> <%= result[:error] %></p>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
+      <% else %>
+        <div class="empty-state">
+          <p>No tests run yet. Click "Test All Services" or test individual services above.</p>
+        </div>
+      <% end %>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Available Tests</h2>
+    <div class="test-grid">
+      <div class="test-category">
+        <h3>👁️ Vision Service</h3>
+        <div class="test-list">
+          <button class="btn btn-small test-service-btn" data-service="vision" data-test="labels">
+            Object Detection
+          </button>
+          <button class="btn btn-small test-service-btn" data-service="vision" data-test="safe_search">
+            Safe Search
+          </button>
+        </div>
+      </div>
+
+      <div class="test-category">
+        <h3>👤 Face Service</h3>
+        <div class="test-list">
+          <button class="btn btn-small test-service-btn" data-service="face" data-test="detection">
+            Face Detection
+          </button>
+          <button class="btn btn-small test-service-btn" data-service="face" data-test="embedding">
+            Face Embedding
+          </button>
+          <button class="btn btn-small test-service-btn" data-service="face" data-test="comparison">
+            Face Comparison
+          </button>
+        </div>
+      </div>
+
+      <div class="test-category">
+        <h3>📄 OCR Service</h3>
+        <div class="test-list">
+          <button class="btn btn-small test-service-btn" data-service="ocr" data-test="text_extraction">
+            Text Extraction
+          </button>
+        </div>
+      </div>
+
+      <div class="test-category">
+        <h3>🎵 Whisper Service</h3>
+        <div class="test-list">
+          <button class="btn btn-small test-service-btn" data-service="whisper" data-test="transcription">
+            Audio Transcription
+          </button>
+        </div>
+      </div>
+
+      <div class="test-category">
+        <h3>🎥 Video Service</h3>
+        <div class="test-list">
+          <button class="btn btn-small test-service-btn" data-service="video" data-test="analysis">
+            Video Analysis
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Service Information</h2>
+    <div class="info-grid">
+      <div class="info-item">
+        <h4>🔧 Configuration</h4>
+        <p>AI Microservice running on <code>localhost:8000</code></p>
+        <p>Services: Vision, Face Detection, OCR, Whisper, Video Analysis</p>
+      </div>
+      
+      <div class="info-item">
+        <h4>📊 Performance</h4>
+        <p>All services run locally for maximum privacy and speed</p>
+        <p>Models loaded on startup for optimal performance</p>
+      </div>
+      
+      <div class="info-item">
+        <h4>🛡️ Privacy</h4>
+        <p>All processing happens locally - no data sent to external services</p>
+        <p>No internet connection required for AI operations</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<% content_for :javascript do %>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  // Refresh status button
+  document.getElementById('refresh-status').addEventListener('click', function() {
+    window.location.reload();
+  });
+
+  // Test all services button
+  document.getElementById('test-all-services').addEventListener('click', function() {
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = '🔄 Testing...';
+    
+    const formData = new FormData();
+    formData.append('_method', 'POST');
+    
+    fetch('<%= test_all_services_ai_dashboard_index_path %>', {
+      method: 'POST',
+      headers: {
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams(formData).toString()
+    })
+    .then(response => response.json())
+    .then(data => {
+      updateTestResults(data);
+      btn.disabled = false;
+      btn.textContent = '🧪 Test All Services';
+    })
+    .catch(error => {
+      console.error('Error:', error);
+      btn.disabled = false;
+      btn.textContent = '🧪 Test All Services';
+    });
+  });
+
+  // Individual service test buttons
+  document.querySelectorAll('.test-service-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const service = this.dataset.service;
+      const test = this.dataset.test;
+      
+      this.disabled = true;
+      this.textContent = '🔄 Testing...';
+      
+      const formData = new FormData();
+      formData.append('service_name', service);
+      formData.append('test_type', test);
+      formData.append('_method', 'POST');
+      
+      fetch('<%= test_service_ai_dashboard_index_path %>', {
+        method: 'POST',
+        headers: {
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
+          'Accept': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams(formData).toString()
+      })
+      .then(response => response.json())
+      .then(data => {
+        updateTestResults({ [service]: data });
+        this.disabled = false;
+        this.textContent = 'Test';
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        updateTestResults({ [service]: { success: false, error: error.message } });
+        this.disabled = false;
+        this.textContent = 'Test';
+      });
+    });
+  });
+
+  function updateTestResults(results) {
+    const resultsContainer = document.getElementById('test-results');
+    let html = '';
+    
+    Object.entries(results).forEach(([service, result]) => {
+      const statusClass = result.success ? 'success' : 'error';
+      const statusIcon = result.success ? '✅' : '❌';
+      const statusText = result.success ? 'Passed' : 'Failed';
+      
+      html += `
+        <div class="test-result ${statusClass}">
+          <div class="test-header">
+            <span class="test-service">${service.charAt(0).toUpperCase() + service.slice(1)}</span>
+            <span class="test-status">${statusIcon} ${statusText}</span>
+          </div>
+          <div class="test-details">
+            ${result.success ? 
+              `<p class="test-message">${result.message || 'Test completed successfully'}</p>` :
+              `<p class="test-error"><strong>Error:</strong> ${result.error}</p>`
+            }
+            ${result.result ? `
+              <div class="test-output">
+                <strong>Output:</strong>
+                <pre>${JSON.stringify(result.result, null, 2)}</pre>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    });
+    
+    resultsContainer.innerHTML = html;
+  }
+});
+</script>
+<% end %>
+
+<% content_for :styles do %>
+<style>
+.service-grid {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-color);
+}
+
+.status-indicator.online {
+  background-color: var(--success-bg);
+  border-color: var(--success-border);
+}
+
+.status-indicator.offline {
+  background-color: var(--error-bg);
+  border-color: var(--error-border);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+
+.status-indicator.online .status-dot {
+  background-color: var(--success-color);
+}
+
+.status-indicator.offline .status-dot {
+  background-color: var(--error-color);
+}
+
+.service-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-color);
+}
+
+.service-item.active {
+  background-color: var(--success-bg);
+  border-color: var(--success-border);
+}
+
+.service-item.inactive {
+  background-color: var(--error-bg);
+  border-color: var(--error-border);
+}
+
+.service-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.service-name {
+  font-weight: 600;
+}
+
+.service-status {
+  font-size: 0.875rem;
+}
+
+.test-results {
+  display: grid;
+  gap: 1rem;
+}
+
+.test-result {
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.test-result.success {
+  background-color: var(--success-bg);
+  border-color: var(--success-border);
+}
+
+.test-result.error {
+  background-color: var(--error-bg);
+  border-color: var(--error-border);
+}
+
+.test-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.test-service {
+  font-weight: 600;
+}
+
+.test-status {
+  font-weight: 600;
+}
+
+.test-output pre {
+  background-color: var(--code-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 0.25rem;
+  padding: 0.5rem;
+  font-size: 0.875rem;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.test-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+}
+
+.test-category h3 {
+  margin-bottom: 0.5rem;
+  color: var(--heading-color);
+}
+
+.test-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1rem;
+}
+
+.info-item h4 {
+  margin-bottom: 0.5rem;
+  color: var(--heading-color);
+}
+
+.info-item p {
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 2rem;
+  color: var(--muted-text);
+}
+
+.error-message {
+  background-color: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+@media (max-width: 768px) {
+  .test-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .info-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+<% end %>

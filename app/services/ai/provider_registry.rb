@@ -1,11 +1,7 @@
 module Ai
   class ProviderRegistry
     PROVIDERS = {
-      "local" => "Ai::Providers::LocalProvider",
-      "xai" => "Ai::Providers::XaiProvider",
-      "google_cloud" => "Ai::Providers::GoogleCloudProvider",
-      "azure_vision" => "Ai::Providers::AzureVisionProvider",
-      "aws_rekognition" => "Ai::Providers::AwsRekognitionProvider"
+      "local" => "Ai::Providers::LocalProvider"
     }.freeze
 
     class << self
@@ -45,15 +41,6 @@ module Ai
         case provider
         when "local"
           true  # Local provider is always available if services are running
-        when "xai"
-          Rails.application.credentials.dig(:xai, :api_key).to_s.present?
-        when "google_cloud"
-          Rails.application.credentials.dig(:google_cloud, :api_key).to_s.present?
-        when "azure_vision"
-          Rails.application.credentials.dig(:azure_vision, :api_key).to_s.present?
-        when "aws_rekognition"
-          Rails.application.credentials.dig(:aws, :access_key_id).to_s.present? &&
-            Rails.application.credentials.dig(:aws, :secret_access_key).to_s.present?
         else
           false
         end
@@ -61,11 +48,7 @@ module Ai
 
       def default_priority(provider)
         case provider
-        when "local" then 1      # Highest priority for cost savings
-        when "google_cloud" then 10
-        when "azure_vision" then 20
-        when "aws_rekognition" then 30
-        when "xai" then 40
+        when "local" then 1      # Highest priority for local processing
         else 100
         end
       end

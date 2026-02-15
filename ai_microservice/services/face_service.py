@@ -4,11 +4,16 @@ from typing import List, Dict, Any, Optional
 import logging
 
 try:
-    from retinaface import RetinaFace
+    from retinaface_pytorch import RetinaFace
     RETINAFACE_AVAILABLE = True
 except ImportError:
-    RETINAFACE_AVAILABLE = False
-    logging.warning("RetinaFace not available, using OpenCV face detection")
+    try:
+        # Try alternative import
+        from retinaface import RetinaFace
+        RETINAFACE_AVAILABLE = True
+    except ImportError:
+        RETINAFACE_AVAILABLE = False
+        logging.warning("RetinaFace not available, using OpenCV face detection")
 
 try:
     import insightface

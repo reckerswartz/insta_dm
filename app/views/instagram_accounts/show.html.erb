@@ -2,6 +2,7 @@
 
 <%= turbo_stream_from @account %>
 <%= turbo_stream_from [@account, :story_archive] %>
+<%= turbo_stream_from [@account, :llm_comment_generation] %>
 
 <div class="page">
   <header class="page-header">
@@ -34,6 +35,32 @@
       <%= link_to "Background Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
       <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
     </div>
+  </section>
+
+  <!-- Story Archive Section - Moved to top for priority visibility -->
+  <section
+    class="card"
+    data-controller="story-media-archive"
+    data-story-media-archive-url-value="<%= story_media_archive_instagram_account_path(@account) %>"
+  >
+    <h2>📱 Downloaded Story Archive</h2>
+    <p class="meta">Dynamically loads archived story media with infinite scrolling. Filter by date to review what was downloaded on a specific day.</p>
+
+    <div class="actions-row">
+      <label>
+        Date filter
+        <input type="date" data-story-media-archive-target="dateInput" data-action="change->story-media-archive#changeDate" />
+      </label>
+      <button type="button" class="btn secondary" data-action="story-media-archive#refresh">Refresh</button>
+      <span class="meta">Max cycles per continuous run: <strong><%= InstagramAccountsController::CONTINUOUS_STORY_SYNC_CYCLE_LIMIT %></strong></span>
+    </div>
+
+    <div class="story-media-scroll" data-story-media-archive-target="scroll" data-action="scroll->story-media-archive#onScroll">
+      <div class="story-media-grid" data-story-media-archive-target="gallery"></div>
+      <p class="meta" data-story-media-archive-target="empty" hidden>No archived stories found for selected date.</p>
+      <p class="meta" data-story-media-archive-target="loader">Loading story media…</p>
+    </div>
+    <div id="story_media_archive_refresh_signal" data-story-media-archive-target="refreshSignal" hidden></div>
   </section>
 
   <section class="card">
@@ -177,30 +204,18 @@
 
   <%= render "audit_logs_section", recent_audit_entries: @recent_audit_entries %>
 
-  <section
-    class="card"
-    data-controller="story-media-archive"
-    data-story-media-archive-url-value="<%= story_media_archive_instagram_account_path(@account) %>"
-  >
-    <h2>Downloaded Story Archive</h2>
-    <p class="meta">Dynamically loads archived story media with infinite scrolling. Filter by date to review what was downloaded on a specific day.</p>
-
-    <div class="actions-row">
-      <label>
-        Date filter
-        <input type="date" data-story-media-archive-target="dateInput" data-action="change->story-media-archive#changeDate" />
-      </label>
-      <button type="button" class="btn secondary" data-action="story-media-archive#refresh">Refresh</button>
-      <span class="meta">Max cycles per continuous run: <strong><%= InstagramAccountsController::CONTINUOUS_STORY_SYNC_CYCLE_LIMIT %></strong></span>
+  <!-- Technical Details Modal - Only for story archive items -->
+  <div class="technical-details-modal hidden" data-controller="technical-details" data-technical-details-account-id-value="<%= @account.id %>" data-technical-details-target="modal">
+    <div class="modal-content" data-technical-details-target="content">
+      <div class="loading-indicator" data-technical-details-target="loading">
+        <div class="loading-spinner"></div>
+        <p>Loading technical details...</p>
+      </div>
+      <div class="error-message" data-technical-details-target="error" hidden>
+        <!-- Error content will be inserted here -->
+      </div>
     </div>
-
-    <div class="story-media-scroll" data-story-media-archive-target="scroll" data-action="scroll->story-media-archive#onScroll">
-      <div class="story-media-grid" data-story-media-archive-target="gallery"></div>
-      <p class="meta" data-story-media-archive-target="empty" hidden>No archived stories found for the selected date.</p>
-      <p class="meta" data-story-media-archive-target="loader">Loading story media…</p>
-    </div>
-    <div id="story_media_archive_refresh_signal" data-story-media-archive-target="refreshSignal" hidden></div>
-  </section>
+  </div>
 
   <section class="card">
     <h2>Recent Failures (This Account)</h2>

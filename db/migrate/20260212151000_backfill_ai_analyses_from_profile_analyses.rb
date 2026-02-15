@@ -30,7 +30,7 @@ class BackfillAiAnalysesFromProfileAnalyses < ActiveRecord::Migration[8.1]
             analyzable_type: "InstagramProfile",
             analyzable_id: legacy.instagram_profile_id,
             purpose: "profile",
-            provider: legacy.provider.to_s.presence || "xai",
+            provider: legacy.provider.to_s.presence || "local",
             model: legacy.model,
             status: legacy.status.to_s.presence || "succeeded",
             started_at: legacy.started_at,

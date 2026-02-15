@@ -5714,26 +5714,6 @@ module Instagram
       (left & right).length.to_f / [ left.length, right.length ].max.to_f
     end
 
-    def generate_google_engagement_comments!(payload:, image_description:, topics:, author_type:)
-      setting = AiProviderSetting.find_by(provider: "google_cloud")
-      api_key = setting&.effective_api_key.to_s.presence || Rails.application.credentials.dig(:google_cloud, :api_key).to_s.presence
-      return [] if api_key.blank?
-
-      model = setting&.config_value("comment_model").to_s.presence || "gemini-2.0-flash"
-      client = Ai::GoogleCloudClient.new(api_key: api_key, instagram_account_id: @account.id)
-      generator = Ai::GoogleEngagementCommentGenerator.new(client: client, model: model)
-      result = generator.generate!(
-        post_payload: payload,
-        image_description: image_description.to_s,
-        topics: Array(topics),
-        author_type: author_type.to_s.presence || "unknown"
-      )
-
-      Array(result[:comment_suggestions]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
-    rescue StandardError
-      []
-    end
-
     def comment_on_post_via_ui!(driver:, shortcode:, comment_text:)
       driver.navigate.to("#{INSTAGRAM_BASE_URL}/p/#{shortcode}/")
       wait_for(driver, css: "body", timeout: 12)

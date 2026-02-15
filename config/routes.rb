@@ -7,9 +7,7 @@ Rails.application.routes.draw do
     get :background_jobs, to: "background_jobs#dashboard"
     get "background_jobs/failures", to: "background_jobs#failures", as: :background_job_failures
     get "background_jobs/failures/:id", to: "background_jobs#failure", as: :background_job_failure
-    resources :ai_providers, only: %i[index update] do
-      post :test_key, on: :member
-    end
+    post "background_jobs/clear_all", to: "background_jobs#clear_all_jobs", as: :clear_all_background_jobs
   end
 
   mount MissionControl::Jobs::Engine, at: "/admin/jobs"
@@ -26,6 +24,8 @@ Rails.application.routes.draw do
       post :sync_stories_with_comments
       post :sync_all_stories_continuous
       get :story_media_archive
+      post :generate_llm_comment
+      get :technical_details
     end
   end
 
@@ -58,6 +58,14 @@ Rails.application.routes.draw do
   end
 
   resources :instagram_posts, only: %i[index show]
+
+  # AI Dashboard
+  resources :ai_dashboard, only: [:index] do
+    collection do
+      post :test_service
+      post :test_all_services
+    end
+  end
 
   # Legacy endpoints kept for now (conversation/story recipients + bulk sending).
   resource :sync, only: :create

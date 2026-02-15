@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_14_230500) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_15_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -312,12 +312,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_14_230500) do
     t.string "external_id"
     t.bigint "instagram_profile_id", null: false
     t.string "kind", null: false
+    t.datetime "llm_comment_generated_at"
+    t.json "llm_comment_metadata", default: {}
+    t.string "llm_comment_model"
+    t.string "llm_comment_provider"
+    t.text "llm_generated_comment"
     t.json "metadata"
     t.datetime "occurred_at"
     t.datetime "updated_at", null: false
     t.index ["instagram_profile_id", "detected_at"], name: "idx_on_instagram_profile_id_detected_at_61620a7860"
     t.index ["instagram_profile_id", "kind", "external_id"], name: "idx_on_instagram_profile_id_kind_external_id_ddff026220", unique: true
     t.index ["instagram_profile_id"], name: "index_instagram_profile_events_on_instagram_profile_id"
+    t.index ["llm_comment_generated_at"], name: "index_instagram_profile_events_on_llm_comment_generated_at"
+    t.index ["llm_comment_provider", "llm_comment_generated_at"], name: "idx_on_llm_comment_provider_llm_comment_generated_a_c186e86ca1"
   end
 
   create_table "instagram_profile_history_chunks", force: :cascade do |t|

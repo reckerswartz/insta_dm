@@ -211,7 +211,8 @@ module Ai
             "suggested_actions" => actions,
             "recommended_next_action" => actions.first || "review",
             "engagement_score" => labels.any? ? 0.6 : 0.4,
-            "comment_suggestions" => comment_generation[:comment_suggestions],
+            "comment_suggestions" => comment_generation[:comment_suggestions] || 
+              (JSON.parse(comment_generation[:raw][:response])&.dig("comment_suggestions") rescue []),
             "comment_generation_status" => comment_generation[:status],
             "comment_generation_source" => comment_generation[:source],
             "comment_generation_fallback_used" => ActiveModel::Type::Boolean.new.cast(comment_generation[:fallback_used]),
