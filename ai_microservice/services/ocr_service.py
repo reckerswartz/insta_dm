@@ -30,7 +30,7 @@ class OCRService:
         try:
             if PADDLEOCR_AVAILABLE:
                 # Initialize PaddleOCR (use angle classifier for rotated text)
-                self.paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+                self.paddle_ocr = PaddleOCR(use_angle_cls=True, lang='en')
                 logger.info("PaddleOCR loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load PaddleOCR: {e}")

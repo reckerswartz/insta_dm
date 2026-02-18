@@ -1,5 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
-import { Cable } from "@hotwired/turbo-rails"
+import { cable } from "@hotwired/turbo-rails"
 
 export default class extends Controller {
   static values = { accountId: Number }
@@ -7,7 +7,7 @@ export default class extends Controller {
 
   connect() {
     console.log("LLM Comment Controller connected", { accountId: this.accountIdValue })
-    this.cable = Cable.createConsumer()
+    this.cable = cable.createConsumer()
     this.subscription = this.cable.subscriptions.create(
       "LlmCommentGenerationChannel",
       {

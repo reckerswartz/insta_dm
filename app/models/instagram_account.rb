@@ -18,6 +18,8 @@ class InstagramAccount < ApplicationRecord
   has_many :instagram_profile_history_chunks, dependent: :destroy
   has_many :instagram_stories, dependent: :destroy
   has_many :instagram_story_people, dependent: :destroy
+  has_many :app_issues, dependent: :nullify
+  has_many :active_storage_ingestions, dependent: :nullify
 
   encryption = Rails.application.config.active_record.encryption
   if encryption.primary_key.present? &&

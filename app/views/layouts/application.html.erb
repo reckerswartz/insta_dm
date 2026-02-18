@@ -1,95 +1,159 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <title><%= content_for(:title) || "Insta DM" %></title>
+    <% page_title = content_for?(:title) ? yield(:title) : "Insta DM" %>
+    <title><%= page_title %></title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="description" content="Instagram DM management and analytics platform">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
     <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
     <%= stylesheet_link_tag "tabulator.min", "data-turbo-track": "reload" %>
-    <%= javascript_importmap_tags %>
+    <%= yield :styles %>
+    <%= javascript_include_tag "application", "data-turbo-track": "reload", defer: true %>
   </head>
 
-  <body>
-    <header class="topbar" role="banner">
-      <div class="topbar-inner">
-        <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Toggle navigation" aria-expanded="false">
-          ☰
-        </button>
-        
-        <nav class="nav" id="mainNav" role="navigation" aria-label="Main navigation">
-          <%= top_nav_link_to "🏠 Dashboard", instagram_accounts_path, section: :accounts %>
-          <%= top_nav_link_to "👥 Profiles", instagram_profiles_path, section: :profiles %>
-          <%= top_nav_link_to "🤖 AI Dashboard", ai_dashboard_index_path, section: :ai_dashboard %>
-          <%= top_nav_link_to "⚙️ Jobs", admin_background_jobs_path, section: :jobs %>
-          <%= top_nav_link_to "🚨 Failures", admin_background_job_failures_path, section: :failures %>
+  <body class="app-body">
+    <div class="app-shell" id="appShell">
+      <aside class="app-sidebar" id="appSidebar" aria-label="Primary navigation">
+        <div class="sidebar-brand-row">
+          <div class="sidebar-brand-mark">ID</div>
+          <div>
+            <h1 class="sidebar-brand">InstaManager</h1>
+            <p class="sidebar-brand-subtitle">Operations Console</p>
+          </div>
+        </div>
+
+        <nav class="sidebar-nav" role="navigation" aria-label="Main">
+          <%= top_nav_link_to instagram_accounts_path, section: :accounts, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon">D</span>
+            <span>Dashboard</span>
+          <% end %>
+
+          <%= top_nav_link_to instagram_profiles_path, section: :profiles, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon">P</span>
+            <span>Profiles</span>
+          <% end %>
+
+          <%= top_nav_link_to ai_dashboard_index_path, section: :ai_dashboard, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon">AI</span>
+            <span>AI Dashboard</span>
+          <% end %>
+
+          <%= top_nav_link_to admin_background_jobs_path, section: :jobs, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon">J</span>
+            <span>Jobs</span>
+          <% end %>
+
+          <%= top_nav_link_to admin_background_job_failures_path, section: :failures, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon">F</span>
+            <span>Failures</span>
+          <% end %>
+
+          <%= top_nav_link_to admin_issues_path, section: :issues, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon">I</span>
+            <span>Issues</span>
+          <% end %>
+
+          <%= top_nav_link_to admin_storage_ingestions_path, section: :storage, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon">S</span>
+            <span>Storage</span>
+          <% end %>
         </nav>
-        
-        <div class="topbar-right" role="status" aria-label="Current account status">
-          <% if current_account %>
-            <span class="current-account-label">Current Account:</span>
-            <%= link_to current_account.username, instagram_account_path(current_account), 
-                class: "nav-link strong current-account", 
-                aria: { current: "page" } %>
-          <% else %>
-            <span class="no-account" role="alert">⚠️ No account selected</span>
+
+        <div class="sidebar-footer">
+          <span class="status-dot"></span>
+          <span>Session Active</span>
+        </div>
+      </aside>
+
+      <div class="app-main">
+        <header class="app-topbar">
+          <button
+            type="button"
+            class="btn small secondary sidebar-toggle-btn"
+            id="sidebarToggleBtn"
+            aria-label="Toggle navigation"
+            aria-expanded="false"
+          >
+            Menu
+          </button>
+
+          <div class="topbar-page-title"><%= page_title %></div>
+
+          <div class="topbar-account" role="status" aria-live="polite">
+            <% if current_account %>
+              <span class="muted">Current account</span>
+              <%= link_to current_account.username, instagram_account_path(current_account), class: "topbar-account-link" %>
+            <% else %>
+              <span class="pill">No account selected</span>
+            <% end %>
+          </div>
+        </header>
+
+        <div class="flash-stack">
+          <% if flash[:notice] %>
+            <div class="alert alert-success alert-dismissible fade show" role="alert" aria-live="polite">
+              <div><%= flash[:notice] %></div>
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+          <% end %>
+
+          <% if flash[:alert] %>
+            <div class="alert alert-warning alert-dismissible fade show" role="alert" aria-live="assertive">
+              <div><%= flash[:alert] %></div>
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
           <% end %>
         </div>
+
+        <div id="notifications" role="status" aria-live="polite" aria-label="Application notifications"></div>
+
+        <%= render "shared/modals" %>
+
+        <main class="app-content" role="main">
+          <%= yield %>
+        </main>
       </div>
-    </header>
+    </div>
 
-    <% if flash[:notice] %>
-      <div class="flash notice" role="alert" aria-live="polite">
-        <div class="flash-icon" aria-hidden="true">✅</div>
-        <div class="flash-message"><%= flash[:notice] %></div>
-      </div>
-    <% end %>
-
-    <% if flash[:alert] %>
-      <div class="flash alert" role="alert" aria-live="assertive">
-        <div class="flash-icon" aria-hidden="true">⚠️</div>
-        <div class="flash-message"><%= flash[:alert] %></div>
-      </div>
-    <% end %>
-
-    <div id="notifications" role="status" aria-live="polite" aria-label="Application notifications"></div>
-
-    <main class="main-content" role="main">
-      <%= yield %>
-    </main>
+    <%= yield :javascript %>
 
     <script>
-      // Mobile menu toggle
-      document.getElementById('mobileMenuBtn').addEventListener('click', function() {
-        const nav = document.getElementById('mainNav');
-        const isOpen = nav.classList.contains('active');
-        
-        nav.classList.toggle('active');
-        this.setAttribute('aria-expanded', !isOpen);
-      });
+      document.addEventListener("turbo:load", function() {
+        const toggleBtn = document.getElementById("sidebarToggleBtn");
+        const body = document.body;
 
-      // Close mobile menu when clicking outside
-      document.addEventListener('click', function(event) {
-        const nav = document.getElementById('mainNav');
-        const btn = document.getElementById('mobileMenuBtn');
-        
-        if (!nav.contains(event.target) && !btn.contains(event.target)) {
-          nav.classList.remove('active');
-          btn.setAttribute('aria-expanded', 'false');
-        }
-      });
+        if (!toggleBtn || toggleBtn.dataset.bound === "1") return;
+        toggleBtn.dataset.bound = "1";
 
-      // Auto-hide flash messages after 5 seconds
-      setTimeout(function() {
-        const flashes = document.querySelectorAll('.flash');
-        flashes.forEach(function(flash) {
-          flash.style.opacity = '0';
-          setTimeout(function() {
-            flash.remove();
-          }, 300);
+        toggleBtn.addEventListener("click", function() {
+          const isOpen = body.classList.toggle("sidebar-open");
+          toggleBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
         });
-      }, 5000);
+
+        document.addEventListener("click", function(event) {
+          if (window.innerWidth > 1024) return;
+          const sidebar = document.getElementById("appSidebar");
+          if (!sidebar) return;
+
+          const clickedInsideSidebar = sidebar.contains(event.target);
+          const clickedToggle = toggleBtn.contains(event.target);
+
+          if (!clickedInsideSidebar && !clickedToggle) {
+            body.classList.remove("sidebar-open");
+            toggleBtn.setAttribute("aria-expanded", "false");
+          }
+        });
+
+        setTimeout(function() {
+          const alerts = document.querySelectorAll(".alert");
+          alerts.forEach(function(alert) {
+            const bsAlert = bootstrap.Alert.getOrCreateInstance(alert);
+            bsAlert.close();
+          });
+        }, 5000);
+      });
     </script>
   </body>
 </html>

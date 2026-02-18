@@ -1,4 +1,8 @@
 development:
+  ai_microservice_health_check:
+    class: CheckAiMicroserviceHealthJob
+    queue: sync
+    cron: "*/5 * * * *"
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
     queue: profiles
@@ -24,6 +28,10 @@ development:
     cron: "40 */2 * * *"
 
 production:
+  ai_microservice_health_check:
+    class: CheckAiMicroserviceHealthJob
+    queue: sync
+    cron: "*/5 * * * *"
   purge_expired_post_media:
     class: PurgeExpiredInstagramPostMediaJob
     queue: profiles

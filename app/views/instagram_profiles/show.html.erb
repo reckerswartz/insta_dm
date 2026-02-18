@@ -78,7 +78,17 @@
           <%= button_to "Verify Messageability (Background)", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Sync Avatar (Background)", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Analyze Stories (10) (Background)", sync_stories_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Force Analyze All Stories (10) (Background)", sync_stories_force_instagram_profile_path(@profile), method: :post, class: "btn secondary", data: { turbo_confirm: "Force re-analysis for up to 10 latest stories?" } %>
+          <%= button_to "Force Analyze All Stories (10) (Background)",
+                sync_stories_force_instagram_profile_path(@profile),
+                method: :post,
+                class: "btn secondary",
+                form: {
+                  data: {
+                    confirm_modal: true,
+                    confirm_title: "Force story re-analysis?",
+                    confirm_message: "Re-run story analysis for up to 10 latest stories for this profile?"
+                  }
+                } %>
         </div>
       </div>
     </div>

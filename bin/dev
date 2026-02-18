@@ -6,6 +6,8 @@ env["REDIS_URL"] ||= "redis://127.0.0.1:6379/0"
 
 web = ["./bin/rails", "server", *ARGV]
 jobs = ["./bin/jobs"]
+css = ["yarn", "watch:css"]
+js = ["yarn", "watch"]
 
 # Check if local AI services should be started
 start_ai_services = ENV.fetch("START_LOCAL_AI", "true") == "true"
@@ -90,9 +92,17 @@ end
 pids = []
 
 begin
-  puts "🚀 Starting Rails server and background jobs..."
+  puts "🚀 Starting Rails server, background jobs, and asset builders..."
+  puts "🎨 Building assets..."
+  
+  # Build assets first
+  system("yarn build") || puts("⚠️  JavaScript build failed")
+  system("yarn build:css") || puts("⚠️  CSS build failed")
+  
   pids << Process.spawn(env, *web)
   pids << Process.spawn(env, *jobs)
+  pids << Process.spawn(env, *css)
+  pids << Process.spawn(env, *js)
   pids.concat(ai_services_pids)
 
   # Set up signal handlers for graceful shutdown
@@ -100,7 +110,7 @@ begin
     puts "\n🛑 Shutting down services (#{signal_name})..."
     
     # Stop Rails and jobs first
-    pids[0..1].each { |pid| Process.kill("TERM", pid) rescue nil }
+    pids[0..3].each { |pid| Process.kill("TERM", pid) rescue nil }
     
     # Give Rails time to shutdown gracefully
     sleep 3
@@ -138,6 +148,7 @@ begin
   puts "   • AI Microservice:  http://localhost:8000" if start_ai_services
   puts "   • Ollama API:      http://localhost:11434" if start_ai_services
   puts ""
+  puts "🎨 Asset builders are running in watch mode"
   puts "💡 Press Ctrl+C to stop all services gracefully"
   puts ""
 

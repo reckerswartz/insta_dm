@@ -1653,7 +1653,9 @@ module Instagram
     end
 
     def with_authenticated_driver
-      raise "No stored cookies. Use manual login or import cookies first." if @account.cookies.blank?
+      if @account.cookies.blank?
+        raise AuthenticationRequiredError, "No stored cookies. Use manual login or import cookies first."
+      end
 
       with_driver do |driver|
         apply_session_bundle!(driver)
@@ -1791,7 +1793,7 @@ module Instagram
         wait_for(driver, css: "body", timeout: 10)
 
         if driver.current_url.include?("/accounts/login") || logged_out_page?(driver)
-          raise "Stored cookies are not authenticated. Re-run Manual Browser Login or import fresh cookies."
+          raise AuthenticationRequiredError, "Stored cookies are not authenticated. Re-run Manual Browser Login or import fresh cookies."
         end
       end
     end

@@ -12,11 +12,19 @@
     <div class="actions-row">
       <%= link_to "Open Mission Control", "/admin/jobs", class: "btn secondary", target: "_blank", rel: "noreferrer" %>
       <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
-      <%= button_to "Stop All Jobs & Clear Queue", admin_clear_all_background_jobs_path, 
-          method: :post, 
+      <%= link_to "Application Issues", admin_issues_path, class: "btn secondary" %>
+      <%= link_to "Storage Ingestions", admin_storage_ingestions_path, class: "btn secondary" %>
+      <%= button_to "Stop All Jobs & Clear Queue",
+          admin_clear_all_background_jobs_path,
+          method: :post,
           class: "btn danger",
-          data: { 
-            confirm: "Are you sure? This will immediately stop all running jobs and clear the entire queue, including failed jobs. This action cannot be undone." 
+          form: {
+            data: {
+              confirm_modal: true,
+              confirm_title: "Clear all queued jobs?",
+              confirm_message: "This will stop running jobs and clear queued/retry/dead entries. This action cannot be undone.",
+              modal_loading_text: "Clearing queue..."
+            }
           } %>
     </div>
   </section>
@@ -241,6 +249,70 @@
       </div>
     <% else %>
       <p class="meta">No app-level failures recorded yet.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Recent Application Issues</h2>
+    <% if @recent_issues.any? %>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Issue</th>
+              <th>Severity</th>
+              <th>Status</th>
+              <th>Occurrences</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @recent_issues.each do |issue| %>
+              <tr>
+                <td><%= relative_time_with_tooltip(issue.last_seen_at) %></td>
+                <td><%= issue.title %></td>
+                <td><span class="pill"><%= issue.severity %></span></td>
+                <td><%= issue.status %></td>
+                <td><%= issue.occurrences %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No application issues tracked yet.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Recent Active Storage Writes</h2>
+    <% if @recent_storage_ingestions.any? %>
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Attachment</th>
+              <th>Record</th>
+              <th>Size</th>
+              <th>Job</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% @recent_storage_ingestions.each do |row| %>
+              <tr>
+                <td><%= relative_time_with_tooltip(row.created_at) %></td>
+                <td><code><%= row.attachment_name %></code> · <%= row.blob_filename %></td>
+                <td><%= row.record_type %>#<%= row.record_id %></td>
+                <td><%= number_to_human_size(row.blob_byte_size) %></td>
+                <td><%= row.created_by_job_class.presence || "manual/request" %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No Active Storage ingestion records yet.</p>
     <% end %>
   </section>
 </div>

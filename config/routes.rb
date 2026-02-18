@@ -7,7 +7,14 @@ Rails.application.routes.draw do
     get :background_jobs, to: "background_jobs#dashboard"
     get "background_jobs/failures", to: "background_jobs#failures", as: :background_job_failures
     get "background_jobs/failures/:id", to: "background_jobs#failure", as: :background_job_failure
+    post "background_jobs/failures/:id/retry", to: "background_jobs#retry_failure", as: :retry_background_job_failure
     post "background_jobs/clear_all", to: "background_jobs#clear_all_jobs", as: :clear_all_background_jobs
+    resources :issues, only: %i[index update] do
+      member do
+        post :retry_job
+      end
+    end
+    resources :storage_ingestions, only: [:index]
   end
 
   mount MissionControl::Jobs::Engine, at: "/admin/jobs"

@@ -1,72 +1,69 @@
-<% content_for :title, "AI Services Dashboard" %>
+<% content_for :title, "AI Services" %>
 
 <div class="page">
   <header class="page-header">
-    <h1>🤖 AI Services Dashboard</h1>
-    <p>Test and monitor all locally installed AI components and services</p>
+    <h1>AI Services</h1>
+    <p class="meta">Run service checks and view response payloads without leaving the dashboard.</p>
   </header>
 
   <section class="card">
     <h2>Service Status</h2>
+
     <div id="service-status" class="service-grid">
-      <% if @service_status[:status] == 'online' %>
+      <% if @service_status[:status] == "online" %>
         <div class="status-indicator online">
-          <span class="status-dot"></span>
-          <span class="status-text">AI Microservice Online</span>
-          <span class="status-time"><%= relative_time_with_tooltip(@service_status[:last_check]) %></span>
+          <div>
+            <strong>AI microservice online</strong>
+            <div class="status-time"><%= relative_time_with_tooltip(@service_status[:last_check]) %></div>
+          </div>
+          <span class="pill">Healthy</span>
         </div>
-        
-        <% @service_status[:services].each do |service, status| %>
-          <div class="service-item <%= status ? 'active' : 'inactive' %>">
+
+        <% @service_status[:services].each do |service, active| %>
+          <div class="service-item <%= active ? "active" : "inactive" %>">
             <div class="service-info">
               <span class="service-name"><%= service.capitalize %></span>
-              <span class="service-status"><%= status ? '✅ Active' : '❌ Inactive' %></span>
+              <span class="service-status"><%= active ? "Active" : "Inactive" %></span>
             </div>
-            <button class="btn btn-small test-service-btn" 
-                    data-service="<%= service %>" 
-                    data-test="<%= get_default_test_for_service(service) %>">
-              Test
+            <button class="btn btn-small test-service-btn" data-service="<%= service %>" data-test="<%= get_default_test_for_service(service) %>">
+              Run test
             </button>
           </div>
         <% end %>
       <% else %>
         <div class="status-indicator offline">
-          <span class="status-dot"></span>
-          <span class="status-text">AI Microservice Offline</span>
-          <span class="status-time"><%= relative_time_with_tooltip(@service_status[:last_check]) %></span>
+          <div>
+            <strong>AI microservice offline</strong>
+            <div class="status-time"><%= relative_time_with_tooltip(@service_status[:last_check]) %></div>
+          </div>
+          <span class="pill">Unavailable</span>
         </div>
         <div class="error-message">
           <strong>Error:</strong> <%= @service_status[:message] %>
-          <p class="hint">Please ensure the AI microservice is running on localhost:8000</p>
+          <p class="hint mb-0">Ensure the microservice is running on <code>localhost:8000</code>.</p>
         </div>
       <% end %>
     </div>
-    
-    <div class="actions-row">
-      <button id="refresh-status" class="btn btn-secondary">🔄 Refresh Status</button>
-      <button id="test-all-services" class="btn btn-primary">🧪 Test All Services</button>
+
+    <div class="actions-row mt-2">
+      <button id="refresh-status" class="btn btn-secondary">Refresh status</button>
+      <button id="test-all-services" class="btn btn-primary">Run all tests</button>
     </div>
   </section>
 
   <section class="card">
-    <h2>Service Test Results</h2>
+    <h2>Test Results</h2>
     <div id="test-results" class="test-results">
       <% if @test_results.present? %>
         <% @test_results.each do |service, result| %>
-          <div class="test-result <%= result[:success] ? 'success' : 'error' %>">
+          <div class="test-result <%= result[:success] ? "success" : "error" %>">
             <div class="test-header">
               <span class="test-service"><%= service.to_s.capitalize %></span>
-              <span class="test-status"><%= result[:success] ? '✅ Passed' : '❌ Failed' %></span>
+              <span class="test-status"><%= result[:success] ? "Passed" : "Failed" %></span>
             </div>
             <div class="test-details">
               <% if result[:success] %>
                 <p class="test-message"><%= result[:message] %></p>
-                <% if result[:result].present? %>
-                  <div class="test-output">
-                    <strong>Output:</strong>
-                    <pre><%= JSON.pretty_generate(result[:result]) rescue result[:result].to_s %></pre>
-                  </div>
-                <% end %>
               <% else %>
                 <p class="test-error"><strong>Error:</strong> <%= result[:error] %></p>
               <% end %>
@@ -75,7 +72,7 @@
         <% end %>
       <% else %>
         <div class="empty-state">
-          <p>No tests run yet. Click "Test All Services" or test individual services above.</p>
+          <p class="mb-0">No tests run yet. Run an individual service test or run all tests.</p>
         </div>
       <% end %>
     </div>
@@ -85,56 +82,40 @@
     <h2>Available Tests</h2>
     <div class="test-grid">
       <div class="test-category">
-        <h3>👁️ Vision Service</h3>
+        <h3>Vision</h3>
         <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="vision" data-test="labels">
-            Object Detection
-          </button>
-          <button class="btn btn-small test-service-btn" data-service="vision" data-test="safe_search">
-            Safe Search
-          </button>
+          <button class="btn btn-small test-service-btn" data-service="vision" data-test="labels">Object detection</button>
+          <button class="btn btn-small test-service-btn" data-service="vision" data-test="safe_search">Safe search</button>
         </div>
       </div>
 
       <div class="test-category">
-        <h3>👤 Face Service</h3>
+        <h3>Face</h3>
         <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="face" data-test="detection">
-            Face Detection
-          </button>
-          <button class="btn btn-small test-service-btn" data-service="face" data-test="embedding">
-            Face Embedding
-          </button>
-          <button class="btn btn-small test-service-btn" data-service="face" data-test="comparison">
-            Face Comparison
-          </button>
+          <button class="btn btn-small test-service-btn" data-service="face" data-test="detection">Face detection</button>
+          <button class="btn btn-small test-service-btn" data-service="face" data-test="embedding">Face embedding</button>
+          <button class="btn btn-small test-service-btn" data-service="face" data-test="comparison">Face comparison</button>
         </div>
       </div>
 
       <div class="test-category">
-        <h3>📄 OCR Service</h3>
+        <h3>OCR</h3>
         <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="ocr" data-test="text_extraction">
-            Text Extraction
-          </button>
+          <button class="btn btn-small test-service-btn" data-service="ocr" data-test="text_extraction">Text extraction</button>
         </div>
       </div>
 
       <div class="test-category">
-        <h3>🎵 Whisper Service</h3>
+        <h3>Whisper</h3>
         <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="whisper" data-test="transcription">
-            Audio Transcription
-          </button>
+          <button class="btn btn-small test-service-btn" data-service="whisper" data-test="transcription">Audio transcription</button>
         </div>
       </div>
 
       <div class="test-category">
-        <h3>🎥 Video Service</h3>
+        <h3>Video</h3>
         <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="video" data-test="analysis">
-            Video Analysis
-          </button>
+          <button class="btn btn-small test-service-btn" data-service="video" data-test="analysis">Video analysis</button>
         </div>
       </div>
     </div>
@@ -144,317 +125,160 @@
     <h2>Service Information</h2>
     <div class="info-grid">
       <div class="info-item">
-        <h4>🔧 Configuration</h4>
-        <p>AI Microservice running on <code>localhost:8000</code></p>
-        <p>Services: Vision, Face Detection, OCR, Whisper, Video Analysis</p>
+        <h4>Configuration</h4>
+        <p class="mb-1">Service endpoint: <code>localhost:8000</code></p>
+        <p class="mb-0">Vision, face, OCR, whisper, and video services are supported.</p>
       </div>
-      
+
       <div class="info-item">
-        <h4>📊 Performance</h4>
-        <p>All services run locally for maximum privacy and speed</p>
-        <p>Models loaded on startup for optimal performance</p>
+        <h4>Performance</h4>
+        <p class="mb-1">Services run locally for low-latency processing.</p>
+        <p class="mb-0">Model warm-up happens during service startup.</p>
       </div>
-      
+
       <div class="info-item">
-        <h4>🛡️ Privacy</h4>
-        <p>All processing happens locally - no data sent to external services</p>
-        <p>No internet connection required for AI operations</p>
+        <h4>Privacy</h4>
+        <p class="mb-1">No external API dependency is required for local runs.</p>
+        <p class="mb-0">Inputs remain inside your own environment.</p>
       </div>
     </div>
   </section>
 </div>
 
 <% content_for :javascript do %>
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-  // Refresh status button
-  document.getElementById('refresh-status').addEventListener('click', function() {
-    window.location.reload();
-  });
+  <script>
+    document.addEventListener("turbo:load", function() {
+      const page = document.getElementById("service-status")
+      if (!page || page.dataset.bound === "1") return
+      page.dataset.bound = "1"
 
-  // Test all services button
-  document.getElementById('test-all-services').addEventListener('click', function() {
-    const btn = this;
-    btn.disabled = true;
-    btn.textContent = '🔄 Testing...';
-    
-    const formData = new FormData();
-    formData.append('_method', 'POST');
-    
-    fetch('<%= test_all_services_ai_dashboard_index_path %>', {
-      method: 'POST',
-      headers: {
-        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
-        'Accept': 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: new URLSearchParams(formData).toString()
-    })
-    .then(response => response.json())
-    .then(data => {
-      updateTestResults(data);
-      btn.disabled = false;
-      btn.textContent = '🧪 Test All Services';
-    })
-    .catch(error => {
-      console.error('Error:', error);
-      btn.disabled = false;
-      btn.textContent = '🧪 Test All Services';
-    });
-  });
+      const refreshButton = document.getElementById("refresh-status")
+      const testAllButton = document.getElementById("test-all-services")
+      const resultsContainer = document.getElementById("test-results")
 
-  // Individual service test buttons
-  document.querySelectorAll('.test-service-btn').forEach(btn => {
-    btn.addEventListener('click', function() {
-      const service = this.dataset.service;
-      const test = this.dataset.test;
-      
-      this.disabled = true;
-      this.textContent = '🔄 Testing...';
-      
-      const formData = new FormData();
-      formData.append('service_name', service);
-      formData.append('test_type', test);
-      formData.append('_method', 'POST');
-      
-      fetch('<%= test_service_ai_dashboard_index_path %>', {
-        method: 'POST',
-        headers: {
-          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
-          'Accept': 'application/json',
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams(formData).toString()
-      })
-      .then(response => response.json())
-      .then(data => {
-        updateTestResults({ [service]: data });
-        this.disabled = false;
-        this.textContent = 'Test';
-      })
-      .catch(error => {
-        console.error('Error:', error);
-        updateTestResults({ [service]: { success: false, error: error.message } });
-        this.disabled = false;
-        this.textContent = 'Test';
-      });
-    });
-  });
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+      }
 
-  function updateTestResults(results) {
-    const resultsContainer = document.getElementById('test-results');
-    let html = '';
-    
-    Object.entries(results).forEach(([service, result]) => {
-      const statusClass = result.success ? 'success' : 'error';
-      const statusIcon = result.success ? '✅' : '❌';
-      const statusText = result.success ? 'Passed' : 'Failed';
-      
-      html += `
-        <div class="test-result ${statusClass}">
-          <div class="test-header">
-            <span class="test-service">${service.charAt(0).toUpperCase() + service.slice(1)}</span>
-            <span class="test-status">${statusIcon} ${statusText}</span>
-          </div>
-          <div class="test-details">
-            ${result.success ? 
-              `<p class="test-message">${result.message || 'Test completed successfully'}</p>` :
-              `<p class="test-error"><strong>Error:</strong> ${result.error}</p>`
-            }
-            ${result.result ? `
-              <div class="test-output">
-                <strong>Output:</strong>
-                <pre>${JSON.stringify(result.result, null, 2)}</pre>
+      function updateTestResults(results, append = false) {
+        const rendered = Object.entries(results).map(([service, result]) => {
+          const statusClass = result.success ? "success" : "error"
+          const statusText = result.success ? "Passed" : "Failed"
+          const message = result.success ? (result.message || "Test completed") : (result.error || "Unknown error")
+
+          return `
+            <div class="test-result ${statusClass}">
+              <div class="test-header">
+                <span class="test-service">${escapeHtml(service.charAt(0).toUpperCase() + service.slice(1))}</span>
+                <span class="test-status">${statusText}</span>
               </div>
-            ` : ''}
+              <div class="test-details">
+                <p class="${result.success ? "test-message" : "test-error"}">${escapeHtml(message)}</p>
+              </div>
+            </div>
+          `
+        }).join("")
+
+        if (append) {
+          resultsContainer.insertAdjacentHTML("afterbegin", rendered)
+        } else {
+          resultsContainer.innerHTML = rendered
+        }
+      }
+
+      function showResultModal(service, result) {
+        if (!window.modalManager || !window.modalManager.showModal) return
+        const status = result.success ? "Passed" : "Failed"
+        const message = result.success ? (result.message || "Test completed") : (result.error || "Unknown error")
+        const details = result.result ? `<pre>${escapeHtml(JSON.stringify(result.result, null, 2))}</pre>` : ""
+
+        window.modalManager.showModal(`
+          <div>
+            <h5>${escapeHtml(service.toUpperCase())} test ${escapeHtml(status)}</h5>
+            <p class="meta">${escapeHtml(message)}</p>
+            ${details}
           </div>
-        </div>
-      `;
-    });
-    
-    resultsContainer.innerHTML = html;
-  }
-});
-</script>
-<% end %>
+        `, { size: "modal-lg", hideFooter: true })
+      }
 
-<% content_for :styles do %>
-<style>
-.service-grid {
-  display: grid;
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
+      function runServiceTest(service, testType, sourceButton) {
+        sourceButton.disabled = true
+        sourceButton.classList.add("btn-loading")
 
-.status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--border-color);
-}
+        const payload = new URLSearchParams()
+        payload.set("service_name", service)
+        payload.set("test_type", testType)
 
-.status-indicator.online {
-  background-color: var(--success-bg);
-  border-color: var(--success-border);
-}
+        fetch("<%= test_service_ai_dashboard_index_path %>", {
+          method: "POST",
+          headers: {
+            "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content,
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: payload.toString()
+        })
+          .then((response) => response.json())
+          .then((result) => {
+            updateTestResults({ [service]: result }, true)
+            showResultModal(service, result)
+          })
+          .catch((error) => {
+            const result = { success: false, error: error.message }
+            updateTestResults({ [service]: result }, true)
+            if (window.showErrorModal) showErrorModal("Service test failed", error.message)
+          })
+          .finally(() => {
+            sourceButton.disabled = false
+            sourceButton.classList.remove("btn-loading")
+          })
+      }
 
-.status-indicator.offline {
-  background-color: var(--error-bg);
-  border-color: var(--error-border);
-}
+      refreshButton?.addEventListener("click", function() {
+        window.location.reload()
+      })
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: currentColor;
-}
+      testAllButton?.addEventListener("click", function() {
+        const button = this
+        button.disabled = true
+        button.classList.add("btn-loading")
 
-.status-indicator.online .status-dot {
-  background-color: var(--success-color);
-}
+        fetch("<%= test_all_services_ai_dashboard_index_path %>", {
+          method: "POST",
+          headers: {
+            "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content,
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: new URLSearchParams().toString()
+        })
+          .then((response) => response.json())
+          .then((results) => {
+            updateTestResults(results)
+            const values = Object.values(results)
+            const passed = values.filter((row) => row.success).length
+            if (window.showSuccessModal) {
+              showSuccessModal("All tests complete", `${passed}/${values.length} tests passed.`)
+            }
+          })
+          .catch((error) => {
+            if (window.showErrorModal) showErrorModal("Run failed", error.message)
+          })
+          .finally(() => {
+            button.disabled = false
+            button.classList.remove("btn-loading")
+          })
+      })
 
-.status-indicator.offline .status-dot {
-  background-color: var(--error-color);
-}
-
-.service-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.75rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--border-color);
-}
-
-.service-item.active {
-  background-color: var(--success-bg);
-  border-color: var(--success-border);
-}
-
-.service-item.inactive {
-  background-color: var(--error-bg);
-  border-color: var(--error-border);
-}
-
-.service-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.service-name {
-  font-weight: 600;
-}
-
-.service-status {
-  font-size: 0.875rem;
-}
-
-.test-results {
-  display: grid;
-  gap: 1rem;
-}
-
-.test-result {
-  border: 1px solid var(--border-color);
-  border-radius: 0.5rem;
-  padding: 1rem;
-}
-
-.test-result.success {
-  background-color: var(--success-bg);
-  border-color: var(--success-border);
-}
-
-.test-result.error {
-  background-color: var(--error-bg);
-  border-color: var(--error-border);
-}
-
-.test-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.5rem;
-}
-
-.test-service {
-  font-weight: 600;
-}
-
-.test-status {
-  font-weight: 600;
-}
-
-.test-output pre {
-  background-color: var(--code-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 0.25rem;
-  padding: 0.5rem;
-  font-size: 0.875rem;
-  overflow-x: auto;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.test-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 1.5rem;
-}
-
-.test-category h3 {
-  margin-bottom: 0.5rem;
-  color: var(--heading-color);
-}
-
-.test-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.info-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 1rem;
-}
-
-.info-item h4 {
-  margin-bottom: 0.5rem;
-  color: var(--heading-color);
-}
-
-.info-item p {
-  margin-bottom: 0.5rem;
-  font-size: 0.875rem;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 2rem;
-  color: var(--muted-text);
-}
-
-.error-message {
-  background-color: var(--error-bg);
-  border: 1px solid var(--error-border);
-  border-radius: 0.5rem;
-  padding: 1rem;
-  margin-top: 1rem;
-}
-
-@media (max-width: 768px) {
-  .test-grid {
-    grid-template-columns: 1fr;
-  }
-  
-  .info-grid {
-    grid-template-columns: 1fr;
-  }
-}
-</style>
+      document.querySelectorAll(".test-service-btn").forEach((button) => {
+        button.addEventListener("click", function() {
+          runServiceTest(this.dataset.service, this.dataset.test, this)
+        })
+      })
+    })
+  </script>
 <% end %>

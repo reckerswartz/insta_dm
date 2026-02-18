@@ -50,6 +50,29 @@ module ApplicationHelper
     ai_dashboard_index_path
   end
 
+  def current_section
+    case controller_path
+    when "instagram_accounts"
+      :accounts
+    when "instagram_profiles", "instagram_profile_actions", "instagram_profile_posts", "instagram_profile_messages"
+      :profiles
+    when "ai_dashboard"
+      :ai_dashboard
+    when "admin/background_jobs"
+      if action_name == "dashboard" || request.path.start_with?("/admin/jobs")
+        :jobs
+      elsif %w[failures failure].include?(action_name)
+        :failures
+      end
+    when "admin/issues"
+      :issues
+    when "admin/storage_ingestions"
+      :storage
+    else
+      nil
+    end
+  end
+
   private
 
   def top_nav_active?(section)
@@ -69,6 +92,10 @@ module ApplicationHelper
       request.path.start_with?("/admin/jobs") || (controller_path == "admin/background_jobs" && action_name == "dashboard")
     when :failures
       controller_path == "admin/background_jobs" && %w[failures failure].include?(action_name)
+    when :issues
+      controller_path == "admin/issues"
+    when :storage
+      controller_path == "admin/storage_ingestions"
     else
       false
     end

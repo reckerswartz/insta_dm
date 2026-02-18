@@ -7,12 +7,16 @@
   </header>
 
   <section class="card">
-    <p class="meta">Use built-in header filters/sorting in the table. Pagination and page size are built in.</p>
+    <p class="meta">Use header filters/sorting and row retry actions. Updates stream in live with ActionCable.</p>
     <div class="actions-row">
       <%= link_to "Back to Dashboard", admin_background_jobs_path, class: "btn secondary" %>
     </div>
 
-    <div data-controller="background-job-failures-table" data-background-job-failures-table-url-value="<%= admin_background_job_failures_path(format: :json) %>">
+    <div
+      data-controller="background-job-failures-table"
+      data-background-job-failures-table-url-value="<%= admin_background_job_failures_path(format: :json) %>"
+      data-background-job-failures-table-account-id-value="<%= current_account&.id.to_i %>"
+    >
       <div data-background-job-failures-table-target="table"></div>
     </div>
   </section>

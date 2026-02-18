@@ -16,7 +16,10 @@ module Ops
           ai_api_calls: AiApiCall.count,
           posts: InstagramPost.count,
           sync_runs: SyncRun.count,
-          failures_24h: BackgroundJobFailure.where("occurred_at >= ?", 24.hours.ago).count
+          failures_24h: BackgroundJobFailure.where("occurred_at >= ?", 24.hours.ago).count,
+          auth_failures_24h: BackgroundJobFailure.where(failure_kind: "authentication").where("occurred_at >= ?", 24.hours.ago).count,
+          active_issues: AppIssue.where.not(status: "resolved").count,
+          storage_ingestions_24h: ActiveStorageIngestion.where("created_at >= ?", 24.hours.ago).count
         },
         api_usage_24h: api_usage_summary(scope: usage_scope)
       }
@@ -38,7 +41,11 @@ module Ops
           posts: account.instagram_posts.count,
           sync_runs: account.sync_runs.count,
           failures_24h: BackgroundJobFailure.where(instagram_account_id: account.id)
-            .where("occurred_at >= ?", 24.hours.ago).count
+            .where("occurred_at >= ?", 24.hours.ago).count,
+          auth_failures_24h: BackgroundJobFailure.where(instagram_account_id: account.id, failure_kind: "authentication")
+            .where("occurred_at >= ?", 24.hours.ago).count,
+          active_issues: account.app_issues.where.not(status: "resolved").count,
+          storage_ingestions_24h: account.active_storage_ingestions.where("created_at >= ?", 24.hours.ago).count
         },
         sync_runs_by_status: account.sync_runs.group(:status).count,
         analyses_by_status: account.ai_analyses.group(:status).count,

@@ -1,160 +1,90 @@
 <% content_for :title, "Dashboard" %>
+<% queue = @metrics[:queue] || {} %>
+<% app = @metrics[:app] || {} %>
+<% usage = @metrics[:api_usage_24h] || {} %>
 
-<div class="page">
+<div class="page dashboard-page">
   <header class="page-header">
-    <h1>Dashboard</h1>
-    <p>Manage your Instagram accounts and monitor system performance</p>
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <div>
+        <h1>Dashboard</h1>
+        <p class="meta mb-0">Manage account health, sync workload, and daily AI throughput.</p>
+      </div>
+      <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addAccountModal">
+        Add Account
+      </button>
+    </div>
   </header>
 
   <section class="card">
-    <h2>➕ Add New Account</h2>
-    <p class="card-description">Add an Instagram account to start monitoring and managing your social media presence</p>
-    <%= form_with url: instagram_accounts_path, method: :post, scope: :instagram_account, class: "add-account-form" do |f| %>
-      <label>
-        Instagram Username
-        <%= f.text_field :username, placeholder: "@username", required: true, class: "form-input" %>
-      </label>
-      <div class="actions-row">
-        <%= f.submit "Add Account", class: "btn btn-primary" %>
+    <h2>System Snapshot</h2>
+    <div class="metric-grid">
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:profiles].to_i %></span>
+        <span class="metric-label-small">Profiles</span>
       </div>
-    <% end %>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:followers].to_i %></span>
+        <span class="metric-label-small">Followers</span>
+      </div>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:following].to_i %></span>
+        <span class="metric-label-small">Following</span>
+      </div>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:messages].to_i %></span>
+        <span class="metric-label-small">Messages</span>
+      </div>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:posts].to_i %></span>
+        <span class="metric-label-small">Feed Posts</span>
+      </div>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:ai_analyses].to_i %></span>
+        <span class="metric-label-small">AI Analyses</span>
+      </div>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:ai_api_calls].to_i %></span>
+        <span class="metric-label-small">API Calls</span>
+      </div>
+      <div class="metric-item-small highlight">
+        <span class="metric-value-small"><%= app[:failures_24h].to_i %></span>
+        <span class="metric-label-small">24h Failures</span>
+      </div>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:auth_failures_24h].to_i %></span>
+        <span class="metric-label-small">24h Auth Failures</span>
+      </div>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:active_issues].to_i %></span>
+        <span class="metric-label-small">Open Issues</span>
+      </div>
+      <div class="metric-item-small">
+        <span class="metric-value-small"><%= app[:storage_ingestions_24h].to_i %></span>
+        <span class="metric-label-small">Storage Writes (24h)</span>
+      </div>
+    </div>
   </section>
 
   <section class="card">
-    <h2>📊 System Overview</h2>
-    <p class="card-description">Real-time system metrics and performance indicators</p>
-
-    <div class="metrics-grid">
-      <div class="metric-card">
-        <div class="metric-header">
-          <h3>🔄 Queue Status</h3>
-          <% q = @metrics[:queue] || {} %>
-          <% if q[:backend].to_s == "sidekiq" %>
-            <span class="metric-badge sidekiq">Sidekiq</span>
-          <% else %>
-            <span class="metric-badge solid-queue">Solid Queue</span>
-          <% end %>
-        </div>
-        <div class="metric-value"><%= q[:processes].to_i %> <span class="metric-unit">processes</span></div>
-          <% total = q.values_at(:enqueued, :scheduled, :retries, :dead).sum.to_i %>
-          <% total = 1 if total <= 0 %>
-        <div class="metric-details">
-          <% if q[:backend].to_s == "sidekiq" %>
-            <% total = q.values_at(:enqueued, :scheduled, :retries, :dead).sum.to_i %>
-            <% total = 1 if total <= 0 %>
-            <div class="metric-item">
-              <span class="metric-label">Enqueued</span>
-              <div class="progress-bar">
-                <div class="progress-fill ok" style="width:<%= (q[:enqueued].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:enqueued].to_i %></span>
-            </div>
-            <div class="metric-item">
-              <span class="metric-label">Scheduled</span>
-              <div class="progress-bar">
-                <div class="progress-fill" style="width:<%= (q[:scheduled].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:scheduled].to_i %></span>
-            </div>
-            <div class="metric-item">
-              <span class="metric-label">Retries</span>
-              <div class="progress-bar">
-                <div class="progress-fill warn" style="width:<%= (q[:retries].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:retries].to_i %></span>
-            </div>
-            <div class="metric-item">
-              <span class="metric-label">Failed</span>
-              <div class="progress-bar">
-                <div class="progress-fill bad" style="width:<%= (q[:dead].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:dead].to_i %></span>
-            </div>
-          <% else %>
-            <% total = q.values_at(:ready, :scheduled, :claimed, :blocked, :failed).sum.to_i %>
-            <% total = 1 if total <= 0 %>
-            <div class="metric-item">
-              <span class="metric-label">Ready</span>
-              <div class="progress-bar">
-                <div class="progress-fill ok" style="width:<%= (q[:ready].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:ready] %></span>
-            </div>
-            <div class="metric-item">
-              <span class="metric-label">Scheduled</span>
-              <div class="progress-bar">
-                <div class="progress-fill" style="width:<%= (q[:scheduled].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:scheduled] %></span>
-            </div>
-            <div class="metric-item">
-              <span class="metric-label">Claimed</span>
-              <div class="progress-bar">
-                <div class="progress-fill" style="width:<%= (q[:claimed].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:claimed] %></span>
-            </div>
-            <div class="metric-item">
-              <span class="metric-label">Blocked</span>
-              <div class="progress-bar">
-                <div class="progress-fill warn" style="width:<%= (q[:blocked].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:blocked] %></span>
-            </div>
-            <div class="metric-item">
-              <span class="metric-label">Failed</span>
-              <div class="progress-bar">
-                <div class="progress-fill bad" style="width:<%= (q[:failed].to_f / total * 100).round(1) %>%"></div>
-              </div>
-              <span class="metric-number"><%= q[:failed] %></span>
-            </div>
-          <% end %>
-        </div>
+    <h2>Queue and API Usage</h2>
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="stat-label">Queue</div>
+        <div class="stat-kv"><span class="muted">Backend</span><strong><%= queue[:backend].to_s == "sidekiq" ? "Sidekiq" : "Solid Queue" %></strong></div>
+        <% if queue[:backend].to_s == "sidekiq" %>
+          <div class="stat-kv"><span class="muted">Enqueued</span><strong><%= queue[:enqueued].to_i %></strong></div>
+          <div class="stat-kv"><span class="muted">Scheduled</span><strong><%= queue[:scheduled].to_i %></strong></div>
+          <div class="stat-kv"><span class="muted">Retries</span><strong><%= queue[:retries].to_i %></strong></div>
+          <div class="stat-kv"><span class="muted">Dead</span><strong><%= queue[:dead].to_i %></strong></div>
+        <% else %>
+          <div class="stat-kv"><span class="muted">Ready</span><strong><%= queue[:ready].to_i %></strong></div>
+          <div class="stat-kv"><span class="muted">Scheduled</span><strong><%= queue[:scheduled].to_i %></strong></div>
+          <div class="stat-kv"><span class="muted">Claimed</span><strong><%= queue[:claimed].to_i %></strong></div>
+          <div class="stat-kv"><span class="muted">Failed</span><strong><%= queue[:failed].to_i %></strong></div>
+        <% end %>
       </div>
 
-      <div class="metric-card">
-        <div class="metric-header">
-          <h3>📈 Application Totals</h3>
-        </div>
-        <div class="metric-grid">
-          <div class="metric-item-small">
-            <span class="metric-value-small"><%= @metrics.dig(:app, :accounts) %></span>
-            <span class="metric-label-small">Accounts</span>
-          </div>
-          <div class="metric-item-small">
-            <span class="metric-value-small"><%= @metrics.dig(:app, :profiles) %></span>
-            <span class="metric-label-small">Profiles</span>
-          </div>
-          <div class="metric-item-small">
-            <span class="metric-value-small"><%= @metrics.dig(:app, :messages) %></span>
-            <span class="metric-label-small">Messages</span>
-          </div>
-          <div class="metric-item-small">
-            <span class="metric-value-small"><%= @metrics.dig(:app, :profile_events) %></span>
-            <span class="metric-label-small">Events</span>
-          </div>
-          <div class="metric-item-small">
-            <span class="metric-value-small"><%= @metrics.dig(:app, :ai_analyses) %></span>
-            <span class="metric-label-small">AI Analyses</span>
-          </div>
-          <div class="metric-item-small">
-            <span class="metric-value-small"><%= @metrics.dig(:app, :ai_api_calls) %></span>
-            <span class="metric-label-small">API Calls</span>
-          </div>
-          <div class="metric-item-small">
-            <span class="metric-value-small"><%= @metrics.dig(:app, :posts) %></span>
-            <span class="metric-label-small">Feed Posts</span>
-          </div>
-          <div class="metric-item-small highlight">
-            <span class="metric-value-small"><%= @metrics.dig(:app, :failures_24h) %></span>
-            <span class="metric-label-small">24h Failures</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <% usage = @metrics[:api_usage_24h] || {} %>
-    <div class="stat-grid" style="margin-top: 12px;">
       <div class="stat">
         <div class="stat-label">AI API Usage (24h)</div>
         <div class="stat-kv"><span class="muted">Total calls</span><strong><%= usage[:total_calls].to_i %></strong></div>
@@ -162,31 +92,33 @@
         <div class="stat-kv"><span class="muted">Report generation</span><strong><%= usage[:report_generation_calls].to_i %></strong></div>
         <div class="stat-kv"><span class="muted">Text generation</span><strong><%= usage[:text_generation_calls].to_i %></strong></div>
         <div class="stat-kv"><span class="muted">Failed calls</span><strong><%= usage[:failed_calls].to_i %></strong></div>
-        <div class="stat-kv"><span class="muted">Avg latency</span><strong><%= usage[:avg_latency_ms].to_i %> ms</strong></div>
       </div>
+
       <div class="stat">
-        <div class="stat-label">Top API Operations (24h)</div>
+        <div class="stat-label">Top Operations (24h)</div>
         <% operations = usage[:top_operations] || {} %>
         <% if operations.any? %>
-          <% operations.each do |op, count| %>
-            <div class="stat-kv"><span class="muted"><%= op %></span><strong><%= count %></strong></div>
+          <% operations.each do |operation, count| %>
+            <div class="stat-kv"><span class="muted"><%= operation %></span><strong><%= count %></strong></div>
           <% end %>
         <% else %>
-          <p class="meta">No API calls recorded in the last 24 hours.</p>
+          <p class="meta mb-0">No API calls recorded in the last 24 hours.</p>
         <% end %>
       </div>
     </div>
 
-    <div class="quick-actions">
-      <%= link_to "⚙️ Jobs Console", admin_background_jobs_path, class: "quick-action-btn" %>
-      <%= link_to "🚨 Failure Logs", admin_background_job_failures_path, class: "quick-action-btn" %>
-      <%= link_to "📱 Feed Posts", instagram_posts_path, class: "quick-action-btn" %>
+    <div class="quick-actions mt-3">
+      <%= link_to "Jobs Console", admin_background_jobs_path, class: "quick-action-btn" %>
+      <%= link_to "Failure Logs", admin_background_job_failures_path, class: "quick-action-btn" %>
+      <%= link_to "Issues", admin_issues_path, class: "quick-action-btn" %>
+      <%= link_to "Storage", admin_storage_ingestions_path, class: "quick-action-btn" %>
+      <%= link_to "Feed Posts", instagram_posts_path, class: "quick-action-btn" %>
     </div>
   </section>
 
   <section class="card">
-    <h2>👥 Instagram Accounts</h2>
-    <p class="card-description">Manage and monitor your connected Instagram accounts</p>
+    <h2>Instagram Accounts</h2>
+    <p class="card-description">Open account settings, switch active context, and clean up stale accounts.</p>
 
     <% if @accounts.any? %>
       <div class="accounts-table">
@@ -202,33 +134,41 @@
               </tr>
             </thead>
             <tbody>
-              <% @accounts.each do |a| %>
+              <% @accounts.each do |account| %>
                 <tr>
+                  <td><strong><%= account.username %></strong></td>
                   <td>
-                    <div class="account-info">
-                      <strong class="username"><%= a.username %></strong>
-                    </div>
-                  </td>
-                  <td>
-                    <% if a.login_state == "authenticated" %>
+                    <% if account.login_state == "authenticated" %>
                       <span class="status-badge authenticated">Authenticated</span>
                     <% else %>
-                      <span class="status-badge unauthenticated"><%= a.login_state %></span>
+                      <span class="status-badge unauthenticated"><%= account.login_state %></span>
                     <% end %>
                   </td>
                   <td>
-                    <% if a.cookies.any? %>
-                      <span class="yes">✅ Stored</span>
+                    <% if account.cookies.any? %>
+                      <span class="yes">Stored</span>
                     <% else %>
-                      <span class="no">❌ None</span>
+                      <span class="no">Missing</span>
                     <% end %>
                   </td>
+                  <td><%= relative_time_with_tooltip(account.last_synced_at) %></td>
                   <td>
-                    <span class="sync-time"><%= relative_time_with_tooltip(a.last_synced_at) %></span>
-                  </td>
-                  <td class="table-actions">
-                    <%= button_to "Select", select_instagram_account_path(a), method: :post, class: "btn small secondary" %>
-                    <%= link_to "Manage", instagram_account_path(a), class: "btn small" %>
+                    <div class="table-actions">
+                      <%= button_to "Select", select_instagram_account_path(account), method: :post, class: "btn small secondary" %>
+                      <%= link_to "Manage", instagram_account_path(account), class: "btn small" %>
+                      <%= button_to "Delete",
+                            instagram_account_path(account),
+                            method: :delete,
+                            class: "btn small danger",
+                            form: {
+                              data: {
+                                confirm_modal: true,
+                                confirm_title: "Delete account?",
+                                confirm_message: "Delete @#{account.username} and all related data? This action cannot be undone.",
+                                modal_loading_text: "Deleting account..."
+                              }
+                            } %>
+                    </div>
                   </td>
                 </tr>
               <% end %>
@@ -238,10 +178,91 @@
       </div>
     <% else %>
       <div class="empty-state">
-        <div class="empty-icon">📱</div>
-        <h3>No accounts added yet</h3>
-        <p>Add your first Instagram account to get started with monitoring and management.</p>
+        <div class="empty-icon">+</div>
+        <h3>No accounts connected</h3>
+        <p>Add your first account to start sync and messaging workflows.</p>
       </div>
     <% end %>
   </section>
 </div>
+
+<div class="modal fade" id="addAccountModal" tabindex="-1" aria-labelledby="addAccountModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="addAccountModalLabel">Add Instagram Account</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+
+      <form id="addAccountForm" action="<%= instagram_accounts_path %>" method="post" novalidate>
+        <%= hidden_field_tag :authenticity_token, form_authenticity_token %>
+        <div class="modal-body">
+          <label for="instagram_account_username" class="form-label">Instagram Username</label>
+          <div class="input-group">
+            <span class="input-group-text">@</span>
+            <input type="text" class="form-control" id="instagram_account_username" name="instagram_account[username]" placeholder="username" required>
+          </div>
+          <p class="meta mt-2 mb-0">Authentication is handled on the account management screen after creation.</p>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="addAccountBtn">
+            <span class="btn-text">Add Account</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<% content_for :javascript do %>
+  <script>
+    document.addEventListener("turbo:load", function() {
+      const form = document.getElementById("addAccountForm")
+      const submitBtn = document.getElementById("addAccountBtn")
+      const modalElement = document.getElementById("addAccountModal")
+      if (!form || !submitBtn || !modalElement || form.dataset.bound === "1") return
+      form.dataset.bound = "1"
+
+      const modal = bootstrap.Modal.getOrCreateInstance(modalElement)
+
+      form.addEventListener("submit", function(event) {
+        event.preventDefault()
+        if (!form.reportValidity()) return
+
+        submitBtn.classList.add("btn-loading")
+        submitBtn.disabled = true
+        submitBtn.querySelector(".btn-text").textContent = "Adding..."
+
+        fetch(form.action, {
+          method: "POST",
+          body: new FormData(form),
+          headers: {
+            "Accept": "text/html",
+            "X-Requested-With": "XMLHttpRequest"
+          }
+        })
+          .then((response) => {
+            if (!response.ok) throw new Error("Unable to add account")
+            modal.hide()
+            form.reset()
+            if (window.showSuccessModal) {
+              showSuccessModal("Account Added", "Account created successfully.")
+            }
+            setTimeout(() => window.location.reload(), 900)
+          })
+          .catch((error) => {
+            if (window.showErrorModal) {
+              showErrorModal("Error", error.message || "Unable to add account")
+            }
+          })
+          .finally(() => {
+            submitBtn.classList.remove("btn-loading")
+            submitBtn.disabled = false
+            submitBtn.querySelector(".btn-text").textContent = "Add Account"
+          })
+      })
+    })
+  </script>
+<% end %>

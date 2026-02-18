@@ -1,7 +1,12 @@
-// Configure your import map in config/importmap.rb. Read more: https://github.com/rails/importmap-rails
+// Entry point for the build script in your package.json
 import "@hotwired/turbo-rails"
-import "controllers"
-import "mobile_menu"
+import "./controllers"
+import "./modal_manager"
+
+// Import Bootstrap
+import "bootstrap"
+
+// Import Bootstrap CSS is handled by the Sass build
 
 // Fallback function for generate comment button
 window.generateCommentFallback = function(eventId, accountId) {

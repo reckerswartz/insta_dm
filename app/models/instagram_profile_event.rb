@@ -11,6 +11,7 @@ class InstagramProfileEvent < ApplicationRecord
   after_commit :broadcast_account_audit_logs_refresh
   after_commit :broadcast_story_archive_refresh, on: %i[create update]
   after_commit :append_profile_history_narrative, on: :create
+  after_commit :broadcast_profile_events_refresh
 
   # LLM Comment validations
   validates :llm_comment_provider, inclusion: { in: %w[ollama local], allow_nil: true }
@@ -205,6 +206,20 @@ class InstagramProfileEvent < ApplicationRecord
 
     account = instagram_profile&.instagram_account
     self.class.broadcast_story_archive_refresh!(account: account)
+  rescue StandardError
+    nil
+  end
+
+  def broadcast_profile_events_refresh
+    account_id = instagram_profile&.instagram_account_id
+    return unless account_id
+
+    Ops::LiveUpdateBroadcaster.broadcast!(
+      topic: "profile_events_changed",
+      account_id: account_id,
+      payload: { profile_id: instagram_profile_id, event_id: id },
+      throttle_key: "profile_events_changed:#{instagram_profile_id}"
+    )
   rescue StandardError
     nil
   end

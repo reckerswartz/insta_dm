@@ -15,11 +15,14 @@ class InstagramProfile < ApplicationRecord
   has_many :ai_analyses, as: :analyzable, dependent: :destroy
   has_many :instagram_profile_taggings, dependent: :destroy
   has_many :profile_tags, through: :instagram_profile_taggings
+  has_many :app_issues, dependent: :nullify
+  has_many :active_storage_ingestions, dependent: :nullify
   has_one :instagram_profile_behavior_profile, dependent: :destroy
 
   has_one_attached :avatar
 
   validates :username, presence: true
+  after_commit :broadcast_profiles_table_refresh
 
   def mutual?
     following && follows_you
@@ -86,5 +89,16 @@ class InstagramProfile < ApplicationRecord
         content: chunk.content.to_s
       }
     end
+  end
+
+  private
+
+  def broadcast_profiles_table_refresh
+    Ops::LiveUpdateBroadcaster.broadcast!(
+      topic: "profiles_table_changed",
+      account_id: instagram_account_id,
+      payload: { profile_id: id },
+      throttle_key: "profiles_table_changed"
+    )
   end
 end

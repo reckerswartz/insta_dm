@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_15_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_18_043200) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -34,6 +34,33 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_15_000001) do
     t.text "metadata"
     t.string "service_name", null: false
     t.index ["key"], name: "index_active_storage_blobs_on_key", unique: true
+  end
+
+  create_table "active_storage_ingestions", force: :cascade do |t|
+    t.bigint "active_storage_attachment_id", null: false
+    t.bigint "active_storage_blob_id", null: false
+    t.string "attachment_name", null: false
+    t.bigint "blob_byte_size", null: false
+    t.string "blob_content_type"
+    t.string "blob_filename", null: false
+    t.datetime "created_at", null: false
+    t.string "created_by_active_job_id"
+    t.string "created_by_job_class"
+    t.string "created_by_provider_job_id"
+    t.bigint "instagram_account_id"
+    t.bigint "instagram_profile_id"
+    t.jsonb "metadata", default: {}, null: false
+    t.string "queue_name"
+    t.bigint "record_id"
+    t.string "record_type"
+    t.datetime "updated_at", null: false
+    t.index ["active_storage_attachment_id"], name: "idx_storage_ingestions_attachment_unique", unique: true
+    t.index ["created_at"], name: "index_active_storage_ingestions_on_created_at"
+    t.index ["created_by_active_job_id"], name: "index_active_storage_ingestions_on_created_by_active_job_id"
+    t.index ["created_by_job_class"], name: "index_active_storage_ingestions_on_created_by_job_class"
+    t.index ["instagram_account_id"], name: "index_active_storage_ingestions_on_instagram_account_id"
+    t.index ["instagram_profile_id"], name: "index_active_storage_ingestions_on_instagram_profile_id"
+    t.index ["record_type", "record_id"], name: "idx_storage_ingestions_record"
   end
 
   create_table "active_storage_variant_records", force: :cascade do |t|
@@ -117,6 +144,35 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_15_000001) do
     t.index ["provider"], name: "index_ai_provider_settings_on_provider", unique: true
   end
 
+  create_table "app_issues", force: :cascade do |t|
+    t.bigint "background_job_failure_id"
+    t.datetime "created_at", null: false
+    t.text "details"
+    t.string "fingerprint", null: false
+    t.datetime "first_seen_at", null: false
+    t.bigint "instagram_account_id"
+    t.bigint "instagram_profile_id"
+    t.string "issue_type", null: false
+    t.datetime "last_seen_at", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.integer "occurrences", default: 1, null: false
+    t.text "resolution_notes"
+    t.datetime "resolved_at"
+    t.string "severity", default: "error", null: false
+    t.string "source", null: false
+    t.string "status", default: "open", null: false
+    t.string "title", null: false
+    t.datetime "updated_at", null: false
+    t.index ["background_job_failure_id"], name: "index_app_issues_on_background_job_failure_id"
+    t.index ["fingerprint"], name: "index_app_issues_on_fingerprint", unique: true
+    t.index ["instagram_account_id"], name: "index_app_issues_on_instagram_account_id"
+    t.index ["instagram_profile_id"], name: "index_app_issues_on_instagram_profile_id"
+    t.index ["issue_type"], name: "index_app_issues_on_issue_type"
+    t.index ["severity", "last_seen_at"], name: "idx_app_issues_severity_last_seen"
+    t.index ["source"], name: "index_app_issues_on_source"
+    t.index ["status", "last_seen_at"], name: "idx_app_issues_status_last_seen"
+  end
+
   create_table "background_job_failures", force: :cascade do |t|
     t.string "active_job_id", null: false
     t.text "arguments_json"
@@ -124,6 +180,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_15_000001) do
     t.datetime "created_at", null: false
     t.string "error_class", null: false
     t.text "error_message", null: false
+    t.string "failure_kind", default: "runtime", null: false
     t.integer "instagram_account_id"
     t.integer "instagram_profile_id"
     t.string "job_class", null: false
@@ -131,13 +188,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_15_000001) do
     t.datetime "occurred_at", null: false
     t.string "provider_job_id"
     t.string "queue_name"
+    t.boolean "retryable", default: true, null: false
     t.integer "solid_queue_job_id"
     t.datetime "updated_at", null: false
     t.index ["active_job_id"], name: "index_background_job_failures_on_active_job_id"
+    t.index ["failure_kind"], name: "index_background_job_failures_on_failure_kind"
     t.index ["instagram_account_id"], name: "index_background_job_failures_on_instagram_account_id"
     t.index ["instagram_profile_id"], name: "index_background_job_failures_on_instagram_profile_id"
     t.index ["job_class"], name: "index_background_job_failures_on_job_class"
     t.index ["occurred_at"], name: "index_background_job_failures_on_occurred_at"
+    t.index ["retryable", "occurred_at"], name: "idx_background_job_failures_retryable_occurred"
   end
 
   create_table "conversation_peers", force: :cascade do |t|
@@ -611,10 +671,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_15_000001) do
   end
 
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
+  add_foreign_key "active_storage_ingestions", "active_storage_attachments"
+  add_foreign_key "active_storage_ingestions", "active_storage_blobs"
+  add_foreign_key "active_storage_ingestions", "instagram_accounts"
+  add_foreign_key "active_storage_ingestions", "instagram_profiles"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
   add_foreign_key "ai_analyses", "ai_analyses", column: "cached_from_ai_analysis_id"
   add_foreign_key "ai_analyses", "instagram_accounts"
   add_foreign_key "ai_api_calls", "instagram_accounts"
+  add_foreign_key "app_issues", "background_job_failures"
+  add_foreign_key "app_issues", "instagram_accounts"
+  add_foreign_key "app_issues", "instagram_profiles"
   add_foreign_key "conversation_peers", "instagram_accounts"
   add_foreign_key "instagram_messages", "instagram_accounts"
   add_foreign_key "instagram_messages", "instagram_profiles"

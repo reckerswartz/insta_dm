@@ -5,7 +5,6 @@ gem "rails", "~> 8.1.1"
 # The modern asset pipeline for Rails [https://github.com/rails/propshaft]
 gem "propshaft"
 # Hotwire (Turbo Streams for background job notifications + fast UI updates)
-gem "importmap-rails"
 gem "turbo-rails"
 gem "stimulus-rails"
 # PostgreSQL database adapter
@@ -64,3 +63,7 @@ group :development do
   # Use console on exceptions pages [https://github.com/rails/web-console]
   # gem 'web-console'
 end
+
+gem "jsbundling-rails", "~> 1.3"
+
+gem "cssbundling-rails", "~> 1.4"

@@ -73,8 +73,8 @@ class FaceService:
                             confidence = face_info.get('score', 0.9)
                             
                             faces.append({
-                                'bbox': bbox,  # [x1, y1, x2, y2]
-                                'confidence': confidence,
+                                'bbox': [int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])],  # [x1, y1, x2, y2]
+                                'confidence': float(confidence),
                                 'landmarks': face_info.get('landmarks', []),
                                 'age': face_info.get('age'),
                                 'gender': face_info.get('gender'),
@@ -92,7 +92,7 @@ class FaceService:
                 
                 for (x, y, w, h) in detections:
                     faces.append({
-                        'bbox': [x, y, x + w, y + h],
+                        'bbox': [int(x), int(y), int(x + w), int(y + h)],
                         'confidence': 0.8,  # OpenCV doesn't provide confidence
                         'landmarks': [],
                         'age': None,

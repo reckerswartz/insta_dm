@@ -252,7 +252,18 @@
     <h2>Danger Zone</h2>
     <p class="meta">Deleting an account will delete its profiles, messages, and history.</p>
     <div class="actions-row">
-      <%= button_to "Delete Account", instagram_account_path(@account), method: :delete, class: "btn secondary", data: { turbo_confirm: "Delete #{@account.username} and all related data?" } %>
+      <%= button_to "Delete Account",
+            instagram_account_path(@account),
+            method: :delete,
+            class: "btn danger",
+            form: {
+              data: {
+                confirm_modal: true,
+                confirm_title: "Delete account?",
+                confirm_message: "Delete #{@account.username} and all related data?",
+                modal_loading_text: "Deleting account..."
+              }
+            } %>
     </div>
   </section>
 </div>

@@ -70,15 +70,30 @@ class AiDashboardController < ApplicationController
       
       if response.code == '200'
         data = JSON.parse(response.body)
+        Ops::IssueTracker.record_ai_service_check!(
+          ok: true,
+          message: "AI microservice healthy",
+          metadata: { services: data["services"] }
+        )
         {
           status: 'online',
           services: data['services'] || {},
           last_check: Time.current
         }
       else
+        Ops::IssueTracker.record_ai_service_check!(
+          ok: false,
+          message: "HTTP #{response.code}",
+          metadata: { http_status: response.code.to_i, response_body_preview: response.body.to_s.byteslice(0, 250) }
+        )
         { status: 'error', message: "HTTP #{response.code}", last_check: Time.current }
       end
     rescue StandardError => e
+      Ops::IssueTracker.record_ai_service_check!(
+        ok: false,
+        message: e.message,
+        metadata: { error_class: e.class.name }
+      )
       { status: 'offline', message: e.message, last_check: Time.current }
     end
   end

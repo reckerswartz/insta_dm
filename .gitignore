@@ -203,3 +203,5 @@ Thumbs.db
 /tmp/ui_audit/
 /test_*.html
 /verification_*.rb
+/app/assets/builds/*
+!/app/assets/builds/.keep

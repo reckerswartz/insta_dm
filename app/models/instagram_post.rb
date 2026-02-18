@@ -12,8 +12,20 @@ class InstagramPost < ApplicationRecord
   validates :status, presence: true
 
   scope :recent_first, -> { order(detected_at: :desc, id: :desc) }
+  after_commit :broadcast_posts_table_refresh
 
   def permalink
     "#{Instagram::Client::INSTAGRAM_BASE_URL}/p/#{shortcode}/"
+  end
+
+  private
+
+  def broadcast_posts_table_refresh
+    Ops::LiveUpdateBroadcaster.broadcast!(
+      topic: "posts_table_changed",
+      account_id: instagram_account_id,
+      payload: { post_id: id },
+      throttle_key: "posts_table_changed"
+    )
   end
 end

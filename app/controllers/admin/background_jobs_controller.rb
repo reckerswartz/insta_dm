@@ -8,7 +8,9 @@ class Admin::BackgroundJobsController < Admin::BaseController
       load_solid_queue_dashboard!
     end
 
-    @failure_logs = BackgroundJobFailure.order(occurred_at: :desc).limit(100)
+    @failure_logs = BackgroundJobFailure.recent_first.limit(100)
+    @recent_issues = AppIssue.recent_first.limit(15)
+    @recent_storage_ingestions = ActiveStorageIngestion.recent_first.limit(15)
   end
 
   def failures
@@ -50,6 +52,29 @@ class Admin::BackgroundJobsController < Admin::BaseController
     @failure = BackgroundJobFailure.find(params[:id])
   end
 
+  def retry_failure
+    failure = BackgroundJobFailure.find(params[:id])
+    Jobs::FailureRetry.enqueue!(failure)
+
+    Ops::LiveUpdateBroadcaster.broadcast!(
+      topic: "job_failures_changed",
+      account_id: failure.instagram_account_id,
+      payload: { action: "retry", failure_id: failure.id },
+      throttle_key: "job_failures_changed",
+      throttle_seconds: 0
+    )
+
+    respond_to do |format|
+      format.html { redirect_to admin_background_job_failure_path(failure), notice: "Retry queued for #{failure.job_class}." }
+      format.json { render json: { ok: true } }
+    end
+  rescue Jobs::FailureRetry::RetryError => e
+    respond_to do |format|
+      format.html { redirect_to admin_background_job_failure_path(params[:id]), alert: e.message }
+      format.json { render json: { ok: false, error: e.message }, status: :unprocessable_entity }
+    end
+  end
+
   def clear_all_jobs
     backend = queue_backend
     
@@ -59,6 +84,12 @@ class Admin::BackgroundJobsController < Admin::BaseController
       clear_solid_queue_jobs!
     end
 
+    Ops::LiveUpdateBroadcaster.broadcast!(
+      topic: "jobs_changed",
+      payload: { action: "clear_all" },
+      throttle_key: "jobs_changed",
+      throttle_seconds: 0
+    )
     redirect_to admin_background_jobs_path, notice: "All jobs have been stopped and queue cleared successfully."
   rescue StandardError => e
     redirect_to admin_background_jobs_path, alert: "Failed to clear jobs: #{e.message}"
@@ -222,6 +253,11 @@ class Admin::BackgroundJobsController < Admin::BaseController
       when "error_message"
         term = "%#{value.downcase}%"
         scope = scope.where("LOWER(COALESCE(error_message,'')) LIKE ?", term)
+      when "failure_kind"
+        scope = scope.where(failure_kind: value.to_s)
+      when "retryable"
+        parsed = ActiveModel::Type::Boolean.new.cast(value)
+        scope = scope.where(retryable: parsed)
       end
     end
     scope
@@ -273,6 +309,8 @@ class Admin::BackgroundJobsController < Admin::BaseController
       scope.order(Arel.sql("queue_name #{dir} NULLS LAST, occurred_at DESC, id DESC"))
     when "error_class"
       scope.order(Arel.sql("error_class #{dir}, occurred_at DESC, id DESC"))
+    when "failure_kind"
+      scope.order(Arel.sql("failure_kind #{dir}, occurred_at DESC, id DESC"))
     else
       nil
     end
@@ -290,9 +328,12 @@ class Admin::BackgroundJobsController < Admin::BaseController
         instagram_profile_id: f.instagram_profile_id,
         job_class: f.job_class,
         queue_name: f.queue_name,
+        failure_kind: f.failure_kind,
+        retryable: f.retryable_now?,
         error_class: f.error_class,
         error_message: f.error_message,
-        open_url: Rails.application.routes.url_helpers.admin_background_job_failure_path(f)
+        open_url: Rails.application.routes.url_helpers.admin_background_job_failure_path(f),
+        retry_url: Rails.application.routes.url_helpers.admin_retry_background_job_failure_path(f)
       }
     end
 

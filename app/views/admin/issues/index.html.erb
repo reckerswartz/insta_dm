@@ -1,0 +1,25 @@
+<% content_for :title, "Application Issues" %>
+
+<div class="page">
+  <header class="page-header">
+    <h1>Application Issues</h1>
+    <p class="meta">Track open, pending, and resolved application-level issues with retry support for linked failed jobs.</p>
+  </header>
+
+  <section class="card">
+    <div class="actions-row">
+      <%= link_to "Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
+      <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
+    </div>
+
+    <p class="meta mt-2">Table updates live using ActionCable signals and throttled refresh.</p>
+
+    <div
+      data-controller="issues-table"
+      data-issues-table-url-value="<%= admin_issues_path(format: :json) %>"
+      data-issues-table-account-id-value="<%= current_account&.id.to_i %>"
+    >
+      <div data-issues-table-target="table"></div>
+    </div>
+  </section>
+</div>
