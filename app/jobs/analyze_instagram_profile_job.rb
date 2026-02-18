@@ -23,8 +23,14 @@ require "digest"
       comments_limit: 20
     )
     described_posts = enrich_first_profile_images!(account: account, profile: profile, collected_posts: collected[:posts])
+    accepted_media_context = build_accepted_media_context(profile: profile)
 
-    payload = build_profile_payload(profile: profile, collected_posts: collected[:posts], described_posts: described_posts)
+    payload = build_profile_payload(
+      profile: profile,
+      collected_posts: collected[:posts],
+      described_posts: described_posts,
+      accepted_media_context: accepted_media_context
+    )
     media = build_media_inputs(profile: profile, collected_posts: described_posts)
 
     run = Ai::Runner.new(account: account).analyze!(
@@ -37,7 +43,8 @@ require "digest"
     aggregate_demographics_from_accumulated_json!(
       account: account,
       profile: profile,
-      latest_profile_analysis: run.dig(:result, :analysis)
+      latest_profile_analysis: run.dig(:result, :analysis),
+      accepted_media_context: accepted_media_context
     )
 
     Turbo::StreamsChannel.broadcast_append_to(
@@ -80,7 +87,7 @@ require "digest"
     )
   end
 
-  def build_profile_payload(profile:, collected_posts:, described_posts:)
+  def build_profile_payload(profile:, collected_posts:, described_posts:, accepted_media_context:)
     history_narrative = profile.history_narrative_text(max_chunks: 4)
     history_chunks = profile.history_narrative_chunks(max_chunks: 8)
 
@@ -153,6 +160,15 @@ require "digest"
           comment_suggestions: Array(analysis["comment_suggestions"]).first(5)
         }
       end,
+      accepted_image_inputs: {
+        policy: "Only accepted images are used for combined demographic insights. Exclude deleted posts and skipped/duplicate story artifacts.",
+        accepted_profile_posts: accepted_media_context[:accepted_profile_posts],
+        accepted_story_images: accepted_media_context[:accepted_story_images],
+        prompt_inputs: {
+          combined_insights_required: [ "age_range", "gender_indicators", "location_signals" ],
+          instruction: "Aggregate demographic evidence from accepted profile posts and accepted story images."
+        }
+      },
       historical_narrative_text: history_narrative,
       historical_narrative_chunks: history_chunks
     }
@@ -347,13 +363,18 @@ require "digest"
     nil
   end
 
-  def aggregate_demographics_from_accumulated_json!(account:, profile:, latest_profile_analysis:)
-    dataset = build_demographics_dataset(profile: profile, latest_profile_analysis: latest_profile_analysis)
+  def aggregate_demographics_from_accumulated_json!(account:, profile:, latest_profile_analysis:, accepted_media_context:)
+    dataset = build_demographics_dataset(
+      profile: profile,
+      latest_profile_analysis: latest_profile_analysis,
+      accepted_media_context: accepted_media_context
+    )
     aggregated = Ai::ProfileDemographicsAggregator.new(account: account).aggregate!(dataset: dataset)
     return unless aggregated.is_a?(Hash) && aggregated[:ok] == true
 
     profile_inference = aggregated[:profile_inference].is_a?(Hash) ? aggregated[:profile_inference] : {}
     post_inferences = Array(aggregated[:post_inferences]).select { |entry| entry.is_a?(Hash) }
+    combined_insights = build_combined_prompt_insights(profile_inference: profile_inference, post_inferences: post_inferences, dataset: dataset)
 
     persist_profile_demographic_inference!(
       profile: profile,
@@ -373,6 +394,7 @@ require "digest"
       post_inferences: post_inferences,
       source: aggregated[:source].to_s
     )
+    persist_combined_prompt_insights!(profile: profile, combined_insights: combined_insights)
 
     profile.record_event!(
       kind: "demographics_aggregated",
@@ -384,6 +406,9 @@ require "digest"
         post_inferences_count: post_inferences.length,
         profile_dataset_rows: dataset.dig(:analysis_pool, :profile_rows_count),
         post_dataset_rows: dataset.dig(:analysis_pool, :post_rows_count),
+        accepted_profile_images: dataset.dig(:analysis_pool, :accepted_profile_images_count),
+        accepted_story_images: dataset.dig(:analysis_pool, :accepted_story_images_count),
+        combined_prompt_insights: combined_insights,
         aggregator_error: aggregated[:error].to_s.presence
       }
     )
@@ -391,10 +416,11 @@ require "digest"
     nil
   end
 
-  def build_demographics_dataset(profile:, latest_profile_analysis:)
+  def build_demographics_dataset(profile:, latest_profile_analysis:, accepted_media_context:)
     profile_runs = profile.ai_analyses.where(purpose: "profile", status: "succeeded").recent_first.limit(30)
-    profile_post_runs = profile.instagram_profile_posts.where.not(analysis: nil).recent_first.limit(120)
+    profile_post_runs = profile.instagram_profile_posts.where.not(analysis: nil).recent_first.limit(220).select { |post| accepted_profile_post?(post) }.first(120)
     feed_post_runs = profile.instagram_account.instagram_posts.where(instagram_profile_id: profile.id).where.not(analysis: nil).recent_first.limit(120)
+    story_rows = accepted_story_demographic_rows(profile: profile)
 
     profile_demographics = []
 
@@ -430,6 +456,10 @@ require "digest"
       post_demographics << extracted.merge(shortcode: post.shortcode, source: "instagram_posts")
     end
 
+    story_rows.each do |story_row|
+      post_demographics << story_row
+    end
+
     {
       profile: {
         username: profile.username,
@@ -448,9 +478,209 @@ require "digest"
         profile_demographics: profile_demographics,
         post_demographics: post_demographics,
         profile_rows_count: profile_demographics.length,
-        post_rows_count: post_demographics.length
+        post_rows_count: post_demographics.length,
+        accepted_profile_images_count: accepted_media_context[:accepted_profile_posts_count].to_i,
+        accepted_story_images_count: accepted_media_context[:accepted_story_images_count].to_i
       }
     }
+  end
+
+  def build_accepted_media_context(profile:)
+    accepted_profile_posts =
+      profile.instagram_profile_posts
+        .recent_first
+        .limit(220)
+        .select { |post| accepted_profile_post?(post) }
+        .first(40)
+        .map do |post|
+          analysis = post.analysis.is_a?(Hash) ? post.analysis : {}
+          {
+            source_ref: post.shortcode,
+            source_type: "instagram_profile_post",
+            taken_at: post.taken_at&.iso8601,
+            caption: post.caption.to_s.tr("\n", " ").byteslice(0, 260),
+            image_description: analysis["image_description"].to_s.presence,
+            relevant: analysis["relevant"],
+            inferred_demographics: analysis["inferred_demographics"].is_a?(Hash) ? analysis["inferred_demographics"] : nil
+          }
+        end
+
+    accepted_story_images =
+      profile.instagram_profile_events
+        .where(kind: InstagramProfileEvent::STORY_ARCHIVE_EVENT_KINDS)
+        .with_attached_media
+        .order(detected_at: :desc, id: :desc)
+        .limit(220)
+        .select { |event| accepted_story_event?(event) }
+        .first(40)
+        .map do |event|
+          meta = event.metadata.is_a?(Hash) ? event.metadata : {}
+          intel = meta["local_story_intelligence"].is_a?(Hash) ? meta["local_story_intelligence"] : {}
+          {
+            source_ref: meta["story_id"].to_s.presence || event.external_id.to_s,
+            source_type: "instagram_story",
+            taken_at: event.occurred_at&.iso8601 || event.detected_at&.iso8601,
+            image_description: meta["ai_image_description"].to_s.presence,
+            ocr_text: intel["ocr_text"].to_s.presence || meta["ocr_text"].to_s.presence,
+            hashtags: Array(intel["hashtags"] || meta["hashtags"]).first(8),
+            mentions: Array(intel["mentions"] || meta["mentions"]).first(8),
+            objects: Array(intel["objects"] || meta["content_signals"]).first(10),
+            relevant: true
+          }
+        end
+
+    {
+      accepted_profile_posts: accepted_profile_posts,
+      accepted_story_images: accepted_story_images,
+      accepted_profile_posts_count: accepted_profile_posts.length,
+      accepted_story_images_count: accepted_story_images.length
+    }
+  end
+
+  def accepted_story_demographic_rows(profile:)
+    profile.instagram_profile_events
+      .where(kind: InstagramProfileEvent::STORY_ARCHIVE_EVENT_KINDS)
+      .with_attached_media
+      .order(detected_at: :desc, id: :desc)
+      .limit(220)
+      .select { |event| accepted_story_event?(event) }
+      .filter_map do |event|
+        meta = event.metadata.is_a?(Hash) ? event.metadata : {}
+        extracted = extract_demographics_from_story_metadata(metadata: meta)
+        next if extracted.blank?
+
+        story_ref = meta["story_id"].to_s.presence || event.external_id.to_s
+        extracted.merge(shortcode: story_ref, source: "instagram_stories", relevant: true)
+      end
+      .first(120)
+  end
+
+  def accepted_profile_post?(post)
+    return false unless post
+    return false unless post.analysis.is_a?(Hash)
+
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    return false if ActiveModel::Type::Boolean.new.cast(metadata["deleted_from_source"])
+
+    relevant = post.analysis["relevant"]
+    return false if relevant == false
+    return false unless post.media.attached? || post.source_media_url.to_s.present?
+
+    true
+  end
+
+  def accepted_story_event?(event)
+    return false unless event
+    return false unless event.media.attached?
+
+    metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
+    return false if ActiveModel::Type::Boolean.new.cast(metadata["skipped"])
+
+    intel = metadata["local_story_intelligence"].is_a?(Hash) ? metadata["local_story_intelligence"] : {}
+    return true if intel.present?
+    return true if metadata["ai_image_description"].to_s.present?
+    return true if metadata["ocr_text"].to_s.present?
+    return true if Array(metadata["content_signals"]).any?
+    return true if Array(metadata["hashtags"]).any?
+    return true if Array(metadata["mentions"]).any?
+
+    false
+  end
+
+  def extract_demographics_from_story_metadata(metadata:)
+    raw = metadata.is_a?(Hash) ? metadata : {}
+    intel = raw["local_story_intelligence"].is_a?(Hash) ? raw["local_story_intelligence"] : {}
+    location_tags = Array(intel["location_tags"] || raw["location_tags"]).map(&:to_s).reject(&:blank?)
+
+    text_parts = [
+      raw["ai_image_description"].to_s,
+      intel["ocr_text"].to_s,
+      raw["ocr_text"].to_s,
+      intel["transcript"].to_s,
+      Array(intel["hashtags"] || raw["hashtags"]).join(" "),
+      Array(intel["mentions"] || raw["mentions"]).join(" "),
+      location_tags.join(" ")
+    ].map(&:strip).reject(&:blank?)
+
+    text = text_parts.join(" ").downcase
+    age =
+      if (m = text.match(/\b([1-7]\d)\s?(?:yo|yrs?|years?\s*old)\b/))
+        m[1].to_i
+      end
+    gender =
+      if text.match?(/\b(she\/her|she her|woman|girl|mrs|ms)\b/)
+        "female"
+      elsif text.match?(/\b(he\/him|he him|man|boy|mr)\b/)
+        "male"
+      elsif text.match?(/\b(they\/them|non[- ]?binary)\b/)
+        "non-binary"
+      end
+    location = location_tags.first.to_s.presence
+    if location.blank? && (m = text.match(/(?:based in|from|in)\s+([a-z][a-z\s,.-]{2,40})/))
+      location = m[1].to_s.split(/[|•]/).first.to_s.strip.titleize
+    end
+
+    evidence = text_parts.first(3).join(" | ").byteslice(0, 220)
+    out = {
+      age: age,
+      age_confidence: age.present? ? 0.28 : nil,
+      gender: normalize_unknown_string(gender),
+      gender_confidence: gender.present? ? 0.26 : nil,
+      location: normalize_unknown_string(location),
+      location_confidence: location.present? ? 0.24 : nil,
+      evidence: evidence.presence
+    }.compact
+
+    demo_values = [out[:age], out[:gender], out[:location]].compact
+    return {} if demo_values.empty?
+
+    out
+  end
+
+  def build_combined_prompt_insights(profile_inference:, post_inferences:, dataset:)
+    rows = Array(dataset.dig(:analysis_pool, :post_demographics))
+    ages = rows.map { |entry| integer_or_nil(entry[:age] || entry["age"]) }.compact
+    ages << integer_or_nil(profile_inference[:age])
+    ages = ages.compact
+    age_range = ages.any? ? "#{ages.min}-#{ages.max}" : nil
+
+    genders = rows.map { |entry| normalize_unknown_string(entry[:gender] || entry["gender"]) }.compact
+    genders << normalize_unknown_string(profile_inference[:gender])
+    genders.concat(Array(post_inferences).map { |entry| normalize_unknown_string(entry[:gender] || entry["gender"]) })
+    gender_indicators = genders.compact.group_by(&:itself).sort_by { |_value, bucket| -bucket.length }.first(3).map(&:first)
+
+    locations = rows.map { |entry| normalize_unknown_string(entry[:location] || entry["location"]) }.compact
+    locations << normalize_unknown_string(profile_inference[:location])
+    locations.concat(Array(post_inferences).map { |entry| normalize_unknown_string(entry[:location] || entry["location"]) })
+    location_signals = locations.compact.group_by(&:itself).sort_by { |_value, bucket| -bucket.length }.first(5).map(&:first)
+
+    {
+      age_range: age_range,
+      gender_indicators: gender_indicators,
+      location_signals: location_signals,
+      accepted_profile_images_count: dataset.dig(:analysis_pool, :accepted_profile_images_count).to_i,
+      accepted_story_images_count: dataset.dig(:analysis_pool, :accepted_story_images_count).to_i
+    }.compact
+  end
+
+  def persist_combined_prompt_insights!(profile:, combined_insights:)
+    return unless combined_insights.is_a?(Hash)
+    return if combined_insights.except(:accepted_profile_images_count, :accepted_story_images_count).values.all?(&:blank?)
+
+    line = [
+      "Combined insights",
+      "age_range=#{combined_insights[:age_range]}",
+      "gender_indicators=#{Array(combined_insights[:gender_indicators]).join(', ')}",
+      "location_signals=#{Array(combined_insights[:location_signals]).join(', ')}",
+      "accepted_posts=#{combined_insights[:accepted_profile_images_count].to_i}",
+      "accepted_stories=#{combined_insights[:accepted_story_images_count].to_i}"
+    ].join(" | ")
+
+    profile.update!(
+      ai_persona_summary: [ profile.ai_persona_summary.to_s.presence, line ].compact.join("\n")
+    )
+  rescue StandardError
+    nil
   end
 
   def extract_demographics_from_analysis(analysis)
@@ -510,7 +740,9 @@ require "digest"
   def persist_profile_post_demographic_inferences!(profile:, profile_inference:, post_inferences:, source:)
     by_shortcode = post_inferences.index_by { |entry| entry[:shortcode].to_s }
 
-    profile.instagram_profile_posts.recent_first.limit(150).each do |post|
+    profile.instagram_profile_posts.recent_first.limit(220).each do |post|
+      next unless accepted_profile_post?(post)
+
       post_hint = by_shortcode[post.shortcode.to_s]
       enrich_post_demographics!(
         record: post,
@@ -525,6 +757,9 @@ require "digest"
     by_shortcode = post_inferences.index_by { |entry| entry[:shortcode].to_s }
 
     profile.instagram_account.instagram_posts.where(instagram_profile_id: profile.id).recent_first.limit(150).each do |post|
+      analysis = post.analysis.is_a?(Hash) ? post.analysis : {}
+      next if analysis["relevant"] == false
+
       post_hint = by_shortcode[post.shortcode.to_s]
       enrich_post_demographics!(
         record: post,

@@ -20,7 +20,7 @@ module Ai
       @model = model.to_s.presence || DEFAULT_MODEL
     end
 
-    def generate!(post_payload:, image_description:, topics:, author_type:, historical_comments: [], historical_context: nil, historical_story_context: [], local_story_intelligence: {}, historical_comparison: {}, cv_ocr_evidence: {}, verified_story_facts: {}, story_ownership_classification: {}, generation_policy: {}, **_extra)
+    def generate!(post_payload:, image_description:, topics:, author_type:, historical_comments: [], historical_context: nil, historical_story_context: [], local_story_intelligence: {}, historical_comparison: {}, cv_ocr_evidence: {}, verified_story_facts: {}, story_ownership_classification: {}, generation_policy: {}, profile_preparation: {}, verified_profile_history: [], conversational_voice: {}, **_extra)
       if generation_policy.is_a?(Hash) && generation_policy.key?(:allow_comment) && !ActiveModel::Type::Boolean.new.cast(generation_policy[:allow_comment] || generation_policy["allow_comment"])
         return {
           model: @model,
@@ -47,7 +47,10 @@ module Ai
         cv_ocr_evidence: cv_ocr_evidence,
         verified_story_facts: verified_story_facts,
         story_ownership_classification: story_ownership_classification,
-        generation_policy: generation_policy
+        generation_policy: generation_policy,
+        profile_preparation: profile_preparation,
+        verified_profile_history: verified_profile_history,
+        conversational_voice: conversational_voice
       )
 
       resp = @ollama_client.generate(
@@ -112,7 +115,7 @@ module Ai
 
     private
 
-    def build_prompt(post_payload:, image_description:, topics:, author_type:, historical_comments:, historical_context:, historical_story_context:, local_story_intelligence:, historical_comparison:, cv_ocr_evidence:, verified_story_facts:, story_ownership_classification:, generation_policy:)
+    def build_prompt(post_payload:, image_description:, topics:, author_type:, historical_comments:, historical_context:, historical_story_context:, local_story_intelligence:, historical_comparison:, cv_ocr_evidence:, verified_story_facts:, story_ownership_classification:, generation_policy:, profile_preparation: {}, verified_profile_history: [], conversational_voice: {})
       verified_story_facts = compact_verified_story_facts(
         verified_story_facts,
         local_story_intelligence: local_story_intelligence,
@@ -123,6 +126,9 @@ module Ai
       historical_comparison = compact_historical_comparison(historical_comparison)
       compact_story_history = compact_historical_story_context(historical_story_context)
       profile_summary = compact_author_profile(post_payload[:author_profile], author_type: author_type)
+      profile_preparation = compact_profile_preparation(profile_preparation)
+      verified_profile_history = compact_verified_profile_history(verified_profile_history)
+      conversational_voice = compact_conversational_voice(conversational_voice)
 
       context_json = {
         task: "instagram_story_comment_generation",
@@ -132,6 +138,8 @@ module Ai
           max_chars_per_comment: 140
         },
         profile: profile_summary,
+        profile_preparation: profile_preparation,
+        conversational_voice: conversational_voice,
         current_story: {
           image_description: truncate_text(image_description.to_s, max: 280),
           topics: Array(topics).map(&:to_s).reject(&:blank?).uniq.first(10),
@@ -142,6 +150,7 @@ module Ai
         historical_context: {
           comparison: historical_comparison,
           recent_story_patterns: compact_story_history,
+          recent_profile_history: verified_profile_history,
           recent_comments: Array(historical_comments).map { |value| truncate_text(value.to_s, max: 110) }.reject(&:blank?).first(6),
           summary: truncate_text(historical_context.to_s, max: 280)
         }
@@ -155,6 +164,7 @@ module Ai
         - treat CONTEXT_JSON as the only source of truth
         - never use URLs, IDs, or hidden metadata as evidence
         - do not infer facts not present in `verified_story_facts`
+        - require `profile_preparation.ready_for_comment_generation` to be true for personalized comments
         - if `generation_policy.allow_comment` is false, return empty suggestions
         - if ownership is not `owned_by_profile`, keep output neutral and non-personal
         - if identity_verification.owner_likelihood is low, avoid user-specific assumptions
@@ -166,6 +176,7 @@ module Ai
         - vary openings and avoid duplicates
         - avoid explicit/adult language
         - avoid identity, age, gender, or sensitive-trait claims
+        - reflect recurring themes and wording style from `historical_context` and `conversational_voice`
 
         Output STRICT JSON only:
         {
@@ -344,6 +355,60 @@ module Ai
         signal_score: (data[:signal_score] || data["signal_score"]).to_i,
         historical_overlap: ActiveModel::Type::Boolean.new.cast(data[:historical_overlap] || data["historical_overlap"])
       }
+    end
+
+    def compact_profile_preparation(payload)
+      data = payload.is_a?(Hash) ? payload : {}
+      identity = data[:identity_consistency].is_a?(Hash) ? data[:identity_consistency] : (data["identity_consistency"].is_a?(Hash) ? data["identity_consistency"] : {})
+      analysis = data[:analysis].is_a?(Hash) ? data[:analysis] : (data["analysis"].is_a?(Hash) ? data["analysis"] : {})
+
+      {
+        ready_for_comment_generation: ActiveModel::Type::Boolean.new.cast(data[:ready_for_comment_generation] || data["ready_for_comment_generation"]),
+        reason_code: data[:reason_code] || data["reason_code"],
+        reason: truncate_text(data[:reason] || data["reason"], max: 220),
+        prepared_at: data[:prepared_at] || data["prepared_at"],
+        analyzed_posts_count: (analysis[:analyzed_posts_count] || analysis["analyzed_posts_count"]).to_i,
+        posts_with_structured_signals_count: (analysis[:posts_with_structured_signals_count] || analysis["posts_with_structured_signals_count"]).to_i,
+        latest_posts_analyzed: ActiveModel::Type::Boolean.new.cast(analysis[:latest_posts_analyzed] || analysis["latest_posts_analyzed"]),
+        identity_consistency: {
+          consistent: ActiveModel::Type::Boolean.new.cast(identity[:consistent] || identity["consistent"]),
+          reason_code: identity[:reason_code] || identity["reason_code"],
+          dominance_ratio: (identity[:dominance_ratio] || identity["dominance_ratio"]).to_f,
+          appearance_count: (identity[:appearance_count] || identity["appearance_count"]).to_i,
+          total_faces: (identity[:total_faces] || identity["total_faces"]).to_i
+        }
+      }
+    end
+
+    def compact_verified_profile_history(rows)
+      Array(rows).first(10).map do |row|
+        data = row.is_a?(Hash) ? row : {}
+        {
+          shortcode: data[:shortcode] || data["shortcode"],
+          taken_at: data[:taken_at] || data["taken_at"],
+          topics: Array(data[:topics] || data["topics"]).first(6),
+          objects: Array(data[:objects] || data["objects"]).first(6),
+          hashtags: Array(data[:hashtags] || data["hashtags"]).first(6),
+          mentions: Array(data[:mentions] || data["mentions"]).first(6),
+          face_count: (data[:face_count] || data["face_count"]).to_i,
+          primary_face_count: (data[:primary_face_count] || data["primary_face_count"]).to_i,
+          secondary_face_count: (data[:secondary_face_count] || data["secondary_face_count"]).to_i,
+          image_description: truncate_text(data[:image_description] || data["image_description"], max: 180)
+        }
+      end
+    end
+
+    def compact_conversational_voice(payload)
+      data = payload.is_a?(Hash) ? payload : {}
+      {
+        author_type: data[:author_type] || data["author_type"],
+        profile_tags: Array(data[:profile_tags] || data["profile_tags"]).first(10),
+        bio_keywords: Array(data[:bio_keywords] || data["bio_keywords"]).first(10),
+        recurring_topics: Array(data[:recurring_topics] || data["recurring_topics"]).first(12),
+        recurring_hashtags: Array(data[:recurring_hashtags] || data["recurring_hashtags"]).first(10),
+        frequent_people_labels: Array(data[:frequent_people_labels] || data["frequent_people_labels"]).first(8),
+        prior_comment_examples: Array(data[:prior_comment_examples] || data["prior_comment_examples"]).map { |value| truncate_text(value, max: 100) }.first(6)
+      }.compact
     end
 
     def compact_historical_story_context(rows)

@@ -3,6 +3,7 @@ class InstagramProfileActionLog < ApplicationRecord
     fetch_profile_details
     verify_messageability
     analyze_profile
+    capture_profile_posts
     sync_avatar
     sync_stories
     auto_story_reply

@@ -7,7 +7,7 @@ import {
   runTableCleanups,
 } from "../lib/tabulator_helpers"
 
-const DEFAULT_PAGE_SIZES = Object.freeze([10, 25, 50, 100, 200])
+const DEFAULT_PAGE_SIZES = [10, 25, 50, 100, 200]
 
 export default class extends Controller {
   static targets = ["table"]
@@ -53,7 +53,7 @@ export default class extends Controller {
       height: this._tableHeight(),
       pagination: this.paginationValue,
       paginationSize: this.paginationSizeValue,
-      paginationSizeSelector: DEFAULT_PAGE_SIZES,
+      paginationSizeSelector: [...DEFAULT_PAGE_SIZES],
       paginationCounter: "rows",
       movableColumns: true,
       resizableColumnFit: true,

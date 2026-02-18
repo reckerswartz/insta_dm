@@ -68,6 +68,8 @@ class InstagramProfilesController < ApplicationController
   def show
     posts_scope = @profile.instagram_profile_posts
     @profile_posts_total_count = posts_scope.count
+    @deleted_posts_count = posts_scope.where.not(metadata: nil).pluck(:metadata).count { |meta| ActiveModel::Type::Boolean.new.cast(meta.is_a?(Hash) ? meta["deleted_from_source"] : nil) }
+    @active_posts_count = [@profile_posts_total_count - @deleted_posts_count, 0].max
     @analyzed_posts_count = posts_scope.where(ai_status: "analyzed").count
     @pending_posts_count = [@profile_posts_total_count - @analyzed_posts_count, 0].max
     @messages_count = @profile.instagram_messages.count
@@ -94,7 +96,11 @@ class InstagramProfilesController < ApplicationController
         .recent_first
         .limit(40)
 
-    render partial: "instagram_profiles/captured_posts_section", locals: { profile: @profile, profile_posts: profile_posts }
+    render_profile_frame(
+      frame_id: "profile_captured_posts_#{@profile.id}",
+      partial: "instagram_profiles/captured_posts_section",
+      locals: { profile: @profile, profile_posts: profile_posts }
+    )
   end
 
   def downloaded_stories_section
@@ -106,21 +112,37 @@ class InstagramProfilesController < ApplicationController
         .order(detected_at: :desc, id: :desc)
         .limit(18)
 
-    render partial: "instagram_profiles/downloaded_stories_section", locals: { profile: @profile, downloaded_story_events: downloaded_story_events }
+    render_profile_frame(
+      frame_id: "profile_downloaded_stories_#{@profile.id}",
+      partial: "instagram_profiles/downloaded_stories_section",
+      locals: { profile: @profile, downloaded_story_events: downloaded_story_events }
+    )
   end
 
   def messages_section
     messages = @profile.instagram_messages.recent_first.limit(120)
-    render partial: "instagram_profiles/messages_section", locals: { messages: messages }
+    render_profile_frame(
+      frame_id: "profile_messages_#{@profile.id}",
+      partial: "instagram_profiles/messages_section",
+      locals: { messages: messages }
+    )
   end
 
   def action_history_section
     action_logs = @profile.instagram_profile_action_logs.recent_first.limit(100)
-    render partial: "instagram_profiles/action_history_section", locals: { action_logs: action_logs }
+    render_profile_frame(
+      frame_id: "profile_actions_#{@profile.id}",
+      partial: "instagram_profiles/action_history_section",
+      locals: { action_logs: action_logs }
+    )
   end
 
   def events_table_section
-    render partial: "instagram_profiles/events_table_section", locals: { profile: @profile }
+    render_profile_frame(
+      frame_id: "profile_events_table_#{@profile.id}",
+      partial: "instagram_profiles/events_table_section",
+      locals: { profile: @profile }
+    )
   end
 
   def events
@@ -454,5 +476,14 @@ class InstagramProfilesController < ApplicationController
     end
   rescue StandardError
     []
+  end
+
+  def render_profile_frame(frame_id:, partial:, locals:)
+    body = render_to_string(partial: partial, locals: locals)
+    if turbo_frame_request?
+      render html: view_context.turbo_frame_tag(frame_id) { body.html_safe }
+    else
+      render html: body.html_safe
+    end
   end
 end

@@ -9,6 +9,7 @@ import logging
 from typing import List, Dict, Any, Optional
 import os
 from pathlib import Path
+import tempfile
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -83,8 +84,9 @@ except Exception as e:
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    healthy = any(bool(value) for value in services_status.values())
     return {
-        "status": "healthy",
+        "status": "healthy" if healthy else "degraded",
         "services": services_status
     }
 
@@ -175,16 +177,18 @@ async def transcribe_audio(
     
     try:
         audio_bytes = await file.read()
-        
-        # Save temporary audio file
-        temp_path = "/tmp/temp_audio.wav"
-        with open(temp_path, "wb") as f:
-            f.write(audio_bytes)
-        
-        transcription = whisper_service.transcribe(temp_path, model)
-        
-        # Clean up
-        os.remove(temp_path)
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        temp_path = temp_file.name
+        try:
+            temp_file.write(audio_bytes)
+            temp_file.flush()
+            temp_file.close()
+            transcription = whisper_service.transcribe(temp_path, model)
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
         
         return {
             "success": True,
@@ -239,10 +243,15 @@ async def get_face_embedding(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
+    reload_enabled = os.getenv("LOCAL_AI_RELOAD", "false").strip().lower() in {"1", "true", "yes", "on"}
+    log_level = os.getenv("LOCAL_AI_LOG_LEVEL", "info").strip().lower() or "info"
+    watch_dir = str(Path(__file__).resolve().parent)
+
     uvicorn.run(
-        "main:app",
+        "main_simple:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
-        log_level="info"
+        reload=reload_enabled,
+        reload_dirs=[watch_dir] if reload_enabled else None,
+        log_level=log_level
     )

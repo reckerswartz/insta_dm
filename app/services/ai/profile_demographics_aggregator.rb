@@ -22,7 +22,7 @@ module Ai
     private
 
     def call_aggregator_llm(dataset:)
-      client = google_client
+      client = local_client
       return nil unless client
 
       prompt = build_prompt(dataset: dataset)
@@ -57,10 +57,13 @@ module Ai
         {
           "profile_inference": {
             "age": 0,
+            "age_range": "",
             "age_confidence": 0.0,
             "gender": "",
+            "gender_indicators": [],
             "gender_confidence": 0.0,
             "location": "",
+            "location_signals": [],
             "location_confidence": 0.0,
             "evidence": "",
             "why": ""
@@ -68,6 +71,8 @@ module Ai
           "post_inferences": [
             {
               "shortcode": "",
+              "source_type": "",
+              "source_ref": "",
               "age": 0,
               "gender": "",
               "location": "",
@@ -91,10 +96,13 @@ module Ai
 
       profile_inference = {
         age: integer_or_nil(profile_raw["age"]),
+        age_range: clean_text(profile_raw["age_range"]),
         age_confidence: float_or_nil(profile_raw["age_confidence"]),
         gender: clean_text(profile_raw["gender"]),
+        gender_indicators: Array(profile_raw["gender_indicators"]).map { |v| clean_text(v) }.compact.first(6),
         gender_confidence: float_or_nil(profile_raw["gender_confidence"]),
         location: clean_text(profile_raw["location"]),
+        location_signals: Array(profile_raw["location_signals"]).map { |v| clean_text(v) }.compact.first(8),
         location_confidence: float_or_nil(profile_raw["location_confidence"]),
         evidence: clean_text(profile_raw["evidence"]),
         why: clean_text(profile_raw["why"])
@@ -106,6 +114,8 @@ module Ai
 
         {
           shortcode: shortcode,
+          source_type: clean_text(entry["source_type"]),
+          source_ref: clean_text(entry["source_ref"]),
           age: integer_or_nil(entry["age"]),
           gender: clean_text(entry["gender"]),
           location: clean_text(entry["location"]),
@@ -137,10 +147,13 @@ module Ai
 
       profile_inference = {
         age: median(ages),
+        age_range: ages.any? ? "#{ages.min}-#{ages.max}" : nil,
         age_confidence: confidence_from_count(ages.length),
         gender: mode(genders),
+        gender_indicators: genders.group_by(&:itself).sort_by { |_value, bucket| -bucket.length }.first(4).map(&:first),
         gender_confidence: confidence_from_count(genders.length),
         location: mode(locations),
+        location_signals: locations.group_by(&:itself).sort_by { |_value, bucket| -bucket.length }.first(5).map(&:first),
         location_confidence: confidence_from_count(locations.length),
         evidence: "Heuristic consolidation from accumulated analysis JSON.",
         why: error.to_s.presence

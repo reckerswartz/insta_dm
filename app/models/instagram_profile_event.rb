@@ -180,7 +180,10 @@ class InstagramProfileEvent < ApplicationRecord
       cv_ocr_evidence: context[:cv_ocr_evidence],
       verified_story_facts: context[:verified_story_facts],
       story_ownership_classification: context[:story_ownership_classification],
-      generation_policy: context[:generation_policy]
+      generation_policy: context[:generation_policy],
+      profile_preparation: context[:profile_preparation],
+      verified_profile_history: context[:verified_profile_history],
+      conversational_voice: context[:conversational_voice]
     )
     enhanced_result = result.merge(technical_details: technical_details)
 
@@ -268,6 +271,9 @@ class InstagramProfileEvent < ApplicationRecord
     story_ownership_classification = context[:story_ownership_classification].is_a?(Hash) ? context[:story_ownership_classification] : {}
     generation_policy = context[:generation_policy].is_a?(Hash) ? context[:generation_policy] : {}
     validated_story_insights = context[:validated_story_insights].is_a?(Hash) ? context[:validated_story_insights] : {}
+    profile_preparation = context[:profile_preparation].is_a?(Hash) ? context[:profile_preparation] : {}
+    verified_profile_history = Array(context[:verified_profile_history]).first(12)
+    conversational_voice = context[:conversational_voice].is_a?(Hash) ? context[:conversational_voice] : {}
 
     {
       timestamp: Time.current.iso8601,
@@ -309,7 +315,10 @@ class InstagramProfileEvent < ApplicationRecord
         bio: profile&.bio,
         bio_length: profile&.bio&.length || 0,
         detected_author_type: determine_author_type(profile),
-        extracted_topics: extract_topics_from_profile(profile)
+        extracted_topics: extract_topics_from_profile(profile),
+        profile_comment_preparation: profile_preparation,
+        conversational_voice: conversational_voice,
+        verified_profile_history: verified_profile_history
       },
       prompt_engineering: {
         final_prompt: context[:post_payload],
@@ -323,6 +332,9 @@ class InstagramProfileEvent < ApplicationRecord
         ownership_classification: story_ownership_classification,
         generation_policy: generation_policy,
         cv_ocr_evidence: context[:cv_ocr_evidence],
+        profile_comment_preparation: profile_preparation,
+        conversational_voice: conversational_voice,
+        verified_profile_history: verified_profile_history,
         rules_applied: context[:post_payload]&.dig(:rules)
       }
     }
@@ -554,6 +566,14 @@ class InstagramProfileEvent < ApplicationRecord
     historical_comments = recent_llm_comments_for_profile(profile)
     topics = (Array(verified_story_facts[:topics]) + extract_topics_from_profile(profile)).map(&:to_s).reject(&:blank?).uniq.first(20)
     historical_story_context = recent_story_intelligence_context(profile)
+    profile_preparation = latest_profile_comment_preparation(profile)
+    verified_profile_history = recent_analyzed_profile_history(profile)
+    conversational_voice = build_conversational_voice_profile(
+      profile: profile,
+      historical_story_context: historical_story_context,
+      verified_profile_history: verified_profile_history,
+      profile_preparation: profile_preparation
+    )
     historical_comparison = build_historical_comparison(
       current: verified_story_facts.presence || local_story_intelligence,
       historical_story_context: historical_story_context
@@ -570,9 +590,14 @@ class InstagramProfileEvent < ApplicationRecord
     post_payload[:cv_ocr_evidence] = cv_ocr_evidence
     post_payload[:story_ownership_classification] = story_ownership_classification
     post_payload[:generation_policy] = generation_policy
+    post_payload[:profile_comment_preparation] = profile_preparation
+    post_payload[:conversational_voice] = conversational_voice
+    post_payload[:verified_profile_history] = verified_profile_history
     historical_context = build_compact_historical_context(
       profile: profile,
-      historical_story_context: historical_story_context
+      historical_story_context: historical_story_context,
+      verified_profile_history: verified_profile_history,
+      profile_preparation: profile_preparation
     )
 
     {
@@ -589,7 +614,10 @@ class InstagramProfileEvent < ApplicationRecord
       verified_story_facts: verified_story_facts,
       story_ownership_classification: story_ownership_classification,
       generation_policy: generation_policy,
-      validated_story_insights: validated_story_insights
+      validated_story_insights: validated_story_insights,
+      profile_preparation: profile_preparation,
+      verified_profile_history: verified_profile_history,
+      conversational_voice: conversational_voice
     }
   end
 
@@ -1243,13 +1271,15 @@ class InstagramProfileEvent < ApplicationRecord
     "Recent structured story intelligence:\n#{lines.join("\n")}"
   end
 
-  def build_compact_historical_context(profile:, historical_story_context:)
+  def build_compact_historical_context(profile:, historical_story_context:, verified_profile_history:, profile_preparation:)
     summary = []
     if profile
       summary << profile.history_narrative_text(max_chunks: 2).to_s
     end
     structured = format_story_intelligence_context(historical_story_context)
     summary << structured.to_s
+    summary << format_verified_profile_history(verified_profile_history)
+    summary << format_profile_preparation(profile_preparation)
 
     compact = summary
       .map(&:to_s)
@@ -1258,6 +1288,110 @@ class InstagramProfileEvent < ApplicationRecord
       .join("\n")
 
     compact.byteslice(0, 650)
+  end
+
+  def latest_profile_comment_preparation(profile)
+    meta = profile&.instagram_profile_behavior_profile&.metadata
+    payload = meta.is_a?(Hash) ? meta["comment_generation_preparation"] : nil
+    payload.is_a?(Hash) ? payload.deep_symbolize_keys : {}
+  rescue StandardError
+    {}
+  end
+
+  def recent_analyzed_profile_history(profile)
+    return [] unless profile
+
+    profile.instagram_profile_posts
+      .recent_first
+      .limit(12)
+      .map do |post|
+        analysis = post.analysis.is_a?(Hash) ? post.analysis : {}
+        faces = post.instagram_post_faces
+        next if analysis.blank? && !faces.exists?
+
+        {
+          post_id: post.id,
+          shortcode: post.shortcode,
+          taken_at: post.taken_at&.iso8601,
+          caption: post.caption.to_s.byteslice(0, 220),
+          image_description: analysis["image_description"].to_s.byteslice(0, 220),
+          topics: Array(analysis["topics"]).map(&:to_s).reject(&:blank?).uniq.first(8),
+          objects: Array(analysis["objects"]).map(&:to_s).reject(&:blank?).uniq.first(8),
+          hashtags: Array(analysis["hashtags"]).map(&:to_s).reject(&:blank?).uniq.first(8),
+          mentions: Array(analysis["mentions"]).map(&:to_s).reject(&:blank?).uniq.first(8),
+          face_count: faces.count,
+          primary_face_count: faces.where(role: "primary_user").count,
+          secondary_face_count: faces.where(role: "secondary_person").count
+        }
+      end.compact
+  rescue StandardError
+    []
+  end
+
+  def build_conversational_voice_profile(profile:, historical_story_context:, verified_profile_history:, profile_preparation:)
+    behavior_summary = profile&.instagram_profile_behavior_profile&.behavioral_summary
+    behavior_summary = {} unless behavior_summary.is_a?(Hash)
+    preparation = profile_preparation.is_a?(Hash) ? profile_preparation : {}
+    recent_comments = recent_llm_comments_for_profile(profile).first(6)
+    recent_topics = Array(verified_profile_history).flat_map { |row| Array(row[:topics]) }.map(&:to_s).reject(&:blank?).uniq.first(10)
+    recurring_story_topics = Array(historical_story_context).flat_map { |row| Array(row[:topics]) }.map(&:to_s).reject(&:blank?).uniq.first(10)
+
+    {
+      author_type: determine_author_type(profile),
+      profile_tags: profile ? profile.profile_tags.pluck(:name).sort.first(10) : [],
+      bio_keywords: extract_topics_from_profile(profile).first(10),
+      recurring_topics: (recent_topics + recurring_story_topics + Array(behavior_summary["topic_clusters"]).map(&:first)).map(&:to_s).reject(&:blank?).uniq.first(12),
+      recurring_hashtags: Array(behavior_summary["top_hashtags"]).map(&:first).map(&:to_s).reject(&:blank?).first(10),
+      frequent_people_labels: Array(behavior_summary["frequent_secondary_persons"]).map { |row| row.is_a?(Hash) ? row["label"] || row[:label] : nil }.map(&:to_s).reject(&:blank?).uniq.first(8),
+      prior_comment_examples: recent_comments.map { |value| value.to_s.byteslice(0, 120) },
+      identity_consistency: preparation[:identity_consistency].is_a?(Hash) ? preparation[:identity_consistency] : preparation["identity_consistency"],
+      profile_preparation_reason: preparation[:reason].to_s.presence || preparation["reason"].to_s.presence
+    }.compact
+  rescue StandardError
+    {}
+  end
+
+  def format_verified_profile_history(rows)
+    entries = Array(rows).first(8)
+    return "" if entries.empty?
+
+    lines = entries.map do |row|
+      parts = []
+      parts << "shortcode=#{row[:shortcode]}" if row[:shortcode].to_s.present?
+      parts << "topics=#{Array(row[:topics]).join(',')}" if Array(row[:topics]).any?
+      parts << "objects=#{Array(row[:objects]).join(',')}" if Array(row[:objects]).any?
+      parts << "hashtags=#{Array(row[:hashtags]).join(',')}" if Array(row[:hashtags]).any?
+      parts << "mentions=#{Array(row[:mentions]).join(',')}" if Array(row[:mentions]).any?
+      parts << "faces=#{row[:face_count].to_i}" if row[:face_count].to_i.positive?
+      parts << "primary_faces=#{row[:primary_face_count].to_i}" if row[:primary_face_count].to_i.positive?
+      parts << "secondary_faces=#{row[:secondary_face_count].to_i}" if row[:secondary_face_count].to_i.positive?
+      parts << "desc=#{row[:image_description]}" if row[:image_description].to_s.present?
+      "- #{parts.join(' | ')}"
+    end
+
+    "Recent analyzed profile posts:\n#{lines.join("\n")}"
+  end
+
+  def format_profile_preparation(payload)
+    data = payload.is_a?(Hash) ? payload : {}
+    return "" if data.blank?
+
+    identity = data[:identity_consistency].is_a?(Hash) ? data[:identity_consistency] : data["identity_consistency"]
+    analysis = data[:analysis].is_a?(Hash) ? data[:analysis] : data["analysis"]
+
+    parts = []
+    parts << "ready=#{ActiveModel::Type::Boolean.new.cast(data[:ready_for_comment_generation] || data["ready_for_comment_generation"])}"
+    parts << "reason=#{data[:reason_code] || data["reason_code"]}"
+    parts << "analyzed_posts=#{analysis[:analyzed_posts_count] || analysis["analyzed_posts_count"]}" if analysis.is_a?(Hash)
+    parts << "structured_posts=#{analysis[:posts_with_structured_signals_count] || analysis["posts_with_structured_signals_count"]}" if analysis.is_a?(Hash)
+    if identity.is_a?(Hash)
+      parts << "identity_consistent=#{ActiveModel::Type::Boolean.new.cast(identity[:consistent] || identity["consistent"])}"
+      parts << "identity_ratio=#{identity[:dominance_ratio] || identity["dominance_ratio"]}"
+      parts << "identity_reason=#{identity[:reason_code] || identity["reason_code"]}"
+    end
+    return "" if parts.empty?
+
+    "Profile preparation: #{parts.join(' | ')}"
   end
 
   def story_timeline_data

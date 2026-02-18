@@ -10,6 +10,7 @@ class StoryIngestionService
     raise ArgumentError, "story_id is required" if story_id.blank?
 
     record = InstagramStory.find_or_initialize_by(instagram_profile: @profile, story_id: story_id)
+    existing_story_record = record.persisted?
     record.instagram_account = @account
     record.source_event = source_event if source_event.present?
     record.media_type = story[:media_type].to_s.presence || infer_media_type(content_type: content_type)
@@ -24,7 +25,8 @@ class StoryIngestionService
       story: story,
       filename: filename,
       content_type: content_type,
-      media_bytes: bytes&.bytesize
+      media_bytes: bytes&.bytesize,
+      existing_story_record: existing_story_record
     )
 
     if record.new_record? || force_reprocess
@@ -49,7 +51,7 @@ class StoryIngestionService
     nil
   end
 
-  def merged_metadata(existing:, story:, filename:, content_type:, media_bytes:)
+  def merged_metadata(existing:, story:, filename:, content_type:, media_bytes:, existing_story_record:)
     current = existing.is_a?(Hash) ? existing : {}
     current.merge(
       "story_payload" => {
@@ -59,6 +61,7 @@ class StoryIngestionService
       "media_filename" => filename.to_s,
       "media_content_type" => content_type.to_s,
       "media_bytes" => media_bytes.to_i,
+      "duplicate_story_storage_prevented" => ActiveModel::Type::Boolean.new.cast(existing_story_record),
       "ingested_at" => Time.current.iso8601
     )
   end

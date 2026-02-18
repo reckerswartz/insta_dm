@@ -40,7 +40,11 @@ class FaceService:
                 self.face_analyzer.prepare(ctx_id=-1)  # CPU mode
                 logger.info("InsightFace loaded successfully")
         except Exception as e:
-            logger.error(f"Failed to load InsightFace: {e}")
+            logger.warning(
+                "Failed to load InsightFace (%s): %r. Falling back to OpenCV detector only.",
+                e.__class__.__name__,
+                e
+            )
             self.face_analyzer = None
         
         # Always load OpenCV as fallback

@@ -9,6 +9,8 @@ class GenerateLlmCommentJob < ApplicationJob
     provider = "local"
     event = InstagramProfileEvent.find(instagram_profile_event_id)
     return unless event.story_archive_item?
+    account = event.instagram_profile&.instagram_account
+    profile = event.instagram_profile
 
     if event.has_llm_generated_comment?
       event.update_columns(
@@ -27,6 +29,18 @@ class GenerateLlmCommentJob < ApplicationJob
         }
       )
       return
+    end
+
+    preparation = prepare_profile_context(profile: profile, account: account)
+    persist_profile_preparation_snapshot(event: event, preparation: preparation)
+    unless ActiveModel::Type::Boolean.new.cast(preparation[:ready_for_comment_generation] || preparation["ready_for_comment_generation"])
+      reason_code = preparation[:reason_code].to_s.presence || preparation["reason_code"].to_s.presence || "profile_comment_preparation_not_ready"
+      reason_text = preparation[:reason].to_s.presence || preparation["reason"].to_s.presence || "Profile context is not ready for grounded comment generation."
+      raise InstagramProfileEvent::LocalStoryIntelligenceUnavailableError.new(
+        reason_text,
+        reason: reason_code,
+        source: "profile_comment_preparation"
+      )
     end
 
     event.mark_llm_comment_running!(job_id: job_id)
@@ -80,5 +94,31 @@ class GenerateLlmCommentJob < ApplicationJob
     )
 
     raise
+  end
+
+  private
+
+  def prepare_profile_context(profile:, account:)
+    return { ready_for_comment_generation: false, reason_code: "profile_missing", reason: "Profile missing for event." } unless profile && account
+
+    Ai::ProfileCommentPreparationService.new(account: account, profile: profile).prepare!
+  rescue StandardError => e
+    {
+      ready_for_comment_generation: false,
+      reason_code: "profile_preparation_error",
+      reason: e.message.to_s,
+      error_class: e.class.name
+    }
+  end
+
+  def persist_profile_preparation_snapshot(event:, preparation:)
+    return unless event
+    return unless preparation.is_a?(Hash)
+
+    existing = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata.deep_dup : {}
+    existing["profile_comment_preparation"] = preparation
+    event.update_columns(llm_comment_metadata: existing, updated_at: Time.current)
+  rescue StandardError
+    nil
   end
 end

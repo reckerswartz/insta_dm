@@ -1,5 +1,6 @@
 require "net/http"
 require "digest"
+require "set"
 
 module Instagram
   class ProfileAnalysisCollector
@@ -12,23 +13,66 @@ module Instagram
       @client = Instagram::Client.new(account: account)
     end
 
-    def collect_and_persist!(posts_limit: nil, comments_limit: 8)
+    def collect_and_persist!(posts_limit: nil, comments_limit: 8, track_missing_as_deleted: false, sync_source: "instagram_profile_analysis_dataset")
       dataset = @client.fetch_profile_analysis_dataset!(
         username: @profile.username,
         posts_limit: posts_limit,
         comments_limit: comments_limit
       )
 
+      synced_at = Time.current
       details = dataset[:profile] || {}
       update_profile_from_details!(details)
 
+      fetched_shortcodes = Set.new
+      summary = {
+        created_count: 0,
+        updated_count: 0,
+        unchanged_count: 0,
+        restored_count: 0,
+        deleted_count: 0,
+        created_shortcodes: [],
+        restored_shortcodes: [],
+        deleted_shortcodes: []
+      }
+
       persisted_posts = Array(dataset[:posts]).map do |post_data|
-        persist_profile_post!(post_data)
+        result = persist_profile_post!(post_data, synced_at: synced_at, sync_source: sync_source)
+        next nil unless result
+
+        post = result[:post]
+        fetched_shortcodes << post.shortcode.to_s
+
+        case result[:change]
+        when :created
+          summary[:created_count] += 1
+          summary[:created_shortcodes] << post.shortcode.to_s
+        when :restored
+          summary[:restored_count] += 1
+          summary[:restored_shortcodes] << post.shortcode.to_s
+        when :updated
+          summary[:updated_count] += 1
+        else
+          summary[:unchanged_count] += 1
+        end
+
+        post
       end.compact
+
+      if ActiveModel::Type::Boolean.new.cast(track_missing_as_deleted) && fetched_shortcodes.any?
+        deleted = mark_missing_posts_as_deleted!(
+          fetched_shortcodes: fetched_shortcodes,
+          synced_at: synced_at,
+          sync_source: sync_source
+        )
+        summary[:deleted_count] = deleted[:count]
+        summary[:deleted_shortcodes] = deleted[:shortcodes]
+      end
 
       {
         details: details,
-        posts: persisted_posts
+        posts: persisted_posts,
+        summary: summary
       }
     end
 
@@ -48,11 +92,26 @@ module Instagram
       @profile.save!
     end
 
-    def persist_profile_post!(post_data)
+    def persist_profile_post!(post_data, synced_at:, sync_source:)
       shortcode = post_data[:shortcode].to_s.strip
       return nil if shortcode.blank?
 
       post = @profile.instagram_profile_posts.find_or_initialize_by(shortcode: shortcode)
+      previous_signature = post_signature(post)
+      was_new = post.new_record?
+      was_deleted = post_deleted?(post)
+      existing_metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+      merged_metadata = existing_metadata.merge(
+        "media_type" => post_data[:media_type],
+        "media_id" => post_data[:media_id],
+        "comments_count_api" => post_data[:comments_count],
+        "source" => sync_source.to_s
+      )
+      merged_metadata.delete("deleted_from_source")
+      merged_metadata.delete("deleted_detected_at")
+      merged_metadata.delete("deleted_reason")
+      merged_metadata["restored_at"] = synced_at.utc.iso8601(3) if was_deleted
+
       post.instagram_account = @account
       post.taken_at = post_data[:taken_at]
       post.caption = post_data[:caption]
@@ -62,28 +121,47 @@ module Instagram
       extracted_comments_count = Array(post_data[:comments]).size
       api_comments_count = post_data[:comments_count].to_i
       post.comments_count = [ extracted_comments_count, api_comments_count ].max
-      post.last_synced_at = Time.current
-      post.metadata = {
-        media_type: post_data[:media_type],
-        media_id: post_data[:media_id],
-        comments_count_api: post_data[:comments_count],
-        source: "instagram_profile_analysis_dataset"
-      }
+      post.last_synced_at = synced_at
+      post.metadata = merged_metadata
       post.save!
 
-      sync_media!(post: post, media_url: post_data[:media_url].presence || post_data[:image_url])
+      sync_media!(
+        post: post,
+        media_url: post_data[:media_url].presence || post_data[:image_url],
+        media_id: post_data[:media_id]
+      )
       sync_comments!(
         post: post,
         comments: post_data[:comments],
         expected_comments_count: post_data[:comments_count]
       )
 
-      post
+      current_signature = post_signature(post.reload)
+      changed = (previous_signature != current_signature)
+      change =
+        if was_new
+          :created
+        elsif was_deleted
+          :restored
+        elsif changed
+          :updated
+        else
+          :unchanged
+        end
+
+      { post: post, change: change }
     end
 
-    def sync_media!(post:, media_url:)
+    def sync_media!(post:, media_url:, media_id: nil)
       url = media_url.to_s.strip
       return if url.blank?
+
+      incoming_media_id = media_id.to_s.strip
+      existing_metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+      existing_media_id = existing_metadata["media_id"].to_s.strip
+      if post.media.attached? && incoming_media_id.present? && existing_media_id.present? && incoming_media_id == existing_media_id
+        return
+      end
 
       fp = Digest::SHA256.hexdigest(url)
       return if post.media.attached? && post.media_url_fingerprint.to_s == fp
@@ -100,6 +178,17 @@ module Instagram
 
     def sync_comments!(post:, comments:, expected_comments_count:)
       entries = Array(comments).first(20)
+      normalized_entries = entries.filter_map do |c|
+        body = c[:text].to_s.strip
+        next if body.blank?
+        [c[:author_username].to_s.strip.presence, body, c[:created_at]&.to_i]
+      end
+      existing_entries = post.instagram_profile_post_comments.order(:id).map do |comment|
+        [comment.author_username.to_s.strip.presence, comment.body.to_s.strip, comment.commented_at&.to_i]
+      end
+
+      return if normalized_entries == existing_entries && normalized_entries.any?
+
       if entries.empty?
         # Keep previously captured comments when this sync could not fetch them.
         # Only clear if the source explicitly reports no comments.
@@ -158,6 +247,47 @@ module Instagram
       return "mov" if content_type.include?("quicktime")
 
       "bin"
+    end
+
+    def mark_missing_posts_as_deleted!(fetched_shortcodes:, synced_at:, sync_source:)
+      missing = @profile.instagram_profile_posts.where.not(shortcode: fetched_shortcodes.to_a)
+      shortcodes = []
+
+      missing.find_each do |post|
+        next if post_deleted?(post)
+
+        metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+        metadata["deleted_from_source"] = true
+        metadata["deleted_detected_at"] = synced_at.utc.iso8601(3)
+        metadata["deleted_reason"] = "missing_from_latest_capture"
+        metadata["source"] = sync_source.to_s
+        post.update!(metadata: metadata, last_synced_at: synced_at)
+        shortcodes << post.shortcode.to_s
+      end
+
+      { count: shortcodes.length, shortcodes: shortcodes }
+    end
+
+    def post_deleted?(post)
+      metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+      ActiveModel::Type::Boolean.new.cast(metadata["deleted_from_source"])
+    end
+
+    def post_signature(post)
+      metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+      {
+        shortcode: post.shortcode.to_s,
+        taken_at: post.taken_at&.utc&.iso8601(3),
+        caption: post.caption.to_s,
+        permalink: post.permalink.to_s,
+        source_media_url: post.source_media_url.to_s,
+        likes_count: post.likes_count.to_i,
+        comments_count: post.comments_count.to_i,
+        media_url_fingerprint: post.media_url_fingerprint.to_s,
+        media_id: metadata["media_id"].to_s,
+        media_type: metadata["media_type"].to_s,
+        deleted_from_source: ActiveModel::Type::Boolean.new.cast(metadata["deleted_from_source"])
+      }
     end
   end
 end

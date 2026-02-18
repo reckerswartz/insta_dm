@@ -1,6 +1,6 @@
 import { cable } from "@hotwired/turbo-rails"
 
-const DEFAULT_PAGE_SIZES = Object.freeze([25, 50, 100, 200])
+const DEFAULT_PAGE_SIZES = [25, 50, 100, 200]
 const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,.btn,[role='button']"
 let operationsConsumer
 
@@ -95,7 +95,8 @@ export function tabulatorBaseOptions({
   paginationSize = 50,
   paginationSizeSelector = DEFAULT_PAGE_SIZES,
 }) {
-  const selectedPageSize = readPreferredPageSize(storageKey, paginationSize, paginationSizeSelector)
+  const pageSizeSelector = Array.isArray(paginationSizeSelector) ? [...paginationSizeSelector] : [...DEFAULT_PAGE_SIZES]
+  const selectedPageSize = readPreferredPageSize(storageKey, paginationSize, pageSizeSelector)
 
   return {
     layout: "fitDataStretch",
@@ -112,7 +113,7 @@ export function tabulatorBaseOptions({
     pagination: true,
     paginationMode: "remote",
     paginationSize: selectedPageSize,
-    paginationSizeSelector,
+    paginationSizeSelector: pageSizeSelector,
     paginationCounter: "rows",
 
     sortMode: "remote",

@@ -57,6 +57,38 @@ class InstagramProfileActionsController < ApplicationController
     end
   end
 
+  def capture_posts
+    profile = current_account.instagram_profiles.find(params[:id])
+    enqueue_profile_job(
+      profile: profile,
+      action: "capture_profile_posts",
+      job_class: CaptureInstagramProfilePostsJob,
+      extra_job_args: {
+        comments_limit: 20
+      }
+    )
+
+    respond_to do |format|
+      format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: "Profile post capture queued." }
+      format.turbo_stream do
+        render turbo_stream: queued_action_streams(profile: profile, message: "Profile post capture queued for #{profile.username}.")
+      end
+      format.json { head :accepted }
+    end
+  rescue StandardError => e
+    respond_to do |format|
+      format.html { redirect_back fallback_location: instagram_profile_path(params[:id]), alert: "Unable to queue post capture: #{e.message}" }
+      format.turbo_stream do
+        render turbo_stream: turbo_stream.append(
+          "notifications",
+          partial: "shared/notification",
+          locals: { kind: "alert", message: "Unable to queue post capture: #{e.message}" }
+        )
+      end
+      format.json { render json: { error: e.message }, status: :unprocessable_entity }
+    end
+  end
+
   def fetch_details
     profile = current_account.instagram_profiles.find(params[:id])
     enqueue_profile_job(

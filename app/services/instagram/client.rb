@@ -444,10 +444,10 @@ module Instagram
                 break
               end
 
-              context = current_story_context(driver)
+              context = normalized_story_context_for_processing(driver: driver, context: current_story_context(driver))
               if context[:story_url_recovery_needed]
                 recover_story_url_context!(driver: driver, username: context[:username], reason: "fallback_profile_url")
-                context = current_story_context(driver)
+                context = normalized_story_context_for_processing(driver: driver, context: current_story_context(driver))
               end
 
               ref = context[:ref].presence || context[:story_key].to_s
@@ -501,7 +501,14 @@ module Instagram
                 break
               end
               visited_refs[story_key] = true
-              story_id = context[:story_id].presence || story_key.to_s.gsub(/[^a-zA-Z0-9:_-]/, "")[0, 120].presence || "unknown"
+              story_id = normalize_story_id_token(context[:story_id])
+              story_id = normalize_story_id_token(ref.to_s.split(":")[1].to_s) if story_id.blank?
+              story_id = normalize_story_id_token(current_story_reference(driver.current_url.to_s).to_s.split(":")[1].to_s) if story_id.blank?
+              story_url = canonical_story_url(
+                username: context[:username],
+                story_id: story_id,
+                fallback_url: driver.current_url.to_s
+              )
 
               stats[:stories_visited] += 1
               freeze_story_progress!(driver)
@@ -509,8 +516,31 @@ module Instagram
                 driver: driver,
                 task_name: "home_story_sync_story_loaded",
                 status: "ok",
-                meta: { ref: ref, story_key: story_key, username: context[:username], story_id: story_id, current_url: driver.current_url.to_s }
+                meta: { ref: ref, story_key: story_key, username: context[:username], story_id: story_id, current_url: story_url }
               )
+
+              if story_id.blank?
+                stats[:failed] += 1
+                fallback_profile = find_or_create_profile_for_auto_engagement!(username: context[:username].presence || @account.username.to_s)
+                fallback_profile.record_event!(
+                  kind: "story_sync_failed",
+                  external_id: "story_sync_failed:missing_story_id:#{Time.current.utc.iso8601(6)}",
+                  occurred_at: Time.current,
+                  metadata: {
+                    source: "home_story_carousel",
+                    reason: "story_id_unresolved",
+                    story_ref: ref,
+                    story_key: story_key,
+                    story_url: story_url
+                  }
+                )
+                moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                unless moved
+                  exit_reason = "next_navigation_failed"
+                  break
+                end
+                next
+              end
 
               profile = find_story_network_profile(username: context[:username])
               if profile.nil?
@@ -523,7 +553,7 @@ module Instagram
                     source: "home_story_carousel",
                     story_id: story_id,
                     story_ref: ref,
-                    story_url: driver.current_url.to_s,
+                    story_url: story_url,
                     reason: "profile_not_in_network",
                     status: "Out of network",
                     username: context[:username].to_s
@@ -559,7 +589,7 @@ module Instagram
                     source: "home_story_carousel",
                     story_id: story_id,
                     story_ref: ref,
-                    story_url: driver.current_url.to_s,
+                    story_url: story_url,
                     reason: "interaction_retry_window_active",
                     status: "Interaction unavailable (retry pending)",
                     retry_after_at: profile.story_interaction_retry_after_at&.iso8601,
@@ -590,10 +620,59 @@ module Instagram
               media = resolve_story_media_for_current_context(
                 driver: driver,
                 username: context[:username],
-                story_id: context[:story_id],
+                story_id: story_id,
                 fallback_story_key: story_key,
                 cache: story_api_cache
               )
+              if media[:url].to_s.blank?
+                stats[:failed] += 1
+                profile.record_event!(
+                  kind: "story_sync_failed",
+                  external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                  occurred_at: Time.current,
+                  metadata: {
+                    source: "home_story_carousel",
+                    reason: "api_story_media_unavailable",
+                    story_id: story_id,
+                    story_ref: ref,
+                    story_url: story_url,
+                    media_source: media[:source].to_s,
+                    media_variant_count: media[:media_variant_count].to_i
+                  }
+                )
+                moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                unless moved
+                  exit_reason = "next_navigation_failed"
+                  break
+                end
+                next
+              end
+
+              media_story_id_hint = story_id_hint_from_media_url(media[:url])
+              if media_story_id_hint.present? && media_story_id_hint != story_id
+                stats[:failed] += 1
+                profile.record_event!(
+                  kind: "story_sync_failed",
+                  external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                  occurred_at: Time.current,
+                  metadata: {
+                    source: "home_story_carousel",
+                    reason: "story_media_story_id_mismatch",
+                    expected_story_id: story_id,
+                    media_story_id: media_story_id_hint,
+                    story_ref: ref,
+                    story_url: story_url,
+                    media_source: media[:source].to_s,
+                    media_url: media[:url].to_s
+                  }
+                )
+                moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                unless moved
+                  exit_reason = "next_navigation_failed"
+                  break
+                end
+                next
+              end
               ad_context = detect_story_ad_context(driver: driver, media: media)
               capture_task_html(
                 driver: driver,
@@ -614,7 +693,11 @@ module Instagram
                   media_type: media[:media_type],
                   media_url: media[:url].to_s.byteslice(0, 500),
                   media_width: media[:width],
-                  media_height: media[:height]
+                  media_height: media[:height],
+                  media_variant_count: media[:media_variant_count].to_i,
+                  primary_media_source: media[:primary_media_source].to_s,
+                  primary_media_index: media[:primary_media_index],
+                  carousel_media_count: Array(media[:carousel_media]).length
                 }
               )
               if ad_context[:ad_detected]
@@ -627,7 +710,7 @@ module Instagram
                     source: "home_story_carousel",
                     story_id: story_id,
                     story_ref: ref,
-                    story_url: driver.current_url.to_s,
+                    story_url: story_url,
                     reason: ad_context[:reason],
                     marker_text: ad_context[:marker_text]
                   }
@@ -666,7 +749,7 @@ module Instagram
                     source: "home_story_carousel",
                     story_id: story_id,
                     story_ref: ref,
-                    story_url: driver.current_url.to_s,
+                    story_url: story_url,
                     reason: api_external_context[:reason_code].to_s.presence || "api_external_profile_indicator",
                     status: "External attribution detected (API)",
                     linked_username: api_external_context[:linked_username],
@@ -716,7 +799,7 @@ module Instagram
                     source: "home_story_carousel",
                     story_id: story_id,
                     story_ref: ref,
-                    story_url: driver.current_url.to_s,
+                    story_url: story_url,
                     reason: api_reply_gate[:reason_code],
                     status: api_reply_gate[:status],
                     retry_after_at: retry_after.iso8601
@@ -754,7 +837,7 @@ module Instagram
                       source: "home_story_carousel",
                       story_id: story_id,
                       story_ref: ref,
-                      story_url: driver.current_url.to_s,
+                      story_url: story_url,
                       reaction_reason: reaction_result[:reason],
                       reaction_marker_text: reaction_result[:marker_text],
                       reply_gate_reason: reply_gate[:reason_code]
@@ -797,7 +880,7 @@ module Instagram
                     source: "home_story_carousel",
                     story_id: story_id,
                     story_ref: ref,
-                    story_url: driver.current_url.to_s,
+                    story_url: story_url,
                     reason: reply_gate[:reason_code],
                     status: reply_gate[:status],
                     submission_reason: reply_gate[:submission_reason],
@@ -847,7 +930,7 @@ module Instagram
                   source: "home_story_carousel",
                   story_id: story_id,
                   story_ref: ref,
-                  story_url: driver.current_url.to_s
+                  story_url: story_url
                 }
               )
               profile.record_event!(
@@ -858,7 +941,7 @@ module Instagram
                   source: "home_story_carousel",
                   story_id: story_id,
                   story_ref: ref,
-                  story_url: driver.current_url.to_s
+                  story_url: story_url
                 }
               )
 
@@ -875,12 +958,20 @@ module Instagram
                       source: "home_story_carousel",
                       story_id: story_id,
                       story_ref: ref,
-                      story_url: driver.current_url.to_s,
+                      story_url: story_url,
                       media_type: "video",
                       media_source: media[:source],
                       media_url: media[:url],
+                      image_url: media[:image_url],
+                      video_url: media[:video_url],
                       media_width: media[:width],
                       media_height: media[:height],
+                      owner_user_id: media[:owner_user_id],
+                      owner_username: media[:owner_username],
+                      api_media_variant_count: media[:media_variant_count].to_i,
+                      api_primary_media_source: media[:primary_media_source].to_s,
+                      api_primary_media_index: media[:primary_media_index],
+                      api_carousel_media: compact_story_media_variants_for_metadata(media[:carousel_media]),
                       media_content_type: download[:content_type],
                       media_bytes: download[:bytes].bytesize
                     }
@@ -895,7 +986,7 @@ module Instagram
                       image_url: nil,
                       video_url: media[:url],
                       caption: nil,
-                      permalink: driver.current_url.to_s,
+                      permalink: story_url,
                       taken_at: story_time
                     },
                     source_event: downloaded_event,
@@ -921,7 +1012,7 @@ module Instagram
                 profile: profile,
                 story_id: story_id,
                 story_ref: ref,
-                story_url: driver.current_url.to_s,
+                story_url: story_url,
                 media_url: media[:url]
               )
               if duplicate_reply[:found]
@@ -933,7 +1024,7 @@ module Instagram
                     source: "home_story_carousel",
                     story_id: story_id,
                     story_ref: ref,
-                    story_url: driver.current_url.to_s,
+                    story_url: story_url,
                     reason: "duplicate_story_already_replied",
                     matched_by: duplicate_reply[:matched_by],
                     matched_event_external_id: duplicate_reply[:matched_external_id]
@@ -972,7 +1063,7 @@ module Instagram
                       source: "home_story_carousel",
                       story_id: story_id,
                       story_ref: ref,
-                      story_url: driver.current_url.to_s,
+                      story_url: story_url,
                       reason: "invalid_story_media",
                       quality_reason: quality[:reason],
                       quality_entropy: quality[:entropy],
@@ -1008,17 +1099,25 @@ module Instagram
                   kind: "story_downloaded",
                   external_id: "story_downloaded:#{story_id}:#{now.utc.iso8601(6)}",
                   occurred_at: now,
-                    metadata: {
-                      source: "home_story_carousel",
-                      story_id: story_id,
-                      story_ref: ref,
-                      story_url: driver.current_url.to_s,
-                      media_type: "image",
-                      media_source: media[:source],
-                      media_url: media[:url],
-                      media_width: media[:width],
-                      media_height: media[:height],
-                      media_content_type: download[:content_type],
+                  metadata: {
+                    source: "home_story_carousel",
+                    story_id: story_id,
+                    story_ref: ref,
+                    story_url: story_url,
+                    media_type: "image",
+                    media_source: media[:source],
+                    media_url: media[:url],
+                    image_url: media[:image_url],
+                    video_url: media[:video_url],
+                    media_width: media[:width],
+                    media_height: media[:height],
+                    owner_user_id: media[:owner_user_id],
+                    owner_username: media[:owner_username],
+                    api_media_variant_count: media[:media_variant_count].to_i,
+                    api_primary_media_source: media[:primary_media_source].to_s,
+                    api_primary_media_index: media[:primary_media_index],
+                    api_carousel_media: compact_story_media_variants_for_metadata(media[:carousel_media]),
+                    media_content_type: download[:content_type],
                     media_bytes: download[:bytes].bytesize
                   }
                 )
@@ -1029,7 +1128,7 @@ module Instagram
                   profile: profile,
                   shortcode: story_id,
                   caption: nil,
-                  permalink: driver.current_url.to_s,
+                  permalink: story_url,
                   include_story_history: true
                 )
                 analysis = analyze_for_auto_engagement!(
@@ -1056,14 +1155,14 @@ module Instagram
                     kind: "story_reply_skipped",
                     external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
                     occurred_at: Time.current,
-                    metadata: { source: "home_story_carousel", story_ref: ref, reason: "missing_auto_reply_tag" }
+                    metadata: { source: "home_story_carousel", story_id: story_id, story_ref: ref, story_url: story_url, reason: "missing_auto_reply_tag" }
                   )
                 elsif comment_text.blank?
                   profile.record_event!(
                     kind: "story_reply_skipped",
                     external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
                     occurred_at: Time.current,
-                    metadata: { source: "home_story_carousel", story_ref: ref, reason: "no_comment_generated" }
+                    metadata: { source: "home_story_carousel", story_id: story_id, story_ref: ref, story_url: story_url, reason: "no_comment_generated" }
                   )
                 else
                   comment_result = comment_on_story_via_api!(
@@ -1107,7 +1206,7 @@ module Instagram
                         source: "home_story_carousel",
                         story_id: story_id,
                         story_ref: ref,
-                        story_url: driver.current_url.to_s,
+                        story_url: story_url,
                         media_url: media[:url],
                         comment_text: comment_text,
                         submission_method: comment_result[:method]
@@ -1123,6 +1222,7 @@ module Instagram
                         source: "home_story_carousel",
                         story_id: story_id,
                         story_ref: ref,
+                        story_url: story_url,
                         reason: skip_status[:reason_code],
                         status: skip_status[:status],
                         submission_reason: comment_result[:reason],
@@ -1134,12 +1234,12 @@ module Instagram
               rescue StandardError => e
                 stats[:failed] += 1
                 profile.record_event!(
-                  kind: "story_sync_failed",
-                  external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                  occurred_at: Time.current,
-                  metadata: { source: "home_story_carousel", story_ref: ref, error_class: e.class.name, error_message: e.message }
-                )
-              end
+	                  kind: "story_sync_failed",
+	                  external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
+	                  occurred_at: Time.current,
+	                  metadata: { source: "home_story_carousel", story_id: story_id, story_ref: ref, story_url: story_url, error_class: e.class.name, error_message: e.message }
+	                )
+	              end
 
               moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
               unless moved
@@ -2971,21 +3071,72 @@ module Instagram
       
       reels = body["reels"]
       if reels.is_a?(Hash)
-        return reels[user_id.to_s] || reels.values.first
+        direct = reels[user_id.to_s]
+        return direct if direct.is_a?(Hash)
+
+        by_owner = reels.values.find { |entry| reel_entry_owner_id(entry) == user_id.to_s }
+        return by_owner if by_owner.is_a?(Hash)
+
+        if reels.size == 1
+          Ops::StructuredLogger.warn(
+            event: "instagram.story_reel.single_reel_without_key_match",
+            payload: {
+              requested_user_id: user_id.to_s,
+              referer_username: referer_username.to_s,
+              available_reel_keys: reels.keys.first(6)
+            }
+          )
+          return reels.values.first
+        end
+
+        Ops::StructuredLogger.warn(
+          event: "instagram.story_reel.requested_reel_missing",
+          payload: {
+            requested_user_id: user_id.to_s,
+            referer_username: referer_username.to_s,
+            available_reel_keys: reels.keys.first(10),
+            reels_count: reels.size
+          }
+        )
+        return nil
       end
 
       reels_media = body["reels_media"]
-      return reels_media.first if reels_media.is_a?(Array)
+      if reels_media.is_a?(Array)
+        by_owner = reels_media.find { |entry| reel_entry_owner_id(entry) == user_id.to_s }
+        return by_owner if by_owner.is_a?(Hash)
+
+        if reels_media.length == 1
+          Ops::StructuredLogger.warn(
+            event: "instagram.story_reel.single_reel_media_without_owner_match",
+            payload: {
+              requested_user_id: user_id.to_s,
+              referer_username: referer_username.to_s
+            }
+          )
+          return reels_media.first
+        end
+
+        Ops::StructuredLogger.warn(
+          event: "instagram.story_reel.reels_media_owner_missing",
+          payload: {
+            requested_user_id: user_id.to_s,
+            referer_username: referer_username.to_s,
+            reels_media_count: reels_media.length
+          }
+        )
+        return nil
+      end
 
       body
     rescue StandardError
       nil
     end
 
-    # Endpoint-first story media resolution:
+    # API-only story media resolution:
     # 1) /api/v1/users/web_profile_info?username=...
     # 2) /api/v1/feed/reels_media/?reel_ids=<user_id>
-    # Falls back to DOM only if API cannot resolve the active story reliably.
+    # Never falls back to DOM media scraping.
     def resolve_story_media_for_current_context(driver:, username:, story_id:, fallback_story_key:, cache: nil)
       uname = normalize_username(username)
       sid = story_id.to_s.strip
@@ -3001,22 +3152,60 @@ module Instagram
             width: api_story[:width],
             height: api_story[:height],
             source: "api_reels_media",
-            story_id: api_story[:story_id].to_s
+            story_id: api_story[:story_id].to_s,
+            image_url: api_story[:image_url].to_s.presence,
+            video_url: api_story[:video_url].to_s.presence,
+            owner_user_id: api_story[:owner_user_id].to_s.presence,
+            owner_username: api_story[:owner_username].to_s.presence,
+            media_variant_count: Array(api_story[:media_variants]).length,
+            primary_media_index: api_story[:primary_media_index],
+            primary_media_source: api_story[:primary_media_source].to_s.presence,
+            carousel_media: Array(api_story[:carousel_media])
           }
         end
       end
 
-      dom = extract_story_media_from_dom(driver)
-      dom.merge(
-        source: "dom_fallback",
-        story_id: sid.presence || fallback_story_key.to_s
+      Ops::StructuredLogger.warn(
+        event: "instagram.story_media.api_unresolved",
+        payload: {
+          username: uname,
+          story_id: sid.presence || fallback_story_key.to_s,
+          source: "api_only_resolution"
+        }
       )
+      {
+        media_type: nil,
+        url: nil,
+        width: nil,
+        height: nil,
+        source: "api_unresolved",
+        story_id: sid.presence || fallback_story_key.to_s,
+        image_url: nil,
+        video_url: nil,
+        owner_user_id: nil,
+        owner_username: nil,
+        media_variant_count: 0,
+        primary_media_index: nil,
+        primary_media_source: nil,
+        carousel_media: []
+      }
     rescue StandardError
-      dom = extract_story_media_from_dom(driver)
-      dom.merge(
-        source: "dom_fallback_error",
-        story_id: sid.presence || fallback_story_key.to_s
-      )
+      {
+        media_type: nil,
+        url: nil,
+        width: nil,
+        height: nil,
+        source: "api_unresolved_error",
+        story_id: sid.presence || fallback_story_key.to_s,
+        image_url: nil,
+        video_url: nil,
+        owner_user_id: nil,
+        owner_username: nil,
+        media_variant_count: 0,
+        primary_media_index: nil,
+        primary_media_source: nil,
+        carousel_media: []
+      }
     end
 
     def resolve_story_item_via_api(username:, story_id:, cache: nil)
@@ -3074,12 +3263,14 @@ module Instagram
       story_id = (item["pk"] || item["id"]).to_s.split("_").first.to_s.strip
       return nil if story_id.blank?
 
-      media_type = story_media_type(item["media_type"])
-      image_url = CGI.unescapeHTML(item.dig("image_versions2", "candidates", 0, "url").to_s).strip
-      video_url = CGI.unescapeHTML(Array(item["video_versions"]).first&.dig("url").to_s).strip
-      media_url = media_type == "video" ? video_url : image_url
-      width = item["original_width"] || item.dig("image_versions2", "candidates", 0, "width") || Array(item["video_versions"]).first&.dig("width")
-      height = item["original_height"] || item.dig("image_versions2", "candidates", 0, "height") || Array(item["video_versions"]).first&.dig("height")
+      media_variants = extract_story_media_variants_from_item(item)
+      selected_variant = choose_primary_story_media_variant(variants: media_variants)
+      media_type = selected_variant[:media_type].to_s.presence || story_media_type(item["media_type"])
+      image_url = selected_variant[:image_url].to_s.presence
+      video_url = selected_variant[:video_url].to_s.presence
+      media_url = selected_variant[:media_url].to_s.presence || video_url.presence || image_url.presence
+      width = selected_variant[:width]
+      height = selected_variant[:height]
       owner_id = (item.dig("owner", "id") || item.dig("owner", "pk") || item.dig("user", "id") || item.dig("user", "pk")).to_s.strip
       owner_username = normalize_username(item.dig("user", "username").to_s)
       external_story_ctx = detect_external_story_attribution_from_item(
@@ -3102,6 +3293,11 @@ module Instagram
         api_external_profile_reason: external_story_ctx[:reason_code],
         api_external_profile_targets: external_story_ctx[:targets],
         api_should_skip: external_story_ctx[:has_external_profile_indicator],
+        api_raw_media_type: item["media_type"].to_i,
+        primary_media_source: selected_variant[:source].to_s.presence,
+        primary_media_index: selected_variant[:index],
+        media_variants: media_variants,
+        carousel_media: media_variants.select { |entry| entry[:source].to_s == "carousel_media" },
         width: width.to_i.positive? ? width.to_i : nil,
         height: height.to_i.positive? ? height.to_i : nil,
         caption: item.dig("caption", "text").to_s.presence,
@@ -3111,6 +3307,86 @@ module Instagram
       }
     rescue StandardError
       nil
+    end
+
+    def extract_story_media_variants_from_item(item)
+      return [] unless item.is_a?(Hash)
+
+      variants = []
+      variants << build_story_media_variant(item: item, source: "root", index: 0)
+      Array(item["carousel_media"]).each_with_index do |entry, idx|
+        variants << build_story_media_variant(item: entry, source: "carousel_media", index: idx + 1)
+      end
+      variants.compact.select { |entry| entry[:media_url].to_s.present? }
+    rescue StandardError
+      []
+    end
+
+    def build_story_media_variant(item:, source:, index:)
+      return nil unless item.is_a?(Hash)
+
+      media_type = story_media_type(item["media_type"])
+      image_candidate = item.dig("image_versions2", "candidates", 0)
+      video_candidate = Array(item["video_versions"]).first
+      image_url = CGI.unescapeHTML(image_candidate&.dig("url").to_s).strip.presence
+      video_url = CGI.unescapeHTML(video_candidate&.dig("url").to_s).strip.presence
+      media_url = media_type == "video" ? (video_url.presence || image_url.presence) : (image_url.presence || video_url.presence)
+      width = item["original_width"] || image_candidate&.dig("width") || video_candidate&.dig("width")
+      height = item["original_height"] || image_candidate&.dig("height") || video_candidate&.dig("height")
+
+      {
+        source: source.to_s,
+        index: index.to_i,
+        media_pk: (item["pk"] || item["id"]).to_s.split("_").first.to_s.presence,
+        raw_media_type: item["media_type"].to_i,
+        media_type: media_type,
+        media_url: media_url.to_s.presence,
+        image_url: image_url,
+        video_url: video_url,
+        width: width.to_i.positive? ? width.to_i : nil,
+        height: height.to_i.positive? ? height.to_i : nil
+      }
+    rescue StandardError
+      nil
+    end
+
+    def choose_primary_story_media_variant(variants:)
+      list = Array(variants).select { |entry| entry.is_a?(Hash) && entry[:media_url].to_s.present? }
+      return {} if list.empty?
+
+      root = list.find { |entry| entry[:source].to_s == "root" }
+      return root if root
+
+      video = list.find { |entry| entry[:media_type].to_s == "video" }
+      return video if video
+
+      list.first
+    rescue StandardError
+      {}
+    end
+
+    def compact_story_media_variants_for_metadata(variants, limit: 8)
+      Array(variants).first(limit.to_i.clamp(1, 20)).filter_map do |entry|
+        data = entry.is_a?(Hash) ? entry : {}
+        source = data[:source] || data["source"]
+        media_type = data[:media_type] || data["media_type"]
+        media_url = data[:media_url] || data["media_url"]
+        next nil if media_url.to_s.blank?
+
+        {
+          source: source.to_s.presence,
+          index: data[:index] || data["index"],
+          media_pk: (data[:media_pk] || data["media_pk"]).to_s.presence,
+          media_type: media_type.to_s.presence,
+          media_url: media_url.to_s.presence,
+          image_url: (data[:image_url] || data["image_url"]).to_s.presence,
+          video_url: (data[:video_url] || data["video_url"]).to_s.presence,
+          width: data[:width] || data["width"],
+          height: data[:height] || data["height"]
+        }.compact
+      end
+    rescue StandardError
+      []
     end
 
     def detect_external_story_attribution_from_item(item:, reel_owner_id:, reel_username:)
@@ -3334,6 +3610,21 @@ module Instagram
       end
       
       items.size
+    end
+
+    def reel_entry_owner_id(entry)
+      return "" unless entry.is_a?(Hash)
+
+      (
+        entry.dig("user", "id") ||
+        entry.dig("user", "pk") ||
+        entry.dig("owner", "id") ||
+        entry.dig("owner", "pk") ||
+        entry["id"] ||
+        entry["pk"]
+      ).to_s.strip
+    rescue StandardError
+      ""
     end
 
     def extract_post_for_analysis(item, comments_limit:, referer_username:)
@@ -4473,12 +4764,9 @@ module Instagram
 
       username = fetch_story_users_via_api.keys.first.to_s
       if username.blank?
-        story_link = driver.find_elements(css: "a[href*='/stories/']").find { |el| el.displayed? rescue false } ||
-          driver.find_elements(css: "a[href*='/stories/']").first
-        return result unless story_link
-
-        href = story_link.attribute("href").to_s
-        username = normalize_username(href.split("/stories/").last.to_s.split("/").first.to_s)
+        result[:reply_skipped] = true
+        result[:reply_skip_reason] = "api_story_users_unavailable"
+        return result
       end
       return result if username.blank?
 
@@ -5289,6 +5577,30 @@ module Instagram
       }
     end
 
+    def normalized_story_context_for_processing(driver:, context:)
+      ctx = context.is_a?(Hash) ? context.dup : {}
+      live_url = driver.current_url.to_s
+      live_ref = current_story_reference(live_url)
+      if live_ref.present?
+        live_username = normalize_username(live_ref.to_s.split(":").first.to_s)
+        live_story_id = normalize_story_id_token(live_ref.to_s.split(":")[1].to_s)
+        ctx[:ref] = live_ref
+        ctx[:username] = live_username if live_username.present?
+        ctx[:story_id] = live_story_id if live_story_id.present?
+      end
+
+      ctx[:username] = normalize_username(ctx[:username])
+      ctx[:story_id] = normalize_story_id_token(ctx[:story_id])
+      if ctx[:username].present? && ctx[:story_id].present?
+        ctx[:ref] = "#{ctx[:username]}:#{ctx[:story_id]}"
+        ctx[:story_key] = "#{ctx[:username]}:#{ctx[:story_id]}"
+      end
+      ctx[:url] = canonical_story_url(username: ctx[:username], story_id: ctx[:story_id], fallback_url: live_url)
+      ctx
+    rescue StandardError
+      context
+    end
+
     def recover_story_url_context!(driver:, username:, reason:)
       clean_username = normalize_username(username)
       return if clean_username.blank?
@@ -5618,6 +5930,21 @@ module Instagram
     end
 
     def generate_comment_suggestions_from_analysis!(profile:, payload:, analysis:)
+      preparation = ensure_profile_comment_generation_readiness(profile: profile)
+      unless ActiveModel::Type::Boolean.new.cast(preparation[:ready_for_comment_generation] || preparation["ready_for_comment_generation"])
+        log_automation_event(
+          task_name: "comment_generation_blocked_profile_preparation",
+          severity: "warn",
+          details: {
+            profile_id: profile&.id,
+            username: profile&.username,
+            reason_code: preparation[:reason_code] || preparation["reason_code"],
+            reason: preparation[:reason] || preparation["reason"]
+          }
+        )
+        return []
+      end
+
       suggestions = Array(analysis["comment_suggestions"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
       suggestions = ensure_story_comment_diversity(profile: profile, suggestions: suggestions)
       return suggestions if suggestions.present?
@@ -5629,6 +5956,29 @@ module Instagram
         author_type: analysis["author_type"].to_s
       )
       ensure_story_comment_diversity(profile: profile, suggestions: generated)
+    end
+
+    def ensure_profile_comment_generation_readiness(profile:)
+      return { ready_for_comment_generation: false, reason_code: "profile_missing", reason: "Profile missing." } unless profile
+
+      @profile_comment_preparation_cache ||= {}
+      cached = @profile_comment_preparation_cache[profile.id]
+      return cached if cached.is_a?(Hash)
+
+      summary = Ai::ProfileCommentPreparationService.new(
+        account: @account,
+        profile: profile,
+        posts_limit: 10,
+        comments_limit: 12
+      ).prepare!
+      @profile_comment_preparation_cache[profile.id] = summary.is_a?(Hash) ? summary : {}
+    rescue StandardError => e
+      {
+        ready_for_comment_generation: false,
+        reason_code: "profile_preparation_error",
+        reason: e.message.to_s,
+        error_class: e.class.name
+      }
     end
 
     def recent_story_and_post_history(profile:)
@@ -6341,6 +6691,61 @@ module Instagram
       nil
     end
 
+    def normalize_story_id_token(value)
+      token = value.to_s.strip
+      return "" if token.blank?
+
+      token = token.split(/[?#]/).first.to_s
+      token = token.split("/").first.to_s
+      return "" if token.blank?
+      return "" if token.casecmp("unknown").zero?
+      return "" if token.casecmp("sig").zero?
+      return "" if token.start_with?("sig:")
+
+      digits = token.gsub(/\D/, "")
+      digits.presence || ""
+    rescue StandardError
+      ""
+    end
+
+    def canonical_story_url(username:, story_id:, fallback_url:)
+      uname = normalize_username(username)
+      sid = normalize_story_id_token(story_id)
+      return "#{INSTAGRAM_BASE_URL}/stories/#{uname}/#{sid}/" if uname.present? && sid.present?
+      return "#{INSTAGRAM_BASE_URL}/stories/#{uname}/" if uname.present?
+
+      fallback_url.to_s
+    rescue StandardError
+      fallback_url.to_s
+    end
+
+    def story_id_hint_from_media_url(url)
+      value = url.to_s.strip
+      return "" if value.blank?
+
+      begin
+        uri = URI.parse(value)
+        query = Rack::Utils.parse_query(uri.query.to_s)
+        raw_ig_cache = query["ig_cache_key"].to_s
+        if raw_ig_cache.present?
+          decoded = Base64.decode64(CGI.unescape(raw_ig_cache)).to_s
+          if (m = decoded.match(/(\d{8,})/))
+            return m[1].to_s
+          end
+        end
+      rescue StandardError
+        nil
+      end
+
+      if (m = value.match(%r{/stories/[A-Za-z0-9._]{1,30}/(\d{8,})}))
+        return m[1].to_s
+      end
+
+      ""
+    rescue StandardError
+      ""
+    end
+
     def current_story_reference(url)
       value = url.to_s
       return "" unless value.include?("/stories/")
@@ -6387,45 +6792,6 @@ module Instagram
         status: "ok",
         meta: { expected_ref: expected_ref, current_ref: current_story_reference(driver.current_url.to_s) }
       )
-    end
-
-    def extract_story_media_from_dom(driver)
-      payload = driver.execute_script(<<~JS)
-        const out = { media_type: null, url: null, width: null, height: null };
-        const img = Array.from(document.querySelectorAll("img")).find((el) => {
-          const r = el.getBoundingClientRect();
-          return r.width > 120 && r.height > 120;
-        });
-
-        if (img) {
-          out.media_type = "image";
-          out.url = img.currentSrc || img.getAttribute("src") || null;
-          out.width = Number(img.naturalWidth || 0) || null;
-          out.height = Number(img.naturalHeight || 0) || null;
-          return out;
-        }
-
-        const video = Array.from(document.querySelectorAll("video")).find((el) => {
-          const r = el.getBoundingClientRect();
-          return r.width > 120 && r.height > 120;
-        });
-        if (video) {
-          out.media_type = "video";
-          out.url = video.currentSrc || video.getAttribute("src") || video.getAttribute("poster") || null;
-          out.width = Number(video.videoWidth || 0) || null;
-          out.height = Number(video.videoHeight || 0) || null;
-        }
-        return out;
-      JS
-
-      {
-        media_type: payload.is_a?(Hash) ? ((payload["media_type"] || payload[:media_type]).to_s.presence || "unknown") : "unknown",
-        url: payload.is_a?(Hash) ? (payload["url"] || payload[:url]).to_s : "",
-        width: payload.is_a?(Hash) ? (payload["width"] || payload[:width]) : nil,
-        height: payload.is_a?(Hash) ? (payload["height"] || payload[:height]) : nil
-      }
-    rescue StandardError
-      { media_type: "unknown", url: "", width: nil, height: nil }
     end
 
     def evaluate_story_image_quality(download:, media:)

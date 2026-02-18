@@ -2,7 +2,13 @@
 
 <%= turbo_stream_from @account %>
 
-<div class="page">
+<div
+  class="page"
+  data-controller="profile-sections-loader"
+  data-profile-sections-loader-retry-limit-value="3"
+  data-profile-sections-loader-poll-ms-value="900"
+  data-profile-sections-loader-max-wait-ms-value="18000"
+>
   <header class="page-header">
     <h1><%= @profile.username %></h1>
     <p class="meta">
@@ -25,7 +31,9 @@
       </div>
       <div class="stat">
         <div class="stat-label">Posts (Image Input)</div>
-        <div class="stat-kv"><span class="muted">Captured</span><strong><%= @profile_posts_total_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Captured total</span><strong><%= @profile_posts_total_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Active</span><strong><%= @active_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Deleted flagged</span><strong><%= @deleted_posts_count %></strong></div>
         <div class="stat-kv"><span class="muted">AI analyzed</span><strong><%= @analyzed_posts_count %></strong></div>
         <div class="stat-kv"><span class="muted">Pending analysis</span><strong><%= @pending_posts_count %></strong></div>
       </div>
@@ -72,6 +80,7 @@
         </p>
 
         <div class="actions-row">
+          <%= button_to "Capture Profile Posts (Background)", capture_posts_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Fetch Profile Details (Background)", fetch_details_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Verify Messageability (Background)", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Sync Avatar (Background)", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
@@ -176,37 +185,37 @@
     <% end %>
   </section>
 
-  <%= turbo_frame_tag "profile_captured_posts_#{@profile.id}", src: captured_posts_section_instagram_profile_path(@profile), loading: :lazy do %>
+  <%= turbo_frame_tag "profile_captured_posts_#{@profile.id}", src: captured_posts_section_instagram_profile_path(@profile), loading: :eager do %>
     <section class="card">
       <h2>Captured Profile Posts (AI Input)</h2>
       <p class="meta">Loading captured posts...</p>
     </section>
   <% end %>
 
-  <%= turbo_frame_tag "profile_downloaded_stories_#{@profile.id}", src: downloaded_stories_section_instagram_profile_path(@profile), loading: :lazy do %>
+  <%= turbo_frame_tag "profile_downloaded_stories_#{@profile.id}", src: downloaded_stories_section_instagram_profile_path(@profile), loading: :eager do %>
     <section class="card">
       <h2>Downloaded Stories</h2>
       <p class="meta">Loading downloaded stories...</p>
     </section>
   <% end %>
 
-  <%= turbo_frame_tag "profile_messages_#{@profile.id}", src: messages_section_instagram_profile_path(@profile), loading: :lazy do %>
+  <%= turbo_frame_tag "profile_messages_#{@profile.id}", src: messages_section_instagram_profile_path(@profile), loading: :eager do %>
     <section class="card">
       <h2>Message History</h2>
       <p class="meta">Loading message history...</p>
     </section>
   <% end %>
 
-  <%= turbo_frame_tag "profile_actions_#{@profile.id}", src: action_history_section_instagram_profile_path(@profile), loading: :lazy do %>
+  <%= turbo_frame_tag "profile_actions_#{@profile.id}", src: action_history_section_instagram_profile_path(@profile), loading: :eager do %>
     <section class="card">
       <h2>Action History</h2>
       <p class="meta">Loading action history...</p>
     </section>
   <% end %>
 
-  <%= turbo_frame_tag "profile_events_table_#{@profile.id}", src: events_table_section_instagram_profile_path(@profile), loading: :lazy do %>
+  <%= turbo_frame_tag "profile_events_table_#{@profile.id}", src: events_table_section_instagram_profile_path(@profile), loading: :eager do %>
     <section class="card">
-      <h2>Profile History</h2>
+      <h2>History</h2>
       <p class="meta">Loading profile history table...</p>
     </section>
   <% end %>

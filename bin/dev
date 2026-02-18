@@ -1,5 +1,46 @@
 #!/usr/bin/env ruby
+
 require "bundler/setup"
+
+# --- Service Refresh Logic ---
+def kill_process_on_port(port)
+  pid = `lsof -ti tcp:#{port}`.strip
+  unless pid.empty?
+    puts "🛑 Killing process on port #{port} (PID: #{pid})..."
+    begin
+      Process.kill("TERM", pid.to_i)
+      sleep 2
+      Process.kill("KILL", pid.to_i) rescue nil
+    rescue => e
+      puts "⚠️  Could not kill process #{pid}: #{e.message}"
+    end
+  end
+end
+
+# Kill Rails (port 3000), AI Microservice (8000), Ollama (11434)
+kill_process_on_port(3000)
+kill_process_on_port(8000)
+kill_process_on_port(11434)
+
+# Kill asset builders (yarn watch, yarn watch:css) and jobs by name
+%w[yarn jobs].each do |proc|
+  pids = `pgrep -f "#{proc}"`.split
+  pids.each do |pid|
+    puts "🛑 Killing #{proc} process (PID: #{pid})..."
+    begin
+      Process.kill("TERM", pid.to_i)
+      sleep 1
+      Process.kill("KILL", pid.to_i) rescue nil
+    rescue => e
+      puts "⚠️  Could not kill #{proc} process #{pid}: #{e.message}"
+    end
+  end
+end
+
+# Remove AI microservice PID file if exists
+if File.exist?("tmp/ai_microservice.pid")
+  File.delete("tmp/ai_microservice.pid") rescue nil
+end
 
 env = ENV.to_h
 env["REDIS_URL"] ||= "redis://127.0.0.1:6379/0"
@@ -37,6 +78,13 @@ if start_ai_services
   microservice_running = system("curl -s http://localhost:8000/health > /dev/null 2>&1")
   unless microservice_running
     puts "🧠 Starting AI Microservice..."
+    microservice_log = File.expand_path("log/ai_microservice.log", Dir.pwd)
+    microservice_env = {
+      "PYTHONPATH" => ".",
+      "PYTHONUNBUFFERED" => "1",
+      "LOCAL_AI_RELOAD" => ENV.fetch("LOCAL_AI_RELOAD", "false"),
+      "LOCAL_AI_LOG_LEVEL" => ENV.fetch("LOCAL_AI_LOG_LEVEL", "info")
+    }
     
     # Setup microservice if needed
     unless Dir.exist?("ai_microservice/ai_microservice_env")
@@ -55,21 +103,23 @@ if start_ai_services
       puts "✅ Microservice setup looks good"
       # Try full version first
       ai_services_pids << Process.spawn(
-        {"PYTHONPATH" => "ai_microservice"},
-        "ai_microservice/ai_microservice_env/bin/python",
-        "ai_microservice/main.py",
-        out: "log/ai_microservice.log",
-        err: "log/ai_microservice.log"
+        microservice_env,
+        "ai_microservice_env/bin/python",
+        "main.py",
+        chdir: "ai_microservice",
+        out: microservice_log,
+        err: microservice_log
       )
     else
       puts "⚠️  Using simplified microservice (some features may be limited)"
       # Use simplified version
       ai_services_pids << Process.spawn(
-        {"PYTHONPATH" => "ai_microservice"},
-        "ai_microservice/ai_microservice_env/bin/python",
-        "ai_microservice/main_simple.py",
-        out: "log/ai_microservice.log",
-        err: "log/ai_microservice.log"
+        microservice_env,
+        "ai_microservice_env/bin/python",
+        "main_simple.py",
+        chdir: "ai_microservice",
+        out: microservice_log,
+        err: microservice_log
       )
     end
     

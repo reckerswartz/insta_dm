@@ -61,6 +61,7 @@ Rails.application.routes.draw do
       get :events_table_section
       patch :tags, to: "instagram_profiles#tags"
       post :analyze, to: "instagram_profile_actions#analyze"
+      post :capture_posts, to: "instagram_profile_actions#capture_posts"
       post :fetch_details, to: "instagram_profile_actions#fetch_details"
       post :verify_messageability, to: "instagram_profile_actions#verify_messageability"
       post :download_avatar, to: "instagram_profile_actions#download_avatar"

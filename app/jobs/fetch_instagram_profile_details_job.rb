@@ -17,13 +17,12 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
     action_log.mark_running!(extra_metadata: { queue_name: queue_name, active_job_id: job_id })
 
     details = Instagram::Client.new(account: account).fetch_profile_details_and_verify_messageability!(username: profile.username)
+    normalized_pic_url = Instagram::AvatarUrlNormalizer.normalize(details[:profile_pic_url])
 
     prev_last_post_at = profile.last_post_at
-    prev_pic_url = profile.profile_pic_url.to_s
-
     profile.update!(
       display_name: details[:display_name].presence || profile.display_name,
-      profile_pic_url: details[:profile_pic_url].presence || profile.profile_pic_url,
+      profile_pic_url: normalized_pic_url.presence || profile.profile_pic_url,
       ig_user_id: details[:ig_user_id].presence || profile.ig_user_id,
       bio: details[:bio].presence || profile.bio,
       can_message: details[:can_message],
@@ -52,7 +51,7 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
     end
 
     # If avatar URL changed (or we never downloaded an attachment), refresh in the background.
-    new_url = profile.profile_pic_url.to_s.strip
+    new_url = Instagram::AvatarUrlNormalizer.normalize(profile.profile_pic_url)
     if new_url.present? && (profile.avatar.blank? || avatar_fp(new_url) != profile.avatar_url_fingerprint.to_s)
       avatar_log = profile.instagram_profile_action_logs.create!(
         instagram_account: account,
@@ -69,7 +68,8 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
         profile_action_log_id: avatar_log.id
       )
       avatar_log.update!(active_job_id: avatar_job.job_id, queue_name: avatar_job.queue_name)
-    elsif new_url.blank? && prev_pic_url.present?
+    elsif new_url.blank? && profile.profile_pic_url.present?
+      profile.update!(profile_pic_url: nil, avatar_url_fingerprint: nil, avatar_synced_at: Time.current)
       profile.record_event!(kind: "avatar_missing", external_id: "avatar_missing:#{Time.current.utc.to_date.iso8601}", metadata: { source: "profile_page" })
     end
 

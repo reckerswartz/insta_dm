@@ -1,6 +1,6 @@
 <section id="action_history_section" class="card">
   <h2>Action History</h2>
-  <p class="meta">Tracks profile actions such as fetch details, messageability verification, AI analysis, and avatar sync.</p>
+  <p class="meta">Tracks capture/sync actions. Use this with <strong>History</strong> (Profile History table) to view fetched media and related event actions.</p>
 
   <% if action_logs.any? %>
     <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="profile-action-history-table" data-table-standard-pagination-size-value="25">
@@ -13,10 +13,12 @@
             <th>Status</th>
             <th>Source</th>
             <th>Details</th>
+            <th>Artifacts</th>
           </tr>
         </thead>
         <tbody>
           <% action_logs.each do |log| %>
+            <% metadata = log.metadata.is_a?(Hash) ? log.metadata : {} %>
             <tr>
               <td><%= relative_time_with_tooltip(log.occurred_at) %></td>
               <td><code><%= log.action %></code></td>
@@ -27,6 +29,20 @@
                   <strong><%= log.error_message %></strong>
                 <% elsif log.log_text.present? %>
                   <%= log.log_text %>
+                <% else %>
+                  -
+                <% end %>
+              </td>
+              <td class="meta">
+                <% if log.action == "capture_profile_posts" %>
+                  new: <strong><%= metadata["created_count"].to_i %></strong>,
+                  restored: <strong><%= metadata["restored_count"].to_i %></strong>,
+                  deleted flagged: <strong><%= metadata["deleted_count"].to_i %></strong><br>
+                  <a class="btn small secondary" href="#captured_profile_posts_section">Posts</a>
+                  <a class="btn small secondary" href="#profile_events_table_<%= log.instagram_profile_id %>">History</a>
+                <% elsif metadata["post_shortcode"].to_s.present? %>
+                  Post: <code><%= metadata["post_shortcode"] %></code><br>
+                  <a class="btn small secondary" href="#captured_profile_posts_section">View post</a>
                 <% else %>
                   -
                 <% end %>

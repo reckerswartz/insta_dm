@@ -10,6 +10,7 @@ import { default as IssuesTableController } from "./issues_table_controller"
 import { default as PostsTableController } from "./posts_table_controller"
 import { default as ProfilePostModalController } from "./profile-post-modal_controller"
 import { default as ProfileEventsTableController } from "./profile_events_table_controller"
+import { default as ProfileSectionsLoaderController } from "./profile_sections_loader_controller"
 import { default as ProfilesTableController } from "./profiles_table_controller"
 import { default as StoryMediaArchiveController } from "./story_media_archive_controller"
 import { default as StorageIngestionsTableController } from "./storage_ingestions_table_controller"
@@ -26,6 +27,7 @@ application.register("issues-table", IssuesTableController)
 application.register("posts-table", PostsTableController)
 application.register("profile-post-modal", ProfilePostModalController)
 application.register("profile-events-table", ProfileEventsTableController)
+application.register("profile-sections-loader", ProfileSectionsLoaderController)
 application.register("profiles-table", ProfilesTableController)
 application.register("story-media-archive", StoryMediaArchiveController)
 application.register("storage-ingestions-table", StorageIngestionsTableController)

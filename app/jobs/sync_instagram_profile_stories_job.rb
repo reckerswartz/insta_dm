@@ -34,6 +34,18 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       force_analyze_all: force,
       auto_reply: auto_reply_enabled
     })
+    Ops::StructuredLogger.info(
+      event: "profile_story_sync.started",
+      payload: {
+        active_job_id: job_id,
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        profile_username: profile.username,
+        max_stories: max_stories_i,
+        force_analyze_all: force,
+        auto_reply: auto_reply_enabled
+      }
+    )
 
     dataset = Instagram::Client.new(account: account).fetch_profile_story_dataset!(
       username: profile.username,
@@ -44,8 +56,10 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
 
     stories = Array(dataset[:stories]).first(max_stories_i)
     downloaded_count = 0
+    reused_download_count = 0
     analyzed_count = 0
     reply_queued_count = 0
+    story_failures = []
 
     stories.each do |story|
       story_id = story[:story_id].to_s
@@ -62,10 +76,18 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
           metadata: base_story_metadata(profile: profile, story: story).merge(
             skip_reason: story[:api_external_profile_reason].to_s.presence || "api_external_profile_indicator",
             skip_source: "api_story_item_attribution",
-            skip_targets: Array(story[:api_external_profile_targets])
+            skip_targets: Array(story[:api_external_profile_targets]),
+            duplicate_download_prevented: latest_story_download_event(profile: profile, story_id: story_id).present?
           )
         )
-        downloaded_count += 1 if download_skipped_story!(account: account, profile: profile, story: story, skip_reason: story[:api_external_profile_reason].to_s.presence || "api_external_profile_indicator")
+        skipped_download = download_skipped_story!(
+          account: account,
+          profile: profile,
+          story: story,
+          skip_reason: story[:api_external_profile_reason].to_s.presence || "api_external_profile_indicator"
+        )
+        downloaded_count += 1 if skipped_download[:downloaded]
+        reused_download_count += 1 if skipped_download[:reused]
         next
       end
 
@@ -79,10 +101,10 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
             skip_reason: "already_processed",
             force_analyze_all: force,
             story_index: stories.find_index(story),
-            total_stories: stories.size
+            total_stories: stories.size,
+            duplicate_download_prevented: latest_story_download_event(profile: profile, story_id: story_id).present?
           )
         )
-        downloaded_count += 1 if download_skipped_story!(account: account, profile: profile, story: story, skip_reason: "already_processed")
         next
       end
 
@@ -108,22 +130,34 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       media_url = story[:media_url].to_s.strip
       next if media_url.blank?
 
-      bytes, content_type, filename = download_story_media(url: media_url, user_agent: account.user_agent)
-      downloaded_at = Time.current
-      downloaded_event = profile.record_event!(
-        kind: "story_downloaded",
-        external_id: "story_downloaded:#{story_id}:#{downloaded_at.utc.iso8601(6)}",
-        occurred_at: downloaded_at,
-        metadata: base_story_metadata(profile: profile, story: story).merge(
-          downloaded_at: downloaded_at.iso8601,
-          media_filename: filename,
-          media_content_type: content_type,
-          media_bytes: bytes.bytesize
+      existing_download_event = latest_story_download_event(profile: profile, story_id: story_id)
+      reused_media = load_existing_story_media(event: existing_download_event)
+      if reused_media
+        bytes = reused_media[:bytes]
+        content_type = reused_media[:content_type]
+        filename = reused_media[:filename]
+        downloaded_event = reused_media[:event]
+        reused_download_count += 1
+      else
+        bytes, content_type, filename = download_story_media(url: media_url, user_agent: account.user_agent)
+        downloaded_at = Time.current
+        downloaded_event = profile.record_event!(
+          kind: "story_downloaded",
+          external_id: "story_downloaded:#{story_id}:#{downloaded_at.utc.iso8601(6)}",
+          occurred_at: downloaded_at,
+          metadata: base_story_metadata(profile: profile, story: story).merge(
+            downloaded_at: downloaded_at.iso8601,
+            media_filename: filename,
+            media_content_type: content_type,
+            media_bytes: bytes.bytesize
+          )
         )
-      )
 
-      downloaded_event.media.attach(io: StringIO.new(bytes), filename: filename, content_type: content_type)
-      InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
+        downloaded_event.media.attach(io: StringIO.new(bytes), filename: filename, content_type: content_type)
+        InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
+        downloaded_count += 1
+      end
+
       attach_media_to_event(upload_event, bytes: bytes, filename: filename, content_type: content_type)
       ingested_story = ingest_story_for_processing(
         account: account,
@@ -135,7 +169,6 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         filename: filename,
         force_reprocess: force
       )
-      downloaded_count += 1
 
       analysis = analyze_story_for_comments(
         account: account,
@@ -191,27 +224,74 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
           )
         end
       end
-    rescue StandardError
+    rescue StandardError => e
+      story_failures << {
+        story_id: story_id.presence || story[:story_id].to_s,
+        error_class: e.class.name,
+        error_message: e.message.to_s.byteslice(0, 220)
+      }
+      Ops::StructuredLogger.warn(
+        event: "profile_story_sync.story_failed",
+        payload: {
+          active_job_id: job_id,
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          profile_username: profile.username,
+          story_id: story_id.presence || story[:story_id].to_s,
+          error_class: e.class.name,
+          error_message: e.message.to_s
+        }
+      )
       next
     end
+
+    Ops::StructuredLogger.info(
+      event: "profile_story_sync.completed",
+      payload: {
+        active_job_id: job_id,
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        profile_username: profile.username,
+        stories_found: stories.size,
+        downloaded: downloaded_count,
+        reused_downloads: reused_download_count,
+        analyzed: analyzed_count,
+        replies_queued: reply_queued_count,
+        failed_story_count: story_failures.length
+      }
+    )
 
     Turbo::StreamsChannel.broadcast_append_to(
       account,
       target: "notifications",
       partial: "shared/notification",
-      locals: { kind: "notice", message: "Story sync completed for #{profile.username}. Stories: #{stories.size}, downloaded: #{downloaded_count}, analyzed: #{analyzed_count}, replies queued: #{reply_queued_count}." }
+      locals: { kind: "notice", message: "Story sync completed for #{profile.username}. Stories: #{stories.size}, downloaded: #{downloaded_count}, reused: #{reused_download_count}, analyzed: #{analyzed_count}, replies queued: #{reply_queued_count}, failed: #{story_failures.length}." }
     )
 
     action_log.mark_succeeded!(
       extra_metadata: {
         stories_found: stories.size,
         downloaded: downloaded_count,
+        reused_downloads: reused_download_count,
         analyzed: analyzed_count,
-        replies_queued: reply_queued_count
+        replies_queued: reply_queued_count,
+        failed_story_count: story_failures.length,
+        failed_stories: story_failures.first(15)
       },
-      log_text: "Synced #{stories.size} stories (downloaded: #{downloaded_count}, analyzed: #{analyzed_count}, replies queued: #{reply_queued_count})"
+      log_text: "Synced #{stories.size} stories (downloaded: #{downloaded_count}, reused: #{reused_download_count}, analyzed: #{analyzed_count}, replies queued: #{reply_queued_count}, failed: #{story_failures.length})"
     )
   rescue StandardError => e
+    Ops::StructuredLogger.error(
+      event: "profile_story_sync.failed",
+      payload: {
+        active_job_id: job_id,
+        instagram_account_id: account&.id,
+        instagram_profile_id: profile&.id,
+        profile_username: profile&.username,
+        error_class: e.class.name,
+        error_message: e.message.to_s
+      }
+    )
     Turbo::StreamsChannel.broadcast_append_to(
       account,
       target: "notifications",
@@ -260,6 +340,10 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       media_url: story[:media_url],
       image_url: story[:image_url],
       video_url: story[:video_url],
+      primary_media_source: story[:primary_media_source],
+      primary_media_index: story[:primary_media_index],
+      media_variants_count: Array(story[:media_variants]).length,
+      carousel_media: compact_story_media_variants(story[:carousel_media]),
       can_reply: story[:can_reply],
       can_reshare: story[:can_reshare],
       owner_user_id: story[:owner_user_id],
@@ -280,6 +364,28 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         bio: profile.bio.to_s.tr("\n", " ").byteslice(0, 260)
       }
     }
+  end
+
+  def compact_story_media_variants(variants)
+    Array(variants).first(8).filter_map do |entry|
+      data = entry.is_a?(Hash) ? entry : {}
+      media_url = data[:media_url] || data["media_url"]
+      next nil if media_url.to_s.blank?
+
+      {
+        source: (data[:source] || data["source"]).to_s.presence,
+        index: data[:index] || data["index"],
+        media_pk: (data[:media_pk] || data["media_pk"]).to_s.presence,
+        media_type: (data[:media_type] || data["media_type"]).to_s.presence,
+        media_url: media_url.to_s,
+        image_url: (data[:image_url] || data["image_url"]).to_s.presence,
+        video_url: (data[:video_url] || data["video_url"]).to_s.presence,
+        width: data[:width] || data["width"],
+        height: data[:height] || data["height"]
+      }.compact
+    end
+  rescue StandardError
+    []
   end
 
   def automatic_reply_enabled?(profile)
@@ -470,12 +576,17 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   end
 
   def download_skipped_story!(account:, profile:, story:, skip_reason:)
+    story_id = story[:story_id].to_s
+    existing_event = latest_story_download_event(profile: profile, story_id: story_id)
+    if existing_event&.media&.attached?
+      return { downloaded: false, reused: true, event: existing_event }
+    end
+
     media_url = story[:media_url].to_s.strip
-    return false if media_url.blank?
+    return { downloaded: false, reused: false, event: nil } if media_url.blank?
 
     bytes, content_type, filename = download_story_media(url: media_url, user_agent: account.user_agent)
     downloaded_at = Time.current
-    story_id = story[:story_id].to_s
     event = profile.record_event!(
       kind: "story_downloaded",
       external_id: "story_downloaded:#{story_id}:#{downloaded_at.utc.iso8601(6)}",
@@ -491,9 +602,9 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     )
     event.media.attach(io: StringIO.new(bytes), filename: filename, content_type: content_type)
     InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
-    true
+    { downloaded: true, reused: false, event: event }
   rescue StandardError
-    false
+    { downloaded: false, reused: false, event: nil }
   end
 
   def recent_story_history_context(profile:)
@@ -624,6 +735,30 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     )
   rescue StandardError => e
     Rails.logger.warn("[SyncInstagramProfileStoriesJob] story ingestion failed story_id=#{story[:story_id]}: #{e.class}: #{e.message}")
+    nil
+  end
+
+  def latest_story_download_event(profile:, story_id:)
+    profile.instagram_profile_events
+      .joins(:media_attachment)
+      .with_attached_media
+      .where(kind: "story_downloaded")
+      .where("external_id LIKE ?", "story_downloaded:#{story_id}:%")
+      .order(detected_at: :desc, id: :desc)
+      .first
+  end
+
+  def load_existing_story_media(event:)
+    return nil unless event&.media&.attached?
+
+    blob = event.media.blob
+    {
+      event: event,
+      bytes: blob.download,
+      content_type: blob.content_type.to_s.presence || "application/octet-stream",
+      filename: blob.filename.to_s.presence || "story_#{event.id}.bin"
+    }
+  rescue StandardError
     nil
   end
 

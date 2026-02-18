@@ -1,6 +1,7 @@
 require "net/http"
 require "digest"
 require "cgi"
+require "uri"
 
 class DownloadInstagramProfileAvatarJob < ApplicationJob
   queue_as :avatars
@@ -16,11 +17,23 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
     )
     action_log.mark_running!(extra_metadata: { queue_name: queue_name, active_job_id: job_id, force: force })
 
-    url = CGI.unescapeHTML(profile.profile_pic_url.to_s).strip
+    raw_url = profile.profile_pic_url.to_s
+    url = Instagram::AvatarUrlNormalizer.normalize(raw_url)
     if url.blank?
       # Nothing to download; leave the attachment blank and allow UI default avatar fallback.
-      profile.update!(avatar_url_fingerprint: nil, avatar_synced_at: Time.current)
-      action_log.mark_succeeded!(log_text: "Avatar URL blank; marked as synced with no attachment")
+      profile.update!(
+        profile_pic_url: (raw_url.present? ? nil : profile.profile_pic_url),
+        avatar_url_fingerprint: nil,
+        avatar_synced_at: Time.current
+      )
+      action_log.mark_succeeded!(
+        extra_metadata: {
+          skipped: true,
+          reason: raw_url.present? ? "invalid_or_placeholder_avatar_url" : "avatar_url_blank",
+          profile_pic_url_raw: raw_url.presence
+        },
+        log_text: raw_url.present? ? "Avatar URL invalid/placeholder; skipped download" : "Avatar URL blank; marked as synced with no attachment"
+      )
       return
     end
 
@@ -121,7 +134,9 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
     Digest::SHA256.hexdigest(url.to_s)
   end
 
-  def fetch_url(url, user_agent:)
+  def fetch_url(url, user_agent:, redirects_left: 4)
+    raise "Too many redirects" if redirects_left.negative?
+
     uri = URI.parse(url)
     raise "Invalid URL" unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
 
@@ -139,7 +154,10 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
 
     # Handle simple redirects (CDN often redirects).
     if res.is_a?(Net::HTTPRedirection) && res["location"].present?
-      return fetch_url(res["location"], user_agent: user_agent)
+      redirected_url = normalize_redirect_url(base_uri: uri, location: res["location"])
+      raise "Invalid redirect URL" if redirected_url.blank?
+
+      return fetch_url(redirected_url, user_agent: user_agent, redirects_left: redirects_left - 1)
     end
 
     raise "HTTP #{res.code}" unless res.is_a?(Net::HTTPSuccess)
@@ -153,5 +171,15 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
 
     io = StringIO.new(body)
     [io, filename, content_type]
+  end
+
+  def normalize_redirect_url(base_uri:, location:)
+    target = URI.join(base_uri.to_s, location.to_s).to_s
+    uri = URI.parse(target)
+    return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+    uri.to_s
+  rescue URI::InvalidURIError, ArgumentError
+    nil
   end
 end

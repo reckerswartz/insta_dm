@@ -143,15 +143,39 @@ module Ai
 
         case media_hash[:type].to_s
         when "image"
-          vision = analyze_image_media(media_hash)
+          vision, vision_warning = safe_media_analysis(stage: "image_analysis", media_type: "image") do
+            analyze_image_media(media_hash)
+          end
           raw[:vision] = vision
           labels = extract_image_labels(vision)
-          image_description = build_image_description_from_vision(vision, labels: labels)
+          if vision_warning
+            labels << warning_label_for_error(vision_warning[:error_class], prefix: "image_analysis_error")
+            raw[:vision_warning] = vision_warning
+          end
+          labels = labels.uniq
+          image_description =
+            if labels.any?
+              build_image_description_from_vision(vision, labels: labels)
+            else
+              "Image analysis unavailable due to a local AI timeout or connection issue."
+            end
         when "video"
-          video = analyze_video_media(media_hash)
+          video, video_warning = safe_media_analysis(stage: "video_analysis", media_type: "video") do
+            analyze_video_media(media_hash)
+          end
           raw[:video] = video
           labels = extract_video_labels(video)
-          image_description = build_image_description_from_video(video, labels: labels)
+          if video_warning
+            labels << warning_label_for_error(video_warning[:error_class], prefix: "video_analysis_error")
+            raw[:video_warning] = video_warning
+          end
+          labels = labels.uniq
+          image_description =
+            if labels.any?
+              build_image_description_from_video(video, labels: labels)
+            else
+              "Video analysis unavailable due to a local AI timeout or connection issue."
+            end
         else
           labels = []
           image_description = "No image or video content available for visual description."
@@ -181,7 +205,7 @@ module Ai
           [ "review" ]
         end
 
-        comment_generation = generate_engagement_comments(
+        comment_generation = generate_engagement_comments_with_fallback(
           post_payload: post_payload,
           image_description: image_description,
           labels: labels,
@@ -248,7 +272,7 @@ module Ai
       def analyze_image_media(media)
         if media[:bytes].present?
           # Ensure bytes are properly encoded for binary data
-          bytes_data = media[:bytes].is_a?(String) ? media[:bytes].force_encoding('BINARY') : media[:bytes]
+          bytes_data = media[:bytes].is_a?(String) ? media[:bytes].force_encoding("BINARY") : media[:bytes]
           client.analyze_image_bytes!(bytes_data, features: image_features)
         elsif media[:url].to_s.start_with?("http://", "https://")
           client.analyze_image_uri!(media[:url], features: image_features)
@@ -335,6 +359,93 @@ module Ai
           error_message: out[:error_message],
           comment_suggestions: build_comment_suggestions(labels: labels, description: image_description)
         }
+      end
+
+      def generate_engagement_comments_with_fallback(post_payload:, image_description:, labels:, author_type:)
+        generate_engagement_comments(
+          post_payload: post_payload,
+          image_description: image_description,
+          labels: labels,
+          author_type: author_type
+        )
+      rescue StandardError => e
+        started_at = monotonic_started_at
+        warning = {
+          stage: "comment_generation",
+          media_type: "post",
+          error_class: e.class.name,
+          error_message: normalize_error_message(e.message)
+        }
+        record_provider_warning!(
+          warning: warning,
+          started_at: started_at,
+          category: "text_generation"
+        )
+        {
+          model: ollama_model,
+          raw: {},
+          source: "fallback",
+          status: "error_fallback",
+          fallback_used: true,
+          error_message: warning[:error_message],
+          comment_suggestions: build_comment_suggestions(labels: labels, description: image_description)
+        }
+      end
+
+      def safe_media_analysis(stage:, media_type:)
+        started_at = monotonic_started_at
+        payload = yield
+        [ payload, nil ]
+      rescue StandardError => e
+        warning = {
+          stage: stage.to_s,
+          media_type: media_type.to_s,
+          error_class: e.class.name,
+          error_message: normalize_error_message(e.message)
+        }
+        record_provider_warning!(
+          warning: warning,
+          started_at: started_at,
+          category: stage.to_s == "video_analysis" ? "video_analysis" : "image_analysis"
+        )
+        [ {}, warning ]
+      end
+
+      def warning_label_for_error(error_class, prefix:)
+        klass = error_class.to_s.presence || "UnknownError"
+        "#{prefix}:#{klass}"
+      end
+
+      def record_provider_warning!(warning:, started_at:, category:)
+        payload = warning.to_h.merge(provider: key)
+
+        Ops::StructuredLogger.warn(
+          event: "ai.local_provider.fallback",
+          payload: payload
+        )
+
+        Ai::ApiUsageTracker.track_failure(
+          provider: "local_ai_stack",
+          operation: warning[:stage].to_s.presence || "unknown_stage",
+          category: category,
+          started_at: started_at,
+          error: "#{warning[:error_class]}: #{warning[:error_message]}",
+          metadata: payload
+        )
+      rescue StandardError
+        nil
+      end
+
+      def monotonic_started_at
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      rescue StandardError
+        Time.current.to_f
+      end
+
+      def normalize_error_message(message)
+        text = message.to_s.strip
+        text = "unknown error" if text.blank?
+        text.byteslice(0, 280)
       end
 
       def ollama_model

@@ -11,6 +11,7 @@ import logging
 from typing import List, Dict, Any, Optional
 import os
 from pathlib import Path
+import tempfile
 
 # Import AI modules
 from services.vision_service import VisionService
@@ -44,15 +45,17 @@ whisper_service = WhisperService()
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    services = {
+        "vision": vision_service.is_loaded(),
+        "face": face_service.is_loaded(),
+        "ocr": ocr_service.is_loaded(),
+        "video": video_service.is_loaded(),
+        "whisper": whisper_service.is_loaded()
+    }
+
     return {
-        "status": "healthy",
-        "services": {
-            "vision": vision_service.is_loaded(),
-            "face": face_service.is_loaded(),
-            "ocr": ocr_service.is_loaded(),
-            "video": video_service.is_loaded(),
-            "whisper": whisper_service.is_loaded()
-        }
+        "status": "healthy" if any(services.values()) else "degraded",
+        "services": services
     }
 
 @app.post("/analyze/image")
@@ -69,31 +72,59 @@ async def analyze_image(
         # Read and decode image
         image_bytes = await file.read()
         image = Image.open(io.BytesIO(image_bytes))
-        
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
         # Convert to OpenCV format
         opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
+
         results = {}
+        warnings = []
         feature_list = features.split(",")
-        
+
         # Object/Label Detection
         if "labels" in feature_list:
-            results["labels"] = vision_service.detect_objects(opencv_image)
-        
+            try:
+                results["labels"] = vision_service.detect_objects(opencv_image)
+            except Exception as e:
+                results["labels"] = []
+                warnings.append({
+                    "feature": "labels",
+                    "error_class": e.__class__.__name__,
+                    "error_message": str(e)
+                })
+
         # Text Detection (OCR)
         if "text" in feature_list:
-            results["text"] = ocr_service.extract_text(opencv_image)
-        
+            try:
+                results["text"] = ocr_service.extract_text(opencv_image)
+            except Exception as e:
+                results["text"] = []
+                warnings.append({
+                    "feature": "text",
+                    "error_class": e.__class__.__name__,
+                    "error_message": str(e)
+                })
+
         # Face Detection
         if "faces" in feature_list:
-            results["faces"] = face_service.detect_faces(opencv_image)
-        
+            try:
+                results["faces"] = face_service.detect_faces(opencv_image)
+            except Exception as e:
+                results["faces"] = []
+                warnings.append({
+                    "feature": "faces",
+                    "error_class": e.__class__.__name__,
+                    "error_message": str(e)
+                })
+
         return {
             "success": True,
             "results": results,
             "metadata": {
                 "image_size": image.size,
-                "features_used": feature_list
+                "features_used": feature_list,
+                "warnings": warnings
             }
         }
         
@@ -115,17 +146,20 @@ async def analyze_video(
     """
     try:
         video_bytes = await file.read()
-        
-        # Save temporary video file
-        temp_path = "/tmp/temp_video.mp4"
-        with open(temp_path, "wb") as f:
-            f.write(video_bytes)
-        
-        results = video_service.analyze_video(temp_path, features.split(","), sample_rate)
-        
-        # Clean up
-        os.remove(temp_path)
-        
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        temp_path = temp_file.name
+        try:
+            temp_file.write(video_bytes)
+            temp_file.flush()
+            temp_file.close()
+
+            results = video_service.analyze_video(temp_path, features.split(","), sample_rate)
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
         return {
             "success": True,
             "results": results,
@@ -149,16 +183,18 @@ async def transcribe_audio(
     """
     try:
         audio_bytes = await file.read()
-        
-        # Save temporary audio file
-        temp_path = "/tmp/temp_audio.wav"
-        with open(temp_path, "wb") as f:
-            f.write(audio_bytes)
-        
-        transcription = whisper_service.transcribe(temp_path, model)
-        
-        # Clean up
-        os.remove(temp_path)
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        temp_path = temp_file.name
+        try:
+            temp_file.write(audio_bytes)
+            temp_file.flush()
+            temp_file.close()
+            transcription = whisper_service.transcribe(temp_path, model)
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
         
         return {
             "success": True,
@@ -231,10 +267,15 @@ async def compare_faces(
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
+    reload_enabled = os.getenv("LOCAL_AI_RELOAD", "false").strip().lower() in {"1", "true", "yes", "on"}
+    log_level = os.getenv("LOCAL_AI_LOG_LEVEL", "info").strip().lower() or "info"
+    watch_dir = str(Path(__file__).resolve().parent)
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
-        log_level="info"
+        reload=reload_enabled,
+        reload_dirs=[watch_dir] if reload_enabled else None,
+        log_level=log_level
     )

@@ -1,100 +1,165 @@
 <% visible_posts = profile_posts.first(20) %>
+<% profile_avatar_url =
+  if profile.avatar.attached?
+    rails_blob_path(profile.avatar, only_path: true)
+  else
+    profile.profile_pic_url.to_s.presence
+  end %>
 
 <section id="captured_profile_posts_section" class="card">
   <h2>Captured Profile Posts (AI Input)</h2>
-  <p class="meta">Shows the latest 20 captured image posts with comments/likes and per-image AI suggestions. Click an image to open details.</p>
+  <p class="meta">Archive-style view of captured posts. New items are downloaded once, deleted source posts are flagged (not removed), and duplicates are skipped.</p>
 
   <% if visible_posts.any? %>
     <div data-controller="profile-post-modal">
-      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="profile-captured-posts-table" data-table-standard-pagination-size-value="20">
-        <div class="table-scroll">
-          <table class="table" data-table-standard-target="table">
-          <thead>
-            <tr>
-              <th>Image</th>
-              <th>Post</th>
-              <th>Taken</th>
-              <th>Likes</th>
-              <th>Comments</th>
-              <th>AI</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <% visible_posts.each do |pp| %>
-              <% comments = pp.instagram_profile_post_comments.recent_first.limit(12).map { |c| "#{c.author_username.presence || 'user'}: #{c.body}" } %>
-              <% analysis = pp.analysis.is_a?(Hash) ? pp.analysis : {} %>
-              <% suggestions = Array(analysis["comment_suggestions"]) %>
-              <% comment_gen_status = analysis["comment_generation_status"].to_s.presence || "unknown" %>
-              <% comment_gen_source = analysis["comment_generation_source"].to_s.presence || "unknown" %>
-              <% comment_gen_fallback = ActiveModel::Type::Boolean.new.cast(analysis["comment_generation_fallback_used"]) %>
-              <% comment_gen_error = analysis["comment_generation_error"].to_s.presence %>
-              <% image_url = pp.media.attached? ? rails_blob_path(pp.media, only_path: true) : nil %>
-              <% download_url = pp.media.attached? ? rails_blob_path(pp.media, disposition: "attachment") : nil %>
-              <tr>
-                <td>
-                  <% if pp.media.attached? %>
-                    <button
-                      class="btn small secondary"
-                      data-action="profile-post-modal#open"
-                      data-shortcode="<%= pp.shortcode %>"
-                      data-caption="<%= h(pp.caption.to_s) %>"
-                      data-likes="<%= pp.likes_count %>"
-                      data-comments-count="<%= pp.comments_count %>"
-                      data-taken-at="<%= pp.taken_at&.strftime('%Y-%m-%d %H:%M:%S') %>"
-                      data-image-url="<%= image_url %>"
-                      data-download-url="<%= download_url %>"
-                      data-permalink="<%= pp.permalink_url %>"
-                      data-ai-status="<%= pp.ai_status %>"
-                      data-ai-provider="<%= pp.ai_provider %>"
-                      data-ai-model="<%= pp.ai_model %>"
-                      data-comment-gen-status="<%= comment_gen_status %>"
-                      data-comment-gen-source="<%= comment_gen_source %>"
-                      data-comment-gen-fallback="<%= comment_gen_fallback %>"
-                      data-comment-gen-error="<%= h(comment_gen_error.to_s) %>"
-                      data-forward-url="<%= forward_comment_instagram_profile_instagram_profile_post_path(profile, pp) %>"
-                      data-comments-json="<%= h(comments.to_json) %>"
-                      data-suggestions-json="<%= h(suggestions.to_json) %>"
-                    >
-                      View
-                    </button>
-                  <% else %>
-                    <span class="meta">No image</span>
-                  <% end %>
-                </td>
-                <td class="meta">
-                  <code><%= pp.shortcode %></code><br>
-                  <%= pp.caption.to_s.truncate(80) %>
-                </td>
-                <td><%= relative_time_with_tooltip(pp.taken_at) %></td>
-                <td><%= pp.likes_count %></td>
-                <td><%= pp.comments_count %></td>
-                <td>
-                  <span class="pill <%= pp.ai_status == "failed" ? "failed" : (pp.ai_status == "analyzed" ? "sent" : "queued") %>"><%= pp.ai_status %></span>
-                  <% if pp.ai_status == "analyzed" %>
-                    <% if comment_gen_fallback %>
-                      <div class="meta" style="color: #b45309;">Comments: fallback (<%= comment_gen_status %>)</div>
-                      <% if comment_gen_error.present? %>
-                        <div class="meta" style="color: #b91c1c;"><%= comment_gen_error.truncate(90) %></div>
-                      <% end %>
-                    <% else %>
-                      <div class="meta">Comments: <%= comment_gen_source %> (<%= comment_gen_status %>)</div>
-                    <% end %>
-                  <% end %>
-                </td>
-                <td class="table-actions">
-                  <%= link_to "Open", pp.permalink_url, target: "_blank", rel: "noreferrer", class: "btn small secondary" %>
-                  <% if pp.ai_status != "analyzed" %>
-                    <%= button_to "Analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small" %>
-                  <% else %>
-                    <%= button_to "Re-analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small secondary" %>
-                  <% end %>
-                </td>
-              </tr>
+      <div class="story-media-grid profile-story-grid">
+        <% visible_posts.each do |pp| %>
+          <% comments = pp.instagram_profile_post_comments.recent_first.limit(12).map { |c| "#{c.author_username.presence || 'user'}: #{c.body}" } %>
+          <% analysis = pp.analysis.is_a?(Hash) ? pp.analysis : {} %>
+          <% metadata = pp.metadata.is_a?(Hash) ? pp.metadata : {} %>
+          <% suggestions = Array(analysis["comment_suggestions"]) %>
+          <% comment_gen_status = analysis["comment_generation_status"].to_s.presence || "unknown" %>
+          <% comment_gen_source = analysis["comment_generation_source"].to_s.presence || "unknown" %>
+          <% comment_gen_fallback = ActiveModel::Type::Boolean.new.cast(analysis["comment_generation_fallback_used"]) %>
+          <% comment_gen_error = analysis["comment_generation_error"].to_s.presence %>
+          <% image_url = pp.media.attached? ? rails_blob_path(pp.media, only_path: true) : nil %>
+          <% download_url = pp.media.attached? ? rails_blob_path(pp.media, disposition: "attachment") : nil %>
+          <% content_type = pp.media.attached? ? pp.media.blob.content_type.to_s : "" %>
+          <% is_video = content_type.start_with?("video/") || metadata["media_type"].to_i == 2 %>
+          <% deleted_from_source = ActiveModel::Type::Boolean.new.cast(metadata["deleted_from_source"]) %>
+          <% deleted_at = metadata["deleted_detected_at"].to_s.presence %>
+          <% deleted_label =
+            if deleted_at.present?
+              begin
+                Time.zone.parse(deleted_at).strftime("%Y-%m-%d %H:%M")
+              rescue StandardError
+                deleted_at
+              end
+            else
+              "detected"
+            end %>
+          <% ig_url = pp.permalink_url %>
+
+          <article class="story-media-card">
+            <div class="story-card-banner">
+              <div class="story-card-user">
+                <% if profile_avatar_url.present? %>
+                  <img class="story-card-avatar" src="<%= profile_avatar_url %>" alt="<%= profile.username %> avatar" loading="lazy" />
+                <% else %>
+                  <span class="story-card-avatar story-card-avatar-placeholder">?</span>
+                <% end %>
+                <div class="story-card-user-text">
+                  <strong><%= profile.display_name.presence || profile.username %></strong>
+                  <span class="meta">@<%= profile.username %></span>
+                </div>
+              </div>
+              <a class="story-open-instagram" href="<%= ig_url %>" target="_blank" rel="noopener noreferrer" aria-label="Open post on Instagram">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5Zm0 2a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H7Zm5 3.25A4.75 4.75 0 1 1 7.25 12 4.76 4.76 0 0 1 12 7.25Zm0 2A2.75 2.75 0 1 0 14.75 12 2.75 2.75 0 0 0 12 9.25ZM17.5 6.5a1.25 1.25 0 1 1-1.25 1.25A1.25 1.25 0 0 1 17.5 6.5Z"/>
+                </svg>
+              </a>
+            </div>
+
+            <% if image_url.present? && !is_video %>
+              <button
+                type="button"
+                class="story-media-preview story-preview-button"
+                data-action="profile-post-modal#open"
+                data-shortcode="<%= pp.shortcode %>"
+                data-caption="<%= h(pp.caption.to_s) %>"
+                data-likes="<%= pp.likes_count %>"
+                data-comments-count="<%= pp.comments_count %>"
+                data-taken-at="<%= pp.taken_at&.strftime('%Y-%m-%d %H:%M:%S') %>"
+                data-image-url="<%= image_url %>"
+                data-download-url="<%= download_url %>"
+                data-permalink="<%= ig_url %>"
+                data-ai-status="<%= pp.ai_status %>"
+                data-ai-provider="<%= pp.ai_provider %>"
+                data-ai-model="<%= pp.ai_model %>"
+                data-comment-gen-status="<%= comment_gen_status %>"
+                data-comment-gen-source="<%= comment_gen_source %>"
+                data-comment-gen-fallback="<%= comment_gen_fallback %>"
+                data-comment-gen-error="<%= h(comment_gen_error.to_s) %>"
+                data-forward-url="<%= forward_comment_instagram_profile_instagram_profile_post_path(profile, pp) %>"
+                data-comments-json="<%= h(comments.to_json) %>"
+                data-suggestions-json="<%= h(suggestions.to_json) %>"
+              >
+                <img loading="lazy" src="<%= image_url %>" alt="Captured post media for <%= profile.username %>" />
+              </button>
+            <% elsif image_url.present? && is_video %>
+              <div class="story-media-preview story-video-player-shell">
+                <video controls preload="none" playsinline src="<%= image_url %>" data-controller="video-player"></video>
+              </div>
+            <% else %>
+              <div class="story-media-preview">
+                <p class="meta">No image captured</p>
+              </div>
             <% end %>
-          </tbody>
-          </table>
-        </div>
+
+            <div class="story-media-meta">
+              <p class="meta"><code><%= pp.shortcode %></code></p>
+              <p class="meta"><%= pp.caption.to_s.truncate(110) %></p>
+              <p class="meta">
+                Taken: <%= relative_time_with_tooltip(pp.taken_at) %> |
+                Likes: <%= pp.likes_count %> |
+                Comments: <%= pp.comments_count %> |
+                Type: <%= content_type.presence || "-" %>
+              </p>
+              <p class="meta">
+                AI:
+                <span class="pill <%= pp.ai_status == "failed" ? "failed" : (pp.ai_status == "analyzed" ? "sent" : "queued") %>"><%= pp.ai_status %></span>
+                <% if comment_gen_fallback %>
+                  | comments fallback (<%= comment_gen_status %>)
+                <% elsif pp.ai_status == "analyzed" %>
+                  | comments <%= comment_gen_source %> (<%= comment_gen_status %>)
+                <% end %>
+              </p>
+              <% if deleted_from_source %>
+                <p class="meta story-skipped-badge">Deleted on source: <%= deleted_label %></p>
+              <% end %>
+
+              <div class="actions-row">
+                <% if download_url.present? %>
+                  <a class="btn small secondary" href="<%= download_url %>" target="_blank" rel="noreferrer">Download</a>
+                <% end %>
+                <% if image_url.present? && !is_video %>
+                  <button
+                    type="button"
+                    class="btn small"
+                    data-action="profile-post-modal#open"
+                    data-shortcode="<%= pp.shortcode %>"
+                    data-caption="<%= h(pp.caption.to_s) %>"
+                    data-likes="<%= pp.likes_count %>"
+                    data-comments-count="<%= pp.comments_count %>"
+                    data-taken-at="<%= pp.taken_at&.strftime('%Y-%m-%d %H:%M:%S') %>"
+                    data-image-url="<%= image_url %>"
+                    data-download-url="<%= download_url %>"
+                    data-permalink="<%= ig_url %>"
+                    data-ai-status="<%= pp.ai_status %>"
+                    data-ai-provider="<%= pp.ai_provider %>"
+                    data-ai-model="<%= pp.ai_model %>"
+                    data-comment-gen-status="<%= comment_gen_status %>"
+                    data-comment-gen-source="<%= comment_gen_source %>"
+                    data-comment-gen-fallback="<%= comment_gen_fallback %>"
+                    data-comment-gen-error="<%= h(comment_gen_error.to_s) %>"
+                    data-forward-url="<%= forward_comment_instagram_profile_instagram_profile_post_path(profile, pp) %>"
+                    data-comments-json="<%= h(comments.to_json) %>"
+                    data-suggestions-json="<%= h(suggestions.to_json) %>"
+                  >
+                    View
+                  </button>
+                <% elsif image_url.present? %>
+                  <a class="btn small" href="<%= image_url %>" target="_blank" rel="noreferrer">Open Media</a>
+                <% end %>
+                <% if pp.ai_status != "analyzed" %>
+                  <%= button_to "Analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small" %>
+                <% else %>
+                  <%= button_to "Re-analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small secondary" %>
+                <% end %>
+              </div>
+            </div>
+          </article>
+        <% end %>
       </div>
 
       <dialog data-profile-post-modal-target="dialog" class="modal">
@@ -126,6 +191,6 @@
       </dialog>
     </div>
   <% else %>
-    <p class="meta">No captured profile posts yet. Run Analyze Profile to collect all available image posts and comments.</p>
+    <p class="meta">No captured profile posts yet. Use <strong>Capture Profile Posts</strong> to fetch posts and preserve historical state (including deleted-source flags).</p>
   <% end %>
 </section>

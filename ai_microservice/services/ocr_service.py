@@ -120,6 +120,10 @@ class OCRService:
             logger.error(f"PaddleOCR extraction error: {e}")
             if self._paddle_error_is_fatal(e):
                 self._paddle_runtime_available = False
+                logger.warning(
+                    "Disabling PaddleOCR runtime after fatal error (%s); falling back to EasyOCR.",
+                    e.__class__.__name__
+                )
 
         return results
 
