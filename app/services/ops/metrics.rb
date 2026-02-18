@@ -9,6 +9,9 @@ module Ops
         queue: queue_counts,
         app: {
           accounts: InstagramAccount.count,
+          continuous_processing_enabled_accounts: InstagramAccount.where(continuous_processing_enabled: true).count,
+          continuous_processing_running_accounts: InstagramAccount.where(continuous_processing_state: "running").count,
+          continuous_processing_backoff_accounts: InstagramAccount.where("continuous_processing_retry_after_at > ?", Time.current).count,
           profiles: InstagramProfile.count,
           messages: InstagramMessage.count,
           profile_events: InstagramProfileEvent.count,
@@ -19,7 +22,8 @@ module Ops
           failures_24h: BackgroundJobFailure.where("occurred_at >= ?", 24.hours.ago).count,
           auth_failures_24h: BackgroundJobFailure.where(failure_kind: "authentication").where("occurred_at >= ?", 24.hours.ago).count,
           active_issues: AppIssue.where.not(status: "resolved").count,
-          storage_ingestions_24h: ActiveStorageIngestion.where("created_at >= ?", 24.hours.ago).count
+          storage_ingestions_24h: ActiveStorageIngestion.where("created_at >= ?", 24.hours.ago).count,
+          continuous_processing_runs_24h: SyncRun.where(kind: "continuous_processing").where("created_at >= ?", 24.hours.ago).count
         },
         api_usage_24h: api_usage_summary(scope: usage_scope)
       }
@@ -45,7 +49,11 @@ module Ops
           auth_failures_24h: BackgroundJobFailure.where(instagram_account_id: account.id, failure_kind: "authentication")
             .where("occurred_at >= ?", 24.hours.ago).count,
           active_issues: account.app_issues.where.not(status: "resolved").count,
-          storage_ingestions_24h: account.active_storage_ingestions.where("created_at >= ?", 24.hours.ago).count
+          storage_ingestions_24h: account.active_storage_ingestions.where("created_at >= ?", 24.hours.ago).count,
+          continuous_processing_state: account.continuous_processing_state,
+          continuous_processing_failure_count: account.continuous_processing_failure_count.to_i,
+          continuous_processing_backoff_active: account.continuous_processing_backoff_active?,
+          continuous_processing_runs_24h: account.sync_runs.where(kind: "continuous_processing").where("created_at >= ?", 24.hours.ago).count
         },
         sync_runs_by_status: account.sync_runs.group(:status).count,
         analyses_by_status: account.ai_analyses.group(:status).count,

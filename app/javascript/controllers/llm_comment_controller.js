@@ -89,6 +89,9 @@ export default class extends Controller {
     console.log("Found elements:", { button, commentSection })
 
     switch (status) {
+      case 'queued':
+        this.handleGenerationQueued(button, message)
+        break
       case 'started':
         console.log("Handling generation start")
         this.handleGenerationStart(button, message)
@@ -101,6 +104,14 @@ export default class extends Controller {
         console.log("Handling generation error")
         this.handleGenerationError(button, message, error)
         break
+    }
+  }
+
+  handleGenerationQueued(button, message) {
+    if (button) {
+      button.disabled = true
+      button.innerHTML = "Queued..."
+      button.classList.add('loading')
     }
   }
 

@@ -33,6 +33,7 @@ Rails.application.routes.draw do
       get :story_media_archive
       post :generate_llm_comment
       get :technical_details
+      post :run_continuous_processing
     end
   end
 

@@ -64,37 +64,40 @@ class AiDashboardController < ApplicationController
   private
 
   def check_ai_services
-    begin
-      uri = URI("#{AI_SERVICE_URL}/health")
-      response = Net::HTTP.get_response(uri)
-      
-      if response.code == '200'
-        data = JSON.parse(response.body)
-        Ops::IssueTracker.record_ai_service_check!(
-          ok: true,
-          message: "AI microservice healthy",
-          metadata: { services: data["services"] }
-        )
-        {
-          status: 'online',
-          services: data['services'] || {},
-          last_check: Time.current
-        }
-      else
-        Ops::IssueTracker.record_ai_service_check!(
-          ok: false,
-          message: "HTTP #{response.code}",
-          metadata: { http_status: response.code.to_i, response_body_preview: response.body.to_s.byteslice(0, 250) }
-        )
-        { status: 'error', message: "HTTP #{response.code}", last_check: Time.current }
-      end
-    rescue StandardError => e
+    health = Ops::LocalAiHealth.check(force: true)
+    checked_at = Time.current
+
+    if ActiveModel::Type::Boolean.new.cast(health[:ok])
+      service_map = health.dig(:details, :microservice, :services) || {}
+      service_map = service_map.merge(
+        "ollama" => Array(health.dig(:details, :ollama, :models)).any?
+      )
+
+      Ops::IssueTracker.record_ai_service_check!(
+        ok: true,
+        message: "Local AI stack healthy",
+        metadata: health
+      )
+
+      {
+        status: "online",
+        services: service_map,
+        last_check: checked_at
+      }
+    else
+      message = health[:error].presence || "Local AI stack unavailable"
+
       Ops::IssueTracker.record_ai_service_check!(
         ok: false,
-        message: e.message,
-        metadata: { error_class: e.class.name }
+        message: message,
+        metadata: health
       )
-      { status: 'offline', message: e.message, last_check: Time.current }
+
+      {
+        status: "offline",
+        message: message,
+        last_check: checked_at
+      }
     end
   end
 

@@ -8,14 +8,15 @@ class InstagramProfileEvent < ApplicationRecord
   validates :external_id, presence: true
   validates :detected_at, presence: true
 
+  # LLM Comment validations
+  validates :llm_comment_provider, inclusion: { in: %w[ollama local], allow_nil: true }
+  validates :llm_comment_status, inclusion: { in: %w[not_requested queued running completed failed skipped], allow_nil: true }
+  validate :llm_comment_consistency, on: :update
+
   after_commit :broadcast_account_audit_logs_refresh
   after_commit :broadcast_story_archive_refresh, on: %i[create update]
   after_commit :append_profile_history_narrative, on: :create
   after_commit :broadcast_profile_events_refresh
-
-  # LLM Comment validations
-  validates :llm_comment_provider, inclusion: { in: %w[ollama local], allow_nil: true }
-  validate :llm_comment_consistency, on: :update
 
   STORY_ARCHIVE_EVENT_KINDS = %w[
     story_downloaded
@@ -23,53 +24,126 @@ class InstagramProfileEvent < ApplicationRecord
     story_media_downloaded_via_feed
   ].freeze
 
-  # LLM Comment methods
+  LLM_SUCCESS_STATUSES = %w[ok fallback_used error_fallback].freeze
+
   def has_llm_generated_comment?
     llm_generated_comment.present?
   end
 
-  def generate_llm_comment!(provider: :ollama, model: nil)
-    return if has_llm_generated_comment?
+  def llm_comment_in_progress?
+    %w[queued running].include?(llm_comment_status.to_s)
+  end
 
-    # Broadcast generation start
+  def queue_llm_comment_generation!(job_id: nil)
+    update!(
+      llm_comment_status: "queued",
+      llm_comment_job_id: job_id.to_s.presence || llm_comment_job_id,
+      llm_comment_last_error: nil
+    )
+
+    broadcast_llm_comment_generation_queued(job_id: job_id)
+  end
+
+  def mark_llm_comment_running!(job_id: nil)
+    update!(
+      llm_comment_status: "running",
+      llm_comment_job_id: job_id.to_s.presence || llm_comment_job_id,
+      llm_comment_attempts: llm_comment_attempts.to_i + 1,
+      llm_comment_last_error: nil
+    )
+
     broadcast_llm_comment_generation_start
+  end
 
-    # Build comprehensive context for comment generation
+  def mark_llm_comment_failed!(error:)
+    update!(
+      llm_comment_status: "failed",
+      llm_comment_last_error: error.message.to_s,
+      llm_comment_metadata: (llm_comment_metadata.is_a?(Hash) ? llm_comment_metadata : {}).merge(
+        "last_failure" => {
+          "error_class" => error.class.name,
+          "error_message" => error.message.to_s,
+          "failed_at" => Time.current.iso8601
+        }
+      )
+    )
+
+    broadcast_llm_comment_generation_error(error.message)
+  rescue StandardError
+    nil
+  end
+
+  def generate_llm_comment!(provider: :ollama, model: nil)
+    if has_llm_generated_comment?
+      update_column(:llm_comment_status, "completed") if llm_comment_status.to_s != "completed"
+
+      return {
+        status: "already_completed",
+        selected_comment: llm_generated_comment,
+        relevance_score: llm_comment_relevance_score
+      }
+    end
+
     context = build_comment_context
     technical_details = capture_technical_details(context)
-    
-    # Use existing local engagement comment generator
+
     generator = Ai::LocalEngagementCommentGenerator.new(
       ollama_client: Ai::OllamaClient.new,
       model: model
     )
 
     result = generator.generate!(**context)
-    
-    # Enhance result with technical details
-    enhanced_result = result.merge(technical_details)
-    
-    if result[:status] == "ok"
-      update!(
-        llm_generated_comment: result[:comment_suggestions]&.first,
-        llm_comment_generated_at: Time.current,
-        llm_comment_model: result[:model],
-        llm_comment_provider: provider.to_s,
-        llm_comment_metadata: enhanced_result.slice(:prompt, :source, :fallback_used, :confidence_score, :technical_details)
-      )
-      
-      # Broadcast refresh to update UI
-      broadcast_story_archive_refresh
-      
-      # Broadcast LLM comment generation update via ActionCable
-      broadcast_llm_comment_generation_update(enhanced_result)
-      
-      enhanced_result
-    else
-      # Broadcast generation error
-      broadcast_llm_comment_generation_error(result[:error_message])
+    enhanced_result = result.merge(technical_details: technical_details)
+
+    unless LLM_SUCCESS_STATUSES.include?(result[:status].to_s)
       raise "Failed to generate LLM comment: #{result[:error_message]}"
     end
+
+    ranked = Ai::CommentRelevanceScorer.rank(
+      suggestions: result[:comment_suggestions],
+      image_description: context[:image_description],
+      topics: context[:topics],
+      historical_comments: context[:historical_comments]
+    )
+
+    selected_comment, score = ranked.first
+    raise "No valid comment suggestions generated" if selected_comment.to_s.blank?
+
+    update!(
+      llm_generated_comment: selected_comment,
+      llm_comment_generated_at: Time.current,
+      llm_comment_model: result[:model],
+      llm_comment_provider: provider.to_s,
+      llm_comment_status: "completed",
+      llm_comment_relevance_score: score,
+      llm_comment_last_error: nil,
+      llm_comment_metadata: (llm_comment_metadata.is_a?(Hash) ? llm_comment_metadata : {}).merge(
+        "prompt" => result[:prompt],
+        "source" => result[:source],
+        "fallback_used" => ActiveModel::Type::Boolean.new.cast(result[:fallback_used]),
+        "generation_status" => result[:status],
+        "technical_details" => technical_details,
+        "ranked_candidates" => ranked.first(8).map { |text, value| { "comment" => text, "score" => value } },
+        "selected_comment" => selected_comment,
+        "selected_relevance_score" => score,
+        "generated_at" => Time.current.iso8601
+      )
+    )
+
+    broadcast_story_archive_refresh
+    broadcast_llm_comment_generation_update(
+      enhanced_result.merge(
+        selected_comment: selected_comment,
+        relevance_score: score,
+        ranked_candidates: ranked.first(8)
+      )
+    )
+
+    enhanced_result.merge(
+      selected_comment: selected_comment,
+      relevance_score: score,
+      ranked_candidates: ranked.first(8)
+    )
   end
 
   def reply_comment
@@ -82,16 +156,16 @@ class InstagramProfileEvent < ApplicationRecord
 
   def capture_technical_details(context)
     profile = instagram_profile
-    media_blob = media.blob
-    
+    media_blob = media.attached? ? media.blob : nil
+
     {
       timestamp: Time.current.iso8601,
       event_id: id,
-      story_id: metadata["story_id"],
+      story_id: metadata.is_a?(Hash) ? metadata["story_id"] : nil,
       media_info: media_blob ? {
-        content_type: media_blob&.content_type,
-        size_bytes: media_blob&.byte_size,
-        dimensions: metadata.slice("media_width", "media_height"),
+        content_type: media_blob.content_type,
+        size_bytes: media_blob.byte_size,
+        dimensions: metadata.is_a?(Hash) ? metadata.slice("media_width", "media_height") : {},
         url: Rails.application.routes.url_helpers.rails_blob_path(media, only_path: true)
       } : {},
       profile_analysis: {
@@ -107,9 +181,27 @@ class InstagramProfileEvent < ApplicationRecord
         image_description: context[:image_description],
         topics_used: context[:topics],
         author_classification: context[:author_type],
+        historical_context: context[:historical_context],
         rules_applied: context[:post_payload]&.dig(:rules)
       }
     }
+  end
+
+  def broadcast_llm_comment_generation_queued(job_id: nil)
+    account = instagram_profile&.instagram_account
+    return unless account
+
+    ActionCable.server.broadcast(
+      "llm_comment_generation_#{account.id}",
+      {
+        event_id: id,
+        status: "queued",
+        job_id: job_id.to_s.presence || llm_comment_job_id,
+        message: "Comment generation queued"
+      }
+    )
+  rescue StandardError
+    nil
   end
 
   def broadcast_llm_comment_generation_update(generation_result)
@@ -120,11 +212,12 @@ class InstagramProfileEvent < ApplicationRecord
       "llm_comment_generation_#{account.id}",
       {
         event_id: id,
-        status: 'completed',
+        status: "completed",
         comment: llm_generated_comment,
         generated_at: llm_comment_generated_at,
         model: llm_comment_model,
         provider: llm_comment_provider,
+        relevance_score: llm_comment_relevance_score,
         generation_result: generation_result
       }
     )
@@ -140,8 +233,8 @@ class InstagramProfileEvent < ApplicationRecord
       "llm_comment_generation_#{account.id}",
       {
         event_id: id,
-        status: 'started',
-        message: 'Generating comment...'
+        status: "started",
+        message: "Generating comment..."
       }
     )
   rescue StandardError
@@ -156,9 +249,9 @@ class InstagramProfileEvent < ApplicationRecord
       "llm_comment_generation_#{account.id}",
       {
         event_id: id,
-        status: 'error',
+        status: "error",
         error: error_message,
-        message: 'Failed to generate comment'
+        message: "Failed to generate comment"
       }
     )
   rescue StandardError
@@ -225,28 +318,32 @@ class InstagramProfileEvent < ApplicationRecord
   end
 
   def llm_comment_consistency
-    if llm_generated_comment.present? && llm_comment_generated_at.blank?
-      errors.add(:llm_comment_generated_at, "must be present when LLM comment is set")
+    status = llm_comment_status.to_s
+
+    if status == "completed" && llm_generated_comment.blank?
+      errors.add(:llm_generated_comment, "must be present when status is completed")
     end
-    
-    if llm_generated_comment.present? && llm_comment_provider.blank?
-      errors.add(:llm_comment_provider, "must be present when LLM comment is set")
+
+    if status == "completed" && llm_comment_generated_at.blank?
+      errors.add(:llm_comment_generated_at, "must be present when status is completed")
     end
-    
-    if llm_generated_comment.blank? && (llm_comment_generated_at.present? || llm_comment_provider.present?)
-      errors.add(:llm_generated_comment, "must be present when comment metadata is set")
+
+    if status == "completed" && llm_comment_provider.blank?
+      errors.add(:llm_comment_provider, "must be present when status is completed")
+    end
+
+    if llm_generated_comment.blank? && llm_comment_generated_at.present?
+      errors.add(:llm_generated_comment, "must be present when generated_at is set")
     end
   end
 
   def build_comment_context
-    # Extract relevant context for comment generation
     profile = instagram_profile
-    media_blob = media.blob
-    
+
     post_payload = {
       post: {
         id: id,
-        caption: nil, # Stories don't have captions
+        caption: nil,
         media_url: Rails.application.routes.url_helpers.rails_blob_path(media, only_path: true)
       },
       author_profile: {
@@ -260,33 +357,52 @@ class InstagramProfileEvent < ApplicationRecord
       }
     }
 
-    # Get image description if available from AI analysis
     image_description = nil
-    if media_blob && media_blob.content_type&.start_with?("image/")
-      # Look for existing AI analysis
+    if media.attached? && media.blob&.content_type&.start_with?("image/")
       ai_analysis = AiAnalysis.where(
         analyzable_type: "InstagramProfileEvent",
         analyzable_id: id,
         purpose: "image_description"
       ).first
-      
-      image_description = ai_analysis&.response_text if ai_analysis
+
+      image_description = ai_analysis&.response_text
     end
+
+    historical_comments = recent_llm_comments_for_profile(profile)
 
     {
       post_payload: post_payload,
       image_description: image_description || "Story media",
       topics: extract_topics_from_profile(profile),
-      author_type: determine_author_type(profile)
+      author_type: determine_author_type(profile),
+      historical_comments: historical_comments,
+      historical_context: profile&.history_narrative_text(max_chunks: 4)
     }
+  end
+
+  def recent_llm_comments_for_profile(profile)
+    return [] unless profile
+
+    profile.instagram_profile_events
+      .where.not(id: id)
+      .where.not(llm_generated_comment: [nil, ""])
+      .order(llm_comment_generated_at: :desc, id: :desc)
+      .limit(12)
+      .pluck(:llm_generated_comment)
+      .map(&:to_s)
+      .reject(&:blank?)
+  rescue StandardError
+    []
   end
 
   def determine_author_type(profile)
     return "unknown" unless profile
-    
-    if profile.bio&.include?("creator") || profile.bio&.include?("artist")
+
+    bio = profile.bio.to_s.downcase
+
+    if bio.include?("creator") || bio.include?("artist")
       "creator"
-    elsif profile.bio&.include?("business") || profile.bio&.include?("entrepreneur")
+    elsif bio.include?("business") || bio.include?("entrepreneur")
       "business"
     else
       "personal"
@@ -295,27 +411,25 @@ class InstagramProfileEvent < ApplicationRecord
 
   def extract_topics_from_profile(profile)
     return [] unless profile&.bio
-    
-    # Simple topic extraction from bio
+
     topics = []
     bio = profile.bio.downcase
-    
-    # Common topics to look for
+
     topic_keywords = {
-      'fitness' => ['fitness', 'gym', 'workout', 'health'],
-      'food' => ['food', 'cooking', 'chef', 'recipe'],
-      'travel' => ['travel', 'wanderlust', 'adventure'],
-      'fashion' => ['fashion', 'style', 'outfit', 'beauty'],
-      'tech' => ['tech', 'technology', 'coding', 'software'],
-      'art' => ['art', 'artist', 'creative', 'design'],
-      'business' => ['business', 'entrepreneur', 'startup'],
-      'photography' => ['photography', 'photo', 'camera']
+      "fitness" => %w[fitness gym workout health],
+      "food" => %w[food cooking chef recipe],
+      "travel" => %w[travel wanderlust adventure],
+      "fashion" => %w[fashion style outfit beauty],
+      "tech" => %w[tech technology coding software],
+      "art" => %w[art artist creative design],
+      "business" => %w[business entrepreneur startup],
+      "photography" => %w[photography photo camera]
     }
-    
+
     topic_keywords.each do |topic, keywords|
       topics << topic if keywords.any? { |keyword| bio.include?(keyword) }
     end
-    
+
     topics.uniq
   end
 end

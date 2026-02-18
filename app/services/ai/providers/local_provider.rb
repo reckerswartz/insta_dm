@@ -316,7 +316,9 @@ module Ai
           post_payload: post_payload,
           image_description: image_description.to_s,
           topics: labels.first(12),
-          author_type: author_type
+          author_type: author_type,
+          historical_comments: extract_historical_comments(post_payload),
+          historical_context: extract_historical_context(post_payload)
         )
         
         return out unless out[:error_message].present?
@@ -336,6 +338,22 @@ module Ai
         @ollama_model ||= setting&.config_value("ollama_model").to_s.presence || 
                           Rails.application.credentials.dig(:ollama, :model).to_s.presence || 
                           "mistral:7b"
+      end
+
+      def extract_historical_comments(post_payload)
+        history = post_payload.dig(:rules, :engagement_history, :prior_story_items)
+        Array(history).filter_map do |row|
+          row = row.to_h if row.respond_to?(:to_h)
+          row.is_a?(Hash) ? row[:sent_comment].to_s.presence || row["sent_comment"].to_s.presence : nil
+        end
+      rescue StandardError
+        []
+      end
+
+      def extract_historical_context(post_payload)
+        post_payload.dig(:rules, :historical_narrative_text).to_s
+      rescue StandardError
+        ""
       end
 
       def build_image_description_from_vision(vision, labels:)

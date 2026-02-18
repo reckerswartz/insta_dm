@@ -1,4 +1,6 @@
 class InstagramAccount < ApplicationRecord
+  CONTINUOUS_PROCESSING_STATES = %w[idle running paused].freeze
+
   has_many :recipients, dependent: :destroy
   has_many :conversation_peers, dependent: :destroy
   has_many :instagram_profiles, dependent: :destroy
@@ -32,6 +34,13 @@ class InstagramAccount < ApplicationRecord
   end
 
   validates :username, presence: true
+  validates :continuous_processing_state, inclusion: { in: CONTINUOUS_PROCESSING_STATES }, allow_nil: true
+
+  scope :continuous_processing_enabled, -> { where(continuous_processing_enabled: true) }
+
+  def continuous_processing_backoff_active?
+    continuous_processing_retry_after_at.present? && continuous_processing_retry_after_at > Time.current
+  end
 
   def cookies
     return [] if cookies_json.blank?

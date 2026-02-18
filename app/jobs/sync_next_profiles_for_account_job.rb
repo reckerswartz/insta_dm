@@ -25,7 +25,16 @@ class SyncNextProfilesForAccountJob < ApplicationJob
         profile_action_log_id: log.id
       )
       log.update!(active_job_id: job.job_id, queue_name: job.queue_name)
-    rescue StandardError
+    rescue StandardError => e
+      Ops::StructuredLogger.warn(
+        event: "sync_next_profiles.profile_enqueue_failed",
+        payload: {
+          account_id: account.id,
+          profile_id: profile.id,
+          error_class: e.class.name,
+          error_message: e.message
+        }
+      )
       next
     end
 

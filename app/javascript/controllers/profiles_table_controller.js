@@ -1,49 +1,44 @@
 import { Controller } from "@hotwired/stimulus"
 import { TabulatorFull as Tabulator } from "tabulator-tables"
+import {
+  attachTabulatorBehaviors,
+  adaptiveTableHeight,
+  escapeHtml,
+  runTableCleanups,
+  tabulatorBaseOptions,
+} from "../lib/tabulator_helpers"
 
 export default class extends Controller {
   static values = { url: String }
 
   connect() {
-    this.csrfToken = document.querySelector("meta[name='csrf-token']")?.content
+    this.csrfToken = document.querySelector("meta[name='csrf-token']")?.content || ""
     this.tableEl = this.element.querySelector("[data-profiles-table-target='table']")
 
     if (!this.tableEl) return
 
-    this.table = new Tabulator(this.tableEl, {
-      layout: "fitColumns",
-      height: this._tableHeight(),
+    const options = tabulatorBaseOptions({
+      url: this.urlValue || "/instagram_profiles.json",
       placeholder: "No profiles found",
-
-      ajaxURL: this.urlValue || "/instagram_profiles.json",
-      ajaxConfig: "GET",
-      ajaxContentType: "json",
-      ajaxResponse: (url, params, response) => response,
-
-      pagination: true,
-      paginationMode: "remote",
-      paginationSize: 50,
-      paginationSizeSelector: [25, 50, 100, 200],
-
-      sortMode: "remote",
-      filterMode: "remote",
+      height: this._tableHeight(),
       initialSort: [{ column: "username", dir: "asc" }],
-
+      storageKey: "profiles-table",
       columns: [
         {
           title: "Avatar",
           field: "avatar_url",
           hozAlign: "center",
-          width: 70,
+          width: 86,
+          minWidth: 70,
           headerSort: false,
           formatter: (cell) => {
             const url = cell.getValue()
             if (!url) return "<div class='avatar placeholder'></div>"
-            return `<img class="avatar" src="${this._escape(url)}" alt="" loading="lazy">`
+            return `<img class="avatar" src="${escapeHtml(url)}" alt="" loading="lazy">`
           },
         },
-        { title: "Username", field: "username", headerSort: true, headerFilter: "input", widthGrow: 1 },
-        { title: "Name", field: "display_name", headerSort: true, headerFilter: "input", widthGrow: 2 },
+        { title: "Username", field: "username", headerSort: true, headerFilter: "input", minWidth: 170, width: 190 },
+        { title: "Name", field: "display_name", headerSort: true, headerFilter: "input", minWidth: 210, width: 240 },
         {
           title: "Following",
           field: "following",
@@ -51,16 +46,18 @@ export default class extends Controller {
           headerFilter: "list",
           headerFilterParams: { values: { "": "Any", true: "Yes", false: "No" } },
           formatter: (cell) => (cell.getValue() ? "Yes" : "No"),
-          width: 110,
+          minWidth: 110,
+          width: 120,
         },
         {
-          title: "Follows you",
+          title: "Follows You",
           field: "follows_you",
           headerSort: true,
           headerFilter: "list",
           headerFilterParams: { values: { "": "Any", true: "Yes", false: "No" } },
           formatter: (cell) => (cell.getValue() ? "Yes" : "No"),
-          width: 120,
+          minWidth: 130,
+          width: 140,
         },
         {
           title: "Mutual",
@@ -69,99 +66,106 @@ export default class extends Controller {
           headerFilter: "list",
           headerFilterParams: { values: { "": "Any", true: "Yes", false: "No" } },
           formatter: (cell) => (cell.getValue() ? "Yes" : "No"),
-          width: 90,
+          minWidth: 100,
+          width: 110,
         },
         {
-          title: "Can message",
+          title: "Can Message",
           field: "can_message",
           headerSort: true,
           headerFilter: "list",
           headerFilterParams: { values: { "": "Any", true: "Yes", false: "No", unknown: "Unknown" } },
           formatter: (cell) => {
-            const v = cell.getValue()
-            if (v === true) return "<span class='yes'>Yes</span>"
-            if (v === false) return "<span class='no'>No</span>"
+            const value = cell.getValue()
+            if (value === true) return "<span class='yes'>Yes</span>"
+            if (value === false) return "<span class='no'>No</span>"
             return "<span class='muted'>Unknown</span>"
           },
-          width: 120,
+          minWidth: 130,
+          width: 145,
         },
         {
-          title: "Last synced",
+          title: "Last Synced",
           field: "last_synced_at",
           headerSort: true,
           formatter: (cell) => (cell.getValue() ? new Date(cell.getValue()).toLocaleString() : "-"),
-          width: 200,
+          minWidth: 220,
+          width: 235,
         },
         {
-          title: "Last active",
+          title: "Last Active",
           field: "last_active_at",
           headerSort: true,
           formatter: (cell) => (cell.getValue() ? new Date(cell.getValue()).toLocaleString() : "-"),
-          width: 200,
+          minWidth: 220,
+          width: 235,
         },
         {
           title: "Actions",
           field: "id",
           headerSort: false,
+          minWidth: 410,
+          width: 440,
           formatter: (cell) => {
             const row = cell.getRow().getData()
-            const open = `/instagram_profiles/${row.id}`
-            const fetch = `/instagram_profiles/${row.id}/fetch_details`
-            const verify = `/instagram_profiles/${row.id}/verify_messageability`
-            const avatar = `/instagram_profiles/${row.id}/download_avatar`
-            const analyze = `/instagram_profiles/${row.id}/analyze`
+            const openUrl = `/instagram_profiles/${row.id}`
+            const fetchUrl = `/instagram_profiles/${row.id}/fetch_details`
+            const verifyUrl = `/instagram_profiles/${row.id}/verify_messageability`
+            const avatarUrl = `/instagram_profiles/${row.id}/download_avatar`
+            const analyzeUrl = `/instagram_profiles/${row.id}/analyze`
+
             return `
-              <div class="table-actions">
-                <a class="btn small" href="${open}">Open</a>
-                <button class="btn small secondary" data-action="profiles-table#post" data-url="${fetch}">Fetch</button>
-                <button class="btn small secondary" data-action="profiles-table#post" data-url="${verify}">Verify</button>
-                <button class="btn small secondary" data-action="profiles-table#post" data-url="${avatar}">Avatar</button>
-                <button class="btn small secondary" data-action="profiles-table#post" data-url="${analyze}">Analyze</button>
+              <div class="table-actions no-wrap">
+                <a class="btn small" href="${openUrl}">Open</a>
+                <button class="btn small secondary" data-action="profiles-table#post" data-url="${fetchUrl}">Fetch</button>
+                <button class="btn small secondary" data-action="profiles-table#post" data-url="${verifyUrl}">Verify</button>
+                <button class="btn small secondary" data-action="profiles-table#post" data-url="${avatarUrl}">Avatar</button>
+                <button class="btn small secondary" data-action="profiles-table#post" data-url="${analyzeUrl}">Analyze</button>
               </div>
             `
           },
-          widthGrow: 2,
         },
       ],
-
-      ajaxURLGenerator: (url, config, params) => this._urlWithParams(url, params),
     })
+
+    this.table = new Tabulator(this.tableEl, options)
+    attachTabulatorBehaviors(this, this.table, { storageKey: "profiles-table", paginationSize: 50 })
+  }
+
+  disconnect() {
+    runTableCleanups(this)
+
+    if (this.table) {
+      this.table.destroy()
+      this.table = null
+    }
   }
 
   async post(event) {
     event.preventDefault()
-    const url = event.currentTarget?.dataset?.url
+
+    const button = event.currentTarget
+    const url = button?.dataset?.url
     if (!url) return
 
-    await fetch(url, {
-      method: "POST",
-      headers: {
-        "X-CSRF-Token": this.csrfToken || "",
-        "X-Requested-With": "XMLHttpRequest",
-        "Accept": "text/vnd.turbo-stream.html, text/html, application/xhtml+xml",
-      },
-      credentials: "same-origin",
-    })
+    button.disabled = true
+
+    try {
+      await fetch(url, {
+        method: "POST",
+        headers: {
+          "X-CSRF-Token": this.csrfToken,
+          "X-Requested-With": "XMLHttpRequest",
+          "Accept": "text/vnd.turbo-stream.html, text/html, application/xhtml+xml",
+        },
+        credentials: "same-origin",
+      })
+    } finally {
+      button.disabled = false
+    }
   }
 
   _tableHeight() {
-    const h = window.innerHeight || 900
-    const target = h - 310
-    return `${Math.max(360, Math.min(620, target))}px`
-  }
-
-  _urlWithParams(baseUrl, params) {
-    const u = new URL(baseUrl, window.location.origin)
-    Object.entries(params || {}).forEach(([k, v]) => {
-      if (v === null || typeof v === "undefined") return
-      const s = (typeof v === "object") ? JSON.stringify(v) : String(v)
-      if (s.length === 0) return
-      u.searchParams.set(k, s)
-    })
-    return u.toString()
-  }
-
-  _escape(s) {
-    return String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;")
+    return adaptiveTableHeight(this.tableEl, { min: 380, max: 940, bottomPadding: 38 })
   }
 }

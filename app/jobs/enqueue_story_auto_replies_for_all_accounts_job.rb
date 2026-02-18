@@ -5,6 +5,8 @@ class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
     max_stories_i = max_stories.to_i.clamp(1, 10)
     force = ActiveModel::Type::Boolean.new.cast(force_analyze_all)
 
+    enqueued = 0
+
     InstagramAccount.find_each do |account|
       next if account.cookies.blank?
 
@@ -30,11 +32,29 @@ class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
         )
 
         log.update!(active_job_id: job.job_id, queue_name: job.queue_name)
+        enqueued += 1
       rescue StandardError
         next
       end
-    rescue StandardError
+    rescue StandardError => e
+      Ops::StructuredLogger.warn(
+        event: "story_auto_reply.enqueue_failed",
+        payload: {
+          account_id: account.id,
+          error_class: e.class.name,
+          error_message: e.message
+        }
+      )
       next
     end
+
+    Ops::StructuredLogger.info(
+      event: "story_auto_reply.batch_enqueued",
+      payload: {
+        enqueued_profiles: enqueued,
+        max_stories: max_stories_i,
+        force_analyze_all: force
+      }
+    )
   end
 end

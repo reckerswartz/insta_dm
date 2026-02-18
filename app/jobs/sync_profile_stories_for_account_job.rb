@@ -46,7 +46,16 @@ class SyncProfileStoriesForAccountJob < ApplicationJob
         require_auto_reply_tag: require_tag
       )
       log.update!(active_job_id: job.job_id, queue_name: job.queue_name)
-    rescue StandardError
+    rescue StandardError => e
+      Ops::StructuredLogger.warn(
+        event: "sync_profile_stories.profile_enqueue_failed",
+        payload: {
+          account_id: account.id,
+          profile_id: profile.id,
+          error_class: e.class.name,
+          error_message: e.message
+        }
+      )
       next
     end
 

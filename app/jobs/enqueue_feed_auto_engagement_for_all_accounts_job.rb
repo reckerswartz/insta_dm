@@ -6,6 +6,8 @@ class EnqueueFeedAutoEngagementForAllAccountsJob < ApplicationJob
     include_story_bool = ActiveModel::Type::Boolean.new.cast(include_story)
     hold_seconds_i = story_hold_seconds.to_i.clamp(8, 40)
 
+    enqueued = 0
+
     InstagramAccount.find_each do |account|
       next if account.cookies.blank?
 
@@ -15,8 +17,27 @@ class EnqueueFeedAutoEngagementForAllAccountsJob < ApplicationJob
         include_story: include_story_bool,
         story_hold_seconds: hold_seconds_i
       )
-    rescue StandardError
+      enqueued += 1
+    rescue StandardError => e
+      Ops::StructuredLogger.warn(
+        event: "feed_auto_engagement.enqueue_failed",
+        payload: {
+          account_id: account.id,
+          error_class: e.class.name,
+          error_message: e.message
+        }
+      )
       next
     end
+
+    Ops::StructuredLogger.info(
+      event: "feed_auto_engagement.batch_enqueued",
+      payload: {
+        enqueued_accounts: enqueued,
+        max_posts: max_posts_i,
+        include_story: include_story_bool,
+        story_hold_seconds: hold_seconds_i
+      }
+    )
   end
 end

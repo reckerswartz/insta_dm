@@ -7,17 +7,18 @@
   </header>
 
   <section class="card">
-    <p class="meta">Use header filters/sorting and row retry actions. Updates stream in live with ActionCable.</p>
+    <p class="meta">Use header filters/sorting and row retry actions. Shift + wheel scrolls horizontally, click-drag pans, and updates stream live via ActionCable.</p>
     <div class="actions-row">
       <%= link_to "Back to Dashboard", admin_background_jobs_path, class: "btn secondary" %>
     </div>
 
     <div
+      class="tabulator-shell"
       data-controller="background-job-failures-table"
       data-background-job-failures-table-url-value="<%= admin_background_job_failures_path(format: :json) %>"
       data-background-job-failures-table-account-id-value="<%= current_account&.id.to_i %>"
     >
-      <div data-background-job-failures-table-target="table"></div>
+      <div class="tabulator-host" data-background-job-failures-table-target="table"></div>
     </div>
   </section>
 </div>

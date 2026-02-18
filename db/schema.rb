@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_18_043200) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_18_050100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -213,6 +213,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_18_043200) do
 
   create_table "instagram_accounts", force: :cascade do |t|
     t.text "auth_snapshot_json"
+    t.boolean "continuous_processing_enabled", default: true, null: false
+    t.integer "continuous_processing_failure_count", default: 0, null: false
+    t.text "continuous_processing_last_error"
+    t.datetime "continuous_processing_last_finished_at"
+    t.datetime "continuous_processing_last_heartbeat_at"
+    t.datetime "continuous_processing_last_started_at"
+    t.datetime "continuous_processing_next_feed_sync_at"
+    t.datetime "continuous_processing_next_profile_scan_at"
+    t.datetime "continuous_processing_next_story_sync_at"
+    t.datetime "continuous_processing_retry_after_at"
+    t.string "continuous_processing_state", default: "idle", null: false
     t.text "cookies_json"
     t.datetime "created_at", null: false
     t.datetime "last_synced_at"
@@ -222,6 +233,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_18_043200) do
     t.datetime "updated_at", null: false
     t.string "user_agent"
     t.string "username", null: false
+    t.index ["continuous_processing_enabled", "continuous_processing_retry_after_at"], name: "idx_accounts_processing_enabled_retry"
+    t.index ["continuous_processing_state", "continuous_processing_last_heartbeat_at"], name: "idx_accounts_processing_state_heartbeat"
     t.index ["username"], name: "index_instagram_accounts_on_username", unique: true
   end
 
@@ -372,19 +385,27 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_18_043200) do
     t.string "external_id"
     t.bigint "instagram_profile_id", null: false
     t.string "kind", null: false
+    t.integer "llm_comment_attempts", default: 0, null: false
     t.datetime "llm_comment_generated_at"
+    t.string "llm_comment_job_id"
+    t.text "llm_comment_last_error"
     t.json "llm_comment_metadata", default: {}
     t.string "llm_comment_model"
     t.string "llm_comment_provider"
+    t.float "llm_comment_relevance_score"
+    t.string "llm_comment_status", default: "not_requested", null: false
     t.text "llm_generated_comment"
     t.json "metadata"
     t.datetime "occurred_at"
     t.datetime "updated_at", null: false
     t.index ["instagram_profile_id", "detected_at"], name: "idx_on_instagram_profile_id_detected_at_61620a7860"
     t.index ["instagram_profile_id", "kind", "external_id"], name: "idx_on_instagram_profile_id_kind_external_id_ddff026220", unique: true
+    t.index ["instagram_profile_id", "kind", "occurred_at"], name: "idx_profile_events_profile_kind_occurred"
     t.index ["instagram_profile_id"], name: "index_instagram_profile_events_on_instagram_profile_id"
     t.index ["llm_comment_generated_at"], name: "index_instagram_profile_events_on_llm_comment_generated_at"
+    t.index ["llm_comment_job_id"], name: "idx_profile_events_llm_comment_job_id"
     t.index ["llm_comment_provider", "llm_comment_generated_at"], name: "idx_on_llm_comment_provider_llm_comment_generated_a_c186e86ca1"
+    t.index ["llm_comment_status", "detected_at"], name: "idx_profile_events_llm_status_detected"
   end
 
   create_table "instagram_profile_history_chunks", force: :cascade do |t|
@@ -564,6 +585,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_18_043200) do
     t.index ["dm_interaction_retry_after_at"], name: "index_instagram_profiles_on_dm_interaction_retry_after_at"
     t.index ["dm_interaction_state"], name: "index_instagram_profiles_on_dm_interaction_state"
     t.index ["ig_user_id"], name: "index_instagram_profiles_on_ig_user_id"
+    t.index ["instagram_account_id", "ai_last_analyzed_at"], name: "idx_instagram_profiles_account_last_analyzed"
     t.index ["instagram_account_id", "following", "follows_you"], name: "idx_on_instagram_account_id_following_follows_you_34f570e7b6"
     t.index ["instagram_account_id", "username"], name: "index_instagram_profiles_on_instagram_account_id_and_username", unique: true
     t.index ["instagram_account_id"], name: "index_instagram_profiles_on_instagram_account_id"

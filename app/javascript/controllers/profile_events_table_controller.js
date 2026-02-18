@@ -1,99 +1,90 @@
 import { Controller } from "@hotwired/stimulus"
 import { TabulatorFull as Tabulator } from "tabulator-tables"
+import {
+  attachTabulatorBehaviors,
+  adaptiveTableHeight,
+  escapeHtml,
+  runTableCleanups,
+  tabulatorBaseOptions,
+} from "../lib/tabulator_helpers"
 
 export default class extends Controller {
   static values = { url: String }
 
   connect() {
     this.tableEl = this.element.querySelector("[data-profile-events-table-target='table']")
-
     if (!this.tableEl) return
 
-    this.table = new Tabulator(this.tableEl, {
-      layout: "fitColumns",
-      height: this._tableHeight(),
+    const options = tabulatorBaseOptions({
+      url: this.urlValue,
       placeholder: "No events found",
-
-      ajaxURL: this.urlValue,
-      ajaxConfig: "GET",
-      ajaxContentType: "json",
-      ajaxResponse: (url, params, response) => response,
-
-      pagination: true,
-      paginationMode: "remote",
-      paginationSize: 50,
-      paginationSizeSelector: [25, 50, 100, 200],
-
-      sortMode: "remote",
-      filterMode: "remote",
+      height: this._tableHeight(),
       initialSort: [{ column: "detected_at", dir: "desc" }],
-
+      storageKey: "profile-events-table",
       columns: [
         {
           title: "Kind",
           field: "kind",
           headerSort: true,
           headerFilter: "input",
-          formatter: (cell) => `<code>${this._escape(cell.getValue() || "")}</code>`,
-          width: 180,
+          minWidth: 190,
+          width: 220,
+          formatter: (cell) => `<code>${escapeHtml(cell.getValue() || "")}</code>`,
         },
         {
           title: "Occurred",
           field: "occurred_at",
           headerSort: true,
+          minWidth: 210,
+          width: 225,
           formatter: (cell) => (cell.getValue() ? new Date(cell.getValue()).toLocaleString() : "-"),
-          width: 200,
         },
         {
           title: "Detected",
           field: "detected_at",
           headerSort: true,
+          minWidth: 210,
+          width: 225,
           formatter: (cell) => (cell.getValue() ? new Date(cell.getValue()).toLocaleString() : "-"),
-          width: 200,
         },
         {
           title: "Details",
           field: "metadata_json",
           headerSort: false,
-          formatter: (cell) => `<span class="meta">${this._escape(cell.getValue() || "")}</span>`,
-          widthGrow: 3,
+          minWidth: 520,
+          width: 620,
+          formatter: (cell) => `<span class="meta">${escapeHtml(cell.getValue() || "")}</span>`,
         },
         {
           title: "Media",
           field: "media_download_url",
           headerSort: false,
           hozAlign: "center",
+          minWidth: 140,
+          width: 150,
           formatter: (cell) => {
             const url = cell.getValue()
             if (!url) return "-"
-            return `<a class="btn small secondary" href="${this._escape(url)}">download</a>`
+            return `<a class="btn small secondary" href="${escapeHtml(url)}">Download</a>`
           },
-          width: 120,
         },
       ],
-
-      ajaxURLGenerator: (url, config, params) => this._urlWithParams(url, params),
     })
+
+    this.table = new Tabulator(this.tableEl, options)
+    attachTabulatorBehaviors(this, this.table, { storageKey: "profile-events-table", paginationSize: 50 })
+  }
+
+  disconnect() {
+    runTableCleanups(this)
+
+    if (this.table) {
+      this.table.destroy()
+      this.table = null
+    }
   }
 
   _tableHeight() {
-    const h = window.innerHeight || 900
-    const target = h - 340
-    return `${Math.max(320, Math.min(540, target))}px`
-  }
-
-  _urlWithParams(baseUrl, params) {
-    const u = new URL(baseUrl, window.location.origin)
-    Object.entries(params || {}).forEach(([k, v]) => {
-      if (v === null || typeof v === "undefined") return
-      const s = (typeof v === "object") ? JSON.stringify(v) : String(v)
-      if (s.length === 0) return
-      u.searchParams.set(k, s)
-    })
-    return u.toString()
-  }
-
-  _escape(s) {
-    return String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;")
+    return adaptiveTableHeight(this.tableEl, { min: 340, max: 760, bottomPadding: 38 })
   }
 }

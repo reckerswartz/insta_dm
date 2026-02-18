@@ -109,6 +109,7 @@
       <%= button_to "Sync Next 10 Stories", sync_profile_stories_instagram_account_path(@account, story_limit: InstagramAccountsController::STORY_SYNC_LIMIT), method: :post, class: "btn secondary" %>
       <%= button_to "Sync Next 10 Stories (Auto Reply Enabled)", sync_stories_with_comments_instagram_account_path(@account, story_limit: InstagramAccountsController::STORY_SYNC_LIMIT), method: :post, class: "btn secondary" %>
       <%= button_to "Sync All Stories (Continuous Auto Reply)", sync_all_stories_continuous_instagram_account_path(@account), method: :post, class: "btn secondary" %>
+      <%= button_to "Run Continuous Processing Now", run_continuous_processing_instagram_account_path(@account), method: :post, class: "btn secondary" %>
       <%= button_to "Download Missing Avatars (Background)", download_missing_avatars_instagram_profiles_path, method: :post, class: "btn secondary" %>
       <%= button_to "Capture Feed (Background)", feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20), method: :post, class: "btn secondary" %>
     </div>

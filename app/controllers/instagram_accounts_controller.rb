@@ -9,6 +9,7 @@ class InstagramAccountsController < ApplicationController
     show update destroy select manual_login import_cookies export_cookies validate_session
     sync_next_profiles sync_profile_stories sync_stories_with_comments
     sync_all_stories_continuous story_media_archive generate_llm_comment technical_details
+    run_continuous_processing
   ]
 
   def index
@@ -249,6 +250,39 @@ class InstagramAccountsController < ApplicationController
     end
   end
 
+  def run_continuous_processing
+    trigger_source = params[:trigger_source].to_s.presence || "manual_account_trigger"
+
+    ProcessInstagramAccountContinuouslyJob.perform_later(
+      instagram_account_id: @account.id,
+      trigger_source: trigger_source
+    )
+
+    respond_to do |format|
+      format.html { redirect_to instagram_account_path(@account), notice: "Queued continuous processing pipeline." }
+      format.turbo_stream do
+        render turbo_stream: turbo_stream.append(
+          "notifications",
+          partial: "shared/notification",
+          locals: { kind: "notice", message: "Queued continuous processing pipeline." }
+        )
+      end
+      format.json { render json: { status: "queued" }, status: :accepted }
+    end
+  rescue StandardError => e
+    respond_to do |format|
+      format.html { redirect_to instagram_account_path(@account), alert: "Unable to queue continuous processing: #{e.message}" }
+      format.turbo_stream do
+        render turbo_stream: turbo_stream.append(
+          "notifications",
+          partial: "shared/notification",
+          locals: { kind: "alert", message: "Unable to queue continuous processing: #{e.message}" }
+        )
+      end
+      format.json { render json: { error: e.message }, status: :unprocessable_entity }
+    end
+  end
+
   def story_media_archive
     page = params.fetch(:page, 1).to_i
     page = 1 if page < 1
@@ -290,7 +324,7 @@ class InstagramAccountsController < ApplicationController
 
   def generate_llm_comment
     event_id = params.require(:event_id)
-    provider = params.fetch(:provider, :ollama).to_sym
+    provider = params.fetch(:provider, :ollama).to_s
     model = params[:model].presence
 
     event = InstagramProfileEvent.find(event_id)
@@ -301,17 +335,46 @@ class InstagramAccountsController < ApplicationController
       return
     end
 
-    # Generate the comment
-    result = event.generate_llm_comment!(provider: provider, model: model)
-    
+    if event.has_llm_generated_comment?
+      event.update_column(:llm_comment_status, "completed") if event.llm_comment_status.to_s != "completed"
+
+      render json: {
+        success: true,
+        status: "completed",
+        event_id: event.id,
+        llm_generated_comment: event.llm_generated_comment,
+        llm_comment_generated_at: event.llm_comment_generated_at,
+        llm_comment_model: event.llm_comment_model,
+        llm_comment_provider: event.llm_comment_provider,
+        llm_comment_relevance_score: event.llm_comment_relevance_score
+      }
+      return
+    end
+
+    if event.llm_comment_in_progress?
+      render json: {
+        success: true,
+        status: event.llm_comment_status,
+        event_id: event.id,
+        job_id: event.llm_comment_job_id
+      }, status: :accepted
+      return
+    end
+
+    job = GenerateLlmCommentJob.perform_later(
+      instagram_profile_event_id: event.id,
+      provider: provider,
+      model: model,
+      requested_by: "dashboard_manual_request"
+    )
+    event.queue_llm_comment_generation!(job_id: job.job_id)
+
     render json: {
       success: true,
-      llm_generated_comment: event.llm_generated_comment,
-      llm_comment_generated_at: event.llm_comment_generated_at,
-      llm_comment_model: event.llm_comment_model,
-      llm_comment_provider: event.llm_comment_provider,
-      generation_result: result
-    }
+      status: "queued",
+      event_id: event.id,
+      job_id: job.job_id
+    }, status: :accepted
   rescue StandardError => e
     render json: { error: e.message }, status: :unprocessable_entity
   end
@@ -328,8 +391,9 @@ class InstagramAccountsController < ApplicationController
     end
 
     # Get technical details from metadata if available, or generate them
-    technical_details = if event.llm_comment_metadata&.dig(:technical_details)
-      event.llm_comment_metadata[:technical_details]
+    llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
+    technical_details = if llm_meta["technical_details"].present? || llm_meta[:technical_details].present?
+      llm_meta["technical_details"] || llm_meta[:technical_details]
     else
       # Generate technical details on-demand if not stored
       context = event.send(:build_comment_context)
@@ -343,6 +407,9 @@ class InstagramAccountsController < ApplicationController
       generated_at: event.llm_comment_generated_at,
       model: event.llm_comment_model,
       provider: event.llm_comment_provider,
+      status: event.llm_comment_status,
+      relevance_score: event.llm_comment_relevance_score,
+      last_error: event.llm_comment_last_error,
       technical_details: technical_details
     }
   rescue StandardError => e
@@ -400,6 +467,10 @@ class InstagramAccountsController < ApplicationController
       llm_comment_generated_at: event.llm_comment_generated_at&.iso8601,
       llm_comment_model: event.llm_comment_model,
       llm_comment_provider: event.llm_comment_provider,
+      llm_comment_status: event.llm_comment_status,
+      llm_comment_attempts: event.llm_comment_attempts,
+      llm_comment_last_error: event.llm_comment_last_error,
+      llm_comment_relevance_score: event.llm_comment_relevance_score,
       llm_comment_metadata: event.llm_comment_metadata,
       has_llm_comment: event.has_llm_generated_comment?
     }

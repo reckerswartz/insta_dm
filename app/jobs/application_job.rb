@@ -25,6 +25,7 @@ class ApplicationJob < ActiveJob::Base
   around_perform do |job, block|
     context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
     started_at = Time.current
+    started_monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue nil
 
     Current.set(
       active_job_id: job.job_id,
@@ -34,6 +35,17 @@ class ApplicationJob < ActiveJob::Base
       instagram_account_id: context[:instagram_account_id],
       instagram_profile_id: context[:instagram_profile_id]
     ) do
+      Ops::StructuredLogger.info(
+        event: "job.started",
+        payload: {
+          active_job_id: job.job_id,
+          job_class: job.class.name,
+          queue_name: job.queue_name,
+          instagram_account_id: context[:instagram_account_id],
+          instagram_profile_id: context[:instagram_profile_id]
+        }
+      )
+
       Ops::LiveUpdateBroadcaster.broadcast!(
         topic: "jobs_changed",
         account_id: context[:instagram_account_id],
@@ -42,6 +54,23 @@ class ApplicationJob < ActiveJob::Base
       )
 
       block.call
+
+      duration_ms =
+        if started_monotonic
+          ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_monotonic) * 1000).round
+        end
+
+      Ops::StructuredLogger.info(
+        event: "job.completed",
+        payload: {
+          active_job_id: job.job_id,
+          job_class: job.class.name,
+          queue_name: job.queue_name,
+          instagram_account_id: context[:instagram_account_id],
+          instagram_profile_id: context[:instagram_profile_id],
+          duration_ms: duration_ms
+        }
+      )
 
       Ops::LiveUpdateBroadcaster.broadcast!(
         topic: "jobs_changed",
@@ -98,6 +127,21 @@ class ApplicationJob < ActiveJob::Base
         exception: e,
         context: context,
         failure_record: failure
+      )
+
+      Ops::StructuredLogger.error(
+        event: "job.failed",
+        payload: {
+          active_job_id: job.job_id,
+          job_class: job.class.name,
+          queue_name: job.queue_name,
+          instagram_account_id: context[:instagram_account_id],
+          instagram_profile_id: context[:instagram_profile_id],
+          error_class: e.class.name,
+          error_message: e.message,
+          failure_kind: failure.failure_kind,
+          retryable: failure.retryable?
+        }
       )
 
       Ops::LiveUpdateBroadcaster.broadcast!(

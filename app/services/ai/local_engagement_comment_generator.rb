@@ -13,12 +13,14 @@ module Ai
       @model = model.to_s.presence || DEFAULT_MODEL
     end
 
-    def generate!(post_payload:, image_description:, topics:, author_type:)
+    def generate!(post_payload:, image_description:, topics:, author_type:, historical_comments: [], historical_context: nil)
       prompt = build_prompt(
         post_payload: post_payload,
         image_description: image_description,
         topics: topics,
-        author_type: author_type
+        author_type: author_type,
+        historical_comments: historical_comments,
+        historical_context: historical_context
       )
 
       resp = @ollama_client.generate(
@@ -72,7 +74,7 @@ module Ai
 
     private
 
-    def build_prompt(post_payload:, image_description:, topics:, author_type:)
+    def build_prompt(post_payload:, image_description:, topics:, author_type:, historical_comments:, historical_context:)
       <<~PROMPT
         You are an Instagram engagement assistant.
         Generate short, natural comments for a single post/story.
@@ -96,12 +98,15 @@ module Ai
 
         Generate exactly 8 suggestions, each <= 140 characters.
         Keep at least 3 suggestions neutral-safe for public comments.
+        Avoid repeating phrases from previous comments for the same profile.
 
         CONTEXT_JSON:
         #{JSON.pretty_generate({
           author_type: author_type,
           image_description: image_description,
           topics: Array(topics).first(12),
+          historical_comments: Array(historical_comments).first(12),
+          historical_context: historical_context.to_s,
           post: post_payload[:post],
           author_profile: post_payload[:author_profile],
           rules: post_payload[:rules]

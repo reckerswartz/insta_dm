@@ -12,14 +12,15 @@
       <%= link_to "Application Issues", admin_issues_path, class: "btn secondary" %>
     </div>
 
-    <p class="meta mt-2">Attachment writes stream live updates over ActionCable and refresh this table with throttling.</p>
+    <p class="meta mt-2">Use header filters/sorting. Shift + wheel scrolls horizontally, click-drag pans, and attachment updates stream live over ActionCable.</p>
 
     <div
+      class="tabulator-shell"
       data-controller="storage-ingestions-table"
       data-storage-ingestions-table-url-value="<%= admin_storage_ingestions_path(format: :json) %>"
       data-storage-ingestions-table-account-id-value="<%= current_account&.id.to_i %>"
     >
-      <div data-storage-ingestions-table-target="table"></div>
+      <div class="tabulator-host" data-storage-ingestions-table-target="table"></div>
     </div>
   </section>
 </div>
