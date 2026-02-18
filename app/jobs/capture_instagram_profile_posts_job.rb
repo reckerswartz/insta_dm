@@ -39,8 +39,10 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
     persisted_posts = Array(collected[:posts])
     summary = collected[:summary].is_a?(Hash) ? collected[:summary] : {}
     created_shortcodes = Array(summary[:created_shortcodes])
+    updated_shortcodes = Array(summary[:updated_shortcodes])
     restored_shortcodes = Array(summary[:restored_shortcodes])
     deleted_shortcodes = Array(summary[:deleted_shortcodes])
+    analysis_candidate_shortcodes = Array(summary[:analysis_candidate_shortcodes])
 
     event_counts = create_post_capture_events!(
       profile: profile,
@@ -48,6 +50,12 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
       created_shortcodes: created_shortcodes,
       restored_shortcodes: restored_shortcodes,
       deleted_shortcodes: deleted_shortcodes
+    )
+    analysis_enqueue = enqueue_post_analysis_followup!(
+      account: account,
+      profile: profile,
+      persisted_posts: persisted_posts,
+      analysis_candidate_shortcodes: analysis_candidate_shortcodes
     )
 
     profile.update!(last_synced_at: Time.current)
@@ -65,6 +73,8 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
         updated_count: summary[:updated_count].to_i,
         unchanged_count: summary[:unchanged_count].to_i,
         deleted_count: summary[:deleted_count].to_i,
+        analysis_candidates_count: analysis_enqueue[:candidate_count],
+        analysis_job_queued: analysis_enqueue[:queued],
         captured_events_count: event_counts[:captured],
         deleted_events_count: event_counts[:deleted],
         restored_events_count: event_counts[:restored]
@@ -77,7 +87,7 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
       partial: "shared/notification",
       locals: {
         kind: "notice",
-        message: "Post capture completed for #{profile.username}. New: #{summary[:created_count].to_i}, restored: #{summary[:restored_count].to_i}, deleted flagged: #{summary[:deleted_count].to_i}."
+        message: "Post capture completed for #{profile.username}. New: #{summary[:created_count].to_i}, restored: #{summary[:restored_count].to_i}, deleted flagged: #{summary[:deleted_count].to_i}, queued for analysis: #{analysis_enqueue[:candidate_count]}."
       }
     )
 
@@ -89,12 +99,19 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
         updated_count: summary[:updated_count].to_i,
         unchanged_count: summary[:unchanged_count].to_i,
         deleted_count: summary[:deleted_count].to_i,
+        feed_fetch: summary[:feed_fetch].is_a?(Hash) ? summary[:feed_fetch] : {},
         created_shortcodes: created_shortcodes.first(40),
+        updated_shortcodes: updated_shortcodes.first(40),
         restored_shortcodes: restored_shortcodes.first(40),
         deleted_shortcodes: deleted_shortcodes.first(40),
+        analysis_candidate_shortcodes: analysis_candidate_shortcodes.first(120),
+        analysis_candidates_count: analysis_enqueue[:candidate_count],
+        analysis_job_queued: analysis_enqueue[:queued],
+        analysis_job_id: analysis_enqueue[:job_id],
+        analysis_action_log_id: analysis_enqueue[:action_log_id],
         captured_events_count: event_counts[:captured]
       },
-      log_text: "Captured posts (new=#{summary[:created_count].to_i}, restored=#{summary[:restored_count].to_i}, deleted=#{summary[:deleted_count].to_i})."
+      log_text: "Captured posts (new=#{summary[:created_count].to_i}, restored=#{summary[:restored_count].to_i}, updated=#{summary[:updated_count].to_i}, deleted=#{summary[:deleted_count].to_i}, queued_for_analysis=#{analysis_enqueue[:candidate_count]})."
     )
   rescue StandardError => e
     Ops::StructuredLogger.error(
@@ -184,6 +201,62 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
     end
 
     counts
+  end
+
+  def enqueue_post_analysis_followup!(account:, profile:, persisted_posts:, analysis_candidate_shortcodes:)
+    candidates = resolve_analysis_candidates(
+      profile: profile,
+      persisted_posts: persisted_posts,
+      analysis_candidate_shortcodes: analysis_candidate_shortcodes
+    )
+    return { queued: false, candidate_count: 0, job_id: nil, action_log_id: nil } if candidates.empty?
+
+    analysis_log = profile.instagram_profile_action_logs.create!(
+      instagram_account: account,
+      action: "analyze_profile_posts",
+      status: "queued",
+      trigger_source: "job",
+      occurred_at: Time.current,
+      metadata: {
+        requested_by: self.class.name,
+        queued_post_ids: candidates.first(150),
+        queued_post_count: candidates.length
+      }
+    )
+
+    job = AnalyzeCapturedInstagramProfilePostsJob.perform_later(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      profile_action_log_id: analysis_log.id,
+      post_ids: candidates,
+      refresh_profile_insights: true
+    )
+    analysis_log.update!(active_job_id: job.job_id, queue_name: job.queue_name)
+
+    {
+      queued: true,
+      candidate_count: candidates.length,
+      job_id: job.job_id,
+      action_log_id: analysis_log.id
+    }
+  rescue StandardError => e
+    Rails.logger.warn("[CaptureInstagramProfilePostsJob] unable to queue post-analysis followup: #{e.class}: #{e.message}")
+    { queued: false, candidate_count: candidates&.length.to_i, job_id: nil, action_log_id: nil }
+  end
+
+  def resolve_analysis_candidates(profile:, persisted_posts:, analysis_candidate_shortcodes:)
+    shortcodes = Array(analysis_candidate_shortcodes).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+    return [] if shortcodes.empty?
+
+    by_shortcode = Array(persisted_posts).index_by { |post| post.shortcode.to_s }
+    ids = shortcodes.filter_map do |shortcode|
+      post = by_shortcode[shortcode] || profile.instagram_profile_posts.find_by(shortcode: shortcode)
+      next unless post
+      next if ActiveModel::Type::Boolean.new.cast(post.metadata.is_a?(Hash) ? post.metadata["deleted_from_source"] : nil)
+
+      post.id
+    end
+    ids.uniq
   end
 
   def profile_post_event_metadata(post:, reason:)

@@ -32,8 +32,11 @@ module Instagram
         restored_count: 0,
         deleted_count: 0,
         created_shortcodes: [],
+        updated_shortcodes: [],
         restored_shortcodes: [],
-        deleted_shortcodes: []
+        deleted_shortcodes: [],
+        analysis_candidate_shortcodes: [],
+        feed_fetch: dataset[:feed_fetch].is_a?(Hash) ? dataset[:feed_fetch] : {}
       }
 
       persisted_posts = Array(dataset[:posts]).map do |post_data|
@@ -52,8 +55,12 @@ module Instagram
           summary[:restored_shortcodes] << post.shortcode.to_s
         when :updated
           summary[:updated_count] += 1
+          summary[:updated_shortcodes] << post.shortcode.to_s
         else
           summary[:unchanged_count] += 1
+        end
+        if result[:analysis_required]
+          summary[:analysis_candidate_shortcodes] << post.shortcode.to_s
         end
 
         post
@@ -72,7 +79,13 @@ module Instagram
       {
         details: details,
         posts: persisted_posts,
-        summary: summary
+        summary: summary.merge(
+          created_shortcodes: Array(summary[:created_shortcodes]).uniq,
+          updated_shortcodes: Array(summary[:updated_shortcodes]).uniq,
+          restored_shortcodes: Array(summary[:restored_shortcodes]).uniq,
+          deleted_shortcodes: Array(summary[:deleted_shortcodes]).uniq,
+          analysis_candidate_shortcodes: Array(summary[:analysis_candidate_shortcodes]).uniq
+        )
       }
     end
 
@@ -98,6 +111,7 @@ module Instagram
 
       post = @profile.instagram_profile_posts.find_or_initialize_by(shortcode: shortcode)
       previous_signature = post_signature(post)
+      previous_analysis_signature = post_analysis_signature(post)
       was_new = post.new_record?
       was_deleted = post_deleted?(post)
       existing_metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
@@ -137,6 +151,7 @@ module Instagram
       )
 
       current_signature = post_signature(post.reload)
+      current_analysis_signature = post_analysis_signature(post)
       changed = (previous_signature != current_signature)
       change =
         if was_new
@@ -149,29 +164,41 @@ module Instagram
           :unchanged
         end
 
-      { post: post, change: change }
+      analysis_required =
+        was_new ||
+        was_deleted ||
+        (previous_analysis_signature != current_analysis_signature) ||
+        post.ai_status.to_s != "analyzed" ||
+        post.analyzed_at.blank?
+      if analysis_required && (post.ai_status.to_s != "pending" || post.analyzed_at.present?)
+        post.update_columns(ai_status: "pending", analyzed_at: nil, updated_at: Time.current)
+      end
+
+      { post: post, change: change, analysis_required: analysis_required }
     end
 
     def sync_media!(post:, media_url:, media_id: nil)
       url = media_url.to_s.strip
-      return if url.blank?
+      return false if url.blank?
 
       incoming_media_id = media_id.to_s.strip
       existing_metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
       existing_media_id = existing_metadata["media_id"].to_s.strip
       if post.media.attached? && incoming_media_id.present? && existing_media_id.present? && incoming_media_id == existing_media_id
-        return
+        return false
       end
 
       fp = Digest::SHA256.hexdigest(url)
-      return if post.media.attached? && post.media_url_fingerprint.to_s == fp
+      return false if post.media.attached? && post.media_url_fingerprint.to_s == fp
 
       io, content_type, filename = download_media(url)
       post.media.purge if post.media.attached?
       post.media.attach(io: io, filename: filename, content_type: content_type)
       post.update!(media_url_fingerprint: fp)
-    rescue StandardError
-      nil
+      true
+    rescue StandardError => e
+      Rails.logger.warn("[ProfileAnalysisCollector] media sync failed for shortcode=#{post.shortcode}: #{e.class}: #{e.message}")
+      false
     ensure
       io&.close if defined?(io) && io.respond_to?(:close)
     end
@@ -214,8 +241,10 @@ module Instagram
       end
     end
 
-    def download_media(url)
+    def download_media(url, redirects_left: 4)
       uri = URI.parse(url)
+      raise "invalid media URL" unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = (uri.scheme == "https")
       http.open_timeout = 10
@@ -224,7 +253,18 @@ module Instagram
       req = Net::HTTP::Get.new(uri.request_uri)
       req["Accept"] = "*/*"
       req["User-Agent"] = @account.user_agent.presence || "Mozilla/5.0"
+      req["Referer"] = Instagram::Client::INSTAGRAM_BASE_URL
       res = http.request(req)
+
+      if res.is_a?(Net::HTTPRedirection) && res["location"].present?
+        raise "too many redirects" if redirects_left.to_i <= 0
+
+        redirected_url = normalize_redirect_url(base_uri: uri, location: res["location"])
+        raise "invalid redirect URL" if redirected_url.blank?
+
+        return download_media(redirected_url, redirects_left: redirects_left.to_i - 1)
+      end
+
       raise "media download failed: HTTP #{res.code}" unless res.is_a?(Net::HTTPSuccess)
 
       body = res.body.to_s
@@ -236,6 +276,16 @@ module Instagram
       io = StringIO.new(body)
       io.set_encoding(Encoding::BINARY) if io.respond_to?(:set_encoding)
       [io, content_type, "profile_post_#{Digest::SHA256.hexdigest(url)[0, 12]}.#{ext}"]
+    end
+
+    def normalize_redirect_url(base_uri:, location:)
+      target = URI.join(base_uri.to_s, location.to_s).to_s
+      uri = URI.parse(target)
+      return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+      uri.to_s
+    rescue URI::InvalidURIError, ArgumentError
+      nil
     end
 
     def extension_for_content_type(content_type:)
@@ -287,6 +337,19 @@ module Instagram
         media_id: metadata["media_id"].to_s,
         media_type: metadata["media_type"].to_s,
         deleted_from_source: ActiveModel::Type::Boolean.new.cast(metadata["deleted_from_source"])
+      }
+    end
+
+    def post_analysis_signature(post)
+      metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+      {
+        shortcode: post.shortcode.to_s,
+        taken_at: post.taken_at&.utc&.iso8601(3),
+        caption: post.caption.to_s,
+        source_media_url: post.source_media_url.to_s,
+        media_url_fingerprint: post.media_url_fingerprint.to_s,
+        media_id: metadata["media_id"].to_s,
+        media_type: metadata["media_type"].to_s
       }
     end
   end

@@ -7,12 +7,16 @@ require "cgi"
 require "base64"
 require "digest"
 require "stringio"
+require "set"
 
 module Instagram
   class Client
     INSTAGRAM_BASE_URL = "https://www.instagram.com".freeze
     DEBUG_CAPTURE_DIR = Rails.root.join("log", "instagram_debug").freeze
     STORY_INTERACTION_RETRY_DAYS = 3
+    PROFILE_FEED_PAGE_SIZE = 30
+    PROFILE_FEED_MAX_PAGES = 120
+    PROFILE_FEED_BROWSER_ITEM_CAP = 500
 
     def initialize(account:)
       @account = account
@@ -1581,35 +1585,15 @@ module Instagram
       details = fetch_profile_details!(username: username)
       web_info = fetch_web_profile_info(username)
       user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
-      user_id = user.is_a?(Hash) ? user["id"].to_s.strip : ""
+      user_id = user.is_a?(Hash) ? user["id"].to_s.strip.presence : nil
+      user_id ||= details[:ig_user_id].to_s.strip.presence if details.is_a?(Hash)
 
-      items = []
-      if user_id.present?
-        remaining = posts_limit.to_i if posts_limit.present?
-        max_id = nil
-
-        loop do
-          count =
-            if remaining.present?
-              break if remaining <= 0
-              [ remaining, 30 ].min
-            else
-              30
-            end
-
-          feed = fetch_user_feed(user_id: user_id, referer_username: username, count: count, max_id: max_id)
-          break unless feed.is_a?(Hash)
-
-          page_items = Array(feed["items"])
-          break if page_items.empty?
-
-          items.concat(page_items)
-          remaining -= page_items.size if remaining.present?
-
-          max_id = feed["next_max_id"].to_s.strip
-          break if max_id.blank?
-        end
-      end
+      feed_result = fetch_profile_feed_items_for_analysis(
+        username: username,
+        user_id: user_id,
+        posts_limit: posts_limit
+      )
+      items = Array(feed_result[:items])
 
       posts = items.filter_map do |item|
         extract_post_for_analysis(item, comments_limit: comments_limit, referer_username: username)
@@ -1623,8 +1607,232 @@ module Instagram
       {
         profile: details,
         posts: posts,
-        fetched_at: Time.current
+        fetched_at: Time.current,
+        feed_fetch: feed_result.except(:items)
       }
+    end
+
+    def fetch_profile_feed_items_for_analysis(username:, user_id:, posts_limit:)
+      http_result = fetch_profile_feed_items_via_http(
+        username: username,
+        user_id: user_id,
+        posts_limit: posts_limit
+      )
+      return http_result if Array(http_result[:items]).any?
+
+      browser_result = fetch_profile_feed_items_via_browser_context(
+        username: username,
+        user_id_hint: user_id,
+        posts_limit: posts_limit
+      )
+      return browser_result if Array(browser_result[:items]).any?
+
+      http_result.merge(
+        browser_fallback_attempted: true,
+        browser_fallback_error: browser_result[:error].to_s.presence
+      )
+    end
+
+    def fetch_profile_feed_items_via_http(username:, user_id:, posts_limit:)
+      limit = posts_limit.to_i if posts_limit.present?
+      limit = nil if limit.to_i <= 0
+      return { source: "http_feed_api", user_id: nil, pages_fetched: 0, items: [] } if user_id.to_s.blank?
+
+      remaining = limit
+      max_id = nil
+      pages = 0
+      items = []
+      seen_max_ids = Set.new
+      seen_item_keys = Set.new
+      more_available = false
+
+      loop do
+        break if pages >= PROFILE_FEED_MAX_PAGES
+        break if remaining.present? && remaining <= 0
+        break if max_id.present? && seen_max_ids.include?(max_id)
+
+        seen_max_ids << max_id if max_id.present?
+        count = remaining.present? ? [remaining, PROFILE_FEED_PAGE_SIZE].min : PROFILE_FEED_PAGE_SIZE
+        feed = fetch_user_feed(user_id: user_id, referer_username: username, count: count, max_id: max_id)
+        break unless feed.is_a?(Hash)
+
+        page_items = Array(feed["items"]).select { |item| item.is_a?(Hash) }
+        break if page_items.empty?
+
+        pages += 1
+        deduped = dedupe_profile_feed_items(items: page_items, seen_keys: seen_item_keys, max_items: remaining)
+        items.concat(deduped)
+        remaining -= deduped.length if remaining.present?
+
+        next_max_id = feed["next_max_id"].to_s.strip.presence
+        more_available = ActiveModel::Type::Boolean.new.cast(feed["more_available"])
+        max_id = next_max_id
+        break if max_id.blank?
+      end
+
+      {
+        source: "http_feed_api",
+        user_id: user_id.to_s,
+        pages_fetched: pages,
+        final_max_id: max_id,
+        more_available: more_available,
+        items: limit.present? ? items.first(limit) : items
+      }
+    rescue StandardError => e
+      {
+        source: "http_feed_api",
+        user_id: user_id.to_s.presence,
+        pages_fetched: 0,
+        error: e.message.to_s,
+        items: []
+      }
+    end
+
+    def fetch_profile_feed_items_via_browser_context(username:, user_id_hint:, posts_limit:)
+      limit = posts_limit.to_i if posts_limit.present?
+      limit = nil if limit.to_i <= 0
+      max_items = limit.present? ? limit : PROFILE_FEED_BROWSER_ITEM_CAP
+
+      with_recoverable_session(label: "profile_analysis_posts_browser_fallback") do
+        with_authenticated_driver do |driver|
+          driver.navigate.to("#{INSTAGRAM_BASE_URL}/#{username}/")
+          wait_for(driver, css: "body", timeout: 10)
+          dismiss_common_overlays!(driver)
+
+          payload =
+            driver.execute_async_script(
+              <<~JS,
+                const username = String(arguments[0] || "").trim();
+                const userIdHint = String(arguments[1] || "").trim();
+                const maxItems = Math.max(1, Number(arguments[2] || 0));
+                const pageSize = Math.max(1, Number(arguments[3] || 30));
+                const maxPages = Math.max(1, Number(arguments[4] || 100));
+                const done = arguments[arguments.length - 1];
+
+                const out = {
+                  source: "browser_feed_api",
+                  user_id: null,
+                  pages_fetched: 0,
+                  final_max_id: null,
+                  items: [],
+                  error: null
+                };
+
+                const readJson = async (path) => {
+                  const resp = await fetch(path, {
+                    method: "GET",
+                    credentials: "include",
+                    headers: {
+                      "Accept": "application/json, text/plain, */*",
+                      "X-Requested-With": "XMLHttpRequest"
+                    }
+                  });
+                  if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${path}`);
+                  return await resp.json();
+                };
+
+                (async () => {
+                  try {
+                    let userId = userIdHint;
+                    if (!userId) {
+                      const profile = await readJson(`/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`);
+                      userId = String((profile && profile.data && profile.data.user && profile.data.user.id) || "").trim();
+                    }
+                    if (!userId) {
+                      out.error = "browser_profile_user_id_missing";
+                      done(out);
+                      return;
+                    }
+
+                    out.user_id = userId;
+                    let maxId = "";
+                    let remaining = maxItems;
+                    const seenCursors = new Set();
+
+                    for (let page = 0; page < maxPages; page += 1) {
+                      if (remaining <= 0) break;
+                      if (maxId && seenCursors.has(maxId)) break;
+                      if (maxId) seenCursors.add(maxId);
+
+                      const count = Math.min(pageSize, remaining);
+                      const query = new URLSearchParams({ count: String(count) });
+                      if (maxId) query.set("max_id", maxId);
+                      const feed = await readJson(`/api/v1/feed/user/${encodeURIComponent(userId)}/?${query.toString()}`);
+                      const pageItems = Array.isArray(feed && feed.items) ? feed.items : [];
+                      if (pageItems.length === 0) break;
+
+                      out.items.push(...pageItems);
+                      out.pages_fetched += 1;
+                      remaining -= pageItems.length;
+
+                      const nextMaxId = String((feed && feed.next_max_id) || "").trim();
+                      if (!nextMaxId || nextMaxId === maxId) {
+                        maxId = nextMaxId;
+                        break;
+                      }
+                      maxId = nextMaxId;
+                    }
+
+                    out.final_max_id = maxId || null;
+                  } catch (error) {
+                    out.error = String((error && error.message) || error || "browser_feed_fetch_failed");
+                  }
+                  done(out);
+                })();
+              JS
+              username.to_s,
+              user_id_hint.to_s,
+              max_items,
+              PROFILE_FEED_PAGE_SIZE,
+              PROFILE_FEED_MAX_PAGES
+            )
+
+          payload_hash = payload.is_a?(Hash) ? payload : {}
+          seen_item_keys = Set.new
+          deduped = dedupe_profile_feed_items(
+            items: Array(payload_hash["items"]),
+            seen_keys: seen_item_keys,
+            max_items: limit
+          )
+
+          {
+            source: payload_hash["source"].to_s.presence || "browser_feed_api",
+            user_id: payload_hash["user_id"].to_s.presence,
+            pages_fetched: payload_hash["pages_fetched"].to_i,
+            final_max_id: payload_hash["final_max_id"].to_s.presence,
+            error: payload_hash["error"].to_s.presence,
+            items: deduped
+          }
+        end
+      end
+    rescue StandardError => e
+      {
+        source: "browser_feed_api",
+        user_id: user_id_hint.to_s.presence,
+        pages_fetched: 0,
+        error: e.message.to_s,
+        items: []
+      }
+    end
+
+    def dedupe_profile_feed_items(items:, seen_keys:, max_items: nil)
+      out = []
+      Array(items).each do |item|
+        next unless item.is_a?(Hash)
+
+        key =
+          item["pk"].to_s.presence ||
+          item["id"].to_s.presence ||
+          item["code"].to_s.presence ||
+          item["shortcode"].to_s.presence
+        key ||= Digest::SHA256.hexdigest(item.to_json)
+        next if key.blank? || seen_keys.include?(key)
+
+        seen_keys << key
+        out << item
+        break if max_items.present? && out.length >= max_items.to_i
+      end
+      out
     end
 
     def fetch_profile_story_dataset!(username:, stories_limit: 20)

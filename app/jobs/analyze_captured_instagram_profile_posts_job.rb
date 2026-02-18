@@ -1,0 +1,164 @@
+class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
+  queue_as :ai
+
+  DEFAULT_BATCH_SIZE = 6
+  MAX_BATCH_SIZE = 20
+
+  def perform(
+    instagram_account_id:,
+    instagram_profile_id:,
+    profile_action_log_id: nil,
+    post_ids: nil,
+    batch_size: DEFAULT_BATCH_SIZE,
+    refresh_profile_insights: true,
+    total_candidates: nil
+  )
+    account = InstagramAccount.find(instagram_account_id)
+    profile = account.instagram_profiles.find(instagram_profile_id)
+    action_log = find_or_create_action_log(
+      account: account,
+      profile: profile,
+      profile_action_log_id: profile_action_log_id
+    )
+
+    ids = normalize_post_ids(profile: profile, post_ids: post_ids)
+    if ids.empty?
+      action_log.mark_succeeded!(
+        extra_metadata: { skipped: true, reason: "no_candidate_posts", queue_name: queue_name, active_job_id: job_id },
+        log_text: "No candidate posts required analysis."
+      )
+      return
+    end
+
+    batch_size_i = batch_size.to_i.clamp(1, MAX_BATCH_SIZE)
+    total_candidates_i = total_candidates.to_i.positive? ? total_candidates.to_i : ids.length
+    current_batch_ids = ids.first(batch_size_i)
+    remaining_ids = ids.drop(batch_size_i)
+
+    action_log.mark_running!(
+      extra_metadata: {
+        queue_name: queue_name,
+        active_job_id: job_id,
+        batch_size: batch_size_i,
+        current_batch_count: current_batch_ids.length,
+        remaining_count: remaining_ids.length
+      }
+    )
+
+    analyzed_now = 0
+    skipped_now = 0
+    failed_now = []
+
+    current_batch_ids.each do |post_id|
+      post = profile.instagram_profile_posts.find_by(id: post_id)
+      next unless post
+
+      if post.ai_status.to_s == "analyzed" && post.analyzed_at.present?
+        skipped_now += 1
+        next
+      end
+
+      AnalyzeInstagramProfilePostJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id
+      )
+      analyzed_now += 1
+    rescue StandardError => e
+      failed_now << {
+        post_id: post_id,
+        shortcode: post&.shortcode.to_s.presence,
+        error_class: e.class.name,
+        error_message: e.message.to_s.byteslice(0, 220)
+      }.compact
+      next
+    end
+
+    state = merged_queue_state(
+      action_log: action_log,
+      total_candidates: total_candidates_i,
+      processed_increment: current_batch_ids.length,
+      analyzed_increment: analyzed_now,
+      skipped_increment: skipped_now,
+      failed_rows: failed_now,
+      remaining_count: remaining_ids.length
+    )
+
+    if remaining_ids.any?
+      next_job = self.class.perform_later(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        profile_action_log_id: action_log.id,
+        post_ids: remaining_ids,
+        batch_size: batch_size_i,
+        refresh_profile_insights: refresh_profile_insights,
+        total_candidates: total_candidates_i
+      )
+      state["next_job_id"] = next_job.job_id
+      action_log.mark_running!(extra_metadata: { analysis_queue_state: state, active_job_id: next_job.job_id, queue_name: next_job.queue_name })
+      return
+    end
+
+    refresh_job = nil
+    if ActiveModel::Type::Boolean.new.cast(refresh_profile_insights) && state["analyzed_count"].to_i.positive?
+      refresh_job = AnalyzeInstagramProfileJob.perform_later(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id
+      )
+    end
+
+    action_log.mark_succeeded!(
+      extra_metadata: {
+        analysis_queue_state: state,
+        refresh_profile_insights: ActiveModel::Type::Boolean.new.cast(refresh_profile_insights),
+        profile_insights_refresh_job_id: refresh_job&.job_id
+      },
+      log_text: "Post analysis completed. analyzed=#{state['analyzed_count']}, skipped=#{state['skipped_count']}, failed=#{state['failed_count']}."
+    )
+  rescue StandardError => e
+    action_log&.mark_failed!(error_message: e.message, extra_metadata: { active_job_id: job_id, queue_name: queue_name })
+    raise
+  end
+
+  private
+
+  def find_or_create_action_log(account:, profile:, profile_action_log_id:)
+    log = profile.instagram_profile_action_logs.find_by(id: profile_action_log_id) if profile_action_log_id.present?
+    return log if log
+
+    profile.instagram_profile_action_logs.create!(
+      instagram_account: account,
+      action: "analyze_profile_posts",
+      status: "queued",
+      trigger_source: "job",
+      occurred_at: Time.current,
+      active_job_id: job_id,
+      queue_name: queue_name,
+      metadata: { created_by: self.class.name }
+    )
+  end
+
+  def normalize_post_ids(profile:, post_ids:)
+    ids = Array(post_ids).map(&:to_i).select(&:positive?).uniq
+    return ids if ids.any?
+
+    profile.instagram_profile_posts.pending_ai.recent_first.limit(200).pluck(:id)
+  end
+
+  def merged_queue_state(action_log:, total_candidates:, processed_increment:, analyzed_increment:, skipped_increment:, failed_rows:, remaining_count:)
+    metadata = action_log.metadata.is_a?(Hash) ? action_log.metadata : {}
+    raw = metadata["analysis_queue_state"].is_a?(Hash) ? metadata["analysis_queue_state"] : {}
+    previous_failed_rows = Array(raw["failed_posts"]).select { |row| row.is_a?(Hash) }
+
+    {
+      "total_candidates" => [raw["total_candidates"].to_i, total_candidates.to_i].max,
+      "processed_count" => raw["processed_count"].to_i + processed_increment.to_i,
+      "analyzed_count" => raw["analyzed_count"].to_i + analyzed_increment.to_i,
+      "skipped_count" => raw["skipped_count"].to_i + skipped_increment.to_i,
+      "failed_count" => raw["failed_count"].to_i + Array(failed_rows).length,
+      "remaining_count" => remaining_count.to_i,
+      "failed_posts" => (previous_failed_rows + Array(failed_rows)).first(30),
+      "updated_at" => Time.current.iso8601
+    }
+  end
+end

@@ -37,9 +37,23 @@
                 <% if log.action == "capture_profile_posts" %>
                   new: <strong><%= metadata["created_count"].to_i %></strong>,
                   restored: <strong><%= metadata["restored_count"].to_i %></strong>,
-                  deleted flagged: <strong><%= metadata["deleted_count"].to_i %></strong><br>
+                  updated: <strong><%= metadata["updated_count"].to_i %></strong>,
+                  deleted flagged: <strong><%= metadata["deleted_count"].to_i %></strong>,
+                  analysis queued: <strong><%= metadata["analysis_candidates_count"].to_i %></strong><br>
+                  <% feed_fetch = metadata["feed_fetch"].is_a?(Hash) ? metadata["feed_fetch"] : {} %>
+                  <% if feed_fetch.present? %>
+                    source: <code><%= feed_fetch["source"].to_s.presence || "-" %></code>,
+                    pages: <strong><%= feed_fetch["pages_fetched"].to_i %></strong><br>
+                  <% end %>
                   <a class="btn small secondary" href="#captured_profile_posts_section">Posts</a>
                   <a class="btn small secondary" href="#profile_events_table_<%= log.instagram_profile_id %>">History</a>
+                <% elsif log.action == "analyze_profile_posts" %>
+                  <% state = metadata["analysis_queue_state"].is_a?(Hash) ? metadata["analysis_queue_state"] : {} %>
+                  total: <strong><%= state["total_candidates"].to_i %></strong>,
+                  analyzed: <strong><%= state["analyzed_count"].to_i %></strong>,
+                  skipped: <strong><%= state["skipped_count"].to_i %></strong>,
+                  failed: <strong><%= state["failed_count"].to_i %></strong><br>
+                  <a class="btn small secondary" href="#captured_profile_posts_section">Posts</a>
                 <% elsif metadata["post_shortcode"].to_s.present? %>
                   Post: <code><%= metadata["post_shortcode"] %></code><br>
                   <a class="btn small secondary" href="#captured_profile_posts_section">View post</a>

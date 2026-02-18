@@ -80,32 +80,27 @@
               <th>Scope</th>
               <th>Context</th>
               <th>Status</th>
+              <th>Active Job ID</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody>
-            <% if @backend == "sidekiq" %>
-              <% @recent_jobs.each do |j| %>
-                <tr>
-                  <td><%= relative_time_with_tooltip(j[:created_at]) %></td>
-                  <td><code><%= j[:class_name] %></code></td>
-                  <td><%= j[:queue_name] %></td>
-                  <td><span class="pill"><%= j[:job_scope] %></span></td>
-                  <td class="meta"><%= j[:context_label] %></td>
-                  <td><%= j[:status] %></td>
-                </tr>
-              <% end %>
-            <% else %>
-              <% @recent_jobs.each do |j| %>
-                <% ctx = Jobs::ContextExtractor.from_solid_queue_job_arguments(j.arguments) %>
-                <tr>
-                  <td><%= relative_time_with_tooltip(j.created_at) %></td>
-                  <td><code><%= j.class_name %></code></td>
-                  <td><%= j.queue_name %></td>
-                  <td><span class="pill"><%= ctx[:job_scope] %></span></td>
-                  <td class="meta"><%= ctx[:context_label] %></td>
-                  <td><%= j.finished_at.present? ? "finished" : "running/scheduled" %></td>
-                </tr>
-              <% end %>
+            <% @recent_jobs.each do |j| %>
+              <tr>
+                <td><%= relative_time_with_tooltip(j[:created_at]) %></td>
+                <td><code><%= j[:class_name] %></code></td>
+                <td><%= j[:queue_name] %></td>
+                <td><span class="pill"><%= j[:job_scope] %></span></td>
+                <td class="meta"><%= j[:context_label] %></td>
+                <td><%= j[:status] %></td>
+                <td><code><%= j[:active_job_id].presence || "-" %></code></td>
+                <td style="min-width: 420px;">
+                  <details>
+                    <summary>inspect</summary>
+                    <%= render "job_details", details: j[:details], job: j %>
+                  </details>
+                </td>
+              </tr>
             <% end %>
           </tbody>
           </table>

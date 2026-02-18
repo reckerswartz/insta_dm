@@ -35,49 +35,58 @@ class ApplicationJob < ActiveJob::Base
       instagram_account_id: context[:instagram_account_id],
       instagram_profile_id: context[:instagram_profile_id]
     ) do
-      Ops::StructuredLogger.info(
-        event: "job.started",
-        payload: {
-          active_job_id: job.job_id,
-          job_class: job.class.name,
-          queue_name: job.queue_name,
-          instagram_account_id: context[:instagram_account_id],
-          instagram_profile_id: context[:instagram_profile_id]
-        }
-      )
+      Ai::ApiUsageTracker.with_context(
+        active_job_id: job.job_id,
+        provider_job_id: job.provider_job_id,
+        job_class: job.class.name,
+        queue_name: job.queue_name,
+        instagram_account_id: context[:instagram_account_id],
+        instagram_profile_id: context[:instagram_profile_id]
+      ) do
+        Ops::StructuredLogger.info(
+          event: "job.started",
+          payload: {
+            active_job_id: job.job_id,
+            job_class: job.class.name,
+            queue_name: job.queue_name,
+            instagram_account_id: context[:instagram_account_id],
+            instagram_profile_id: context[:instagram_profile_id]
+          }
+        )
 
-      Ops::LiveUpdateBroadcaster.broadcast!(
-        topic: "jobs_changed",
-        account_id: context[:instagram_account_id],
-        payload: { status: "started", job_class: job.class.name, active_job_id: job.job_id },
-        throttle_key: "jobs_changed"
-      )
+        Ops::LiveUpdateBroadcaster.broadcast!(
+          topic: "jobs_changed",
+          account_id: context[:instagram_account_id],
+          payload: { status: "started", job_class: job.class.name, active_job_id: job.job_id },
+          throttle_key: "jobs_changed"
+        )
 
-      block.call
+        block.call
 
-      duration_ms =
-        if started_monotonic
-          ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_monotonic) * 1000).round
-        end
+        duration_ms =
+          if started_monotonic
+            ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_monotonic) * 1000).round
+          end
 
-      Ops::StructuredLogger.info(
-        event: "job.completed",
-        payload: {
-          active_job_id: job.job_id,
-          job_class: job.class.name,
-          queue_name: job.queue_name,
-          instagram_account_id: context[:instagram_account_id],
-          instagram_profile_id: context[:instagram_profile_id],
-          duration_ms: duration_ms
-        }
-      )
+        Ops::StructuredLogger.info(
+          event: "job.completed",
+          payload: {
+            active_job_id: job.job_id,
+            job_class: job.class.name,
+            queue_name: job.queue_name,
+            instagram_account_id: context[:instagram_account_id],
+            instagram_profile_id: context[:instagram_profile_id],
+            duration_ms: duration_ms
+          }
+        )
 
-      Ops::LiveUpdateBroadcaster.broadcast!(
-        topic: "jobs_changed",
-        account_id: context[:instagram_account_id],
-        payload: { status: "completed", job_class: job.class.name, active_job_id: job.job_id },
-        throttle_key: "jobs_changed"
-      )
+        Ops::LiveUpdateBroadcaster.broadcast!(
+          topic: "jobs_changed",
+          account_id: context[:instagram_account_id],
+          payload: { status: "completed", job_class: job.class.name, active_job_id: job.job_id },
+          throttle_key: "jobs_changed"
+        )
+      end
     end
   rescue StandardError => e
     begin

@@ -186,6 +186,71 @@ class ProfileAnalysisCollectorTest < ActiveSupport::TestCase
     assert_equal "media_123", post.metadata["media_id"]
   end
 
+  test "marks updated post as analysis candidate when analysis inputs change" do
+    account = InstagramAccount.create!(username: "collector_analysis_account")
+    profile = account.instagram_profiles.create!(username: "collector_analysis_profile")
+
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "analysis_1",
+      caption: "old caption",
+      permalink: "https://instagram.com/p/analysis_1/",
+      source_media_url: "https://cdn.example.com/old.jpg",
+      likes_count: 2,
+      comments_count: 0,
+      metadata: { "media_id" => "media_old", "media_type" => 1 },
+      ai_status: "analyzed",
+      analyzed_at: 2.hours.ago
+    )
+
+    dataset = {
+      profile: {},
+      posts: [
+        {
+          shortcode: "analysis_1",
+          media_id: "media_new",
+          media_type: 1,
+          taken_at: Time.current,
+          caption: "new caption",
+          permalink: "https://instagram.com/p/analysis_1/",
+          media_url: "https://cdn.example.com/new.jpg",
+          image_url: nil,
+          likes_count: 5,
+          comments_count: 0,
+          comments: []
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_analysis_dataset!) { |**_kwargs| dataset }
+
+    with_client_stub(client_stub) do
+      collector = Instagram::ProfileAnalysisCollector.new(account: account, profile: profile)
+      collector.define_singleton_method(:download_media) do |_url, **_kwargs|
+        io = StringIO.new("new-media")
+        [ io, "image/jpeg", "analysis_1.jpg" ]
+      end
+
+      result = collector.collect_and_persist!(
+        posts_limit: nil,
+        comments_limit: 8,
+        track_missing_as_deleted: false,
+        sync_source: "test_capture"
+      )
+
+      summary = result[:summary].is_a?(Hash) ? result[:summary] : {}
+      assert_equal 1, summary[:updated_count].to_i
+      assert_includes Array(summary[:updated_shortcodes]), "analysis_1"
+      assert_includes Array(summary[:analysis_candidate_shortcodes]), "analysis_1"
+    end
+
+    post.reload
+    assert_equal "pending", post.ai_status
+    assert_nil post.analyzed_at
+    assert_equal "media_new", post.metadata["media_id"]
+  end
+
   private
 
   def with_client_stub(stubbed_client)
