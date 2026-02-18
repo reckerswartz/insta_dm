@@ -3,6 +3,7 @@
 
 :queues:
   - [sync, 4]
+  - [ai, 3]
   - [profiles, 3]
   - [messages, 2]
   - [avatars, 1]

@@ -26,11 +26,19 @@ class UserProfileBuilderService
       sentiment_counts[sentiment] += 1 if sentiment.present?
     end
 
-    person_counts = InstagramStoryFace.joins(:instagram_story)
+    story_person_counts = InstagramStoryFace.joins(:instagram_story)
       .where(instagram_stories: { instagram_profile_id: profile.id })
       .where.not(instagram_story_person_id: nil)
       .group(:instagram_story_person_id)
       .count
+
+    post_person_counts = InstagramPostFace.joins(:instagram_profile_post)
+      .where(instagram_profile_posts: { instagram_profile_id: profile.id })
+      .where.not(instagram_story_person_id: nil)
+      .group(:instagram_story_person_id)
+      .count
+
+    person_counts = story_person_counts.merge(post_person_counts) { |_person_id, left, right| left.to_i + right.to_i }
 
     top_people = profile.instagram_story_people.where(id: person_counts.keys).map do |person|
       {
@@ -47,6 +55,10 @@ class UserProfileBuilderService
       secondary_person_mentions: top_people.reject { |row| row[:role] == "primary_user" }.sum { |row| row[:appearances].to_i }
     )
 
+    record = InstagramProfileBehaviorProfile.find_or_initialize_by(instagram_profile: profile)
+    existing_summary = record.behavioral_summary.is_a?(Hash) ? record.behavioral_summary.deep_dup : {}
+    existing_metadata = record.metadata.is_a?(Hash) ? record.metadata.deep_dup : {}
+
     summary = {
       posting_time_pattern: {
         hour_histogram: by_hour.sort.to_h,
@@ -59,14 +71,17 @@ class UserProfileBuilderService
       top_hashtags: sort_top(hashtag_counts),
       sentiment_trend: sort_top(sentiment_counts, limit: 5)
     }
+    summary["face_identity_profile"] = existing_summary["face_identity_profile"] if existing_summary["face_identity_profile"].is_a?(Hash)
+    summary["related_individuals"] = Array(existing_summary["related_individuals"]) if existing_summary["related_individuals"].present?
+    summary["known_username_matches"] = Array(existing_summary["known_username_matches"]) if existing_summary["known_username_matches"].present?
 
-    record = InstagramProfileBehaviorProfile.find_or_initialize_by(instagram_profile: profile)
     record.activity_score = score
     record.behavioral_summary = summary
-    record.metadata = {
+    record.metadata = existing_metadata.merge(
       stories_processed: stories.length,
+      post_faces_processed: profile.instagram_post_faces.count,
       refreshed_at: Time.current.iso8601
-    }
+    )
     record.save!
     record
   end

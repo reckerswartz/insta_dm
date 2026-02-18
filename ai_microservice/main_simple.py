@@ -91,12 +91,12 @@ async def health_check():
 @app.post("/analyze/image")
 async def analyze_image(
     file: UploadFile = File(...),
-    features: Optional[str] = "labels,text,faces,safe_search"
+    features: Optional[str] = "labels,text,faces"
 ):
     """
     Analyze image with local AI models
     
-    Features: labels, text, faces, safe_search
+    Features: labels, text, faces
     """
     try:
         # Read and decode image
@@ -148,15 +148,6 @@ async def analyze_image(
             except Exception as e:
                 logger.error(f"Face detection error: {e}")
                 results["faces"] = []
-        
-        # Safe Search (basic content detection)
-        if "safe_search" in feature_list and vision_service:
-            try:
-                if opencv_image is not None:
-                    results["safe_search"] = vision_service.detect_safe_content(opencv_image)
-            except Exception as e:
-                logger.error(f"Safe search error: {e}")
-                results["safe_search"] = {}
         
         return {
             "success": True,

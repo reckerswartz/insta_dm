@@ -1,8 +1,9 @@
 class EnqueueProfileRefreshForAllAccountsJob < ApplicationJob
   queue_as :profiles
 
-  def perform(limit_per_account: 30)
-    limit = limit_per_account.to_i.clamp(1, 500)
+  def perform(opts = nil, **kwargs)
+    params = normalize_params(opts, kwargs, limit_per_account: 30)
+    limit = params[:limit_per_account].to_i.clamp(1, 500)
 
     InstagramAccount.find_each do |account|
       next if account.cookies.blank?
@@ -20,5 +21,12 @@ class EnqueueProfileRefreshForAllAccountsJob < ApplicationJob
     rescue StandardError
       next
     end
+  end
+
+  private
+
+  def normalize_params(opts, kwargs, defaults)
+    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
+    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
   end
 end

@@ -5,6 +5,20 @@ redis_url = ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0")
 
 Sidekiq.configure_server do |config|
   config.redis = { url: redis_url }
+  config.error_handlers << proc do |error, context, _|
+    Ops::StructuredLogger.error(
+      event: "sidekiq.error",
+      payload: {
+        error_class: error.class.name,
+        error_message: error.message,
+        queue: context[:queue],
+        jid: context[:jid],
+        class: context[:class]
+      }
+    )
+  rescue StandardError
+    Rails.logger.error("[sidekiq] error handler failed for #{error.class}: #{error.message}")
+  end
 
   schedule_path = Rails.root.join("config/sidekiq_schedule.yml")
   next unless File.exist?(schedule_path)

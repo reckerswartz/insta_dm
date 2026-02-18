@@ -9,11 +9,17 @@ import {
 } from "../lib/tabulator_helpers"
 
 export default class extends Controller {
-  static values = { url: String }
+  static values = {
+    url: String,
+    profileId: Number,
+    profileUsername: String,
+  }
 
   connect() {
     this.tableEl = this.element.querySelector("[data-profile-events-table-target='table']")
     if (!this.tableEl) return
+
+    this.ensureMediaModal()
 
     const options = tabulatorBaseOptions({
       url: this.urlValue,
@@ -53,19 +59,48 @@ export default class extends Controller {
           headerSort: false,
           minWidth: 520,
           width: 620,
-          formatter: (cell) => `<span class="meta">${escapeHtml(cell.getValue() || "")}</span>`,
+          formatter: (cell) => {
+            const raw = String(cell.getValue() || "")
+            const preview = raw.length > 320 ? `${raw.slice(0, 320)}...` : raw
+            return `<span class="meta">${escapeHtml(preview)}</span>`
+          },
         },
         {
           title: "Media",
           field: "media_download_url",
           headerSort: false,
           hozAlign: "center",
-          minWidth: 140,
-          width: 150,
+          minWidth: 210,
+          width: 220,
           formatter: (cell) => {
-            const url = cell.getValue()
-            if (!url) return "-"
-            return `<a class="btn small secondary" href="${escapeHtml(url)}">Download</a>`
+            const row = cell.getRow().getData() || {}
+            const viewUrl = row.media_url
+            const downloadUrl = row.media_download_url
+            const contentType = row.media_content_type || ""
+            if (!viewUrl && !downloadUrl) return "-"
+
+            const links = []
+            if (viewUrl) {
+              links.push(`
+                <button
+                  type="button"
+                  class="btn small"
+                  data-action="click->profile-events-table#openMedia"
+                  data-media-url="${escapeHtml(viewUrl)}"
+                  data-media-download-url="${escapeHtml(downloadUrl || viewUrl)}"
+                  data-media-content-type="${escapeHtml(contentType)}"
+                  data-activity-kind="${escapeHtml(row.kind || "event")}"
+                  data-occurred-at="${escapeHtml(row.occurred_at || row.detected_at || "")}"
+                >
+                  View
+                </button>
+              `)
+            }
+            if (downloadUrl) {
+              links.push(`<a class="btn small secondary" href="${escapeHtml(downloadUrl)}" target="_blank" rel="noreferrer">Download</a>`)
+            }
+
+            return `<div class="table-actions">${links.join("")}</div>`
           },
         },
       ],
@@ -82,6 +117,129 @@ export default class extends Controller {
       this.table.destroy()
       this.table = null
     }
+
+    this.closeMedia()
+
+    if (this.mediaModalEl) {
+      this.mediaModalEl.remove()
+      this.mediaModalEl = null
+    }
+  }
+
+  openMedia(event) {
+    event.preventDefault()
+    if (!this.mediaModalEl) this.ensureMediaModal()
+
+    const data = event.currentTarget.dataset
+    const mediaUrl = String(data.mediaUrl || "")
+    if (!mediaUrl) return
+
+    const contentType = String(data.mediaContentType || "").toLowerCase()
+    const mediaPath = mediaUrl.split("?")[0].toLowerCase()
+    const isVideo = contentType.startsWith("video/") ||
+      mediaPath.endsWith(".mp4") ||
+      mediaPath.endsWith(".mov") ||
+      mediaPath.endsWith(".webm") ||
+      mediaPath.endsWith(".m3u8")
+    const activity = String(data.activityKind || "event").replaceAll("_", " ")
+    const occurredAt = data.occurredAt ? new Date(data.occurredAt).toLocaleString() : "-"
+
+    this.mediaTitleEl.textContent = `Media • ${activity}`
+    this.mediaMetaEl.textContent = `Type: ${contentType || "unknown"} | Time: ${occurredAt}`
+    this.mediaDownloadEl.href = data.mediaDownloadUrl || mediaUrl
+
+    if (this.hasProfileUsernameValue && this.profileUsernameValue) {
+      this.mediaAppProfileEl.textContent = `@${this.profileUsernameValue}`
+      this.mediaAppProfileEl.href = this.hasProfileIdValue ? `/instagram_profiles/${encodeURIComponent(this.profileIdValue)}` : "#"
+      this.mediaInstagramProfileEl.textContent = "IG"
+      this.mediaInstagramProfileEl.href = `https://www.instagram.com/${encodeURIComponent(this.profileUsernameValue)}/`
+    } else {
+      this.mediaAppProfileEl.textContent = "-"
+      this.mediaAppProfileEl.href = "#"
+      this.mediaInstagramProfileEl.textContent = "-"
+      this.mediaInstagramProfileEl.href = "#"
+    }
+
+    if (isVideo) {
+      this.mediaImageEl.removeAttribute("src")
+      this.mediaImageEl.style.display = "none"
+      this.mediaVideoShellEl.style.display = "block"
+      this.mediaVideoEl.dataset.videoSource = mediaUrl
+      this.mediaVideoEl.dataset.videoContentType = contentType
+      this.mediaVideoEl.dispatchEvent(
+        new CustomEvent("video-player:load", {
+          detail: { src: mediaUrl, contentType, autoplay: true },
+        }),
+      )
+    } else {
+      this.clearMediaVideo()
+      this.mediaImageEl.src = mediaUrl
+      this.mediaImageEl.style.display = "block"
+    }
+
+    if (this.mediaModalEl.open) this.mediaModalEl.close()
+    this.mediaModalEl.showModal()
+  }
+
+  closeMedia() {
+    this.clearMediaVideo()
+    if (this.mediaModalEl?.open) this.mediaModalEl.close()
+  }
+
+  clearMediaVideo() {
+    if (!this.mediaVideoEl || !this.mediaVideoShellEl) return
+    this.mediaVideoEl.dispatchEvent(new CustomEvent("video-player:clear"))
+    this.mediaVideoShellEl.style.display = "none"
+  }
+
+  ensureMediaModal() {
+    if (this.mediaModalEl) return
+
+    const dialog = document.createElement("dialog")
+    dialog.className = "modal profile-media-modal"
+    dialog.innerHTML = `
+      <div class="modal-header">
+        <h3 data-profile-media-title>Event Media</h3>
+        <button type="button" class="btn small secondary" data-action="click->profile-events-table#closeMedia">Close</button>
+      </div>
+      <div class="modal-grid">
+        <div>
+          <img data-profile-media-image alt="Profile event media" style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line);" />
+          <div data-profile-media-video-shell class="story-video-player-shell audit-video-player-shell" style="display:none;">
+            <video data-profile-media-video data-controller="video-player" data-video-player-autoplay-value="true" controls playsinline preload="none"></video>
+          </div>
+        </div>
+        <div>
+          <p class="meta">
+            Profile:
+            <a data-profile-media-app-profile href="#">-</a>
+            <span class="meta">|</span>
+            <a data-profile-media-ig-profile href="#" target="_blank" rel="noopener noreferrer">IG</a>
+          </p>
+          <p class="meta" data-profile-media-meta></p>
+          <div class="actions-row">
+            <a data-profile-media-download class="btn secondary" href="#" target="_blank" rel="noreferrer">Download media</a>
+          </div>
+        </div>
+      </div>
+    `
+
+    this.element.appendChild(dialog)
+
+    this.mediaModalEl = dialog
+    this.mediaTitleEl = dialog.querySelector("[data-profile-media-title]")
+    this.mediaImageEl = dialog.querySelector("[data-profile-media-image]")
+    this.mediaVideoEl = dialog.querySelector("[data-profile-media-video]")
+    this.mediaVideoShellEl = dialog.querySelector("[data-profile-media-video-shell]")
+    this.mediaMetaEl = dialog.querySelector("[data-profile-media-meta]")
+    this.mediaDownloadEl = dialog.querySelector("[data-profile-media-download]")
+    this.mediaAppProfileEl = dialog.querySelector("[data-profile-media-app-profile]")
+    this.mediaInstagramProfileEl = dialog.querySelector("[data-profile-media-ig-profile]")
+
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) this.closeMedia()
+    })
+    dialog.addEventListener("close", () => this.clearMediaVideo())
   }
 
   _tableHeight() {

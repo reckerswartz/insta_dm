@@ -30,6 +30,7 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       ai_model: run.dig(:result, :model),
       analysis: run.dig(:result, :analysis)
     )
+    PostFaceRecognitionService.new.process!(post: post)
     Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: run.dig(:result, :analysis))
 
     Turbo::StreamsChannel.broadcast_append_to(

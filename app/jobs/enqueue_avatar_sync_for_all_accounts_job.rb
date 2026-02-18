@@ -1,7 +1,10 @@
 class EnqueueAvatarSyncForAllAccountsJob < ApplicationJob
   queue_as :avatars
 
-  def perform(limit: 500)
+  def perform(opts = nil, **kwargs)
+    params = normalize_params(opts, kwargs, limit: 500)
+    limit = params[:limit].to_i.clamp(1, 2000)
+
     InstagramAccount.find_each do |account|
       next if account.cookies.blank?
 
@@ -9,5 +12,12 @@ class EnqueueAvatarSyncForAllAccountsJob < ApplicationJob
     rescue StandardError
       next
     end
+  end
+
+  private
+
+  def normalize_params(opts, kwargs, defaults)
+    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
+    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
   end
 end

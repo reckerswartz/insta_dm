@@ -101,6 +101,18 @@ class InstagramAccount < ApplicationRecord
     self.auth_snapshot = payload[:auth_snapshot] || {}
   end
 
+  def sessionid_cookie_present?
+    cookie_named_present?("sessionid")
+  end
+
+  def csrftoken_cookie_present?
+    cookie_named_present?("csrftoken")
+  end
+
+  def cookie_authenticated?
+    login_state.to_s == "authenticated" && sessionid_cookie_present?
+  end
+
   private
 
   def parse_json_array(value)
@@ -109,5 +121,14 @@ class InstagramAccount < ApplicationRecord
     JSON.parse(value)
   rescue JSON::ParserError
     []
+  end
+
+  def cookie_named_present?(name)
+    target = name.to_s
+    cookies.any? do |cookie|
+      next false unless cookie.is_a?(Hash)
+
+      cookie["name"].to_s == target && cookie["value"].to_s.present?
+    end
   end
 end

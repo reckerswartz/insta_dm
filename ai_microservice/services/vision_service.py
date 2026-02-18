@@ -9,11 +9,6 @@ logger = logging.getLogger(__name__)
 class VisionService:
     def __init__(self):
         self.model = None
-        self.safe_classes = {
-            'adult': ['person', 'people', 'human', 'man', 'woman'],
-            'violence': ['weapon', 'gun', 'knife', 'sword', 'blood', 'explosion'],
-            'racy': ['underwear', 'lingerie', 'bikini', 'swimsuit']
-        }
         self._load_model()
     
     def _load_model(self):
@@ -64,28 +59,3 @@ class VisionService:
             logger.error(f"Object detection error: {e}")
             return []
     
-    def detect_safe_content(self, image: np.ndarray) -> Dict[str, str]:
-        """
-        Basic safe search detection using object classes
-        Returns: {'adult': 'likely'|'unlikely'|'unknown', ...}
-        """
-        detections = self.detect_objects(image, confidence=0.3)
-        labels = [d['label'] for d in detections]
-        
-        results = {}
-        for category, sensitive_classes in self.safe_classes.items():
-            found_sensitive = any(label in sensitive_classes for label in labels)
-            
-            if found_sensitive:
-                # Check confidence levels
-                max_conf = max([d['confidence'] for d in detections if d['label'] in sensitive_classes], default=0)
-                if max_conf > 0.7:
-                    results[category] = 'likely'
-                elif max_conf > 0.4:
-                    results[category] = 'possible'
-                else:
-                    results[category] = 'unlikely'
-            else:
-                results[category] = 'unlikely'
-        
-        return results

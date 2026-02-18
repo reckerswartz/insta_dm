@@ -3,8 +3,9 @@
   <p class="meta">Tracks profile actions such as fetch details, messageability verification, AI analysis, and avatar sync.</p>
 
   <% if action_logs.any? %>
-    <div class="table-scroll">
-      <table class="table">
+    <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="profile-action-history-table" data-table-standard-pagination-size-value="25">
+      <div class="table-scroll">
+        <table class="table" data-table-standard-target="table">
         <thead>
           <tr>
             <th>When</th>
@@ -33,7 +34,8 @@
             </tr>
           <% end %>
         </tbody>
-      </table>
+        </table>
+      </div>
     </div>
   <% else %>
     <p class="meta">No profile action history yet.</p>

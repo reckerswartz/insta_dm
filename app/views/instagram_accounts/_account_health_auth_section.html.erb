@@ -1,0 +1,84 @@
+<% cookie_auth_ok = @account.cookie_authenticated? %>
+<% snap = @account.auth_snapshot %>
+
+<section class="card">
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <h2>Account Health & Authentication</h2>
+    <span class="status-badge <%= cookie_auth_ok ? 'authenticated' : 'unauthenticated' %>">
+      <%= cookie_auth_ok ? "Cookie Auth Valid" : "Authentication Needs Attention" %>
+    </span>
+  </div>
+
+  <p class="meta">
+    Cookie-based authentication is treated as valid when login state is authenticated and a live <code>sessionid</code> cookie is present.
+  </p>
+
+  <details class="details-box auth-collapsible" open>
+    <summary>Account Health</summary>
+    <div class="auth-collapsible-body">
+      <% if @issues.any? %>
+        <ul class="issue-list">
+          <% @issues.each do |i| %>
+            <li class="issue <%= i[:level] %>"><%= i[:message] %></li>
+          <% end %>
+        </ul>
+      <% else %>
+        <p class="meta">No issues detected.</p>
+      <% end %>
+
+      <div class="actions-row">
+        <%= button_to "Select This Account", select_instagram_account_path(@account), method: :post, class: "btn secondary", form: { data: { turbo: false } } %>
+        <%= link_to "Profiles", instagram_profiles_path, class: "btn" %>
+        <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
+        <%= link_to "Background Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
+        <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
+      </div>
+    </div>
+  </details>
+
+  <details class="details-box auth-collapsible">
+    <summary>Authentication System</summary>
+    <div class="auth-collapsible-body">
+      <%= form_with model: @account, url: instagram_account_path(@account), method: :patch, class: "filters" do |f| %>
+        <label>
+          Instagram username
+          <%= f.text_field :username, required: true %>
+        </label>
+        <div class="actions-row">
+          <%= f.submit "Save" %>
+        </div>
+      <% end %>
+
+      <div class="actions-row">
+        <%= link_to "Manual Browser Login (3 min)", manual_login_instagram_account_path(@account, timeout_seconds: 180), data: { turbo_method: :post, turbo: false }, class: "btn secondary" %>
+        <%= link_to "Validate Session", validate_session_instagram_account_path(@account), data: { turbo_method: :post }, class: "btn secondary" %>
+        <%= link_to "Export Stored Cookies", export_cookies_instagram_account_path(@account), class: "btn secondary" %>
+      </div>
+
+      <%= form_with url: import_cookies_instagram_account_path(@account), method: :post, class: "stack" do |f| %>
+        <label>
+          Import cookies JSON
+          <%= f.text_area :cookies_json, rows: 6, placeholder: '[{\"name\":\"sessionid\",\"value\":\"...\",\"domain\":\".instagram.com\",\"path\":\"/\"}]' %>
+        </label>
+        <div class="actions-row">
+          <%= f.submit "Import Cookies" %>
+        </div>
+      <% end %>
+
+      <p class="meta">
+        Cookies stored: <strong><%= @account.cookies.any? ? "Yes" : "No" %></strong>
+        | Session cookie: <strong><%= @account.sessionid_cookie_present? ? "Present" : "Missing" %></strong>
+        | CSRF cookie: <strong><%= @account.csrftoken_cookie_present? ? "Present" : "Missing" %></strong>
+        | User agent: <strong><%= @account.user_agent.to_s.present? ? "Present" : "Missing" %></strong>
+        <% if snap["captured_at"].present? %>
+          | Snapshot captured: <strong><%= snap["captured_at"] %></strong>
+        <% end %>
+        | IG App ID: <strong><%= snap["ig_app_id"].presence || "-" %></strong>
+      </p>
+
+      <% if cookie_auth_ok && (@account.user_agent.to_s.blank? || snap.blank?) %>
+        <p class="meta">Cookie authentication is currently valid. Missing snapshot or user-agent data is informational only.</p>
+      <% end %>
+    </div>
+  </details>
+</section>

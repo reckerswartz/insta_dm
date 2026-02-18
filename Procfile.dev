@@ -1,3 +1,4 @@
-web: env RUBY_DEBUG_OPEN=true bin/rails server
-js: yarn build --watch
-css: yarn build:css --watch
+web: env PATH=$HOME/.local/bin:$PATH WEBPACK_DEV_SERVER=true RUBY_DEBUG_OPEN=true FFMPEG_BIN=${FFMPEG_BIN:-$HOME/.local/bin/ffmpeg} bin/rails server
+worker: env PATH=$HOME/.local/bin:$PATH FFMPEG_BIN=${FFMPEG_BIN:-$HOME/.local/bin/ffmpeg} bundle exec sidekiq -C config/sidekiq.yml
+js: env PATH=$HOME/.local/bin:$PATH yarn dev:server
+css: env PATH=$HOME/.local/bin:$PATH yarn build:css --watch

@@ -7,8 +7,12 @@ class StoryContentUnderstandingService
 
     locations = rows.flat_map { |row| Array(row[:location_tags]) }.map(&:to_s).map(&:strip).reject(&:blank?).uniq
     objects = rows.flat_map { |row| Array(row[:content_signals]) }.map(&:to_s).map(&:strip).reject(&:blank?)
+    object_detections = rows.flat_map { |row| Array(row[:object_detections]) }.select { |row| row.is_a?(Hash) }
+    scenes = rows.flat_map { |row| Array(row[:scenes]) }.select { |row| row.is_a?(Hash) }
+    ocr_blocks = rows.flat_map { |row| Array(row[:ocr_blocks]) }.select { |row| row.is_a?(Hash) }
     mentions = rows.flat_map { |row| Array(row[:mentions]) }.map(&:to_s).map(&:downcase).uniq
     hashtags = rows.flat_map { |row| Array(row[:hashtags]) }.map(&:to_s).map(&:downcase).uniq
+    profile_handles = rows.flat_map { |row| Array(row[:profile_handles]) }.map(&:to_s).map(&:downcase).uniq
 
     combined_text = [ ocr_text, transcript_text.to_s ].compact.join("\n")
     sentiment = infer_sentiment(combined_text)
@@ -19,11 +23,15 @@ class StoryContentUnderstandingService
       faces: faces,
       locations: locations.first(30),
       ocr_text: ocr_text,
+      ocr_blocks: ocr_blocks.first(120),
       transcript: transcript_text.to_s.presence,
       sentiment: sentiment,
       topics: topics.first(30),
       mentions: mentions.first(40),
       hashtags: hashtags.first(40),
+      profile_handles: profile_handles.first(40),
+      scenes: scenes.first(80),
+      object_detections: object_detections.first(120),
       media_type: media_type.to_s
     }
   end

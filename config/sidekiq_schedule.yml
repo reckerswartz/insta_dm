@@ -1,16 +1,33 @@
 development:
   continuous_account_processing:
     class: EnqueueContinuousAccountProcessingJob
+    active_job: true
     queue: sync
     args:
       - limit: 120
     cron: "*/10 * * * *"
   ai_microservice_health_check:
     class: CheckAiMicroserviceHealthJob
+    active_job: true
     queue: sync
     cron: "*/5 * * * *"
+  queue_health_check:
+    class: CheckQueueHealthJob
+    active_job: true
+    queue: sync
+    cron: "*/3 * * * *"
+  retry_failed_background_jobs:
+    class: RetryFailedBackgroundJobsJob
+    active_job: true
+    queue: sync
+    args:
+      - limit: 15
+        max_attempts: 3
+        cooldown_minutes: 10
+    cron: "*/10 * * * *"
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
+    active_job: true
     queue: profiles
     args:
       - max_stories: 10
@@ -18,6 +35,7 @@ development:
     cron: "0 */2 * * *"
   feed_auto_engagement_all_accounts:
     class: EnqueueFeedAutoEngagementForAllAccountsJob
+    active_job: true
     queue: sync
     args:
       - max_posts: 2
@@ -26,6 +44,7 @@ development:
     cron: "20 */2 * * *"
   profile_recent_posts_scan_all_accounts:
     class: EnqueueRecentProfilePostScansForAllAccountsJob
+    active_job: true
     queue: profiles
     args:
       - limit_per_account: 5
@@ -36,38 +55,59 @@ development:
 production:
   continuous_account_processing:
     class: EnqueueContinuousAccountProcessingJob
+    active_job: true
     queue: sync
     args:
       - limit: 500
     cron: "*/8 * * * *"
   ai_microservice_health_check:
     class: CheckAiMicroserviceHealthJob
+    active_job: true
     queue: sync
     cron: "*/5 * * * *"
+  queue_health_check:
+    class: CheckQueueHealthJob
+    active_job: true
+    queue: sync
+    cron: "*/2 * * * *"
+  retry_failed_background_jobs:
+    class: RetryFailedBackgroundJobsJob
+    active_job: true
+    queue: sync
+    args:
+      - limit: 25
+        max_attempts: 3
+        cooldown_minutes: 10
+    cron: "*/8 * * * *"
   purge_expired_post_media:
     class: PurgeExpiredInstagramPostMediaJob
+    active_job: true
     queue: profiles
     args:
       - limit: 500
     cron: "37 * * * *"
   follow_graph_sync_all_accounts:
     class: EnqueueFollowGraphSyncForAllAccountsJob
+    active_job: true
     queue: sync
     cron: "15 3 * * *"
   avatar_sync_all_accounts:
     class: EnqueueAvatarSyncForAllAccountsJob
+    active_job: true
     queue: avatars
     args:
       - limit: 500
     cron: "5 4 * * *"
   profile_refresh_all_accounts:
     class: EnqueueProfileRefreshForAllAccountsJob
+    active_job: true
     queue: profiles
     args:
       - limit_per_account: 20
     cron: "0 */2 * * *"
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
+    active_job: true
     queue: profiles
     args:
       - max_stories: 10
@@ -75,6 +115,7 @@ production:
     cron: "22 * * * *"
   feed_auto_engagement_all_accounts:
     class: EnqueueFeedAutoEngagementForAllAccountsJob
+    active_job: true
     queue: sync
     args:
       - max_posts: 3
@@ -83,6 +124,7 @@ production:
     cron: "44 * * * *"
   profile_recent_posts_scan_all_accounts:
     class: EnqueueRecentProfilePostScansForAllAccountsJob
+    active_job: true
     queue: profiles
     args:
       - limit_per_account: 8

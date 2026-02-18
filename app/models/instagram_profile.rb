@@ -5,6 +5,7 @@ class InstagramProfile < ApplicationRecord
   has_many :instagram_profile_analyses, dependent: :destroy
   has_many :instagram_profile_action_logs, dependent: :destroy
   has_many :instagram_profile_posts, dependent: :destroy
+  has_many :instagram_post_faces, through: :instagram_profile_posts
   has_many :instagram_profile_post_comments, dependent: :destroy
   has_many :instagram_profile_insights, dependent: :destroy
   has_many :instagram_profile_message_strategies, dependent: :destroy

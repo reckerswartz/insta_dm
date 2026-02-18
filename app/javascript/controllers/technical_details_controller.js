@@ -1,140 +1,148 @@
 import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
-  static targets = ["modal", "content", "loading", "error"]
+  static targets = ["modal", "loading", "error", "details"]
   static values = { eventId: Number, accountId: Number }
 
   connect() {
     this.modalVisible = false
+    this.lastTechnicalPayload = ""
+    this.boundEscapeHandler = (event) => {
+      if (event.key === "Escape" && this.modalVisible) this.hideModal()
+    }
+  }
+
+  disconnect() {
+    document.removeEventListener("keydown", this.boundEscapeHandler)
   }
 
   async showTechnicalDetails(event) {
-    const button = event.target
-    const eventId = button.dataset.eventId || this.eventIdValue
-    
-    if (!eventId) {
-      console.error("No event ID found for technical details")
-      return
-    }
+    event.preventDefault()
 
-    // Find the global modal
-    const modal = document.querySelector(".technical-details-modal")
-    if (!modal) {
-      console.error("Technical details modal not found")
-      return
-    }
+    const eventId = event.currentTarget?.dataset?.eventId || this.eventIdValue
+    if (!eventId) return
 
-    // Store the event ID for later use
-    this.eventIdValue = eventId
-    
-    this.showModal(modal)
-    await this.loadTechnicalDetails(eventId)
+    this.eventIdValue = Number(eventId)
+    this.showModal()
+    this.showLoading()
+    await this.loadTechnicalDetails(String(eventId))
   }
 
-  hideModal() {
-    const modal = document.querySelector(".technical-details-modal")
-    if (modal) {
-      modal.classList.add("hidden")
-    }
+  handleBackdropClick(event) {
+    if (event.target === this.modalTarget) this.hideModal()
+  }
+
+  stopPropagation(event) {
+    event.stopPropagation()
+  }
+
+  hideModal(event = null) {
+    event?.preventDefault()
+    if (!this.hasModalTarget) return
+
+    this.modalTarget.classList.add("hidden")
     this.modalVisible = false
-    document.body.style.overflow = ""
+    document.body.style.overflow = document.querySelector(".story-modal-overlay") ? "hidden" : ""
+    document.removeEventListener("keydown", this.boundEscapeHandler)
   }
 
-  showModal(modal) {
+  async copyTechnicalData(event) {
+    event.preventDefault()
+    if (!this.lastTechnicalPayload) return
+
+    try {
+      await navigator.clipboard.writeText(this.lastTechnicalPayload)
+      this.showInlineMessage("Technical data copied to clipboard.", "notice")
+    } catch (_) {
+      this.showInlineMessage("Clipboard copy was blocked by the browser.", "error")
+    }
+  }
+
+  showModal() {
+    if (!this.hasModalTarget) return
     this.modalVisible = true
-    modal.classList.remove("hidden")
+    this.modalTarget.classList.remove("hidden")
     document.body.style.overflow = "hidden"
-    
-    // Add escape key listener
-    document.addEventListener("keydown", this.handleEscapeKey.bind(this))
+    document.addEventListener("keydown", this.boundEscapeHandler)
   }
 
   async loadTechnicalDetails(eventId) {
-    const modal = document.querySelector(".technical-details-modal")
-    const loadingTarget = modal.querySelector("[data-technical-details-target='loading']")
-    const contentTarget = modal.querySelector("[data-technical-details-target='content']")
-    const errorTarget = modal.querySelector("[data-technical-details-target='error']")
-    
-    this.showLoading(loadingTarget, contentTarget, errorTarget)
-    
     try {
-      const response = await fetch(`/instagram_accounts/${this.accountIdValue}/technical_details?event_id=${eventId}`, {
-        headers: {
-          "Accept": "application/json"
-        }
+      const response = await fetch(`/instagram_accounts/${this.accountIdValue}/technical_details?event_id=${encodeURIComponent(eventId)}`, {
+        headers: { Accept: "application/json" },
       })
 
+      const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+        throw new Error(payload.error || `Request failed (${response.status})`)
       }
 
-      const data = await response.json()
-      this.displayTechnicalDetails(data, contentTarget, errorTarget)
-      
+      this.displayTechnicalDetails(payload)
     } catch (error) {
-      console.error("Error loading technical details:", error)
-      this.showError(error.message, contentTarget, errorTarget)
+      this.showError(error.message)
     }
   }
 
-  showLoading(loadingTarget, contentTarget, errorTarget) {
-    loadingTarget.classList.remove("hidden")
-    contentTarget.classList.add("hidden")
-    errorTarget.classList.add("hidden")
+  showLoading() {
+    if (this.hasLoadingTarget) this.loadingTarget.hidden = false
+    if (this.hasErrorTarget) {
+      this.errorTarget.hidden = true
+      this.errorTarget.innerHTML = ""
+    }
+    if (this.hasDetailsTarget) {
+      this.detailsTarget.hidden = true
+      this.detailsTarget.innerHTML = ""
+    }
   }
 
-  showError(errorMessage, contentTarget, errorTarget) {
-    const modal = document.querySelector(".technical-details-modal")
-    const loadingTarget = modal.querySelector("[data-technical-details-target='loading']")
-    
-    loadingTarget.classList.add("hidden")
-    contentTarget.classList.add("hidden")
-    errorTarget.classList.remove("hidden")
-    
-    errorTarget.innerHTML = `
-      <div class="error-message">
-        <h3>Error Loading Technical Details</h3>
-        <p>${this.esc(errorMessage)}</p>
-        <button class="btn secondary" data-action="click->technical-details#hideModal">Close</button>
-      </div>
-    `
+  showError(errorMessage) {
+    if (this.hasLoadingTarget) this.loadingTarget.hidden = true
+    if (this.hasDetailsTarget) this.detailsTarget.hidden = true
+
+    if (this.hasErrorTarget) {
+      this.errorTarget.hidden = false
+      this.errorTarget.innerHTML = `
+        <div class="error-message">
+          <h3>Error Loading Technical Details</h3>
+          <p>${this.esc(errorMessage)}</p>
+          <button class="btn secondary" data-action="click->technical-details#hideModal">Close</button>
+        </div>
+      `
+    }
   }
 
-  displayTechnicalDetails(data, contentTarget, errorTarget) {
-    const modal = document.querySelector(".technical-details-modal")
-    const loadingTarget = modal.querySelector("[data-technical-details-target='loading']")
-    
-    loadingTarget.classList.add("hidden")
-    contentTarget.classList.remove("hidden")
-    errorTarget.classList.add("hidden")
-    
+  displayTechnicalDetails(data) {
+    if (this.hasLoadingTarget) this.loadingTarget.hidden = true
+    if (this.hasErrorTarget) this.errorTarget.hidden = true
+    if (!this.hasDetailsTarget) return
+
     const details = data.technical_details || {}
-    
-    contentTarget.innerHTML = `
+    this.lastTechnicalPayload = JSON.stringify(details, null, 2)
+
+    this.detailsTarget.hidden = false
+    this.detailsTarget.innerHTML = `
       <div class="technical-details-container">
         <div class="technical-details-header">
-          <h3>Technical Details for Event #${data.event_id}</h3>
-          <div class="status-indicator ${data.has_llm_comment ? 'success' : 'pending'}">
-            ${data.has_llm_comment ? '✓ AI Comment Generated' : '○ No AI Comment'}
+          <h3>Technical Details for Event #${this.esc(data.event_id)}</h3>
+          <div class="status-indicator ${data.has_llm_comment ? "success" : "pending"}">
+            ${data.has_llm_comment ? "AI comment generated" : "No AI comment yet"}
           </div>
         </div>
 
-        ${data.has_llm_comment ? this.displayGeneratedCommentInfo(data) : ''}
+        ${data.has_llm_comment ? this.displayGeneratedCommentInfo(data) : ""}
 
         <div class="technical-sections">
-          ${this.displaySection('Media Information', details.media_info || {})}
-          ${this.displaySection('Profile Analysis', details.profile_analysis || {})}
-          ${this.displaySection('Vision Analysis', details.vision_analysis || {})}
-          ${this.displaySection('OCR Results', details.ocr_results || {})}
-          ${this.displaySection('Account History', details.account_history || {})}
-          ${this.displaySection('Prompt Engineering', details.prompt_engineering || {})}
+          ${this.displaySection("Story Timeline", data.timeline || {})}
+          ${this.displaySection("Media Information", details.media_info || {})}
+          ${this.displaySection("Local Story Intelligence", details.local_story_intelligence || {})}
+          ${this.displaySection("Analysis", details.analysis || {})}
+          ${this.displaySection("Profile Analysis", details.profile_analysis || {})}
+          ${this.displaySection("Prompt Engineering", details.prompt_engineering || {})}
         </div>
 
         <div class="technical-details-actions">
           <button class="btn secondary" data-action="click->technical-details#hideModal">Close</button>
-          <button class="btn primary" onclick="navigator.clipboard.writeText(JSON.stringify(${JSON.stringify(details)}, null, 2))">
-            📋 Copy Technical Data
-          </button>
+          <button class="btn primary" data-action="click->technical-details#copyTechnicalData">Copy Technical Data</button>
         </div>
       </div>
     `
@@ -145,11 +153,14 @@ export default class extends Controller {
       <div class="generated-comment-info">
         <h4>Generated Comment</h4>
         <div class="comment-display">
-          <p class="generated-comment">${this.esc(data.llm_comment)}</p>
+          <p class="generated-comment">${this.esc(data.llm_comment || "")}</p>
           <div class="comment-meta">
-            <span class="meta">Generated: ${data.generated_at ? new Date(data.generated_at).toLocaleString() : 'Unknown'}</span>
-            <span class="meta">Model: ${this.esc(data.model || 'Unknown')}</span>
-            <span class="meta">Provider: ${this.esc(data.provider || 'Unknown')}</span>
+            <span class="meta">Generated: ${this.esc(this.formatDate(data.generated_at))}</span>
+            <span class="meta">Model: ${this.esc(data.model || "-")}</span>
+            <span class="meta">Provider: ${this.esc(data.provider || "-")}</span>
+            <span class="meta">Status: ${this.esc(data.status || "-")}</span>
+            <span class="meta">Relevance: ${this.esc(data.relevance_score ?? "-")}</span>
+            <span class="meta">Pipeline: local vision + OCR + local LLM</span>
           </div>
         </div>
       </div>
@@ -160,26 +171,26 @@ export default class extends Controller {
     return `
       <div class="technical-section">
         <h4>${this.esc(title)}</h4>
-        <div class="section-content">
-          ${this.formatDataAsJson(data)}
-        </div>
+        <pre class="json-display">${this.esc(JSON.stringify(data || {}, null, 2))}</pre>
       </div>
     `
   }
 
-  formatDataAsJson(data) {
-    const formatted = JSON.stringify(data, null, 2)
-      .replace(/"/g, '&quot;')
-      .replace(/\\n/g, '<br>')
-      .replace(/\\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;')
-    
-    return `<pre class="json-display">${formatted}</pre>`
+  showInlineMessage(message, type) {
+    const container = document.getElementById("notifications")
+    if (!container) return
+
+    const el = document.createElement("div")
+    el.className = `notification ${type}`
+    el.textContent = message
+    container.appendChild(el)
+    setTimeout(() => el.remove(), 3500)
   }
 
-  handleEscapeKey(event) {
-    if (event.key === 'Escape' && this.modalVisible) {
-      this.hideModal()
-    }
+  formatDate(value) {
+    if (!value) return "-"
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString()
   }
 
   esc(value) {

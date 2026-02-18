@@ -5,6 +5,8 @@ module Ai
   class OllamaClient
     BASE_URL = ENV.fetch("OLLAMA_URL", "http://localhost:11434").freeze
     DEFAULT_MODEL = ENV.fetch("OLLAMA_MODEL", "mistral:7b").freeze
+    OPEN_TIMEOUT_SECONDS = ENV.fetch("OLLAMA_OPEN_TIMEOUT_SECONDS", "12").to_i.clamp(5, 60)
+    READ_TIMEOUT_SECONDS = ENV.fetch("OLLAMA_READ_TIMEOUT_SECONDS", "240").to_i.clamp(30, 600)
     
     def initialize(base_url: nil, default_model: nil)
       @base_url = base_url || BASE_URL
@@ -33,6 +35,7 @@ module Ai
           temperature: temperature,
           num_predict: max_tokens
         },
+        keep_alive: ENV.fetch("OLLAMA_KEEP_ALIVE", "10m"),
         stream: false
       }
       
@@ -57,6 +60,7 @@ module Ai
           temperature: temperature,
           num_predict: max_tokens
         },
+        keep_alive: ENV.fetch("OLLAMA_KEEP_ALIVE", "10m"),
         stream: false
       }
       
@@ -88,8 +92,8 @@ module Ai
     def get_json(endpoint)
       uri = URI.parse("#{@base_url}#{endpoint}")
       http = Net::HTTP.new(uri.host, uri.port)
-      http.open_timeout = 10
-      http.read_timeout = 60
+      http.open_timeout = OPEN_TIMEOUT_SECONDS
+      http.read_timeout = [READ_TIMEOUT_SECONDS, 60].min
       
       request = Net::HTTP::Get.new(uri.request_uri)
       request["Accept"] = "application/json"
@@ -108,8 +112,8 @@ module Ai
     def post_json(endpoint, payload)
       uri = URI.parse("#{@base_url}#{endpoint}")
       http = Net::HTTP.new(uri.host, uri.port)
-      http.open_timeout = 10
-      http.read_timeout = 120
+      http.open_timeout = OPEN_TIMEOUT_SECONDS
+      http.read_timeout = READ_TIMEOUT_SECONDS
       
       request = Net::HTTP::Post.new(uri.request_uri)
       request["Content-Type"] = "application/json"

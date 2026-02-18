@@ -1,204 +1,272 @@
 import { Controller } from "@hotwired/stimulus"
-import { cable } from "@hotwired/turbo-rails"
+import { createConsumer } from "@rails/actioncable"
 
 export default class extends Controller {
   static values = { accountId: Number }
-  static targets = ["generateButton", "commentSection", "statusMessage"]
 
   connect() {
-    console.log("LLM Comment Controller connected", { accountId: this.accountIdValue })
-    this.cable = cable.createConsumer()
-    this.subscription = this.cable.subscriptions.create(
-      "LlmCommentGenerationChannel",
-      {
-        channel: "LlmCommentGenerationChannel",
-        account_id: this.accountIdValue
-      }
-    )
-    
-    this.subscription.received = this.handleReceived.bind(this)
+    this.consumer = null
+    this.subscription = null
+    this.wsConnected = false
+    this.pendingEventIds = new Set()
+    this.ensureSubscription()
   }
 
   disconnect() {
-    if (this.subscription) {
-      this.cable.subscriptions.remove(this.subscription)
+    if (this.consumer && this.subscription) {
+      this.consumer.subscriptions.remove(this.subscription)
+    }
+    this.pendingEventIds.clear()
+    this.wsConnected = false
+  }
+
+  async generateComment(event) {
+    event.preventDefault()
+    const button = event.currentTarget
+    const eventId = button?.dataset?.eventId || button?.closest("[data-event-id]")?.dataset?.eventId
+    if (!eventId) return
+    const key = String(eventId)
+    if (this.pendingEventIds.has(key)) return
+
+    try {
+      this.ensureSubscription()
+      this.pendingEventIds.add(key)
+      this.updateButtonState(button, { disabled: true, label: "Queued...", loading: true, eta: null })
+      const result = await this.callGenerateCommentApi(eventId)
+      this.processImmediateResult(eventId, result)
+    } catch (error) {
+      this.pendingEventIds.delete(key)
+      this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
+      this.showNotification(`Failed to generate comment: ${error.message}`, "error")
     }
   }
 
-  generateComment(event) {
-    console.log("Generate comment button clicked!", event)
-    const button = event.target
-    const eventId = button.dataset.eventId
-    
-    console.log("Generate comment clicked", { eventId, accountId: this.accountIdValue })
-    
-    if (!eventId) {
-      console.error("No event ID found on generate comment button")
-      return
-    }
+  ensureSubscription() {
+    if (!Number.isFinite(this.accountIdValue) || this.accountIdValue <= 0) return
+    if (this.subscription) return
 
-    // Show immediate feedback
-    button.disabled = true
-    button.innerHTML = "Starting..."
-    
-    // Call the backend API to trigger generation
-    this.callGenerateCommentApi(eventId)
+    try {
+      this.consumer = createConsumer()
+      this.subscription = this.consumer.subscriptions.create(
+        {
+          channel: "LlmCommentGenerationChannel",
+          account_id: this.accountIdValue,
+        },
+        {
+          connected: () => {
+            this.wsConnected = true
+          },
+          disconnected: () => {
+            this.wsConnected = false
+          },
+          rejected: () => {
+            this.wsConnected = false
+            this.showNotification("Real-time updates are unavailable. Please refresh and retry.", "error")
+          },
+          received: (data) => this.handleReceived(data),
+        },
+      )
+    } catch (error) {
+      // Keep queueing available, but inform user that realtime feedback cannot be guaranteed.
+      this.subscription = null
+      this.consumer = null
+      this.wsConnected = false
+      console.warn("Failed to initialize LLM comment subscription", error)
+    }
   }
 
   async callGenerateCommentApi(eventId) {
-    try {
-      const response = await fetch(`/instagram_accounts/${this.accountIdValue}/generate_llm_comment`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": this.getCsrfToken(),
-          "Accept": "application/json"
-        },
-        body: JSON.stringify({
-          event_id: eventId,
-          provider: "ollama"
-        })
-      })
+    const response = await fetch(`/instagram_accounts/${this.accountIdValue}/generate_llm_comment`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": this.getCsrfToken(),
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        event_id: eventId,
+        provider: "local",
+      }),
+    })
 
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.error || "Failed to generate comment")
-      }
-
-      const result = await response.json()
-      console.log("Comment generation initiated:", result)
-      
-      // The actual UI updates will come via ActionCable
-    } catch (error) {
-      console.error("Error calling generate comment API:", error)
-      this.showNotification(`Failed to generate comment: ${error.message}`, 'error')
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(payload.error || `Request failed (${response.status})`)
     }
+
+    return payload
+  }
+
+  processImmediateResult(eventId, result) {
+    const status = String(result?.status || "").toLowerCase()
+    if (status === "completed") {
+      this.handleGenerationComplete(eventId, {
+        comment: result.llm_generated_comment,
+        generated_at: result.llm_comment_generated_at,
+        provider: result.llm_comment_provider,
+        model: result.llm_comment_model,
+      })
+      return
+    }
+
+    if (status === "queued") {
+      this.updateButtonsForEvent(eventId, {
+        disabled: true,
+        label: "Queued...",
+        loading: true,
+        eta: this.buildEtaText(result?.estimated_seconds, result?.queue_size),
+      })
+      return
+    }
+
+    if (status === "running" || status === "started") {
+      this.updateButtonsForEvent(eventId, {
+        disabled: true,
+        label: "Generating...",
+        loading: true,
+        eta: this.buildEtaText(result?.estimated_seconds, result?.queue_size),
+      })
+      return
+    }
+
+    this.pendingEventIds.delete(String(eventId))
   }
 
   handleReceived(data) {
-    console.log("LLM Comment Controller received data:", data)
-    const { event_id, status, comment, message, error } = data
-    
-    // Find the story card for this event
-    const storyCard = document.querySelector(`[data-event-id="${event_id}"]`)
-    console.log("Found story card:", storyCard)
-    if (!storyCard) return
+    const eventId = String(data?.event_id || "")
+    if (!eventId) return
 
-    const button = storyCard.querySelector('.generate-comment-btn')
-    const commentSection = storyCard.querySelector('.llm-comment-section')
-    console.log("Found elements:", { button, commentSection })
-
+    const status = String(data?.status || "").toLowerCase()
     switch (status) {
-      case 'queued':
-        this.handleGenerationQueued(button, message)
+      case "queued":
+        this.updateButtonsForEvent(eventId, {
+          disabled: true,
+          label: "Queued...",
+          loading: true,
+          eta: this.buildEtaText(data?.estimated_seconds, data?.queue_size),
+        })
         break
-      case 'started':
-        console.log("Handling generation start")
-        this.handleGenerationStart(button, message)
+      case "running":
+      case "started":
+        this.updateButtonsForEvent(eventId, {
+          disabled: true,
+          label: data?.progress ? `Generating... ${Number(data.progress).toFixed(0)}%` : "Generating...",
+          loading: true,
+          eta: this.buildEtaText(data?.estimated_seconds, data?.queue_size),
+        })
         break
-      case 'completed':
-        console.log("Handling generation complete")
-        this.handleGenerationComplete(storyCard, button, commentSection, comment, data)
+      case "completed":
+        this.handleGenerationComplete(eventId, data)
         break
-      case 'error':
-        console.log("Handling generation error")
-        this.handleGenerationError(button, message, error)
+      case "skipped":
+        this.pendingEventIds.delete(eventId)
+        this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
+        this.showNotification(data?.message || "Comment generation skipped: no usable local context.", "notice")
+        break
+      case "error":
+      case "failed":
+        this.pendingEventIds.delete(eventId)
+        this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
+        this.showNotification(`Failed to generate comment: ${data?.error || data?.message || "Unknown error"}`, "error")
+        break
+      default:
         break
     }
   }
 
-  handleGenerationQueued(button, message) {
-    if (button) {
-      button.disabled = true
-      button.innerHTML = "Queued..."
-      button.classList.add('loading')
-    }
-  }
+  handleGenerationComplete(eventId, data) {
+    this.pendingEventIds.delete(String(eventId))
+    const storyCard = document.querySelector(`[data-event-id="${this.escapeSelector(eventId)}"]`)
+    if (storyCard) {
+      const commentSection = storyCard.querySelector(".llm-comment-section")
+      const generatedAt = this.formatDate(data.generated_at)
+      const commentText = data.comment || data.llm_generated_comment || ""
 
-  handleGenerationStart(button, message) {
-    if (button) {
-      button.disabled = true
-      button.innerHTML = `
-        <span class="loading-spinner"></span>
-        Generating...
-      `
-      button.classList.add('loading')
-    }
-  }
-
-  handleGenerationComplete(storyCard, button, commentSection, comment, data) {
-    console.log("handleGenerationComplete called", { storyCard, button, commentSection, comment, data })
-    
-    if (button) {
-      button.style.display = 'none'
-      console.log("Button hidden")
-    }
-
-    if (commentSection) {
-      const generatedAt = data.generated_at 
-        ? new Date(data.generated_at).toLocaleString() 
-        : "Unknown"
-      
-      const newContent = `
-        <div class="llm-comment-section success">
-          <p class="llm-generated-comment" title="AI-generated comment suggestion">
-            <strong>AI Suggestion:</strong> ${this.esc(comment)}
-          </p>
-          <p class="meta llm-comment-meta">
-            Generated ${this.esc(generatedAt)} 
-            ${data.provider ? `via ${this.esc(data.provider)}` : ""}
-            ${data.model ? `(${this.esc(data.model)})` : ""}
-          </p>
-          <div class="success-indicator">
-            ✓ Comment generated successfully
+      if (commentSection && commentText) {
+        commentSection.innerHTML = `
+          <div class="llm-comment-section success">
+            <p class="llm-generated-comment"><strong>AI Suggestion:</strong> ${this.esc(commentText)}</p>
+            <p class="meta llm-comment-meta">
+              Generated ${this.esc(generatedAt)}
+              ${data.provider ? ` via ${this.esc(data.provider)}` : ""}
+              ${data.model ? ` (${this.esc(data.model)})` : ""}
+            </p>
           </div>
-        </div>
-      `
-      
-      commentSection.innerHTML = newContent
-      console.log("Comment section updated with new content")
+        `
+      }
     }
 
-    // Show success notification
-    this.showNotification('Comment generated successfully!', 'success')
-
-    // Update the story card data attributes
-    storyCard.dataset.hasLlmComment = 'true'
-    console.log("Story card updated")
+    this.updateButtonsForEvent(eventId, { disabled: true, label: "Completed", loading: false, eta: null })
+    this.showNotification("Comment generated successfully.", "success")
   }
 
-  handleGenerationError(button, message, error) {
-    if (button) {
-      button.disabled = false
-      button.innerHTML = 'Generate Comment Locally'
-      button.classList.remove('loading')
+  updateButtonsForEvent(eventId, state) {
+    document
+      .querySelectorAll(`.generate-comment-btn[data-event-id="${this.escapeSelector(String(eventId))}"]`)
+      .forEach((button) => this.updateButtonState(button, state))
+  }
+
+  updateButtonState(button, { disabled, label, loading, eta = null }) {
+    if (!button) return
+    button.disabled = Boolean(disabled)
+    button.classList.toggle("loading", Boolean(loading))
+    if (typeof label === "string" && label.length > 0) {
+      button.textContent = label
     }
 
-    // Show error notification
-    this.showNotification(`Failed to generate comment: ${error}`, 'error')
+    const container = button.closest(".llm-comment-section") || button.parentElement
+    if (!container) return
+    const existing = container.querySelector(".llm-progress-hint")
+    if (eta) {
+      if (existing) {
+        existing.textContent = eta
+      } else {
+        const hint = document.createElement("p")
+        hint.className = "meta llm-progress-hint"
+        hint.textContent = eta
+        container.appendChild(hint)
+      }
+    } else if (existing) {
+      existing.remove()
+    }
   }
 
-  showNotification(message, type = 'notice') {
-    // Create notification element
+  buildEtaText(seconds, queueSize) {
+    const sec = Number(seconds)
+    if (!Number.isFinite(sec) || sec <= 0) return null
+    const rangeLow = Math.max(5, Math.floor(sec * 0.7))
+    const rangeHigh = Math.ceil(sec * 1.5)
+    const queue = Number.isFinite(Number(queueSize)) ? ` (queue: ${Number(queueSize)})` : ""
+    return `Estimated ${rangeLow}-${rangeHigh}s${queue}`
+  }
+
+  showNotification(message, type = "notice") {
+    const container = document.getElementById("notifications")
+    if (!container) return
+
     const notification = document.createElement("div")
     notification.className = `notification ${type}`
     notification.textContent = message
-    
-    // Add to notifications container
-    const container = document.getElementById("notifications")
-    if (container) {
-      container.appendChild(notification)
-      
-      // Auto-remove after 5 seconds
-      setTimeout(() => {
-        notification.remove()
-      }, 5000)
-    }
+    container.appendChild(notification)
+
+    setTimeout(() => notification.remove(), 4500)
+  }
+
+  formatDate(value) {
+    if (!value) return "-"
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString()
   }
 
   getCsrfToken() {
-    const meta = document.querySelector('meta[name="csrf-token"]')
-    return meta ? meta.getAttribute('content') : ''
+    return document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") || ""
+  }
+
+  escapeSelector(value) {
+    if (typeof window.CSS !== "undefined" && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(String(value))
+    }
+    return String(value).replaceAll('"', '\\"')
   }
 
   esc(value) {

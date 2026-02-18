@@ -3,8 +3,9 @@
   <p class="meta">Latest recent posts (up to 5 days old) from recently active users that still need manual review.</p>
 
   <% if actions_todo_posts.any? %>
-    <div class="table-scroll">
-      <table class="table">
+    <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="actions-to-be-done-table" data-table-standard-pagination-size-value="25">
+      <div class="table-scroll">
+        <table class="table" data-table-standard-target="table">
         <thead>
           <tr>
             <th>Profile</th>
@@ -55,7 +56,8 @@
             </tr>
           <% end %>
         </tbody>
-      </table>
+        </table>
+      </div>
     </div>
   <% else %>
     <p class="meta">No pending post-review actions. New analyzed posts will appear here automatically.</p>

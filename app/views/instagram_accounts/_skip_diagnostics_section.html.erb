@@ -4,8 +4,9 @@
 
   <% rows = Array(skip_diagnostics[:by_reason]) %>
   <% if rows.any? %>
-    <div class="table-scroll">
-      <table class="table">
+    <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="skip-diagnostics-table" data-table-standard-pagination-size-value="25">
+      <div class="table-scroll">
+        <table class="table" data-table-standard-target="table">
         <thead>
           <tr>
             <th>Reason</th>
@@ -28,7 +29,8 @@
             </tr>
           <% end %>
         </tbody>
-      </table>
+        </table>
+      </div>
     </div>
     <p class="meta">Total skips/failures analyzed: <strong><%= skip_diagnostics[:total] %></strong></p>
   <% else %>

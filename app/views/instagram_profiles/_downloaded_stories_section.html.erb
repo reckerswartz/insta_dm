@@ -1,0 +1,58 @@
+<% story_profile = local_assigns[:profile] %>
+
+<section class="card">
+  <h2>Downloaded Stories</h2>
+  <p class="meta">Stories captured from this profile are available here for quick view and download.</p>
+
+  <% if downloaded_story_events.any? %>
+    <div class="story-media-grid profile-story-grid">
+      <% downloaded_story_events.each do |event| %>
+        <% blob = event.media.blob %>
+        <% content_type = blob&.content_type.to_s %>
+        <% is_video = content_type.start_with?("video/") %>
+        <% view_url = rails_blob_path(event.media, only_path: true) %>
+        <% download_url = rails_blob_path(event.media, only_path: true, disposition: "attachment") %>
+        <% occurred = event.occurred_at || event.detected_at || event.created_at %>
+        <% meta = event.metadata.is_a?(Hash) ? event.metadata : {} %>
+        <% intel = meta["local_story_intelligence"].is_a?(Hash) ? meta["local_story_intelligence"] : {} %>
+        <% objects = Array(intel["objects"] || meta["content_signals"]).map(&:to_s).reject(&:blank?).first(4) %>
+        <% hashtags = Array(intel["hashtags"] || meta["hashtags"]).map(&:to_s).reject(&:blank?).first(4) %>
+        <% mentions = Array(intel["mentions"] || meta["mentions"]).map(&:to_s).reject(&:blank?).first(4) %>
+        <% face_count = (intel["face_count"] || meta["face_count"]).to_i %>
+
+        <article class="story-media-card">
+          <% if is_video %>
+            <div class="story-media-preview story-video-player-shell">
+              <video
+                controls
+                preload="none"
+                playsinline
+                src="<%= view_url %>"
+                data-controller="video-player"
+              ></video>
+            </div>
+          <% else %>
+            <a class="story-media-preview" href="<%= view_url %>" target="_blank" rel="noreferrer">
+              <img loading="lazy" src="<%= view_url %>" alt="Story media for <%= story_profile&.username || 'profile' %>" />
+            </a>
+          <% end %>
+
+          <div class="story-media-meta">
+            <p class="meta"><strong><%= event.kind.to_s.humanize %></strong></p>
+            <p class="meta"><%= relative_time_with_tooltip(occurred) %></p>
+            <p class="meta">Type: <%= content_type.presence || "-" %></p>
+            <% if objects.any? || hashtags.any? || mentions.any? || face_count.positive? %>
+              <p class="meta">Analysis: <%= objects.any? ? "objects=#{objects.join(', ')}" : nil %><%= objects.any? && (hashtags.any? || mentions.any? || face_count.positive?) ? " | " : "" %><%= hashtags.any? ? "hashtags=#{hashtags.join(', ')}" : nil %><%= hashtags.any? && (mentions.any? || face_count.positive?) ? " | " : "" %><%= mentions.any? ? "mentions=#{mentions.join(', ')}" : nil %><%= mentions.any? && face_count.positive? ? " | " : "" %><%= face_count.positive? ? "faces=#{face_count}" : nil %></p>
+            <% end %>
+            <div class="actions-row">
+              <a class="btn small" href="<%= view_url %>" target="_blank" rel="noreferrer">View</a>
+              <a class="btn small secondary" href="<%= download_url %>" target="_blank" rel="noreferrer">Download</a>
+            </div>
+          </div>
+        </article>
+      <% end %>
+    </div>
+  <% else %>
+    <p class="meta">No downloaded stories are available for this profile yet.</p>
+  <% end %>
+</section>

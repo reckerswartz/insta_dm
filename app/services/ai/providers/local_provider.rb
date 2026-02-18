@@ -17,6 +17,10 @@ module Ai
         true
       end
 
+      def requires_api_key?
+        false
+      end
+
       def test_key!
         # Test both microservice and Ollama
         microservice_result = client.test_connection!
@@ -237,8 +241,7 @@ module Ai
       def image_features
         [
           { type: "LABEL_DETECTION", maxResults: 15 },
-          { type: "TEXT_DETECTION", maxResults: 10 },
-          { type: "SAFE_SEARCH_DETECTION" }
+          { type: "TEXT_DETECTION", maxResults: 10 }
         ]
       end
 
@@ -359,15 +362,10 @@ module Ai
       def build_image_description_from_vision(vision, labels:)
         top_labels = labels.first(5)
         text = Array(vision["textAnnotations"]).first&.dig("description").to_s.strip
-        safe = vision["safeSearchAnnotation"].is_a?(Hash) ? vision["safeSearchAnnotation"] : {}
 
         parts = []
         parts << "Likely shows: #{top_labels.join(', ')}." if top_labels.any?
         parts << "Visible text: #{text.tr("\n", " ").byteslice(0, 120)}." if text.present?
-        if safe.any?
-          flags = %w[adult violence racy].map { |k| "#{k}=#{safe[k.to_s]}" }.join(", ")
-          parts << "Safety hints: #{flags}."
-        end
 
         out = parts.join(" ").strip
         out.presence || "Image content appears visually clear but limited contextual details were detected."

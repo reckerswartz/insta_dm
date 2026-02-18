@@ -54,6 +54,11 @@ Rails.application.routes.draw do
 
     member do
       get :events
+      get :captured_posts_section
+      get :downloaded_stories_section
+      get :messages_section
+      get :action_history_section
+      get :events_table_section
       patch :tags, to: "instagram_profiles#tags"
       post :analyze, to: "instagram_profile_actions#analyze"
       post :fetch_details, to: "instagram_profile_actions#fetch_details"

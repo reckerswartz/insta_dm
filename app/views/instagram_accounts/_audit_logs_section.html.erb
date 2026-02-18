@@ -3,9 +3,10 @@
   <p class="meta">Tracks automated actions and events such as story viewed, story analyzed, and comment posting activity.</p>
 
   <% if recent_audit_entries.any? %>
-    <div data-controller="audit-media-modal">
-      <div class="table-scroll">
-        <table class="table">
+    <div data-controller="audit-media-modal table-standard" data-table-standard-storage-key-value="account-audit-logs-table" data-table-standard-pagination-size-value="25">
+      <div class="tabulator-shell">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
               <th>When</th>
@@ -70,7 +71,8 @@
               </tr>
             <% end %>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
       <dialog data-audit-media-modal-target="dialog" class="modal">
         <div class="modal-header">
@@ -80,7 +82,16 @@
         <div class="modal-grid">
           <div>
             <img data-audit-media-modal-target="image" alt="Audit media preview" style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line);" />
-            <video data-audit-media-modal-target="video" controls style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line); display:none;"></video>
+            <div data-audit-media-modal-target="videoShell" class="story-video-player-shell audit-video-player-shell" style="display:none;">
+              <video
+                data-audit-media-modal-target="video"
+                data-controller="video-player"
+                data-video-player-autoplay-value="true"
+                controls
+                playsinline
+                preload="metadata"
+              ></video>
+            </div>
           </div>
           <div>
             <p class="meta">

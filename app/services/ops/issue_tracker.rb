@@ -46,6 +46,28 @@ module Ops
         )
       end
 
+      def record_queue_health!(ok:, message:, metadata: {})
+        fingerprint = fingerprint_for("queue_health", "Sidekiq", nil, nil, "workers_or_backlog")
+
+        if ok
+          resolve_by_fingerprint!(
+            fingerprint: fingerprint,
+            notes: "Queue health recovered."
+          )
+          return
+        end
+
+        upsert_issue!(
+          issue_type: "queue_health_degraded",
+          source: "Sidekiq",
+          severity: "critical",
+          title: "Queue processing degraded",
+          details: message.to_s,
+          metadata: metadata,
+          fingerprint: fingerprint
+        )
+      end
+
       def resolve_by_fingerprint!(fingerprint:, notes: nil)
         issue = AppIssue.find_by(fingerprint: fingerprint.to_s)
         return unless issue

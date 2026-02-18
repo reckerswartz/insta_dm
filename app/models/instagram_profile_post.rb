@@ -2,6 +2,7 @@ class InstagramProfilePost < ApplicationRecord
   belongs_to :instagram_account
   belongs_to :instagram_profile
   has_many :instagram_profile_post_comments, dependent: :destroy
+  has_many :instagram_post_faces, dependent: :destroy
   has_many :ai_analyses, as: :analyzable, dependent: :destroy
 
   has_one_attached :media

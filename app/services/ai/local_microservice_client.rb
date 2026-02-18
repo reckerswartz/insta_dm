@@ -1,6 +1,7 @@
 require "net/http"
 require "json"
 require "base64"
+require "tempfile"
 
 module Ai
   class LocalMicroserviceClient
@@ -113,6 +114,199 @@ module Ai
         }
       }
     end
+
+    # Returns normalized payload for local story intelligence extraction.
+    # Expected keys:
+    # - faces: [{ confidence:, bounding_box:, landmarks:, likelihoods: {} }]
+    # - ocr_text: "..."
+    # - ocr_blocks: [{ text:, confidence:, bbox:, source: }]
+    # - content_labels: ["person", "beach", ...]
+    # - object_detections: [{ label:, confidence:, bbox: }]
+    # - location_tags: []
+    # - mentions: ["@user"]
+    # - hashtags: ["#tag"]
+    def detect_faces_and_ocr!(image_bytes:, usage_context: nil)
+      temp_file = Tempfile.new(["story_intel", ".jpg"])
+      begin
+        temp_file.binmode
+        temp_file.write(image_bytes)
+        temp_file.flush
+
+        response = upload_file("/analyze/image", temp_file.path, { features: "labels,text,faces" })
+        results = response["results"].is_a?(Hash) ? response["results"] : {}
+
+        text_rows = Array(results["text"]).map do |row|
+          if row.is_a?(Hash)
+            source_name = row["source"].to_s.presence || "ocr"
+            variant_name = row["variant"].to_s.presence
+            {
+              "text" => row["text"].to_s,
+              "confidence" => row["confidence"],
+              "bbox" => normalize_bounding_box(row["bbox"]),
+              "source" => [source_name, variant_name].compact.join(":"),
+              "variant" => variant_name
+            }
+          else
+            { "text" => row.to_s, "confidence" => nil, "bbox" => {}, "source" => "ocr", "variant" => nil }
+          end
+        end
+        ocr_blocks = text_rows
+          .map do |row|
+            {
+              "text" => row["text"].to_s.strip,
+              "confidence" => row["confidence"].to_f,
+              "bbox" => row["bbox"].is_a?(Hash) ? row["bbox"] : {},
+              "source" => row["source"].to_s.presence || "ocr",
+              "variant" => row["variant"].to_s.presence
+            }
+          end
+          .reject { |row| row["text"].blank? }
+          .first(80)
+        ocr_text = ocr_blocks.map { |row| row["text"] }.uniq.join("\n").presence
+
+        object_detections = Array(results["labels"])
+          .map do |row|
+            if row.is_a?(Hash)
+              {
+                "label" => (row["label"] || row["description"]).to_s,
+                "confidence" => (row["confidence"] || row["score"]).to_f,
+                "bbox" => normalize_bounding_box(row["bbox"])
+              }
+            else
+              { "label" => row.to_s, "confidence" => nil, "bbox" => {} }
+            end
+          end
+          .reject { |row| row["label"].blank? }
+          .first(80)
+
+        labels = object_detections
+          .map { |row| row["label"] }
+          .map(&:to_s)
+          .map(&:strip)
+          .reject(&:blank?)
+          .uniq
+          .first(40)
+
+        faces = Array(results["faces"]).map { |face| normalize_face(face) }
+        mentions = ocr_text.to_s.scan(/@[a-zA-Z0-9._]+/).map(&:downcase).uniq.first(40)
+        hashtags = ocr_text.to_s.scan(/#[a-zA-Z0-9_]+/).map(&:downcase).uniq.first(40)
+        profile_handles = ocr_blocks
+          .flat_map { |row| row["text"].to_s.scan(/\b([a-zA-Z0-9._]{3,30})\b/) }
+          .map { |match| match.is_a?(Array) ? match.first.to_s.downcase : match.to_s.downcase }
+          .select { |token| token.include?("_") || token.include?(".") }
+          .reject { |token| token.include?("instagram.com") }
+          .uniq
+          .first(40)
+
+        {
+          "faces" => faces,
+          "ocr_text" => ocr_text,
+          "ocr_blocks" => ocr_blocks,
+          "location_tags" => [],
+          "content_labels" => labels,
+          "object_detections" => object_detections,
+          "mentions" => mentions,
+          "hashtags" => hashtags,
+          "profile_handles" => profile_handles,
+          "metadata" => {
+            "source" => "local_microservice",
+            "usage_context" => usage_context.to_h
+          }
+        }
+      ensure
+        temp_file.close
+        temp_file.unlink
+      end
+    end
+
+    # Returns normalized story intelligence from /analyze/video.
+    # - scenes: [{ timestamp:, type:, correlation: }]
+    # - content_labels: [..]
+    # - object_detections: [{ label:, confidence:, timestamps: [] }]
+    # - ocr_text / ocr_blocks
+    # - faces: [{ first_seen:, last_seen:, detection_count: }]
+    # - mentions / hashtags
+    def analyze_video_story_intelligence!(video_bytes:, sample_rate: 2, usage_context: nil)
+      temp_file = Tempfile.new(["story_video_intel", ".mp4"])
+      begin
+        temp_file.binmode
+        temp_file.write(video_bytes)
+        temp_file.flush
+
+        response = upload_file("/analyze/video", temp_file.path, {
+          features: "labels,faces,scenes,text",
+          sample_rate: sample_rate.to_i.clamp(1, 5)
+        })
+        results = response["results"].is_a?(Hash) ? response["results"] : {}
+
+        scenes = Array(results["scenes"]).map do |row|
+          next unless row.is_a?(Hash)
+          {
+            "timestamp" => row["timestamp"],
+            "type" => row["type"].to_s.presence || "scene_change",
+            "correlation" => row["correlation"]
+          }.compact
+        end.compact.first(80)
+
+        object_detections = Array(results["labels"]).map do |row|
+          next unless row.is_a?(Hash)
+          label = (row["label"] || row["description"]).to_s.strip
+          next if label.blank?
+
+          {
+            "label" => label,
+            "confidence" => (row["max_confidence"] || row["confidence"]).to_f,
+            "timestamps" => Array(row["timestamps"]).map(&:to_f).first(80)
+          }
+        end.compact.first(80)
+        content_labels = object_detections.map { |row| row["label"].to_s.downcase }.uniq.first(50)
+
+        ocr_blocks = Array(results["text"]).map do |row|
+          next unless row.is_a?(Hash)
+          text = row["text"].to_s.strip
+          next if text.blank?
+
+          {
+            "text" => text,
+            "confidence" => row["confidence"].to_f,
+            "timestamp" => row["timestamp"],
+            "bbox" => normalize_bounding_box(row["bbox"]),
+            "source" => row["source"].to_s.presence || "ocr_video"
+          }.compact
+        end.compact.first(120)
+        ocr_text = ocr_blocks.map { |row| row["text"] }.uniq.join("\n").presence
+
+        faces = Array(results["faces"]).map do |row|
+          next unless row.is_a?(Hash)
+          {
+            "first_seen" => row["first_seen"],
+            "last_seen" => row["last_seen"],
+            "detection_count" => row["detection_count"].to_i
+          }.compact
+        end.compact.first(60)
+
+        mentions = ocr_text.to_s.scan(/@[a-zA-Z0-9._]+/).map(&:downcase).uniq.first(40)
+        hashtags = ocr_text.to_s.scan(/#[a-zA-Z0-9_]+/).map(&:downcase).uniq.first(40)
+
+        {
+          "scenes" => scenes,
+          "content_labels" => content_labels,
+          "object_detections" => object_detections,
+          "ocr_text" => ocr_text,
+          "ocr_blocks" => ocr_blocks,
+          "faces" => faces,
+          "mentions" => mentions,
+          "hashtags" => hashtags,
+          "metadata" => {
+            "source" => "local_microservice_video",
+            "usage_context" => usage_context.to_h
+          }
+        }
+      ensure
+        temp_file.close
+        temp_file.unlink
+      end
+    end
     
     private
     
@@ -121,7 +315,6 @@ module Ai
       feature_map = {
         "LABEL_DETECTION" => "labels",
         "TEXT_DETECTION" => "text",
-        "SAFE_SEARCH_DETECTION" => "safe_search",
         "FACE_DETECTION" => "faces"
       }
       
@@ -173,11 +366,6 @@ module Ai
             }
           }
         end
-      end
-      
-      # Safe Search
-      if results["safe_search"]
-        vision_response["safeSearchAnnotation"] = convert_safe_search(results["safe_search"])
       end
       
       # Faces
@@ -239,7 +427,10 @@ module Ai
     def convert_bbox_to_vertices(bbox)
       return [] unless bbox
       
-      if bbox.is_a?(Array) && bbox.length == 4
+      if bbox.is_a?(Array) && bbox.length == 4 && bbox.first.is_a?(Array)
+        # Format: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+        bbox.map { |point| { "x" => point[0].to_i, "y" => point[1].to_i } }
+      elsif bbox.is_a?(Array) && bbox.length == 4
         # Format: [x1, y1, x2, y2]
         [
           { "x" => bbox[0].to_i, "y" => bbox[1].to_i },
@@ -247,11 +438,50 @@ module Ai
           { "x" => bbox[2].to_i, "y" => bbox[3].to_i },
           { "x" => bbox[0].to_i, "y" => bbox[3].to_i }
         ]
-      elsif bbox.is_a?(Array) && bbox.length == 4 && bbox.first.is_a?(Array)
-        # Format: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-        bbox.map { |point| { "x" => point[0].to_i, "y" => point[1].to_i } }
       else
         []
+      end
+    end
+
+    def normalize_face(face)
+      raw = face.is_a?(Hash) ? face : {}
+      bbox = raw["bounding_box"] || raw["bbox"] || raw[:bounding_box] || raw[:bbox]
+      landmarks_raw = raw["landmarks"] || raw[:landmarks]
+
+      {
+        "confidence" => (raw["confidence"] || raw[:confidence]).to_f,
+        "bounding_box" => normalize_bounding_box(bbox),
+        "landmarks" => normalize_landmarks(landmarks_raw),
+        "likelihoods" => (raw["likelihoods"] || raw[:likelihoods] || {})
+      }
+    end
+
+    def normalize_bounding_box(value)
+      if value.is_a?(Array) && value.length == 4 && value.first.is_a?(Numeric)
+        { "x1" => value[0], "y1" => value[1], "x2" => value[2], "y2" => value[3] }
+      elsif value.is_a?(Array) && value.length == 4 && value.first.is_a?(Array)
+        xs = value.map { |pt| pt[0].to_f }
+        ys = value.map { |pt| pt[1].to_f }
+        { "x1" => xs.min, "y1" => ys.min, "x2" => xs.max, "y2" => ys.max }
+      elsif value.is_a?(Hash)
+        value
+      else
+        {}
+      end
+    end
+
+    def normalize_landmarks(value)
+      Array(value).first(24).filter_map do |item|
+        if item.is_a?(Hash)
+          {
+            "type" => item["type"].to_s.presence || "UNKNOWN",
+            "x" => item["x"] || item.dig("position", "x"),
+            "y" => item["y"] || item.dig("position", "y"),
+            "z" => item["z"] || item.dig("position", "z")
+          }
+        elsif item.is_a?(Array)
+          { "type" => "UNKNOWN", "x" => item[0], "y" => item[1], "z" => item[2] }
+        end
       end
     end
     
@@ -267,28 +497,6 @@ module Ai
             "z" => (landmark[2].to_i rescue 0)
           }
         }
-      end
-    end
-    
-    def convert_safe_search(safe_search)
-      # Convert local safe search to Google format
-      {
-        "adult" => map_safety_level(safe_search["adult"]),
-        "violence" => map_safety_level(safe_search["violence"]),
-        "racy" => map_safety_level(safe_search["racy"])
-      }
-    end
-    
-    def map_safety_level(level)
-      case level.to_s
-      when "likely"
-        "LIKELY"
-      when "possible"
-        "POSSIBLE"
-      when "unlikely"
-        "UNLIKELY"
-      else
-        "UNKNOWN"
       end
     end
     

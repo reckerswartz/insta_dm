@@ -5,6 +5,7 @@ class InstagramStoryPerson < ApplicationRecord
   belongs_to :instagram_profile
 
   has_many :instagram_story_faces, dependent: :nullify
+  has_many :instagram_post_faces, dependent: :nullify
 
   validates :role, presence: true, inclusion: { in: ROLES }
 

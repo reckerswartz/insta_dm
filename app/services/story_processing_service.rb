@@ -15,7 +15,8 @@ class StoryProcessingService
     speech_transcription_service: SpeechTranscriptionService.new,
     video_metadata_service: VideoMetadataService.new,
     content_understanding_service: StoryContentUnderstandingService.new,
-    response_generation_service: ResponseGenerationService.new
+    response_generation_service: ResponseGenerationService.new,
+    face_identity_resolution_service: FaceIdentityResolutionService.new
   )
     @story = story
     @force = ActiveModel::Type::Boolean.new.cast(force)
@@ -29,6 +30,7 @@ class StoryProcessingService
     @video_metadata_service = video_metadata_service
     @content_understanding_service = content_understanding_service
     @response_generation_service = response_generation_service
+    @face_identity_resolution_service = face_identity_resolution_service
   end
 
   def process!
@@ -79,6 +81,23 @@ class StoryProcessingService
       duration_seconds: result[:duration_seconds] || @story.duration_seconds,
       metadata: metadata
     )
+
+    identity_resolution = @face_identity_resolution_service.resolve_for_story!(
+      story: @story,
+      extracted_usernames: (
+        Array(content_understanding[:mentions]) +
+        Array(content_understanding[:profile_handles]) +
+        content_understanding[:ocr_text].to_s.scan(/@[a-zA-Z0-9._]{2,30}/)
+      ),
+      content_summary: content_understanding
+    )
+    if identity_resolution.is_a?(Hash) && identity_resolution[:summary].is_a?(Hash)
+      story_meta = @story.metadata.is_a?(Hash) ? @story.metadata.deep_dup : {}
+      story_meta["face_identity"] = identity_resolution[:summary]
+      story_meta["participant_summary"] = identity_resolution[:summary][:participant_summary_text].to_s
+      @story.update!(metadata: story_meta)
+    end
+
     InstagramProfileEvent.broadcast_story_archive_refresh!(account: @story.instagram_account)
 
     @user_profile_builder_service.refresh!(profile: @story.instagram_profile)
@@ -185,6 +204,7 @@ class StoryProcessingService
         embedding: embedding_payload[:vector],
         occurred_at: @story.taken_at || Time.current
       )
+      update_person_face_attributes!(person: match[:person], face: face)
 
       attrs = {
         instagram_story_person: match[:person],
@@ -198,7 +218,11 @@ class StoryProcessingService
           frame_index: face[:frame_index],
           timestamp_seconds: face[:timestamp_seconds],
           landmarks: face[:landmarks],
-          likelihoods: face[:likelihoods]
+          likelihoods: face[:likelihoods],
+          age: face[:age],
+          age_range: face[:age_range],
+          gender: face[:gender],
+          gender_score: face[:gender_score].to_f
         }
       }
       attrs[:embedding_vector] = embedding_payload[:vector] if InstagramStoryFace.column_names.include?("embedding_vector")
@@ -283,6 +307,43 @@ class StoryProcessingService
     raise "Media download failed: HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
 
     response.body.to_s
+  end
+
+  def update_person_face_attributes!(person:, face:)
+    return unless person
+
+    metadata = person.metadata.is_a?(Hash) ? person.metadata.deep_dup : {}
+    attrs = metadata["face_attributes"].is_a?(Hash) ? metadata["face_attributes"].deep_dup : {}
+
+    gender = face[:gender].to_s.strip.downcase
+    if gender.present?
+      gender_counts = attrs["gender_counts"].is_a?(Hash) ? attrs["gender_counts"].deep_dup : {}
+      gender_counts[gender] = gender_counts[gender].to_i + 1
+      attrs["gender_counts"] = gender_counts
+      attrs["primary_gender_cue"] = gender_counts.max_by { |_key, count| count.to_i }&.first
+    end
+
+    age_range = face[:age_range].to_s.strip
+    if age_range.present?
+      age_counts = attrs["age_range_counts"].is_a?(Hash) ? attrs["age_range_counts"].deep_dup : {}
+      age_counts[age_range] = age_counts[age_range].to_i + 1
+      attrs["age_range_counts"] = age_counts
+      attrs["primary_age_range"] = age_counts.max_by { |_key, count| count.to_i }&.first
+    end
+
+    age_value = face[:age].to_f
+    if age_value.positive?
+      samples = Array(attrs["age_samples"]).map(&:to_f).first(19)
+      samples << age_value.round(1)
+      attrs["age_samples"] = samples
+      attrs["age_estimate"] = (samples.sum / samples.length.to_f).round(1)
+    end
+
+    attrs["last_observed_at"] = Time.current.iso8601
+    metadata["face_attributes"] = attrs
+    person.update_columns(metadata: metadata, updated_at: Time.current)
+  rescue StandardError
+    nil
   end
 
   def fail_story!(error_message:)

@@ -11,6 +11,7 @@ class InstagramAccountsController < ApplicationController
     sync_all_stories_continuous story_media_archive generate_llm_comment technical_details
     run_continuous_processing
   ]
+  before_action :normalize_navigation_format, only: %i[show]
 
   def index
     @accounts = InstagramAccount.order(:id).to_a
@@ -63,7 +64,7 @@ class InstagramAccountsController < ApplicationController
 
   def select
     session[:instagram_account_id] = @account.id
-    redirect_to instagram_account_path(@account), notice: "Selected #{@account.username}."
+    redirect_to instagram_account_path(@account), notice: "Selected #{@account.username}.", status: :see_other
   end
 
   def manual_login
@@ -287,8 +288,8 @@ class InstagramAccountsController < ApplicationController
     page = params.fetch(:page, 1).to_i
     page = 1 if page < 1
 
-    per_page = params.fetch(:per_page, 24).to_i
-    per_page = per_page.clamp(12, 80)
+    per_page = params.fetch(:per_page, 12).to_i
+    per_page = per_page.clamp(8, 40)
 
     on = parse_archive_date(params[:on])
 
@@ -296,6 +297,7 @@ class InstagramAccountsController < ApplicationController
       InstagramProfileEvent
         .joins(:instagram_profile)
         .joins(:media_attachment)
+        .includes(:instagram_profile)
         .with_attached_media
         .where(
           instagram_profiles: { instagram_account_id: @account.id },
@@ -324,8 +326,9 @@ class InstagramAccountsController < ApplicationController
 
   def generate_llm_comment
     event_id = params.require(:event_id)
-    provider = params.fetch(:provider, :ollama).to_s
+    provider = params.fetch(:provider, :local).to_s
     model = params[:model].presence
+    status_only = ActiveModel::Type::Boolean.new.cast(params[:status_only])
 
     event = InstagramProfileEvent.find(event_id)
     
@@ -352,12 +355,33 @@ class InstagramAccountsController < ApplicationController
     end
 
     if event.llm_comment_in_progress?
+      if stale_llm_comment_job?(event)
+        event.update_columns(
+          llm_comment_status: "failed",
+          llm_comment_last_error: "Previous generation job appears stalled. Please retry.",
+          updated_at: Time.current
+        )
+      else
       render json: {
         success: true,
         status: event.llm_comment_status,
         event_id: event.id,
-        job_id: event.llm_comment_job_id
+        job_id: event.llm_comment_job_id,
+        estimated_seconds: llm_comment_estimated_seconds(event: event),
+        queue_size: ai_queue_size
       }, status: :accepted
+      return
+      end
+    end
+
+    if status_only
+      render json: {
+        success: true,
+        status: event.llm_comment_status.presence || "not_requested",
+        event_id: event.id,
+        estimated_seconds: llm_comment_estimated_seconds(event: event),
+        queue_size: ai_queue_size
+      }
       return
     end
 
@@ -373,7 +397,9 @@ class InstagramAccountsController < ApplicationController
       success: true,
       status: "queued",
       event_id: event.id,
-      job_id: job.job_id
+      job_id: job.job_id,
+      estimated_seconds: llm_comment_estimated_seconds(event: event, include_queue: true),
+      queue_size: ai_queue_size
     }, status: :accepted
   rescue StandardError => e
     render json: { error: e.message }, status: :unprocessable_entity
@@ -381,9 +407,9 @@ class InstagramAccountsController < ApplicationController
 
   def technical_details
     event_id = params.require(:event_id)
-    
+
     event = InstagramProfileEvent.find(event_id)
-    
+
     # Ensure this event belongs to the current account
     unless event.instagram_profile&.instagram_account_id == @account.id
       render json: { error: "Event not found or not accessible" }, status: :not_found
@@ -392,13 +418,8 @@ class InstagramAccountsController < ApplicationController
 
     # Get technical details from metadata if available, or generate them
     llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
-    technical_details = if llm_meta["technical_details"].present? || llm_meta[:technical_details].present?
-      llm_meta["technical_details"] || llm_meta[:technical_details]
-    else
-      # Generate technical details on-demand if not stored
-      context = event.send(:build_comment_context)
-      event.send(:capture_technical_details, context)
-    end
+    stored_details = llm_meta["technical_details"] || llm_meta[:technical_details]
+    technical_details = hydrate_technical_details(event: event, technical_details: stored_details)
 
     render json: {
       event_id: event.id,
@@ -410,6 +431,7 @@ class InstagramAccountsController < ApplicationController
       status: event.llm_comment_status,
       relevance_score: event.llm_comment_relevance_score,
       last_error: event.llm_comment_last_error,
+      timeline: story_timeline_for(event: event),
       technical_details: technical_details
     }
   rescue StandardError => e
@@ -417,6 +439,23 @@ class InstagramAccountsController < ApplicationController
   end
 
   private
+
+  def hydrate_technical_details(event:, technical_details:)
+    current = technical_details.is_a?(Hash) ? technical_details.deep_stringify_keys : {}
+    has_required_sections =
+      current["local_story_intelligence"].is_a?(Hash) &&
+      current["analysis"].is_a?(Hash) &&
+      current["prompt_engineering"].is_a?(Hash)
+
+    return current if has_required_sections
+
+    context = event.send(:build_comment_context)
+    generated = event.send(:capture_technical_details, context)
+    generated_hash = generated.is_a?(Hash) ? generated.deep_stringify_keys : {}
+    generated_hash.deep_merge(current)
+  rescue StandardError
+    current
+  end
 
   def set_account
     @account = InstagramAccount.find(params[:id])
@@ -441,16 +480,38 @@ class InstagramAccountsController < ApplicationController
 
   def archive_item_payload(event)
     metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
+    llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
+    ownership_data =
+      if llm_meta["ownership_classification"].is_a?(Hash)
+        llm_meta["ownership_classification"]
+      elsif metadata["story_ownership_classification"].is_a?(Hash)
+        metadata["story_ownership_classification"]
+      elsif metadata.dig("validated_story_insights", "ownership_classification").is_a?(Hash)
+        metadata.dig("validated_story_insights", "ownership_classification")
+      else
+        {}
+      end
     blob = event.media.blob
-    occurred_at = event.occurred_at || event.detected_at || event.created_at
+    profile = event.instagram_profile
+    story_posted_at = metadata["upload_time"].presence || metadata["taken_at"].presence
+    downloaded_at = metadata["downloaded_at"].presence || event.occurred_at&.iso8601
+    avatar_url =
+      if profile&.avatar&.attached?
+        Rails.application.routes.url_helpers.rails_blob_path(profile.avatar, only_path: true)
+      else
+        profile&.profile_pic_url.to_s.presence
+      end
 
     {
       id: event.id,
       profile_id: event.instagram_profile_id,
-      profile_username: event.instagram_profile&.username.to_s,
+      profile_username: profile&.username.to_s,
+      profile_display_name: profile&.display_name.to_s.presence || profile&.username.to_s,
+      profile_avatar_url: avatar_url,
       app_profile_url: event.instagram_profile_id ? instagram_profile_path(event.instagram_profile_id) : nil,
-      instagram_profile_url: event.instagram_profile&.username.present? ? "https://www.instagram.com/#{event.instagram_profile.username}/" : nil,
-      occurred_at: occurred_at&.iso8601,
+      instagram_profile_url: profile&.username.present? ? "https://www.instagram.com/#{profile.username}/" : nil,
+      story_posted_at: story_posted_at,
+      downloaded_at: downloaded_at,
       media_url: Rails.application.routes.url_helpers.rails_blob_path(event.media, only_path: true),
       media_download_url: Rails.application.routes.url_helpers.rails_blob_path(event.media, only_path: true, disposition: "attachment"),
       media_content_type: blob&.content_type.to_s.presence || metadata["media_content_type"].to_s,
@@ -470,10 +531,109 @@ class InstagramAccountsController < ApplicationController
       llm_comment_status: event.llm_comment_status,
       llm_comment_attempts: event.llm_comment_attempts,
       llm_comment_last_error: event.llm_comment_last_error,
+      llm_comment_last_error_preview: text_preview(event.llm_comment_last_error, max: 180),
       llm_comment_relevance_score: event.llm_comment_relevance_score,
-      llm_comment_metadata: event.llm_comment_metadata,
-      has_llm_comment: event.has_llm_generated_comment?
+      llm_generated_comment_preview: text_preview(event.llm_generated_comment, max: 260),
+      has_llm_comment: event.has_llm_generated_comment?,
+      story_ownership_label: ownership_data["label"].to_s.presence,
+      story_ownership_summary: ownership_data["summary"].to_s.presence,
+      story_ownership_confidence: ownership_data["confidence"]
     }
+  end
+
+  def normalize_navigation_format
+    request.format = :html if request.format.turbo_stream?
+  end
+
+  def text_preview(raw, max:)
+    text = raw.to_s
+    return text if text.length <= max
+
+    "#{text[0, max]}..."
+  end
+
+  def story_timeline_for(event:)
+    metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
+    story = event.instagram_stories.order(taken_at: :desc, id: :desc).first
+
+    posted_at = metadata["upload_time"].presence || metadata["taken_at"].presence || story&.taken_at&.iso8601
+    downloaded_at = metadata["downloaded_at"].presence || event.occurred_at&.iso8601 || event.created_at&.iso8601
+    detected_at = event.detected_at&.iso8601
+
+    {
+      story_posted_at: posted_at,
+      downloaded_to_system_at: downloaded_at,
+      event_detected_at: detected_at
+    }
+  end
+
+  def llm_comment_estimated_seconds(event:, include_queue: false)
+    base = 18
+    queue_factor = include_queue ? (ai_queue_size * 4) : 0
+    attempt_factor = event.llm_comment_attempts.to_i * 6
+    preprocess_factor = story_local_context_preprocess_penalty(event: event)
+    (base + queue_factor + attempt_factor + preprocess_factor).clamp(10, 240)
+  end
+
+  def story_local_context_preprocess_penalty(event:)
+    metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
+    has_context = metadata["local_story_intelligence"].is_a?(Hash) ||
+      metadata["ocr_text"].to_s.present? ||
+      Array(metadata["content_signals"]).any?
+
+    return 0 if has_context
+
+    media_type = event.media&.blob&.content_type.to_s.presence || metadata["media_content_type"].to_s
+    media_type.start_with?("image/") ? 16 : 8
+  rescue StandardError
+    0
+  end
+
+  def ai_queue_size
+    return 0 unless Rails.application.config.active_job.queue_adapter.to_s == "sidekiq"
+
+    require "sidekiq/api"
+    Sidekiq::Queue.new("ai").size.to_i
+  rescue StandardError
+    0
+  end
+
+  def stale_llm_comment_job?(event)
+    return false unless event.llm_comment_in_progress?
+    return false if event.updated_at && event.updated_at > 5.minutes.ago
+    return false unless Rails.application.config.active_job.queue_adapter.to_s == "sidekiq"
+
+    require "sidekiq/api"
+    job_id = event.llm_comment_job_id.to_s
+    event_marker = "instagram_profile_event_id\"=>#{event.id}"
+
+    busy = Sidekiq::Workers.new.any? do |_pid, _tid, work|
+      payload = work["payload"].to_s
+      payload.include?(job_id) || payload.include?(event_marker)
+    end
+    return false if busy
+
+    queued = Sidekiq::Queue.new("ai").any? do |job|
+      payload = job.item.to_s
+      payload.include?(job_id) || payload.include?(event_marker)
+    end
+    return false if queued
+
+    retrying = Sidekiq::RetrySet.new.any? do |job|
+      payload = job.item.to_s
+      payload.include?(job_id) || payload.include?(event_marker)
+    end
+    return false if retrying
+
+    scheduled = Sidekiq::ScheduledSet.new.any? do |job|
+      payload = job.item.to_s
+      payload.include?(job_id) || payload.include?(event_marker)
+    end
+    return false if scheduled
+
+    true
+  rescue StandardError
+    false
   end
 
   def build_actions_todo_posts(account:, limit:)

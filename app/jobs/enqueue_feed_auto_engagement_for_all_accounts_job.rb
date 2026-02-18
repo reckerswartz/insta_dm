@@ -1,10 +1,11 @@
 class EnqueueFeedAutoEngagementForAllAccountsJob < ApplicationJob
   queue_as :sync
 
-  def perform(max_posts: 3, include_story: true, story_hold_seconds: 18)
-    max_posts_i = max_posts.to_i.clamp(1, 10)
-    include_story_bool = ActiveModel::Type::Boolean.new.cast(include_story)
-    hold_seconds_i = story_hold_seconds.to_i.clamp(8, 40)
+  def perform(opts = nil, **kwargs)
+    params = normalize_params(opts, kwargs, max_posts: 3, include_story: true, story_hold_seconds: 18)
+    max_posts_i = params[:max_posts].to_i.clamp(1, 10)
+    include_story_bool = ActiveModel::Type::Boolean.new.cast(params[:include_story])
+    hold_seconds_i = params[:story_hold_seconds].to_i.clamp(8, 40)
 
     enqueued = 0
 
@@ -39,5 +40,12 @@ class EnqueueFeedAutoEngagementForAllAccountsJob < ApplicationJob
         story_hold_seconds: hold_seconds_i
       }
     )
+  end
+
+  private
+
+  def normalize_params(opts, kwargs, defaults)
+    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
+    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
   end
 end

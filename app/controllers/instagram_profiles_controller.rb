@@ -1,5 +1,15 @@
 class InstagramProfilesController < ApplicationController
   before_action :require_current_account!
+  before_action :set_account_and_profile!, only: %i[
+    show
+    events
+    tags
+    captured_posts_section
+    downloaded_stories_section
+    messages_section
+    action_history_section
+    events_table_section
+  ]
 
   def index
     @account = current_account
@@ -56,21 +66,65 @@ class InstagramProfilesController < ApplicationController
   end
 
   def show
-    @account = current_account
-    @profile = @account.instagram_profiles.find(params[:id])
-    @messages = @profile.instagram_messages.recent_first.limit(200)
-    @action_logs = @profile.instagram_profile_action_logs.recent_first.limit(100)
-    @profile_posts = @profile.instagram_profile_posts.includes(:instagram_profile_post_comments, :ai_analyses, media_attachment: :blob).recent_first.limit(100)
+    posts_scope = @profile.instagram_profile_posts
+    @profile_posts_total_count = posts_scope.count
+    @analyzed_posts_count = posts_scope.where(ai_status: "analyzed").count
+    @pending_posts_count = [@profile_posts_total_count - @analyzed_posts_count, 0].max
+    @messages_count = @profile.instagram_messages.count
+    @action_logs_count = @profile.instagram_profile_action_logs.count
+
     @new_message = @profile.instagram_messages.new
     @latest_analysis = @profile.latest_analysis
+    @latest_story_intelligence_event =
+      @profile.instagram_profile_events
+        .where(kind: InstagramProfileEvent::STORY_ARCHIVE_EVENT_KINDS)
+        .order(detected_at: :desc, id: :desc)
+        .limit(60)
+        .detect do |event|
+          metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
+          story_intelligence_available_for_snapshot?(metadata: metadata)
+        end
     @available_tags = %w[personal_user friend female_friend male_friend relative page excluded automatic_reply]
   end
 
-  def events
-    @account = current_account
-    @profile = @account.instagram_profiles.find(params[:id])
+  def captured_posts_section
+    profile_posts =
+      @profile.instagram_profile_posts
+        .includes(:instagram_profile_post_comments, :ai_analyses, media_attachment: :blob)
+        .recent_first
+        .limit(40)
 
-    scope = @profile.instagram_profile_events
+    render partial: "instagram_profiles/captured_posts_section", locals: { profile: @profile, profile_posts: profile_posts }
+  end
+
+  def downloaded_stories_section
+    downloaded_story_events =
+      @profile.instagram_profile_events
+        .joins(:media_attachment)
+        .with_attached_media
+        .where(kind: InstagramProfileEvent::STORY_ARCHIVE_EVENT_KINDS)
+        .order(detected_at: :desc, id: :desc)
+        .limit(18)
+
+    render partial: "instagram_profiles/downloaded_stories_section", locals: { profile: @profile, downloaded_story_events: downloaded_story_events }
+  end
+
+  def messages_section
+    messages = @profile.instagram_messages.recent_first.limit(120)
+    render partial: "instagram_profiles/messages_section", locals: { messages: messages }
+  end
+
+  def action_history_section
+    action_logs = @profile.instagram_profile_action_logs.recent_first.limit(100)
+    render partial: "instagram_profiles/action_history_section", locals: { action_logs: action_logs }
+  end
+
+  def events_table_section
+    render partial: "instagram_profiles/events_table_section", locals: { profile: @profile }
+  end
+
+  def events
+    scope = @profile.instagram_profile_events.with_attached_media
     scope = apply_tabulator_event_filters(scope)
 
     @q = params[:q].to_s.strip
@@ -86,8 +140,8 @@ class InstagramProfilesController < ApplicationController
 
     per_page_param = params[:per_page].presence || params[:size].presence
     per_page = per_page_param.to_i
-    per_page = 50 if per_page <= 0
-    per_page = per_page.clamp(10, 200)
+    per_page = 25 if per_page <= 0
+    per_page = per_page.clamp(10, 100)
 
     total = scope.count
     pages = (total / per_page.to_f).ceil
@@ -97,9 +151,6 @@ class InstagramProfilesController < ApplicationController
   end
 
   def tags
-    @account = current_account
-    @profile = @account.instagram_profiles.find(params[:id])
-
     names = Array(params[:tag_names]).map { |t| t.to_s.strip.downcase }.reject(&:blank?)
     custom = params[:custom_tags].to_s.split(/[,\n]/).map { |t| t.to_s.strip.downcase }.reject(&:blank?)
     desired = (names + custom).uniq
@@ -143,6 +194,23 @@ class InstagramProfilesController < ApplicationController
   end
 
   private
+
+  def story_intelligence_available_for_snapshot?(metadata:)
+    intel = metadata["local_story_intelligence"].is_a?(Hash) ? metadata["local_story_intelligence"] : {}
+    return true if intel.present?
+    return true if metadata["ocr_text"].to_s.present?
+    return true if Array(metadata["content_signals"]).any?
+    return true if Array(metadata["object_detections"]).any?
+    return true if Array(metadata["ocr_blocks"]).any?
+    return true if Array(metadata["scenes"]).any?
+
+    false
+  end
+
+  def set_account_and_profile!
+    @account = current_account
+    @profile = @account.instagram_profiles.find(params[:id])
+  end
 
   def apply_tabulator_profile_filters(scope)
     extract_tabulator_filters.each do |f|
@@ -348,7 +416,8 @@ class InstagramProfilesController < ApplicationController
         external_id: e.external_id,
         occurred_at: e.occurred_at&.iso8601,
         detected_at: e.detected_at&.iso8601,
-        metadata_json: (e.metadata || {}).to_json,
+        metadata_json: metadata_preview_json(e.metadata),
+        media_content_type: (e.media.attached? ? e.media.blob.content_type : nil),
         media_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true) : nil),
         media_download_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true, disposition: "attachment") : nil)
       }
@@ -359,6 +428,13 @@ class InstagramProfilesController < ApplicationController
       last_page: pages,
       last_row: total
     }
+  end
+
+  def metadata_preview_json(raw_metadata)
+    json = (raw_metadata || {}).to_json
+    return json if json.length <= 1200
+
+    "#{json[0, 1200]}..."
   end
 
   def extract_tabulator_sorters

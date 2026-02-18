@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_18_050100) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_18_103500) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -269,6 +269,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_18_050100) do
     t.index ["instagram_post_id", "entity_type"], name: "idx_post_entities_post_type"
     t.index ["instagram_post_id"], name: "index_instagram_post_entities_on_instagram_post_id"
     t.index ["instagram_post_insight_id"], name: "index_instagram_post_entities_on_instagram_post_insight_id"
+  end
+
+  create_table "instagram_post_faces", force: :cascade do |t|
+    t.json "bounding_box"
+    t.datetime "created_at", null: false
+    t.float "detector_confidence"
+    t.json "embedding"
+    t.string "embedding_version"
+    t.bigint "instagram_profile_post_id", null: false
+    t.bigint "instagram_story_person_id"
+    t.float "match_similarity"
+    t.json "metadata"
+    t.string "role", default: "unknown", null: false
+    t.datetime "updated_at", null: false
+    t.index ["instagram_profile_post_id", "created_at"], name: "idx_post_faces_post_created"
+    t.index ["instagram_profile_post_id"], name: "index_instagram_post_faces_on_instagram_profile_post_id"
+    t.index ["instagram_story_person_id"], name: "index_instagram_post_faces_on_instagram_story_person_id"
+    t.index ["role"], name: "index_instagram_post_faces_on_role"
   end
 
   create_table "instagram_post_insights", force: :cascade do |t|
@@ -710,6 +728,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_18_050100) do
   add_foreign_key "instagram_post_entities", "instagram_accounts"
   add_foreign_key "instagram_post_entities", "instagram_post_insights"
   add_foreign_key "instagram_post_entities", "instagram_posts"
+  add_foreign_key "instagram_post_faces", "instagram_profile_posts"
+  add_foreign_key "instagram_post_faces", "instagram_story_people"
   add_foreign_key "instagram_post_insights", "ai_analyses"
   add_foreign_key "instagram_post_insights", "instagram_accounts"
   add_foreign_key "instagram_post_insights", "instagram_posts"

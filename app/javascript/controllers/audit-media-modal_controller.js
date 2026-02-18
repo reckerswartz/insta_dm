@@ -1,7 +1,7 @@
 import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
-  static targets = ["dialog", "title", "image", "video", "meta", "download", "appProfileLink", "instagramProfileLink"]
+  static targets = ["dialog", "title", "image", "video", "videoShell", "meta", "download", "appProfileLink", "instagramProfileLink"]
 
   open(event) {
     event.preventDefault()
@@ -34,26 +34,50 @@ export default class extends Controller {
 
     this.downloadTarget.href = downloadUrl
 
-    const isVideo = contentType.startsWith("video/")
+    const mediaPath = mediaUrl.split("?")[0].toLowerCase()
+    const isVideo = contentType.startsWith("video/") ||
+      mediaPath.endsWith(".mp4") ||
+      mediaPath.endsWith(".mov") ||
+      mediaPath.endsWith(".webm") ||
+      mediaPath.endsWith(".m3u8")
 
     if (isVideo) {
-      this.videoTarget.src = mediaUrl
-      this.videoTarget.style.display = "block"
+      this.videoTarget.dataset.videoSource = mediaUrl
+      this.videoTarget.dataset.videoContentType = contentType
+      this.videoTarget.dispatchEvent(
+        new CustomEvent("video-player:load", {
+          detail: { src: mediaUrl, contentType, autoplay: true },
+        }),
+      )
+
+      if (this.hasVideoShellTarget) {
+        this.videoShellTarget.style.display = "block"
+      } else {
+        this.videoTarget.style.display = "block"
+      }
       this.imageTarget.removeAttribute("src")
       this.imageTarget.style.display = "none"
     } else {
+      this.clearVideoPlayer()
       this.imageTarget.src = mediaUrl
       this.imageTarget.style.display = "block"
-      this.videoTarget.pause()
-      this.videoTarget.removeAttribute("src")
-      this.videoTarget.style.display = "none"
     }
 
+    if (this.dialogTarget.open) this.dialogTarget.close()
     this.dialogTarget.showModal()
   }
 
   close() {
-    this.videoTarget.pause()
-    this.dialogTarget.close()
+    this.clearVideoPlayer()
+    if (this.dialogTarget.open) this.dialogTarget.close()
+  }
+
+  clearVideoPlayer() {
+    this.videoTarget.dispatchEvent(new CustomEvent("video-player:clear"))
+    if (this.hasVideoShellTarget) {
+      this.videoShellTarget.style.display = "none"
+    } else {
+      this.videoTarget.style.display = "none"
+    }
   }
 }

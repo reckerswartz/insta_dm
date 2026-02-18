@@ -1,0 +1,13 @@
+<section class="card">
+  <h2>Profile History</h2>
+  <p class="meta">Use header filters/sorting. Shift + wheel scrolls horizontally, and click-drag pans vertically/horizontally.</p>
+  <div
+    class="tabulator-shell"
+    data-controller="profile-events-table"
+    data-profile-events-table-url-value="<%= events_instagram_profile_path(profile, format: :json) %>"
+    data-profile-events-table-profile-id-value="<%= profile.id %>"
+    data-profile-events-table-profile-username-value="<%= profile.username %>"
+  >
+    <div class="tabulator-host" data-profile-events-table-target="table"></div>
+  </div>
+</section>

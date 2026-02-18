@@ -1,9 +1,10 @@
 class PurgeExpiredInstagramPostMediaJob < ApplicationJob
   queue_as :profiles
 
-  def perform(limit: 200)
+  def perform(opts = nil, **kwargs)
+    params = normalize_params(opts, kwargs, limit: 200)
     now = Time.current
-    scope = InstagramPost.where("purge_at IS NOT NULL AND purge_at <= ?", now).order(purge_at: :asc).limit(limit.to_i.clamp(1, 2000))
+    scope = InstagramPost.where("purge_at IS NOT NULL AND purge_at <= ?", now).order(purge_at: :asc).limit(params[:limit].to_i.clamp(1, 2000))
 
     scope.find_each do |post|
       begin
@@ -14,5 +15,11 @@ class PurgeExpiredInstagramPostMediaJob < ApplicationJob
       post.update_columns(purge_at: nil) # avoid reprocessing
     end
   end
-end
 
+  private
+
+  def normalize_params(opts, kwargs, defaults)
+    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
+    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
+  end
+end

@@ -122,8 +122,9 @@
 
     <% if @accounts.any? %>
       <div class="accounts-table">
-        <div class="table-scroll">
-          <table class="table">
+        <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="accounts-table" data-table-standard-pagination-size-value="25">
+          <div class="table-scroll">
+            <table class="table" data-table-standard-target="table">
             <thead>
               <tr>
                 <th>Username</th>
@@ -154,7 +155,7 @@
                   <td><%= relative_time_with_tooltip(account.last_synced_at) %></td>
                   <td>
                     <div class="table-actions">
-                      <%= button_to "Select", select_instagram_account_path(account), method: :post, class: "btn small secondary" %>
+                      <%= button_to "Select", select_instagram_account_path(account), method: :post, class: "btn small secondary", form: { data: { turbo: false } } %>
                       <%= link_to "Manage", instagram_account_path(account), class: "btn small" %>
                       <%= button_to "Delete",
                             instagram_account_path(account),
@@ -173,7 +174,8 @@
                 </tr>
               <% end %>
             </tbody>
-          </table>
+            </table>
+          </div>
         </div>
       </div>
     <% else %>

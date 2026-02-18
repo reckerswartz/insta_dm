@@ -1,0 +1,9 @@
+<section class="card">
+  <h2>Message History</h2>
+
+  <div id="messages">
+    <% messages.each do |message| %>
+      <%= render "instagram_messages/row", message: message %>
+    <% end %>
+  </div>
+</section>

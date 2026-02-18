@@ -1,8 +1,9 @@
 class EnqueueContinuousAccountProcessingJob < ApplicationJob
   queue_as :sync
 
-  def perform(limit: 100)
-    cap = limit.to_i.clamp(1, 500)
+  def perform(opts = nil, **kwargs)
+    params = normalize_params(opts, kwargs, limit: 100)
+    cap = params[:limit].to_i.clamp(1, 500)
     enqueued = 0
     now = Time.current
 
@@ -35,5 +36,12 @@ class EnqueueContinuousAccountProcessingJob < ApplicationJob
     )
 
     { enqueued: enqueued, limit: cap }
+  end
+
+  private
+
+  def normalize_params(opts, kwargs, defaults)
+    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
+    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
   end
 end

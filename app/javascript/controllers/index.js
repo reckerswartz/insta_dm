@@ -13,7 +13,9 @@ import { default as ProfileEventsTableController } from "./profile_events_table_
 import { default as ProfilesTableController } from "./profiles_table_controller"
 import { default as StoryMediaArchiveController } from "./story_media_archive_controller"
 import { default as StorageIngestionsTableController } from "./storage_ingestions_table_controller"
+import { default as TableStandardController } from "./table_standard_controller"
 import { default as TechnicalDetailsController } from "./technical_details_controller"
+import { default as VideoPlayerController } from "./video_player_controller"
 
 // Register controllers
 application.register("hello", HelloController)
@@ -27,4 +29,6 @@ application.register("profile-events-table", ProfileEventsTableController)
 application.register("profiles-table", ProfilesTableController)
 application.register("story-media-archive", StoryMediaArchiveController)
 application.register("storage-ingestions-table", StorageIngestionsTableController)
+application.register("table-standard", TableStandardController)
 application.register("technical-details", TechnicalDetailsController)
+application.register("video-player", VideoPlayerController)

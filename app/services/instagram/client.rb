@@ -1661,7 +1661,10 @@ module Instagram
         apply_session_bundle!(driver)
         driver.navigate.to("#{INSTAGRAM_BASE_URL}/")
         ensure_authenticated!(driver)
-        yield(driver)
+
+        result = yield(driver)
+        refresh_account_snapshot!(driver)
+        result
       end
     end
 
@@ -1729,15 +1732,25 @@ module Instagram
       persist_cookies!(driver)
       @account.local_storage = read_web_storage(driver, "localStorage")
       @account.session_storage = read_web_storage(driver, "sessionStorage")
+      ig_app_id = detect_ig_app_id(driver)
 
       @account.auth_snapshot = {
         captured_at: Time.current.utc.iso8601(3),
         current_url: safe_driver_value(driver) { driver.current_url },
         page_title: safe_driver_value(driver) { driver.title },
+        ig_app_id: ig_app_id,
+        sessionid_present: @account.cookies.any? { |c| c["name"].to_s == "sessionid" && c["value"].to_s.present? },
         cookie_names: @account.cookies.map { |c| c["name"] }.compact.uniq.sort,
         local_storage_keys: @account.local_storage.map { |e| e["key"] }.compact.uniq.sort,
         session_storage_keys: @account.session_storage.map { |e| e["key"] }.compact.uniq.sort
       }
+    end
+
+    def refresh_account_snapshot!(driver)
+      persist_session_bundle!(driver)
+      @account.save! if @account.changed?
+    rescue StandardError => e
+      Rails.logger.warn("Instagram snapshot refresh skipped: #{e.class}: #{e.message}")
     end
 
     def apply_session_bundle!(driver)
@@ -1747,6 +1760,34 @@ module Instagram
       apply_cookies!(driver)
       write_web_storage(driver, "localStorage", @account.local_storage)
       write_web_storage(driver, "sessionStorage", @account.session_storage)
+    end
+
+    def detect_ig_app_id(driver)
+      script = <<~JS
+        const candidates = []
+        const push = (value) => {
+          if (value === null || typeof value === "undefined") return
+          const text = String(value)
+          const match = text.match(/\\d{8,}/)
+          if (match) candidates.push(match[0])
+        }
+
+        try { push(document.documentElement?.getAttribute("data-app-id")) } catch (e) {}
+        try { push(window._sharedData?.config?.app_id) } catch (e) {}
+        try { push(window.__initialData?.config?.app_id) } catch (e) {}
+        try { push(window.localStorage?.getItem("ig_app_id")) } catch (e) {}
+        try { push(window.localStorage?.getItem("app_id")) } catch (e) {}
+        try { push(window.sessionStorage?.getItem("ig_app_id")) } catch (e) {}
+
+        return candidates[0] || null
+      JS
+
+      detected = safe_driver_value(driver) { driver.execute_script(script) }.to_s.strip
+      return detected if detected.present?
+
+      @account.auth_snapshot.dig("ig_app_id").to_s.presence || "936619743392459"
+    rescue StandardError
+      @account.auth_snapshot.dig("ig_app_id").to_s.presence || "936619743392459"
     end
 
     def apply_cookies!(driver)

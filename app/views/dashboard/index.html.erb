@@ -59,36 +59,40 @@
     <h2>Recipients</h2>
 
     <%= form_with url: update_all_recipients_path, method: :patch do %>
-      <table>
-        <thead>
-          <tr>
-            <th>Select</th>
-            <th>Username</th>
-            <th>Source</th>
-            <th>Can message</th>
-            <th>Reason</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% @recipients.each do |recipient| %>
-            <tr>
-              <td>
-                <%= check_box_tag "selected_ids[]", recipient.id, recipient.selected, disabled: !recipient.can_message %>
-              </td>
-              <td><%= recipient.username %></td>
-              <td><%= recipient.source %></td>
-              <td>
-                <% if recipient.can_message %>
-                  <span class="yes">Yes</span>
-                <% else %>
-                  <span class="no">No</span>
-                <% end %>
-              </td>
-              <td><%= recipient.restriction_reason.presence || "-" %></td>
-            </tr>
-          <% end %>
-        </tbody>
-      </table>
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="dashboard-recipients-table" data-table-standard-pagination-value="false" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
+            <thead>
+              <tr>
+                <th>Select</th>
+                <th>Username</th>
+                <th>Source</th>
+                <th>Can message</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% @recipients.each do |recipient| %>
+                <tr>
+                  <td>
+                    <%= check_box_tag "selected_ids[]", recipient.id, recipient.selected, disabled: !recipient.can_message %>
+                  </td>
+                  <td><%= recipient.username %></td>
+                  <td><%= recipient.source %></td>
+                  <td>
+                    <% if recipient.can_message %>
+                      <span class="yes">Yes</span>
+                    <% else %>
+                      <span class="no">No</span>
+                    <% end %>
+                  </td>
+                  <td><%= recipient.restriction_reason.presence || "-" %></td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       <div class="actions-row">
         <%= submit_tag "Save Selections" %>

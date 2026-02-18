@@ -10,7 +10,11 @@
     <%= stylesheet_link_tag "tabulator.min", "data-turbo-track": "reload" %>
     <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
     <%= yield :styles %>
-    <%= javascript_include_tag "application", "data-turbo-track": "reload", defer: true %>
+    <% if Rails.env.development? && ENV["WEBPACK_DEV_SERVER"] == "true" %>
+      <%= javascript_include_tag "http://127.0.0.1:3035/application.js", "data-turbo-track": "reload", defer: true, crossorigin: "anonymous" %>
+    <% else %>
+      <%= javascript_include_tag "application", "data-turbo-track": "reload", defer: true %>
+    <% end %>
   </head>
 
   <body class="app-body">

@@ -6,8 +6,9 @@
 
   <% if visible_posts.any? %>
     <div data-controller="profile-post-modal">
-      <div class="table-scroll">
-        <table class="table">
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="profile-captured-posts-table" data-table-standard-pagination-size-value="20">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
               <th>Image</th>
@@ -92,7 +93,8 @@
               </tr>
             <% end %>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
 
       <dialog data-profile-post-modal-target="dialog" class="modal">

@@ -90,7 +90,7 @@ class LocalAIValidator
       test_image = create_test_image
       
       response = upload_file("#{@microservice_url}/analyze/image", test_image, 
-                           { features: 'labels,text,faces,safe_search' })
+                           { features: 'labels,text,faces' })
       data = JSON.parse(response.body)
       
       if data['success'] && data['results']

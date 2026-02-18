@@ -1,21 +1,17 @@
-const path    = require("path")
-const webpack = require("webpack")
+const development = require("./config/webpack/development")
+const test = require("./config/webpack/test")
+const production = require("./config/webpack/production")
 
-module.exports = {
-  mode: "production",
-  devtool: "source-map",
-  entry: {
-    application: "./app/javascript/application.js"
-  },
-  output: {
-    filename: "[name].js",
-    sourceMapFilename: "[file].map",
-    chunkFormat: "module",
-    path: path.resolve(__dirname, "app/assets/builds"),
-  },
-  plugins: [
-    new webpack.optimize.LimitChunkCountPlugin({
-      maxChunks: 1
-    })
-  ]
+const ENV_CONFIGS = {
+  development,
+  test,
+  production,
 }
+
+const selectedEnv = process.env.NODE_ENV || "development"
+
+if (!Object.prototype.hasOwnProperty.call(ENV_CONFIGS, selectedEnv)) {
+  throw new Error(`Unsupported NODE_ENV: ${selectedEnv}`)
+}
+
+module.exports = ENV_CONFIGS[selectedEnv]

@@ -207,6 +207,7 @@ require "digest"
           }
         )
       )
+      PostFaceRecognitionService.new.process!(post: post)
       Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: analysis_data["analysis"])
     rescue StandardError
       next

@@ -2,13 +2,20 @@
   "name": "app",
   "private": true,
   "devDependencies": {
+    "terser-webpack-plugin": "^5.3.14",
     "webpack": "^5.105.2",
-    "webpack-cli": "^6.0.1"
+    "webpack-cli": "^6.0.1",
+    "webpack-dev-server": "^5.2.2",
+    "webpack-merge": "^6.0.1"
   },
   "scripts": {
-    "build": "webpack --config webpack.config.js",
+    "build": "yarn build:production",
+    "build:development": "NODE_ENV=development webpack --config webpack.config.js",
+    "build:test": "NODE_ENV=test webpack --config webpack.config.js",
+    "build:production": "NODE_ENV=production webpack --config webpack.config.js",
     "build:css": "sass ./app/assets/stylesheets/application.sass.scss:./app/assets/builds/application.css --no-source-map --load-path=node_modules",
-    "watch": "webpack --config webpack.config.js --watch",
+    "watch": "NODE_ENV=development webpack --config webpack.config.js --watch",
+    "dev:server": "NODE_ENV=development webpack serve --config webpack.config.js",
     "watch:css": "sass ./app/assets/stylesheets/application.sass.scss:./app/assets/builds/application.css --no-source-map --load-path=node_modules --watch"
   },
   "dependencies": {
@@ -16,6 +23,8 @@
     "@hotwired/turbo-rails": "^8.0.23",
     "@popperjs/core": "^2.11.8",
     "bootstrap": "^5.3.8",
+    "hls.js": "^1.6.14",
+    "plyr": "^3.8.3",
     "sass": "^1.97.3",
     "tabulator-tables": "^6.3.1"
   }

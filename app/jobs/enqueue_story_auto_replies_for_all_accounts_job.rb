@@ -1,9 +1,10 @@
 class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
   queue_as :profiles
 
-  def perform(max_stories: 10, force_analyze_all: false)
-    max_stories_i = max_stories.to_i.clamp(1, 10)
-    force = ActiveModel::Type::Boolean.new.cast(force_analyze_all)
+  def perform(opts = nil, **kwargs)
+    params = normalize_params(opts, kwargs, max_stories: 10, force_analyze_all: false)
+    max_stories_i = params[:max_stories].to_i.clamp(1, 10)
+    force = ActiveModel::Type::Boolean.new.cast(params[:force_analyze_all])
 
     enqueued = 0
 
@@ -56,5 +57,12 @@ class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
         force_analyze_all: force
       }
     )
+  end
+
+  private
+
+  def normalize_params(opts, kwargs, defaults)
+    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
+    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
   end
 end

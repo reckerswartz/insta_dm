@@ -4,8 +4,9 @@ require "tempfile"
 require "tmpdir"
 
 class VideoAudioExtractionService
-  def initialize(ffmpeg_bin: ENV.fetch("FFMPEG_BIN", "ffmpeg"))
-    @ffmpeg_bin = ffmpeg_bin.to_s
+  def initialize(ffmpeg_bin: nil)
+    resolved_bin = ffmpeg_bin.to_s.presence || ENV["FFMPEG_BIN"].to_s.presence || default_ffmpeg_bin
+    @ffmpeg_bin = resolved_bin.to_s
   end
 
   def extract(video_bytes:, story_id:, content_type: nil)
@@ -41,6 +42,13 @@ class VideoAudioExtractionService
 
   def command_available?(command)
     system("command -v #{Shellwords.escape(command)} >/dev/null 2>&1")
+  end
+
+  def default_ffmpeg_bin
+    local_bin = File.expand_path("~/.local/bin/ffmpeg")
+    return local_bin if File.exist?(local_bin)
+
+    "ffmpeg"
   end
 
   def extension_for(content_type:)

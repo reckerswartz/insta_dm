@@ -2,11 +2,11 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
   queue_as :profiles
 
   # Accept a single hash (e.g. from Sidekiq cron/schedule) or keyword args from perform_later(...)
-  def perform(opts = {})
-    opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
-    limit_per_account = opts.fetch(:limit_per_account, 8).to_i.clamp(1, 30)
-    posts_limit_i = opts.fetch(:posts_limit, 3).to_i.clamp(1, 3)
-    comments_limit_i = opts.fetch(:comments_limit, 8).to_i.clamp(1, 20)
+  def perform(opts = nil, **kwargs)
+    params = normalize_params(opts, kwargs, limit_per_account: 8, posts_limit: 3, comments_limit: 8)
+    limit_per_account = params[:limit_per_account].to_i.clamp(1, 30)
+    posts_limit_i = params[:posts_limit].to_i.clamp(1, 3)
+    comments_limit_i = params[:comments_limit].to_i.clamp(1, 20)
 
     enqueued_accounts = 0
 
@@ -41,5 +41,12 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
         comments_limit: comments_limit_i
       }
     )
+  end
+
+  private
+
+  def normalize_params(opts, kwargs, defaults)
+    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
+    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
   end
 end

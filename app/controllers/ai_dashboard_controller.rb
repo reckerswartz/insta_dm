@@ -140,41 +140,6 @@ class AiDashboardController < ApplicationController
         else
           { success: false, error: "HTTP #{response.code}: #{response.body}" }
         end
-      when 'safe_search'
-        test_image = create_test_image
-        
-        uri = URI("#{AI_SERVICE_URL}/analyze/image")
-        req = Net::HTTP::Post.new(uri)
-        
-        boundary = "----WebKitFormBoundary#{SecureRandom.hex(16)}"
-        
-        post_data = []
-        post_data << "--#{boundary}\r\n"
-        post_data << "Content-Disposition: form-data; name=\"features\"\r\n\r\n"
-        post_data << "safe_search\r\n"
-        post_data << "--#{boundary}\r\n"
-        post_data << "Content-Disposition: form-data; name=\"file\"; filename=\"test.png\"\r\n"
-        post_data << "Content-Type: image/png\r\n\r\n"
-        post_data << test_image
-        post_data << "\r\n--#{boundary}--\r\n"
-        
-        req.body = post_data.join
-        req['Content-Type'] = "multipart/form-data; boundary=#{boundary}"
-        
-        response = Net::HTTP.start(uri.hostname, uri.port) do |http|
-          http.request(req)
-        end
-        
-        if response.code == '200'
-          data = JSON.parse(response.body)
-          {
-            success: true,
-            result: data['results']['safe_search'] || {},
-            message: "Safe search analysis working"
-          }
-        else
-          { success: false, error: "HTTP #{response.code}: #{response.body}" }
-        end
       else
         { success: false, error: "Unknown test type: #{test_type}" }
       end

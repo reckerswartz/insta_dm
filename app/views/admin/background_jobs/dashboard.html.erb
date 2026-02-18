@@ -69,8 +69,9 @@
   <section class="card">
     <h2>Recent Jobs (All)</h2>
     <% if @recent_jobs.any? %>
-      <div class="table-scroll">
-        <table class="table">
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-recent-jobs-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
               <th>When</th>
@@ -107,7 +108,8 @@
               <% end %>
             <% end %>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     <% else %>
       <p class="meta">No jobs found yet.</p>
@@ -117,8 +119,9 @@
   <section class="card">
     <h2>Active Processes</h2>
     <% if @processes.any? %>
-      <div class="table-scroll">
-        <table class="table">
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-active-processes-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
               <th>Name</th>
@@ -151,7 +154,8 @@
               <% end %>
             <% end %>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     <% else %>
       <p class="meta">No worker processes found. Ensure `bin/jobs` is running.</p>
@@ -161,8 +165,9 @@
   <section class="card">
     <h2>Recent Queue Failures</h2>
     <% if @recent_failed.any? %>
-      <div class="table-scroll">
-        <table class="table">
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-queue-failures-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
               <th>When</th>
@@ -200,7 +205,8 @@
               <% end %>
             <% end %>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     <% else %>
       <p class="meta">No failed executions found in queue backend.</p>
@@ -210,8 +216,9 @@
   <section class="card">
     <h2>Recent App Failure Logs</h2>
     <% if @failure_logs.any? %>
-      <div class="table-scroll">
-        <table class="table">
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-app-failures-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
               <th>When</th>
@@ -245,7 +252,8 @@
               </tr>
             <% end %>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     <% else %>
       <p class="meta">No app-level failures recorded yet.</p>
@@ -255,8 +263,9 @@
   <section class="card">
     <h2>Recent Application Issues</h2>
     <% if @recent_issues.any? %>
-      <div class="table-scroll">
-        <table class="table">
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-recent-issues-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
               <th>When</th>
@@ -277,7 +286,8 @@
               </tr>
             <% end %>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     <% else %>
       <p class="meta">No application issues tracked yet.</p>
@@ -287,8 +297,9 @@
   <section class="card">
     <h2>Recent Active Storage Writes</h2>
     <% if @recent_storage_ingestions.any? %>
-      <div class="table-scroll">
-        <table class="table">
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-storage-writes-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
               <th>When</th>
@@ -309,7 +320,8 @@
               </tr>
             <% end %>
           </tbody>
-        </table>
+          </table>
+        </div>
       </div>
     <% else %>
       <p class="meta">No Active Storage ingestion records yet.</p>

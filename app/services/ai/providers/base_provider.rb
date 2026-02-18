@@ -28,7 +28,13 @@ module Ai
       end
 
       def available?
-        setting&.enabled == true && setting&.api_key_present?
+        return false unless setting&.enabled == true
+
+        !requires_api_key? || setting&.api_key_present?
+      end
+
+      def requires_api_key?
+        true
       end
 
       def preferred_model

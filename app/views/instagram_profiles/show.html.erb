@@ -1,8 +1,6 @@
 <% content_for :title, @profile.username %>
 
 <%= turbo_stream_from @account %>
-<% analyzed_posts_count = @profile_posts.count { |post| post.ai_status == "analyzed" } %>
-<% pending_posts_count = @profile_posts.count { |post| post.ai_status != "analyzed" } %>
 
 <div class="page">
   <header class="page-header">
@@ -27,14 +25,14 @@
       </div>
       <div class="stat">
         <div class="stat-label">Posts (Image Input)</div>
-        <div class="stat-kv"><span class="muted">Captured</span><strong><%= @profile_posts.size %></strong></div>
-        <div class="stat-kv"><span class="muted">AI analyzed</span><strong><%= analyzed_posts_count %></strong></div>
-        <div class="stat-kv"><span class="muted">Pending analysis</span><strong><%= pending_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Captured</span><strong><%= @profile_posts_total_count %></strong></div>
+        <div class="stat-kv"><span class="muted">AI analyzed</span><strong><%= @analyzed_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Pending analysis</span><strong><%= @pending_posts_count %></strong></div>
       </div>
       <div class="stat">
         <div class="stat-label">Activity</div>
-        <div class="stat-kv"><span class="muted">Messages</span><strong><%= @messages.size %></strong></div>
-        <div class="stat-kv"><span class="muted">Action logs</span><strong><%= @action_logs.size %></strong></div>
+        <div class="stat-kv"><span class="muted">Messages</span><strong><%= @messages_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Action logs</span><strong><%= @action_logs_count %></strong></div>
         <div class="stat-kv"><span class="muted">Last analyzed</span><strong><%= relative_time_with_tooltip(@profile.ai_last_analyzed_at) %></strong></div>
       </div>
     </div>
@@ -123,8 +121,8 @@
       <div class="stat">
         <div class="stat-label">Analysis Status</div>
         <div class="stat-kv"><span class="muted">Last analyzed</span><strong><%= relative_time_with_tooltip(@profile.ai_last_analyzed_at) %></strong></div>
-        <div class="stat-kv"><span class="muted">Analyzed posts</span><strong><%= analyzed_posts_count %></strong></div>
-        <div class="stat-kv"><span class="muted">Needs analysis</span><strong><%= pending_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Analyzed posts</span><strong><%= @analyzed_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Needs analysis</span><strong><%= @pending_posts_count %></strong></div>
       </div>
     </div>
 
@@ -150,28 +148,68 @@
     <% else %>
       <p class="meta">No AI analysis saved yet.</p>
     <% end %>
+
+    <% if @latest_story_intelligence_event.present? %>
+      <% intel_meta = @latest_story_intelligence_event.metadata.is_a?(Hash) ? @latest_story_intelligence_event.metadata : {} %>
+      <% intel = intel_meta["local_story_intelligence"].is_a?(Hash) ? intel_meta["local_story_intelligence"] : {} %>
+      <% snapshot = {
+        event_id: @latest_story_intelligence_event.id,
+        occurred_at: @latest_story_intelligence_event.occurred_at || @latest_story_intelligence_event.detected_at,
+        source: intel["source"],
+        ocr_text: intel["ocr_text"] || intel_meta["ocr_text"],
+        transcript: intel["transcript"] || intel_meta["transcript"],
+        objects: intel["objects"] || intel_meta["content_signals"],
+        scenes: intel["scenes"] || intel_meta["scenes"],
+        object_detections: intel["object_detections"] || intel_meta["object_detections"],
+        ocr_blocks: intel["ocr_blocks"] || intel_meta["ocr_blocks"],
+        hashtags: intel["hashtags"] || intel_meta["hashtags"],
+        mentions: intel["mentions"] || intel_meta["mentions"],
+        face_count: intel["face_count"] || intel_meta["face_count"],
+        people: intel["people"] || intel_meta["face_people"]
+      } %>
+      <details class="details-box">
+        <summary>Show Latest Story Intelligence Snapshot</summary>
+        <div class="table-scroll">
+          <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(snapshot) rescue snapshot.to_json %></pre>
+        </div>
+      </details>
+    <% end %>
   </section>
 
-  <%= render "captured_posts_section", profile: @profile, profile_posts: @profile_posts %>
+  <%= turbo_frame_tag "profile_captured_posts_#{@profile.id}", src: captured_posts_section_instagram_profile_path(@profile), loading: :lazy do %>
+    <section class="card">
+      <h2>Captured Profile Posts (AI Input)</h2>
+      <p class="meta">Loading captured posts...</p>
+    </section>
+  <% end %>
 
-  <section class="card">
-    <h2>Message History</h2>
-    <div id="messages">
-      <% @messages.each do |m| %>
-        <%= render "instagram_messages/row", message: m %>
-      <% end %>
-    </div>
-  </section>
+  <%= turbo_frame_tag "profile_downloaded_stories_#{@profile.id}", src: downloaded_stories_section_instagram_profile_path(@profile), loading: :lazy do %>
+    <section class="card">
+      <h2>Downloaded Stories</h2>
+      <p class="meta">Loading downloaded stories...</p>
+    </section>
+  <% end %>
 
-  <%= render "action_history_section", action_logs: @action_logs %>
+  <%= turbo_frame_tag "profile_messages_#{@profile.id}", src: messages_section_instagram_profile_path(@profile), loading: :lazy do %>
+    <section class="card">
+      <h2>Message History</h2>
+      <p class="meta">Loading message history...</p>
+    </section>
+  <% end %>
 
-  <section class="card">
-    <h2>Profile History</h2>
-    <p class="meta">Use header filters/sorting. Shift + wheel scrolls horizontally, and click-drag pans vertically/horizontally.</p>
-    <div class="tabulator-shell" data-controller="profile-events-table" data-profile-events-table-url-value="<%= events_instagram_profile_path(@profile, format: :json) %>">
-      <div class="tabulator-host" data-profile-events-table-target="table"></div>
-    </div>
-  </section>
+  <%= turbo_frame_tag "profile_actions_#{@profile.id}", src: action_history_section_instagram_profile_path(@profile), loading: :lazy do %>
+    <section class="card">
+      <h2>Action History</h2>
+      <p class="meta">Loading action history...</p>
+    </section>
+  <% end %>
+
+  <%= turbo_frame_tag "profile_events_table_#{@profile.id}", src: events_table_section_instagram_profile_path(@profile), loading: :lazy do %>
+    <section class="card">
+      <h2>Profile History</h2>
+      <p class="meta">Loading profile history table...</p>
+    </section>
+  <% end %>
 
   <div class="actions-row">
     <%= link_to "Back to Profiles", instagram_profiles_path, class: "btn secondary" %>
