@@ -211,7 +211,28 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     if video_meta.present?
       analysis["video_processing_mode"] = video_meta["processing_mode"].to_s if video_meta["processing_mode"].to_s.present?
       analysis["video_static_detected"] = ActiveModel::Type::Boolean.new.cast(video_meta["static"]) if video_meta.key?("static")
+      analysis["video_semantic_route"] = video_meta["semantic_route"].to_s if video_meta["semantic_route"].to_s.present?
       analysis["video_duration_seconds"] = video_meta["duration_seconds"] if video_meta.key?("duration_seconds")
+      analysis["video_context_summary"] = video_meta["context_summary"].to_s if video_meta["context_summary"].to_s.present?
+      analysis["transcript"] = video_meta["transcript"].to_s if video_meta["transcript"].to_s.present?
+      analysis["video_topics"] = normalize_string_array(video_meta["topics"], limit: 40)
+      analysis["video_objects"] = normalize_string_array(video_meta["objects"], limit: 50)
+      analysis["video_scenes"] = Array(video_meta["scenes"]).select { |row| row.is_a?(Hash) }.first(50)
+      analysis["video_hashtags"] = normalize_string_array(video_meta["hashtags"], limit: 50)
+      analysis["video_mentions"] = normalize_string_array(video_meta["mentions"], limit: 50)
+      analysis["video_profile_handles"] = normalize_string_array(video_meta["profile_handles"], limit: 50)
+
+      analysis["topics"] = merge_string_array(analysis["topics"], video_meta["topics"], limit: 40)
+      analysis["objects"] = merge_string_array(analysis["objects"], video_meta["objects"], limit: 50)
+      analysis["hashtags"] = merge_string_array(analysis["hashtags"], video_meta["hashtags"], limit: 50)
+      analysis["mentions"] = merge_string_array(analysis["mentions"], video_meta["mentions"], limit: 50)
+
+      if analysis["ocr_text"].to_s.blank? && video_meta["ocr_text"].to_s.present?
+        analysis["ocr_text"] = video_meta["ocr_text"].to_s
+      end
+      if Array(analysis["ocr_blocks"]).empty?
+        analysis["ocr_blocks"] = Array(video_meta["ocr_blocks"]).select { |row| row.is_a?(Hash) }.first(40)
+      end
     end
 
     metadata["ai_pipeline"] = pipeline
@@ -322,5 +343,13 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     )
   rescue StandardError
     nil
+  end
+
+  def normalize_string_array(values, limit:)
+    Array(values).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(limit)
+  end
+
+  def merge_string_array(existing, incoming, limit:)
+    normalize_string_array(Array(existing) + Array(incoming), limit: limit)
   end
 end

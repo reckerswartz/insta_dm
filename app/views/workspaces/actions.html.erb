@@ -1,0 +1,32 @@
+<% content_for :title, "Workspace Actions" %>
+
+<div class="page">
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1>Workspace: Actions to Be Done</h1>
+      <p class="meta">Background queue for user-post previews and suggested comments. Stories and page-like profiles are excluded.</p>
+    </div>
+    <div class="page-toolbar-actions">
+      <%= link_to "Account Dashboard", instagram_account_path(@account), class: "btn secondary" %>
+      <%= link_to "Profiles", instagram_profiles_path, class: "btn secondary" %>
+    </div>
+  </header>
+
+  <section
+    class="card workspace-actions-card"
+    data-controller="workspace-actions-queue"
+    data-workspace-actions-queue-url-value="<%= actions_feed_workspace_path(instagram_account_id: @account.id) %>"
+    data-workspace-actions-queue-poll-interval-ms-value="15000"
+  >
+    <div class="actions-row workspace-actions-toolbar">
+      <p class="meta">Processing runs in background. If profile context is incomplete, profile analysis is queued automatically and this post is retried later.</p>
+      <button type="button" class="btn secondary" data-action="workspace-actions-queue#refresh">Refresh</button>
+    </div>
+
+    <p class="meta workspace-actions-refresh-status" data-workspace-actions-queue-target="status" hidden></p>
+
+    <div data-workspace-actions-queue-target="content">
+      <%= render "actions_queue_section", account: @account, queue_result: @queue_result %>
+    </div>
+  </section>
+</div>

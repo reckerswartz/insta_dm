@@ -1,9 +1,6 @@
-require "set"
-
 class InstagramAccountsController < ApplicationController
   STORY_SYNC_LIMIT = SyncHomeStoryCarouselJob::STORY_BATCH_LIMIT
   CONTINUOUS_STORY_SYNC_CYCLE_LIMIT = SyncAllHomeStoriesJob::MAX_CYCLES
-  ACTIONS_TODO_POST_MAX_AGE_DAYS = 5
   STORY_ARCHIVE_SLOW_REQUEST_MS = Integer(ENV.fetch("STORY_ARCHIVE_SLOW_REQUEST_MS", "2000"))
   STORY_ARCHIVE_PREVIEW_ENQUEUE_TTL_SECONDS = Integer(ENV.fetch("STORY_ARCHIVE_PREVIEW_ENQUEUE_TTL_SECONDS", "900"))
 
@@ -34,7 +31,7 @@ class InstagramAccountsController < ApplicationController
         .order(occurred_at: :desc, id: :desc)
         .limit(25)
     @recent_audit_entries = Ops::AuditLogBuilder.for_account(instagram_account: @account, limit: 120)
-    @actions_todo_posts = build_actions_todo_posts(account: @account, limit: 30)
+    @actions_todo_queue = build_actions_todo_queue_summary(account: @account, limit: 20)
     @skip_diagnostics = build_skip_diagnostics(account: @account, hours: 72)
   end
 
@@ -710,69 +707,24 @@ class InstagramAccountsController < ApplicationController
     false
   end
 
-  def build_actions_todo_posts(account:, limit:)
-    cap = limit.to_i.clamp(1, 100)
-    recent_cutoff = ACTIONS_TODO_POST_MAX_AGE_DAYS.days.ago
-    candidates =
-      account.instagram_profile_posts
-        .includes(:instagram_profile, media_attachment: :blob)
-        .where(ai_status: "analyzed")
-        .where("taken_at >= ?", recent_cutoff)
-        .limit(cap * 6)
-        .to_a
-    return [] if candidates.empty?
-
-    sent_keys = commented_post_keys_for(account: account, profile_ids: candidates.map(&:instagram_profile_id).uniq)
-
-    candidates.filter_map do |post|
-      profile = post.instagram_profile
-      next unless profile
-      next if profile.last_active_at.present? && profile.last_active_at < recent_cutoff
-
-      key = "#{post.instagram_profile_id}:#{post.shortcode}"
-      next if sent_keys.include?(key)
-
-      analysis = post.analysis.is_a?(Hash) ? post.analysis : {}
-      suggestions = Array(analysis["comment_suggestions"]).map { |v| v.to_s.strip }.reject(&:blank?).uniq.first(3)
-      next if suggestions.empty?
-
-      {
-        post: post,
-        profile: profile,
-        suggestions: suggestions,
-        profile_last_active_at: profile.last_active_at,
-        post_taken_at: post.taken_at
+  def build_actions_todo_queue_summary(account:, limit:)
+    Workspace::ActionsTodoQueueService.new(
+      account: account,
+      limit: limit,
+      enqueue_processing: true
+    ).fetch!
+  rescue StandardError => e
+    {
+      items: [],
+      stats: {
+        total_items: 0,
+        ready_items: 0,
+        processing_items: 0,
+        enqueued_now: 0,
+        refreshed_at: Time.current.iso8601(3),
+        error: e.message.to_s
       }
-    end
-      .sort_by do |item|
-        [
-          item[:profile_last_active_at] || Time.at(0),
-          item[:post_taken_at] || Time.at(0)
-        ]
-      end
-      .reverse
-      .first(cap)
-  end
-
-  def commented_post_keys_for(account:, profile_ids:)
-    return Set.new if profile_ids.blank?
-
-    events =
-      InstagramProfileEvent
-        .joins(:instagram_profile)
-        .where(instagram_profiles: { instagram_account_id: account.id, id: profile_ids })
-        .where(kind: "post_comment_sent")
-        .order(detected_at: :desc, id: :desc)
-        .limit(2_000)
-
-    Set.new(
-      events.filter_map do |event|
-        shortcode = event.metadata.is_a?(Hash) ? event.metadata["post_shortcode"].to_s.strip : ""
-        next if shortcode.blank?
-
-        "#{event.instagram_profile_id}:#{shortcode}"
-      end
-    )
+    }
   end
 
   def build_skip_diagnostics(account:, hours:)

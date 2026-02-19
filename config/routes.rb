@@ -83,6 +83,11 @@ Rails.application.routes.draw do
 
   resources :instagram_posts, only: %i[index show]
 
+  resource :workspace, only: [] do
+    get :actions
+    get :actions_feed
+  end
+
   # AI Dashboard
   resources :ai_dashboard, only: [:index] do
     collection do

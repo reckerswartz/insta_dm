@@ -43,4 +43,39 @@ RSpec.describe "ProfileScanPolicyTest" do
     assert_equal false, decision[:skip_scan]
     assert_equal "scan_allowed", decision[:reason_code]
   end
+
+  it "skips likely business pages based on category and business flags" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "city_updates_#{SecureRandom.hex(2)}",
+      display_name: "City Updates",
+      bio: "Daily clips and local updates."
+    )
+
+    decision = Instagram::ProfileScanPolicy.new(
+      profile: profile,
+      profile_details: {
+        category_name: "Media/news company",
+        is_business_account: true,
+        external_url: "https://example.com"
+      }
+    ).decision
+
+    assert_equal true, decision[:skip_scan]
+    assert_equal "non_personal_profile_page", decision[:reason_code]
+  end
+
+  it "allows regular personal profiles without business/page signals" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "john_#{SecureRandom.hex(2)}",
+      display_name: "John",
+      bio: "Sharing photos from life and friends."
+    )
+
+    decision = Instagram::ProfileScanPolicy.new(profile: profile).decision
+
+    assert_equal false, decision[:skip_scan]
+    assert_equal "scan_allowed", decision[:reason_code]
+  end
 end

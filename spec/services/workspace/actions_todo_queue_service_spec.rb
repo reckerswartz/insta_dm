@@ -1,0 +1,88 @@
+require "rails_helper"
+require "securerandom"
+
+RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
+  it "builds queue items only for eligible user-created posts" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+
+    person = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(3)}")
+    post_ready = person.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "ready_#{SecureRandom.hex(2)}",
+      taken_at: 2.hours.ago,
+      ai_status: "analyzed",
+      analysis: { "comment_suggestions" => ["Nice shot", "Great frame"] },
+      metadata: { "post_kind" => "post" }
+    )
+    post_pending = person.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "pending_#{SecureRandom.hex(2)}",
+      taken_at: 1.hour.ago,
+      ai_status: "pending",
+      analysis: {},
+      metadata: { "post_kind" => "post" }
+    )
+
+    page_profile = account.instagram_profiles.create!(username: "brand_page_#{SecureRandom.hex(2)}")
+    page_tag = ProfileTag.find_or_create_by!(name: "page")
+    page_profile.profile_tags << page_tag
+    page_profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "page_#{SecureRandom.hex(2)}",
+      taken_at: 30.minutes.ago,
+      ai_status: "analyzed",
+      analysis: { "comment_suggestions" => ["should be skipped"] },
+      metadata: { "post_kind" => "post" }
+    )
+
+    person.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "story_#{SecureRandom.hex(2)}",
+      taken_at: 20.minutes.ago,
+      ai_status: "analyzed",
+      analysis: { "comment_suggestions" => ["story post"] },
+      metadata: { "post_kind" => "story" }
+    )
+
+    result = Workspace::ActionsTodoQueueService.new(account: account, limit: 20, enqueue_processing: false).fetch!
+
+    shortcodes = Array(result[:items]).map { |item| item[:post].shortcode }
+    assert_includes shortcodes, post_ready.shortcode
+    assert_includes shortcodes, post_pending.shortcode
+    refute shortcodes.any? { |code| code.start_with?("page_") }
+    refute shortcodes.any? { |code| code.start_with?("story_") }
+
+    ready_row = result[:items].find { |item| item[:post].id == post_ready.id }
+    pending_row = result[:items].find { |item| item[:post].id == post_pending.id }
+
+    assert_equal "ready", ready_row[:processing_status]
+    assert_equal false, ready_row[:requires_processing]
+    assert_equal "waiting_media_download", pending_row[:processing_status]
+    assert_equal true, pending_row[:requires_processing]
+  end
+
+  it "excludes posts that already have a comment sent event" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(3)}")
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "posted_#{SecureRandom.hex(2)}",
+      taken_at: Time.current,
+      ai_status: "analyzed",
+      analysis: { "comment_suggestions" => ["Looks good"] },
+      metadata: { "post_kind" => "post" }
+    )
+
+    profile.instagram_profile_events.create!(
+      kind: "post_comment_sent",
+      external_id: "comment_sent_#{SecureRandom.hex(4)}",
+      detected_at: Time.current,
+      metadata: { "post_shortcode" => post.shortcode, "comment_text" => "Looks good" }
+    )
+
+    result = Workspace::ActionsTodoQueueService.new(account: account, limit: 10, enqueue_processing: false).fetch!
+
+    assert_equal 0, Array(result[:items]).length
+    assert_equal 0, result[:stats][:total_items].to_i
+  end
+end

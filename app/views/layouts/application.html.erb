@@ -54,6 +54,18 @@
             </span>
           <% end %>
 
+          <%= top_nav_link_to actions_workspace_path, section: :workspace_actions, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M4 6h16v2H4V6Zm0 5h10v2H4v-2Zm0 5h16v2H4v-2Zm12.5-5.5 1.4 1.4-3.6 3.6-2.2-2.2 1.4-1.4 0.8 0.8 2.2-2.2Z"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">Actions Queue</span>
+              <span class="sidebar-link-hint">User post follow-ups</span>
+            </span>
+          <% end %>
+
           <%= top_nav_link_to instagram_profiles_path, section: :profiles, class: "sidebar-link" do %>
             <span class="sidebar-link-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
@@ -167,6 +179,7 @@
 
           <% if current_account %>
             <nav class="topbar-shortcuts" aria-label="Quick navigation">
+              <%= link_to "Workspace", actions_workspace_path, class: "topbar-shortcut-link" %>
               <%= link_to "Profiles", instagram_profiles_path, class: "topbar-shortcut-link" %>
               <%= link_to "Posts", instagram_posts_path, class: "topbar-shortcut-link" %>
               <%= link_to "Jobs", admin_background_jobs_path, class: "topbar-shortcut-link" %>

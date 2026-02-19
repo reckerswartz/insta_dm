@@ -50,6 +50,8 @@ module Pipeline
         end
       end
 
+      enqueue_workspace_actions!(stats)
+
       @account.update!(
         continuous_processing_last_heartbeat_at: Time.current,
         continuous_processing_next_story_sync_at: @account.continuous_processing_next_story_sync_at,
@@ -179,6 +181,52 @@ module Pipeline
           account_id: @account.id,
           active_job_id: job.job_id,
           trigger_source: @trigger_source
+        }
+      )
+    end
+
+    def enqueue_workspace_actions!(stats)
+      result = Workspace::ActionsTodoQueueService.new(
+        account: @account,
+        limit: 40,
+        enqueue_processing: true
+      ).fetch!
+      queue_stats = result[:stats].is_a?(Hash) ? result[:stats] : {}
+
+      stats[:enqueued_jobs] << {
+        job: "Workspace::ActionsTodoQueueService",
+        source: "continuous_processing",
+        queued_now: queue_stats[:enqueued_now].to_i,
+        ready_items: queue_stats[:ready_items].to_i,
+        processing_items: queue_stats[:processing_items].to_i,
+        total_items: queue_stats[:total_items].to_i
+      }
+
+      Ops::StructuredLogger.info(
+        event: "continuous_processing.workspace_actions_refreshed",
+        payload: {
+          account_id: @account.id,
+          trigger_source: @trigger_source,
+          queued_now: queue_stats[:enqueued_now].to_i,
+          ready_items: queue_stats[:ready_items].to_i,
+          processing_items: queue_stats[:processing_items].to_i,
+          total_items: queue_stats[:total_items].to_i
+        }
+      )
+    rescue StandardError => e
+      stats[:skipped_jobs] << {
+        job: "Workspace::ActionsTodoQueueService",
+        reason: "workspace_queue_refresh_failed",
+        error_class: e.class.name
+      }
+
+      Ops::StructuredLogger.warn(
+        event: "continuous_processing.workspace_actions_refresh_failed",
+        payload: {
+          account_id: @account.id,
+          trigger_source: @trigger_source,
+          error_class: e.class.name,
+          error_message: e.message.to_s.byteslice(0, 280)
         }
       )
     end

@@ -1,65 +1,59 @@
-<section id="actions_to_be_done_section" class="card">
-  <h2>Actions to Be Done</h2>
-  <p class="meta">Latest recent posts (up to 5 days old) from recently active users that still need manual review.</p>
+<% queue = actions_todo_queue.is_a?(Hash) ? actions_todo_queue : {} %>
+<% stats = queue[:stats].is_a?(Hash) ? queue[:stats] : {} %>
+<% items = Array(queue[:items]).first(5) %>
+<% refreshed_time = begin Time.zone.parse(stats[:refreshed_at].to_s) rescue nil end %>
 
-  <% if actions_todo_posts.any? %>
-    <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="actions-to-be-done-table" data-table-standard-pagination-size-value="25">
-      <div class="table-scroll">
-        <table class="table" data-table-standard-target="table">
+<section id="actions_to_be_done_section" class="card">
+  <div class="actions-row workspace-actions-summary-header">
+    <div>
+      <h2>Actions to Be Done</h2>
+      <p class="meta">Optimized queue now runs in <strong>Workspace</strong>. Processing continues in background while profile and post analysis complete.</p>
+    </div>
+    <%= link_to "Open Workspace Queue", actions_workspace_path, class: "btn" %>
+  </div>
+
+  <div class="workspace-actions-summary-stats">
+    <span class="pill queued">Total: <%= stats[:total_items].to_i %></span>
+    <span class="pill sent">Ready: <%= stats[:ready_items].to_i %></span>
+    <span class="pill running">Processing: <%= stats[:processing_items].to_i %></span>
+    <span class="pill">Enqueued now: <%= stats[:enqueued_now].to_i %></span>
+    <% if refreshed_time.present? %>
+      <span class="meta">Refreshed <%= relative_time_with_tooltip(refreshed_time) %></span>
+    <% end %>
+  </div>
+
+  <% if items.any? %>
+    <div class="table-scroll">
+      <table class="table workspace-actions-summary-table">
         <thead>
           <tr>
             <th>Profile</th>
-            <th>Preview</th>
             <th>Post</th>
-            <th>Posted</th>
+            <th>Status</th>
             <th>Suggestions</th>
-            <th>Action</th>
           </tr>
         </thead>
         <tbody>
-          <% actions_todo_posts.each do |item| %>
+          <% items.each do |item| %>
             <% post = item[:post] %>
             <% profile = item[:profile] %>
-            <% suggestions = item[:suggestions] %>
+            <% suggestions = Array(item[:suggestions]) %>
             <tr>
               <td>
                 <%= link_to "@#{profile.username}", instagram_profile_path(profile), class: "link-inline" %>
               </td>
-              <td>
-                <% if post.media.attached? %>
-                  <%= image_tag rails_blob_path(post.media, only_path: true), alt: "Post preview", class: "table-preview-thumb" %>
-                <% else %>
-                  <span class="meta">-</span>
-                <% end %>
-              </td>
               <td class="meta">
                 <code><%= post.shortcode %></code><br>
-                <%= post.caption.to_s.truncate(90) %><br>
-                <%= link_to "Open Post", post.permalink_url, target: "_blank", rel: "noopener noreferrer", class: "link-inline" %>
+                <%= post.caption.to_s.truncate(90) %>
               </td>
-              <td><%= relative_time_with_tooltip(post.taken_at) %></td>
-              <td>
-                <ol class="compact-numbered-list tight">
-                  <% suggestions.each do |text| %>
-                    <li class="meta"><%= text %></li>
-                  <% end %>
-                </ol>
-              </td>
-              <td class="table-actions">
-                <% suggestions.each_with_index do |text, idx| %>
-                  <%= button_to "Post ##{idx + 1}",
-                        forward_comment_instagram_profile_instagram_profile_post_path(profile, post, comment: text),
-                        method: :post,
-                        class: "btn small secondary" %>
-                <% end %>
-              </td>
+              <td class="meta"><%= item[:processing_message].to_s.presence || item[:processing_status].to_s.humanize %></td>
+              <td class="meta"><%= suggestions.any? ? suggestions.first(2).join(" | ") : "In progress" %></td>
             </tr>
           <% end %>
         </tbody>
-        </table>
-      </div>
+      </table>
     </div>
   <% else %>
-    <p class="meta">No pending post-review actions. New analyzed posts will appear here automatically.</p>
+    <p class="meta">No pending user-post actions. New queue items will appear in Workspace automatically.</p>
   <% end %>
 </section>

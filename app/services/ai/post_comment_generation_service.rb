@@ -1,6 +1,6 @@
 module Ai
   class PostCommentGenerationService
-    REQUIRED_SIGNAL_KEYS = %w[history face ocr].freeze
+    REQUIRED_SIGNAL_KEYS = %w[history face text_context].freeze
     MAX_SUGGESTIONS = 8
 
     def initialize(
@@ -30,12 +30,14 @@ module Ai
 
       face_count = extract_face_count(analysis: analysis, metadata: metadata)
       ocr_text = extract_ocr_text(analysis: analysis, metadata: metadata)
+      transcript = extract_transcript(analysis: analysis, metadata: metadata)
+      text_context = extract_text_context(analysis: analysis, metadata: metadata)
       history_ready = ActiveModel::Type::Boolean.new.cast(preparation["ready_for_comment_generation"])
 
       missing = []
       missing << "history" unless history_ready
       missing << "face" unless face_count.positive?
-      missing << "ocr" if ocr_text.blank?
+      missing << "text_context" if text_context.blank?
 
       if missing.any? && enforce_required_evidence?
         return persist_blocked!(
@@ -47,11 +49,13 @@ module Ai
         )
       end
 
-      image_description = analysis["image_description"].to_s.strip
-      topics = normalized_topics(analysis["topics"])
-      if image_description.blank?
-        image_description = "Detected visual signals: #{topics.first(6).join(', ')}." if topics.any?
-      end
+      topics = merged_topics(analysis: analysis, metadata: metadata)
+      image_description = build_image_description(
+        analysis: analysis,
+        metadata: metadata,
+        topics: topics,
+        transcript: transcript
+      )
 
       if image_description.blank?
         return persist_blocked!(
@@ -72,7 +76,14 @@ module Ai
         historical_context: historical_context,
         profile_preparation: preparation,
         verified_profile_history: verified_profile_history,
-        conversational_voice: conversational_voice
+        conversational_voice: conversational_voice,
+        cv_ocr_evidence: build_comment_context_payload(
+          analysis: analysis,
+          metadata: metadata,
+          topics: topics,
+          transcript: transcript,
+          ocr_text: ocr_text
+        )
       )
 
       suggestions = normalize_suggestions(result[:comment_suggestions])
@@ -101,7 +112,9 @@ module Ai
         "history_ready" => history_ready,
         "history_reason_code" => preparation["reason_code"].to_s.presence,
         "face_count" => face_count,
+        "text_context_present" => text_context.present?,
         "ocr_text_present" => ocr_text.present?,
+        "transcript_present" => transcript.present?,
         "updated_at" => Time.current.iso8601(3)
       }.compact
 
@@ -178,7 +191,8 @@ module Ai
       payload[:rules] = (payload[:rules].is_a?(Hash) ? payload[:rules] : {}).merge(
         require_history_context: true,
         require_face_signal: true,
-        require_ocr_signal: true
+        require_ocr_signal: true,
+        require_text_context: true
       )
       payload
     rescue StandardError
@@ -271,6 +285,18 @@ module Ai
       Array(value).map(&:to_s).map(&:strip).reject(&:blank?).uniq
     end
 
+    def merged_topics(analysis:, metadata:)
+      normalized_topics(
+        normalized_topics(analysis["topics"]) +
+        normalized_topics(analysis["video_topics"]) +
+        normalized_topics(analysis["video_objects"]) +
+        normalized_topics(analysis["video_hashtags"]) +
+        normalized_topics(metadata.dig("video_processing", "topics")) +
+        normalized_topics(metadata.dig("video_processing", "objects")) +
+        normalized_topics(metadata.dig("video_processing", "hashtags"))
+      )
+    end
+
     def normalize_suggestions(value)
       Array(value).filter_map do |raw|
         text = raw.to_s.gsub(/\s+/, " ").strip
@@ -289,7 +315,59 @@ module Ai
 
     def extract_ocr_text(analysis:, metadata:)
       analysis["ocr_text"].to_s.strip.presence ||
-        metadata.dig("ocr_analysis", "ocr_text").to_s.strip.presence
+        analysis["video_ocr_text"].to_s.strip.presence ||
+        metadata.dig("ocr_analysis", "ocr_text").to_s.strip.presence ||
+        metadata.dig("video_processing", "ocr_text").to_s.strip.presence
+    end
+
+    def extract_transcript(analysis:, metadata:)
+      analysis["transcript"].to_s.strip.presence ||
+        metadata.dig("video_processing", "transcript").to_s.strip.presence
+    end
+
+    def extract_text_context(analysis:, metadata:)
+      [ extract_ocr_text(analysis: analysis, metadata: metadata), extract_transcript(analysis: analysis, metadata: metadata) ]
+        .map(&:to_s)
+        .map(&:strip)
+        .reject(&:blank?)
+        .join("\n")
+        .presence
+    end
+
+    def build_image_description(analysis:, metadata:, topics:, transcript:)
+      description = analysis["image_description"].to_s.strip
+      if description.blank? && topics.any?
+        description = "Detected visual signals: #{topics.first(6).join(', ')}."
+      end
+
+      video_summary = analysis["video_context_summary"].to_s.strip.presence || metadata.dig("video_processing", "context_summary").to_s.strip.presence
+      if description.present? && video_summary.present?
+        description = "#{description} #{video_summary}".strip
+      elsif description.blank? && video_summary.present?
+        description = video_summary
+      end
+
+      if transcript.to_s.present?
+        transcript_excerpt = transcript.to_s.gsub(/\s+/, " ").strip.byteslice(0, 220)
+        snippet = "Audio transcript: #{transcript_excerpt}."
+        description = [ description, snippet ].compact.join(" ").strip
+      end
+
+      description.presence
+    end
+
+    def build_comment_context_payload(analysis:, metadata:, topics:, transcript:, ocr_text:)
+      {
+        source: "post_analysis",
+        media_type: analysis["video_semantic_route"].to_s.presence || metadata.dig("video_processing", "semantic_route").to_s.presence || "image",
+        objects: topics.first(20),
+        hashtags: normalized_topics(analysis["hashtags"]).first(20),
+        mentions: normalized_topics(analysis["mentions"]).first(20),
+        profile_handles: normalized_topics(analysis["video_profile_handles"]).first(20),
+        scenes: Array(analysis["video_scenes"]).select { |row| row.is_a?(Hash) }.first(20),
+        ocr_text: ocr_text.to_s.presence,
+        transcript: transcript.to_s.presence
+      }.compact
     end
 
     def persist_blocked!(analysis:, metadata:, preparation:, missing_signals:, reason_code:, error_message: nil)
@@ -334,7 +412,7 @@ module Ai
       parts = []
       parts << "history_not_ready(#{preparation['reason_code']})" if missing_signals.include?("history")
       parts << "face_signal_missing" if missing_signals.include?("face")
-      parts << "ocr_signal_missing" if missing_signals.include?("ocr")
+      parts << "text_context_missing(ocr_or_transcript)" if missing_signals.include?("text_context")
       parts << fallback_reason_code.to_s if parts.empty?
       parts.join(", ")
     end

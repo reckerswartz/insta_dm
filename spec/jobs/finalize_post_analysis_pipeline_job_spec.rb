@@ -27,6 +27,51 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
     assert_equal "succeeded", post.metadata.dig("ai_pipeline", "steps", "visual", "status")
   end
 
+  it "merges enriched video context into final analysis payload" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "succeeded")
+    post.update!(
+      analysis: {
+        "topics" => [ "city" ],
+        "image_description" => "Street photo at sunset."
+      },
+      metadata: post.metadata.deep_dup.merge(
+        "video_processing" => {
+          "processing_mode" => "static_image",
+          "static" => true,
+          "semantic_route" => "image",
+          "duration_seconds" => 5.8,
+          "transcript" => "City lights and music.",
+          "topics" => [ "music", "street" ],
+          "objects" => [ "person" ],
+          "hashtags" => [ "#city" ],
+          "mentions" => [ "@friend" ],
+          "profile_handles" => [ "friend.profile" ],
+          "ocr_text" => "CITY NIGHTS",
+          "ocr_blocks" => [ { "text" => "CITY NIGHTS" } ],
+          "context_summary" => "Static visual video detected and routed through image-style analysis."
+        }
+      )
+    )
+
+    FinalizePostAnalysisPipelineJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id,
+      attempts: 0
+    )
+
+    post.reload
+    assert_equal "static_image", post.analysis["video_processing_mode"]
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(post.analysis["video_static_detected"])
+    assert_equal "image", post.analysis["video_semantic_route"]
+    assert_equal "City lights and music.", post.analysis["transcript"]
+    assert_equal "CITY NIGHTS", post.analysis["ocr_text"]
+    assert_includes Array(post.analysis["topics"]), "city"
+    assert_includes Array(post.analysis["topics"]), "music"
+    assert_includes Array(post.analysis["hashtags"]), "#city"
+  end
+
   it "skips duplicate finalizer runs while another finalize lock is active" do
     account, profile, post, run_id = build_pipeline_with_visual_status(status: "running")
     metadata = post.metadata.deep_dup

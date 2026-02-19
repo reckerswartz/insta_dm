@@ -80,7 +80,7 @@ RSpec.describe Ai::PostCommentGenerationService do
     assert_equal "blocked", post.metadata.dig("comment_generation_policy", "status")
     assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "history"
     assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "face"
-    assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "ocr"
+    assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "text_context"
   end
 
   it "generates comments when required history/face/ocr evidence is present" do
@@ -171,6 +171,56 @@ RSpec.describe Ai::PostCommentGenerationService do
     assert_equal "enabled_with_missing_required_evidence", post.metadata.dig("comment_generation_policy", "status")
     assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "history"
     assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "face"
-    assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "ocr"
+    assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "text_context"
+  end
+
+  it "accepts transcript-only text context when OCR is absent" do
+    account, profile, post = build_account_profile_post
+    post.update!(
+      metadata: {
+        "face_recognition" => { "face_count" => 1 },
+        "video_processing" => {
+          "semantic_route" => "image",
+          "transcript" => "Sunset drive playlist on repeat."
+        }
+      }
+    )
+
+    prep = FakePreparationService.new(
+      {
+        "ready_for_comment_generation" => true,
+        "reason_code" => "profile_context_ready",
+        "reason" => "Profile context is ready."
+      }
+    )
+    generator = FakeCommentGenerator.new(
+      {
+        status: "ok",
+        source: "ollama",
+        fallback_used: false,
+        error_message: nil,
+        comment_suggestions: [
+          "The vibe here is excellent.",
+          "Love how this moment feels.",
+          "Clean post and great energy."
+        ]
+      }
+    )
+
+    result = Ai::PostCommentGenerationService.new(
+      account: account,
+      profile: profile,
+      post: post,
+      profile_preparation_service: prep,
+      comment_generator: generator
+    ).run!
+
+    post.reload
+    assert_equal false, result[:blocked]
+    assert_equal "ok", post.analysis["comment_generation_status"]
+    assert_equal true, post.metadata.dig("comment_generation_policy", "text_context_present")
+    assert_equal false, post.metadata.dig("comment_generation_policy", "ocr_text_present")
+    assert_equal true, post.metadata.dig("comment_generation_policy", "transcript_present")
+    assert_equal 1, generator.calls
   end
 end

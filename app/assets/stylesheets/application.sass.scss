@@ -2167,6 +2167,77 @@ textarea.form-control {
   border: 1px solid var(--line);
 }
 
+.workspace-actions-card {
+  overflow: hidden;
+}
+
+.workspace-actions-toolbar {
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.workspace-actions-refresh-status {
+  margin: 0 0 8px;
+}
+
+.workspace-actions-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.workspace-actions-table-scroll {
+  max-height: 72vh;
+}
+
+.workspace-actions-table td {
+  vertical-align: top;
+}
+
+.workspace-profile-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.workspace-profile-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  object-fit: cover;
+}
+
+.workspace-profile-avatar-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: #aebfdf;
+  background: rgba(20, 33, 58, 0.8);
+}
+
+.workspace-actions-summary-header {
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.workspace-actions-summary-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.workspace-actions-summary-table td {
+  vertical-align: top;
+}
+
 .suggestion-action-row {
   margin-top: 6px;
 }

@@ -1,0 +1,152 @@
+<% rows = Array(queue_result[:items]) %>
+<% stats = queue_result[:stats].is_a?(Hash) ? queue_result[:stats] : {} %>
+<% refreshed_time = begin Time.zone.parse(stats[:refreshed_at].to_s) rescue nil end %>
+
+<div class="workspace-actions-stats-row">
+  <span class="pill queued">Total: <%= stats[:total_items].to_i %></span>
+  <span class="pill sent">Ready: <%= stats[:ready_items].to_i %></span>
+  <span class="pill running">Processing: <%= stats[:processing_items].to_i %></span>
+  <span class="pill">Enqueued now: <%= stats[:enqueued_now].to_i %></span>
+  <% if refreshed_time.present? %>
+    <span class="meta">Updated <%= relative_time_with_tooltip(refreshed_time) %></span>
+  <% end %>
+</div>
+
+<% if rows.any? %>
+  <div class="table-scroll workspace-actions-table-scroll">
+    <table class="table workspace-actions-table">
+      <thead>
+        <tr>
+          <th>Posted by</th>
+          <th>Preview</th>
+          <th>Post data</th>
+          <th>Suggested comments</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% rows.each do |item| %>
+          <% post = item[:post] %>
+          <% profile = item[:profile] %>
+          <% metadata = item[:metadata].is_a?(Hash) ? item[:metadata] : {} %>
+          <% suggestions = Array(item[:suggestions]).first(3) %>
+          <% status = item[:processing_status].to_s %>
+          <% status_class =
+              case status
+              when "ready"
+                "sent"
+              when "failed"
+                "failed"
+              when "running", "waiting_profile_analysis", "waiting_post_analysis", "waiting_media_download"
+                "running"
+              else
+                "queued"
+              end %>
+          <% avatar_url =
+              if profile.avatar.attached?
+                rails_blob_path(profile.avatar, only_path: true)
+              else
+                profile.profile_pic_url.to_s.presence
+              end %>
+
+          <% media_content_type =
+              if post.media.attached?
+                post.media.blob&.content_type.to_s
+              else
+                metadata["media_content_type"].to_s
+              end %>
+          <% is_video = media_content_type.start_with?("video/") || metadata["media_type"].to_i == 2 %>
+          <% preview_url =
+              if post.media.attached? && !is_video
+                rails_blob_path(post.media, only_path: true)
+              elsif is_video
+                preferred_profile_post_preview_image_url(post: post, metadata: metadata)
+              else
+                metadata["preview_image_url"].to_s.presence ||
+                  metadata["poster_url"].to_s.presence ||
+                  metadata["image_url"].to_s.presence ||
+                  metadata["media_url_image"].to_s.presence
+              end %>
+          <% media_download_url = post.media.attached? ? rails_blob_path(post.media, disposition: "attachment") : nil %>
+
+          <tr>
+            <td>
+              <div class="workspace-profile-cell">
+                <% if avatar_url.present? %>
+                  <img src="<%= avatar_url %>" alt="<%= profile.username %> avatar" class="workspace-profile-avatar" loading="lazy" />
+                <% else %>
+                  <span class="workspace-profile-avatar workspace-profile-avatar-placeholder">?</span>
+                <% end %>
+                <div>
+                  <strong><%= profile.display_name.presence || profile.username %></strong>
+                  <div class="meta">
+                    <%= link_to "@#{profile.username}", instagram_profile_path(profile), class: "link-inline" %>
+                  </div>
+                </div>
+              </div>
+            </td>
+            <td>
+              <% if preview_url.present? %>
+                <img src="<%= preview_url %>" alt="Post preview" class="table-preview-thumb" loading="lazy" />
+              <% else %>
+                <span class="meta">Preview pending</span>
+              <% end %>
+            </td>
+            <td class="meta">
+              <code><%= post.shortcode %></code><br>
+              <%= post.caption.to_s.truncate(110) %><br>
+              <span>Taken: <%= relative_time_with_tooltip(post.taken_at) %></span><br>
+              <%= link_to "Open Post", post.permalink_url, target: "_blank", rel: "noopener noreferrer", class: "link-inline" %>
+              <% if media_download_url.present? %>
+                | <a href="<%= media_download_url %>" target="_blank" rel="noreferrer" class="link-inline">Download</a>
+              <% end %>
+            </td>
+            <td>
+              <% if suggestions.any? %>
+                <ol class="compact-numbered-list tight">
+                  <% suggestions.each do |text| %>
+                    <li class="meta"><%= text %></li>
+                  <% end %>
+                </ol>
+              <% else %>
+                <span class="meta">Suggestions pending</span>
+              <% end %>
+            </td>
+            <td>
+              <span class="pill <%= status_class %>"><%= status.humanize %></span>
+              <p class="meta compact-meta-top"><%= item[:processing_message].to_s.presence || "Queued for background processing." %></p>
+            </td>
+            <td class="table-actions">
+              <% if suggestions.any? %>
+                <% suggestions.each_with_index do |text, idx| %>
+                  <%= button_to "Post ##{idx + 1}",
+                        forward_comment_instagram_profile_instagram_profile_post_path(profile, post, comment: text),
+                        method: :post,
+                        class: "btn small secondary" %>
+                <% end %>
+              <% else %>
+                <%= button_to "Regenerate",
+                      analyze_instagram_profile_instagram_profile_post_path(profile, post),
+                      method: :post,
+                      params: {
+                        analyze_visual: false,
+                        analyze_faces: false,
+                        run_ocr: false,
+                        run_video: false,
+                        run_metadata: true,
+                        generate_comments: true,
+                        enforce_comment_evidence_policy: false,
+                        retry_on_incomplete_profile: false
+                      },
+                      class: "btn small secondary" %>
+              <% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  </div>
+<% else %>
+  <p class="meta">No user-post action items are pending. New captured posts will appear here automatically.</p>
+<% end %>

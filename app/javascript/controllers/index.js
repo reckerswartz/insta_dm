@@ -18,6 +18,7 @@ import { default as StorageIngestionsTableController } from "./storage_ingestion
 import { default as TableStandardController } from "./table_standard_controller"
 import { default as TechnicalDetailsController } from "./technical_details_controller"
 import { default as VideoPlayerController } from "./video_player_controller"
+import { default as WorkspaceActionsQueueController } from "./workspace_actions_queue_controller"
 
 // Register controllers
 application.register("hello", HelloController)
@@ -36,3 +37,4 @@ application.register("storage-ingestions-table", StorageIngestionsTableControlle
 application.register("table-standard", TableStandardController)
 application.register("technical-details", TechnicalDetailsController)
 application.register("video-player", VideoPlayerController)
+application.register("workspace-actions-queue", WorkspaceActionsQueueController)

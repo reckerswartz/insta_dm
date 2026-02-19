@@ -16,6 +16,30 @@ module Instagram
       fanpage
     ].freeze
 
+    NON_PERSONAL_PAGE_USERNAME_HINTS = %w[
+      official
+      store shop brand media news magazine
+      fanpage memes meme quotes facts
+      deals promo sale
+      clips reposts updates daily
+      business company agency studio
+    ].freeze
+
+    NON_PERSONAL_BIO_CTA_HINTS = [
+      "link in bio",
+      "dm for collab",
+      "dm for promo",
+      "for business inquiries",
+      "order now",
+      "shop now",
+      "customer care",
+      "whatsapp",
+      "telegram",
+      "booking"
+    ].freeze
+
+    NON_PERSONAL_CATEGORY_PATTERN = /\b(media|news|entertainment|publisher|brand|store|shop|business|company|organization|community|product\/service)\b/.freeze
+
     def self.max_followers_threshold
       configured = Rails.application.config.x.instagram.profile_scan_max_followers
       value = parse_integer(configured)
@@ -167,12 +191,23 @@ module Instagram
       return false if combined.blank?
 
       keyword_hits = NON_PERSONAL_PAGE_KEYWORDS.count { |keyword| combined.include?(keyword) }
-      business = ActiveModel::Type::Boolean.new.cast(@profile_details[:is_business_account])
+      username_blob = [ @profile&.username, @profile_details[:username], @profile&.display_name, @profile_details[:display_name] ].map(&:to_s).join(" ").downcase
+      username_hits = NON_PERSONAL_PAGE_USERNAME_HINTS.count { |keyword| username_blob.include?(keyword) }
+      bio_blob = [ @profile&.bio, @profile_details[:bio] ].map(&:to_s).join(" ").downcase
+      cta_hits = NON_PERSONAL_BIO_CTA_HINTS.count { |keyword| bio_blob.include?(keyword) }
       category = @profile_details[:category_name].to_s.downcase
+      business = ActiveModel::Type::Boolean.new.cast(@profile_details[:is_business_account])
+      professional = ActiveModel::Type::Boolean.new.cast(@profile_details[:is_professional_account])
+      verified = ActiveModel::Type::Boolean.new.cast(@profile_details[:is_verified])
+      business_like = business || professional
+      has_external_link = @profile_details[:external_url].to_s.present?
 
-      return true if business && category.match?(/\b(media|news|entertainment|publisher|brand|store|shop)\b/)
-      return true if keyword_hits >= 2
-      return true if keyword_hits.positive? && business
+      return true if business_like && category.match?(NON_PERSONAL_CATEGORY_PATTERN)
+      return true if business_like && (keyword_hits + username_hits + cta_hits >= 2)
+      return true if category.match?(NON_PERSONAL_CATEGORY_PATTERN) && (keyword_hits + username_hits >= 2)
+      return true if keyword_hits >= 3
+      return true if username_hits >= 2 && (cta_hits.positive? || has_external_link)
+      return true if verified && category.match?(NON_PERSONAL_CATEGORY_PATTERN) && keyword_hits.positive?
 
       false
     end
