@@ -7,7 +7,9 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
     run_ocr: true,
     run_video: true,
     run_metadata: true,
-    generate_comments: true
+    generate_comments: true,
+    enforce_comment_evidence_policy: true,
+    retry_on_incomplete_profile: true
   }.freeze
 
   def perform(
@@ -233,7 +235,8 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       Ai::PostCommentGenerationService.new(
         account: account,
         profile: profile,
-        post: post
+        post: post,
+        enforce_required_evidence: ActiveModel::Type::Boolean.new.cast(task_flags[:enforce_comment_evidence_policy])
       ).run!
       post.reload
     end

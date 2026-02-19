@@ -80,7 +80,12 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
         instagram_account_id: account.id,
         instagram_profile_id: profile.id,
         instagram_profile_post_id: post.id,
-        pipeline_mode: "inline"
+        pipeline_mode: "inline",
+        task_flags: {
+          generate_comments: false,
+          enforce_comment_evidence_policy: false,
+          retry_on_incomplete_profile: false
+        }
       )
       analyzed_now += 1
     rescue StandardError => e

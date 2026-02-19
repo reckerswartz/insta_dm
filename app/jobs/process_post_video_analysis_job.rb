@@ -156,22 +156,25 @@ class ProcessPostVideoAnalysisJob < PostAnalysisPipelineJob
 
   def persist_video_analysis!(post:, result:)
     normalized = normalize_video_result(result)
-    analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
-    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    post.with_lock do
+      post.reload
+      analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
+      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
 
-    analysis["video_processing_mode"] = normalized[:processing_mode].to_s if normalized.key?(:processing_mode)
-    analysis["video_static_detected"] = ActiveModel::Type::Boolean.new.cast(normalized[:static]) if normalized.key?(:static)
-    analysis["video_duration_seconds"] = normalized[:duration_seconds] if normalized.key?(:duration_seconds)
+      analysis["video_processing_mode"] = normalized[:processing_mode].to_s if normalized.key?(:processing_mode)
+      analysis["video_static_detected"] = ActiveModel::Type::Boolean.new.cast(normalized[:static]) if normalized.key?(:static)
+      analysis["video_duration_seconds"] = normalized[:duration_seconds] if normalized.key?(:duration_seconds)
 
-    metadata["video_processing"] = {
-      "processing_mode" => normalized[:processing_mode].to_s,
-      "static" => ActiveModel::Type::Boolean.new.cast(normalized[:static]),
-      "duration_seconds" => normalized[:duration_seconds],
-      "metadata" => normalized[:metadata],
-      "updated_at" => Time.current.iso8601(3)
-    }.compact
+      metadata["video_processing"] = {
+        "processing_mode" => normalized[:processing_mode].to_s,
+        "static" => ActiveModel::Type::Boolean.new.cast(normalized[:static]),
+        "duration_seconds" => normalized[:duration_seconds],
+        "metadata" => normalized[:metadata],
+        "updated_at" => Time.current.iso8601(3)
+      }.compact
 
-    post.update!(analysis: analysis, metadata: metadata)
+      post.update!(analysis: analysis, metadata: metadata)
+    end
   end
 
   def normalize_video_result(result)

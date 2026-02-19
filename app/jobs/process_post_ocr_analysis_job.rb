@@ -181,22 +181,25 @@ class ProcessPostOcrAnalysisJob < PostAnalysisPipelineJob
   end
 
   def persist_ocr_result!(post:, result:)
-    analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
-    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    post.with_lock do
+      post.reload
+      analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
+      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
 
-    analysis["ocr_text"] = result[:ocr_text] if result.key?(:ocr_text)
-    analysis["ocr_blocks"] = Array(result[:ocr_blocks]).first(40) if result.key?(:ocr_blocks)
+      analysis["ocr_text"] = result[:ocr_text] if result.key?(:ocr_text)
+      analysis["ocr_blocks"] = Array(result[:ocr_blocks]).first(40) if result.key?(:ocr_blocks)
 
-    metadata["ocr_analysis"] = {
-      "ocr_text" => result[:ocr_text].to_s.presence,
-      "ocr_blocks" => Array(result[:ocr_blocks]).first(80),
-      "source" => result.dig(:metadata, :source) || result.dig("metadata", "source"),
-      "reason" => result.dig(:metadata, :reason) || result.dig("metadata", "reason"),
-      "error_message" => result.dig(:metadata, :error_message) || result.dig("metadata", "error_message"),
-      "updated_at" => Time.current.iso8601(3)
-    }.compact
+      metadata["ocr_analysis"] = {
+        "ocr_text" => result[:ocr_text].to_s.presence,
+        "ocr_blocks" => Array(result[:ocr_blocks]).first(80),
+        "source" => result.dig(:metadata, :source) || result.dig("metadata", "source"),
+        "reason" => result.dig(:metadata, :reason) || result.dig("metadata", "reason"),
+        "error_message" => result.dig(:metadata, :error_message) || result.dig("metadata", "error_message"),
+        "updated_at" => Time.current.iso8601(3)
+      }.compact
 
-    post.update!(analysis: analysis, metadata: metadata)
+      post.update!(analysis: analysis, metadata: metadata)
+    end
   end
 
   def ocr_timeout_seconds

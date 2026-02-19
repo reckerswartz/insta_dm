@@ -12,7 +12,9 @@ module Ai
       "run_ocr" => true,
       "run_video" => true,
       "run_metadata" => true,
-      "generate_comments" => true
+      "generate_comments" => true,
+      "enforce_comment_evidence_policy" => true,
+      "retry_on_incomplete_profile" => true
     }.freeze
 
     TASK_TO_STEP = {

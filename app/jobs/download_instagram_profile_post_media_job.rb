@@ -144,7 +144,12 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     job = AnalyzeInstagramProfilePostJob.perform_later(
       instagram_account_id: account.id,
       instagram_profile_id: profile.id,
-      instagram_profile_post_id: post.id
+      instagram_profile_post_id: post.id,
+      task_flags: {
+        generate_comments: false,
+        enforce_comment_evidence_policy: false,
+        retry_on_incomplete_profile: false
+      }
     )
     post.update!(
       ai_status: "pending",

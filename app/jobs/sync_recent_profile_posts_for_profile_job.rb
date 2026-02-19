@@ -82,7 +82,12 @@ class SyncRecentProfilePostsForProfileJob < ApplicationJob
       AnalyzeInstagramProfilePostJob.perform_later(
         instagram_account_id: account.id,
         instagram_profile_id: profile.id,
-        instagram_profile_post_id: post.id
+        instagram_profile_post_id: post.id,
+        task_flags: {
+          generate_comments: true,
+          enforce_comment_evidence_policy: true,
+          retry_on_incomplete_profile: true
+        }
       )
     rescue StandardError => enqueue_error
       analysis_enqueue_failures += 1

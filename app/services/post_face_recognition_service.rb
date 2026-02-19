@@ -158,9 +158,10 @@ class PostFaceRecognitionService
       }.compact
     end
 
-    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
     total_detected_faces = Array(detection[:faces]).length
-    metadata["face_recognition"] = {
+    persist_face_recognition_metadata!(
+      post: post,
+      attributes: {
       "face_count" => total_detected_faces,
       "linked_face_count" => linked_face_count,
       "unlinked_face_count" => [ total_detected_faces - linked_face_count, 0 ].max,
@@ -176,7 +177,7 @@ class PostFaceRecognitionService
       "detection_warnings" => Array(detection_metadata[:warnings] || detection_metadata["warnings"]).first(20),
       "updated_at" => Time.current.iso8601
     }.compact
-    post.update!(metadata: metadata)
+    )
 
     identity_resolution = @face_identity_resolution_service.resolve_for_post!(
       post: post,
@@ -189,12 +190,13 @@ class PostFaceRecognitionService
     )
 
     if identity_resolution.is_a?(Hash) && identity_resolution[:summary].is_a?(Hash)
-      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
-      metadata["face_recognition"] = (metadata["face_recognition"].is_a?(Hash) ? metadata["face_recognition"] : {}).merge(
+      persist_face_recognition_metadata!(
+        post: post,
+        attributes: {
         "identity" => identity_resolution[:summary],
         "participant_summary" => identity_resolution[:summary][:participant_summary_text].to_s
+      }
       )
-      post.update!(metadata: metadata)
     end
 
     {
@@ -230,10 +232,13 @@ class PostFaceRecognitionService
   private
 
   def persist_face_recognition_metadata!(post:, attributes:)
-    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
-    current = metadata["face_recognition"].is_a?(Hash) ? metadata["face_recognition"].deep_dup : {}
-    metadata["face_recognition"] = current.merge(attributes.to_h.compact)
-    post.update!(metadata: metadata)
+    post.with_lock do
+      post.reload
+      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+      current = metadata["face_recognition"].is_a?(Hash) ? metadata["face_recognition"].deep_dup : {}
+      metadata["face_recognition"] = current.merge(attributes.to_h.compact)
+      post.update!(metadata: metadata)
+    end
   rescue StandardError
     nil
   end

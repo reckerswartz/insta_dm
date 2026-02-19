@@ -40,7 +40,9 @@ class InstagramProfilePostsController < ApplicationController
       run_ocr: boolean_param(params[:run_ocr], default: true),
       run_video: boolean_param(params[:run_video], default: true),
       run_metadata: boolean_param(params[:run_metadata], default: true),
-      generate_comments: boolean_param(params[:generate_comments], default: true)
+      generate_comments: boolean_param(params[:generate_comments], default: true),
+      enforce_comment_evidence_policy: boolean_param(params[:enforce_comment_evidence_policy], default: false),
+      retry_on_incomplete_profile: boolean_param(params[:retry_on_incomplete_profile], default: false)
     }
 
     AnalyzeInstagramProfilePostJob.perform_later(

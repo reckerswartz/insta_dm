@@ -2,6 +2,13 @@ require "rails_helper"
 require "securerandom"
 
 RSpec.describe "GenerateLlmCommentJobTest" do
+  include ActiveJob::TestHelper
+
+  before do
+    clear_enqueued_jobs
+    clear_performed_jobs
+  end
+
   def build_story_event
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(
@@ -52,5 +59,33 @@ RSpec.describe "GenerateLlmCommentJobTest" do
     )
     assert_equal false, event.llm_comment_metadata.dig("profile_comment_preparation", "ready_for_comment_generation")
     assert_equal "profile_comment_preparation", event.llm_comment_metadata.dig("last_failure", "source")
+  end
+
+  it "requeues generation after a delay when profile preparation is incomplete" do
+    _account, _profile, event = build_story_event
+    summary = {
+      "ready_for_comment_generation" => false,
+      "reason_code" => "latest_posts_not_analyzed",
+      "reason" => "Latest posts have not been fully analyzed yet."
+    }
+
+    job = GenerateLlmCommentJob.new
+    job.define_singleton_method(:prepare_profile_context) do |profile:, account:|
+      summary
+    end
+
+    assert_enqueued_with(job: GenerateLlmCommentJob) do
+      job.perform(
+        instagram_profile_event_id: event.id,
+        provider: "local",
+        requested_by: "test"
+      )
+    end
+
+    event.reload
+    assert_equal "queued", event.llm_comment_status
+    assert_not_nil event.llm_comment_job_id
+    assert_equal 1, event.llm_comment_metadata.dig("profile_preparation_retry", "attempts").to_i
+    assert_equal "latest_posts_not_analyzed", event.llm_comment_metadata.dig("profile_preparation_retry", "last_reason_code")
   end
 end

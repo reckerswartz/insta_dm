@@ -9,7 +9,8 @@ module Ai
       post:,
       preparation_summary: nil,
       profile_preparation_service: nil,
-      comment_generator: nil
+      comment_generator: nil,
+      enforce_required_evidence: true
     )
       @account = account
       @profile = profile
@@ -17,6 +18,7 @@ module Ai
       @preparation_summary = preparation_summary
       @profile_preparation_service = profile_preparation_service
       @comment_generator = comment_generator
+      @enforce_required_evidence = ActiveModel::Type::Boolean.new.cast(enforce_required_evidence)
     end
 
     def run!
@@ -35,7 +37,7 @@ module Ai
       missing << "face" unless face_count.positive?
       missing << "ocr" if ocr_text.blank?
 
-      if missing.any?
+      if missing.any? && enforce_required_evidence?
         return persist_blocked!(
           analysis: analysis,
           metadata: metadata,
@@ -92,9 +94,10 @@ module Ai
       analysis["comment_generation_error"] = result[:error_message].to_s.presence
 
       metadata["comment_generation_policy"] = {
-        "status" => "enabled",
+        "status" => missing.any? ? "enabled_with_missing_required_evidence" : "enabled",
         "required_signals" => REQUIRED_SIGNAL_KEYS,
-        "missing_signals" => [],
+        "missing_signals" => missing.any? ? missing : [],
+        "enforce_required_evidence" => enforce_required_evidence?,
         "history_ready" => history_ready,
         "history_reason_code" => preparation["reason_code"].to_s.presence,
         "face_count" => face_count,
@@ -109,7 +112,8 @@ module Ai
         status: analysis["comment_generation_status"],
         source: analysis["comment_generation_source"],
         suggestions_count: suggestions.length,
-        reason_code: nil
+        reason_code: nil,
+        history_reason_code: preparation["reason_code"].to_s.presence
       }
     rescue StandardError => e
       analysis = normalized_hash(post&.analysis)
@@ -305,6 +309,7 @@ module Ai
         "status" => "blocked",
         "required_signals" => REQUIRED_SIGNAL_KEYS,
         "missing_signals" => missing,
+        "enforce_required_evidence" => enforce_required_evidence?,
         "history_ready" => ActiveModel::Type::Boolean.new.cast(preparation["ready_for_comment_generation"]),
         "history_reason_code" => preparation["reason_code"].to_s.presence,
         "history_reason" => preparation["reason"].to_s.presence,
@@ -320,7 +325,8 @@ module Ai
         status: analysis["comment_generation_status"],
         source: analysis["comment_generation_source"],
         suggestions_count: 0,
-        reason_code: reason_code.to_s.presence || "missing_required_evidence"
+        reason_code: reason_code.to_s.presence || "missing_required_evidence",
+        history_reason_code: preparation["reason_code"].to_s.presence
       }
     end
 
@@ -339,12 +345,17 @@ module Ai
         status: "skipped",
         source: "policy",
         suggestions_count: 0,
-        reason_code: reason_code.to_s
+        reason_code: reason_code.to_s,
+        history_reason_code: nil
       }
     end
 
     def normalized_hash(value)
       value.is_a?(Hash) ? value.deep_dup : {}
+    end
+
+    def enforce_required_evidence?
+      @enforce_required_evidence
     end
   end
 end

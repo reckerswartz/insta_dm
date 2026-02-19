@@ -130,4 +130,47 @@ RSpec.describe Ai::PostCommentGenerationService do
     assert_equal "enabled", post.metadata.dig("comment_generation_policy", "status")
     assert_equal true, post.metadata.dig("comment_generation_policy", "history_ready")
   end
+
+  it "allows generation with missing evidence when policy enforcement is disabled" do
+    account, profile, post = build_account_profile_post
+
+    prep = FakePreparationService.new(
+      {
+        "ready_for_comment_generation" => false,
+        "reason_code" => "latest_posts_not_analyzed",
+        "reason" => "Latest posts are not analyzed yet."
+      }
+    )
+    generator = FakeCommentGenerator.new(
+      {
+        status: "ok",
+        source: "ollama",
+        fallback_used: false,
+        error_message: nil,
+        comment_suggestions: [
+          "Trying this flow in manual mode.",
+          "Looks clean even with partial history.",
+          "Testing comment generation during bootstrap."
+        ]
+      }
+    )
+
+    result = Ai::PostCommentGenerationService.new(
+      account: account,
+      profile: profile,
+      post: post,
+      profile_preparation_service: prep,
+      comment_generator: generator,
+      enforce_required_evidence: false
+    ).run!
+
+    post.reload
+    assert_equal false, result[:blocked]
+    assert_equal "ok", post.analysis["comment_generation_status"]
+    assert_equal 1, generator.calls
+    assert_equal "enabled_with_missing_required_evidence", post.metadata.dig("comment_generation_policy", "status")
+    assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "history"
+    assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "face"
+    assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "ocr"
+  end
 end

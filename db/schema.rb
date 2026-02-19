@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_19_092000) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_19_103000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -216,12 +216,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_19_092000) do
     t.boolean "continuous_processing_enabled", default: true, null: false
     t.integer "continuous_processing_failure_count", default: 0, null: false
     t.text "continuous_processing_last_error"
+    t.datetime "continuous_processing_last_feed_sync_enqueued_at"
     t.datetime "continuous_processing_last_finished_at"
     t.datetime "continuous_processing_last_heartbeat_at"
+    t.datetime "continuous_processing_last_profile_refresh_enqueued_at"
+    t.datetime "continuous_processing_last_profile_scan_enqueued_at"
     t.datetime "continuous_processing_last_started_at"
+    t.datetime "continuous_processing_last_story_sync_enqueued_at"
     t.datetime "continuous_processing_next_feed_sync_at"
     t.datetime "continuous_processing_next_profile_scan_at"
     t.datetime "continuous_processing_next_story_sync_at"
+    t.bigint "continuous_processing_profile_refresh_cursor_id"
+    t.bigint "continuous_processing_profile_scan_cursor_id"
     t.datetime "continuous_processing_retry_after_at"
     t.string "continuous_processing_state", default: "idle", null: false
     t.text "cookies_json"

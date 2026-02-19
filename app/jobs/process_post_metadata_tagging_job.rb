@@ -1,6 +1,17 @@
 class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
   queue_as :ai_metadata_queue
 
+  PROFILE_INCOMPLETE_REASON_CODES = %w[
+    latest_posts_not_analyzed
+    insufficient_analyzed_posts
+    no_recent_posts_available
+    missing_structured_post_signals
+    profile_preparation_failed
+    profile_preparation_error
+  ].freeze
+  COMMENT_RETRY_WAIT_HOURS = ENV.fetch("POST_COMMENT_RETRY_WAIT_HOURS", 4).to_i.clamp(1, 24)
+  COMMENT_RETRY_MAX_ATTEMPTS = ENV.fetch("POST_COMMENT_RETRY_MAX_ATTEMPTS", 3).to_i.clamp(1, 10)
+
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:)
     enqueue_finalizer = true
     context = load_pipeline_context!(
@@ -61,7 +72,8 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
         Ai::PostCommentGenerationService.new(
           account: account,
           profile: profile,
-          post: post
+          post: post,
+          enforce_required_evidence: comment_evidence_policy_enforced?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id)
         ).run!
       else
         {
@@ -71,6 +83,18 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
           suggestions_count: 0,
           reason_code: "comments_disabled"
         }
+      end
+
+    retry_result =
+      if comment_retry_enabled?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id)
+        enqueue_comment_retry_if_needed!(
+          account: account,
+          profile: profile,
+          post: post,
+          comment_result: comment_result
+        )
+      else
+        { queued: false, reason: "retry_disabled" }
       end
 
     pipeline_state.mark_step_completed!(
@@ -84,7 +108,12 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
         comment_generation_blocked: ActiveModel::Type::Boolean.new.cast(comment_result[:blocked]),
         comment_generation_source: comment_result[:source].to_s,
         comment_suggestions_count: comment_result[:suggestions_count].to_i,
-        comment_reason_code: comment_result[:reason_code].to_s.presence
+        comment_reason_code: comment_result[:reason_code].to_s.presence,
+        comment_history_reason_code: comment_result[:history_reason_code].to_s.presence,
+        comment_retry_queued: ActiveModel::Type::Boolean.new.cast(retry_result[:queued]),
+        comment_retry_reason: retry_result[:reason].to_s.presence,
+        comment_retry_job_id: retry_result[:job_id].to_s.presence,
+        comment_retry_next_run_at: retry_result[:next_run_at].to_s.presence
       }
     )
   rescue StandardError => e
@@ -123,5 +152,108 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
     end
   rescue StandardError
     true
+  end
+
+  def comment_evidence_policy_enforced?(pipeline_state:, pipeline_run_id:)
+    pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
+    flags = pipeline.is_a?(Hash) ? pipeline["task_flags"] : {}
+    flags = {} unless flags.is_a?(Hash)
+
+    if flags.key?("enforce_comment_evidence_policy")
+      ActiveModel::Type::Boolean.new.cast(flags["enforce_comment_evidence_policy"])
+    else
+      true
+    end
+  rescue StandardError
+    true
+  end
+
+  def comment_retry_enabled?(pipeline_state:, pipeline_run_id:)
+    pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
+    flags = pipeline.is_a?(Hash) ? pipeline["task_flags"] : {}
+    flags = {} unless flags.is_a?(Hash)
+
+    if flags.key?("retry_on_incomplete_profile")
+      ActiveModel::Type::Boolean.new.cast(flags["retry_on_incomplete_profile"])
+    else
+      true
+    end
+  rescue StandardError
+    true
+  end
+
+  def enqueue_comment_retry_if_needed!(account:, profile:, post:, comment_result:)
+    return { queued: false, reason: "comment_not_blocked" } unless ActiveModel::Type::Boolean.new.cast(comment_result[:blocked])
+    return { queued: false, reason: "reason_not_retryable" } unless comment_result[:reason_code].to_s == "missing_required_evidence"
+
+    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    policy = metadata["comment_generation_policy"]
+    return { queued: false, reason: "policy_missing" } unless policy.is_a?(Hash)
+    return { queued: false, reason: "history_ready" } if ActiveModel::Type::Boolean.new.cast(policy["history_ready"])
+
+    history_reason_code = policy["history_reason_code"].to_s
+    return { queued: false, reason: "history_reason_not_retryable" } unless PROFILE_INCOMPLETE_REASON_CODES.include?(history_reason_code)
+
+    retry_state = policy["retry_state"].is_a?(Hash) ? policy["retry_state"].deep_dup : {}
+    attempts = retry_state["attempts"].to_i
+    return { queued: false, reason: "retry_attempts_exhausted" } if attempts >= COMMENT_RETRY_MAX_ATTEMPTS
+
+    next_run_at = parse_time(retry_state["next_run_at"])
+    if next_run_at.present? && next_run_at > Time.current
+      return { queued: false, reason: "retry_already_scheduled", next_run_at: next_run_at.iso8601 }
+    end
+
+    run_at = Time.current + COMMENT_RETRY_WAIT_HOURS.hours
+    job = AnalyzeInstagramProfilePostJob.set(wait_until: run_at).perform_later(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_mode: "inline",
+      task_flags: {
+        analyze_visual: false,
+        analyze_faces: false,
+        run_ocr: false,
+        run_video: false,
+        run_metadata: true,
+        generate_comments: true,
+        enforce_comment_evidence_policy: true,
+        retry_on_incomplete_profile: true
+      }
+    )
+
+    retry_state["attempts"] = attempts + 1
+    retry_state["last_reason_code"] = history_reason_code
+    retry_state["last_blocked_at"] = Time.current.iso8601(3)
+    retry_state["last_enqueued_at"] = Time.current.iso8601(3)
+    retry_state["next_run_at"] = run_at.iso8601(3)
+    retry_state["job_id"] = job.job_id
+    retry_state["source"] = self.class.name
+
+    policy["retry_state"] = retry_state
+    policy["updated_at"] = Time.current.iso8601(3)
+    metadata["comment_generation_policy"] = policy
+    post.update!(metadata: metadata)
+
+    {
+      queued: true,
+      reason: "profile_analysis_incomplete_retry_queued",
+      job_id: job.job_id,
+      next_run_at: run_at.iso8601(3)
+    }
+  rescue StandardError => e
+    {
+      queued: false,
+      reason: "retry_enqueue_failed",
+      error_class: e.class.name,
+      error_message: e.message.to_s
+    }
+  end
+
+  def parse_time(value)
+    return nil if value.to_s.blank?
+
+    Time.zone.parse(value.to_s)
+  rescue StandardError
+    nil
   end
 end
