@@ -1,7 +1,7 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class GenerateLlmCommentJobTest < ActiveSupport::TestCase
+RSpec.describe "GenerateLlmCommentJobTest" do
   def build_story_event
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(
@@ -17,8 +17,7 @@ class GenerateLlmCommentJobTest < ActiveSupport::TestCase
     )
     [ account, profile, event ]
   end
-
-  test "skips generation when profile preparation is not ready and stores preparation snapshot" do
+  it "skips generation when profile preparation is not ready and stores preparation snapshot" do
     _account, _profile, event = build_story_event
     summary = {
       "ready_for_comment_generation" => false,

@@ -1,8 +1,8 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class ProfileScanPolicyTest < ActiveSupport::TestCase
-  test "skips scan when followers exceed threshold" do
+RSpec.describe "ProfileScanPolicyTest" do
+  it "skips scan when followers exceed threshold" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(
       username: "profile_#{SecureRandom.hex(4)}",
@@ -15,8 +15,7 @@ class ProfileScanPolicyTest < ActiveSupport::TestCase
     assert_equal true, decision[:skip_post_analysis]
     assert_equal "followers_threshold_exceeded", decision[:reason_code]
   end
-
-  test "skips likely meme/info pages when not personal-tagged" do
+  it "skips likely meme/info pages when not personal-tagged" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(
       username: "daily_memes_hub_#{SecureRandom.hex(2)}",
@@ -29,8 +28,7 @@ class ProfileScanPolicyTest < ActiveSupport::TestCase
     assert_equal true, decision[:skip_scan]
     assert_equal "non_personal_profile_page", decision[:reason_code]
   end
-
-  test "allows scan for personal-tagged profiles even with meme-like bio" do
+  it "allows scan for personal-tagged profiles even with meme-like bio" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(
       username: "creator_#{SecureRandom.hex(2)}",

@@ -1,6 +1,6 @@
-require "test_helper"
+require "rails_helper"
 
-class LocalMicroserviceClientTest < ActiveSupport::TestCase
+RSpec.describe "LocalMicroserviceClientTest" do
   class StubClient < Ai::LocalMicroserviceClient
     attr_writer :stub_response
 
@@ -10,8 +10,7 @@ class LocalMicroserviceClientTest < ActiveSupport::TestCase
       @stub_response
     end
   end
-
-  test "detect_faces_and_ocr normalizes labels text tags and faces" do
+  it "detect_faces_and_ocr normalizes labels text tags and faces" do
     client = StubClient.new(service_url: "http://example.test")
     client.stub_response = {
       "results" => {

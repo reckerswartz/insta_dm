@@ -1,5 +1,5 @@
-Rails.application.configure do
-  # Keep Mission Control open for now (no auth) to simplify setup/troubleshooting.
-  config.mission_control.jobs.base_controller_class = "ApplicationController"
-  config.mission_control.jobs.http_basic_auth_enabled = false
-end
+# Mission Control's `config.mission_control.jobs.*` options are applied during
+# engine `before_initialize`, so setting them in an app initializer is too late.
+# Configure runtime flags directly here to ensure auth is disabled.
+MissionControl::Jobs.base_controller_class = "::ApplicationController"
+MissionControl::Jobs.http_basic_auth_enabled = false

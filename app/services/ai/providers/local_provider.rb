@@ -1,6 +1,11 @@
 module Ai
   module Providers
     class LocalProvider < BaseProvider
+      def initialize(setting: nil, video_frame_change_detector_service: VideoFrameChangeDetectorService.new)
+        super(setting: setting)
+        @video_frame_change_detector_service = video_frame_change_detector_service
+      end
+
       def key
         "local"
       end
@@ -160,22 +165,52 @@ module Ai
               "Image analysis unavailable due to a local AI timeout or connection issue."
             end
         when "video"
-          video, video_warning = safe_media_analysis(stage: "video_analysis", media_type: "video") do
-            analyze_video_media(media_hash)
-          end
-          raw[:video] = video
-          labels = extract_video_labels(video)
-          if video_warning
-            labels << warning_label_for_error(video_warning[:error_class], prefix: "video_analysis_error")
-            raw[:video_warning] = video_warning
-          end
-          labels = labels.uniq
-          image_description =
-            if labels.any?
-              build_image_description_from_video(video, labels: labels)
-            else
-              "Video analysis unavailable due to a local AI timeout or connection issue."
+          mode = classify_video_processing(media_hash)
+          raw[:video_processing] = (mode[:metadata].is_a?(Hash) ? mode[:metadata] : {}).merge(
+            processing_mode: mode[:processing_mode].to_s,
+            static: ActiveModel::Type::Boolean.new.cast(mode[:static]),
+            duration_seconds: mode[:duration_seconds]
+          ).compact
+          if mode[:processing_mode].to_s == "static_image" && mode[:frame_bytes].present?
+            static_media = {
+              type: "image",
+              content_type: mode[:frame_content_type].to_s.presence || "image/jpeg",
+              bytes: mode[:frame_bytes]
+            }
+            vision, vision_warning = safe_media_analysis(stage: "image_analysis", media_type: "image") do
+              analyze_image_media(static_media)
             end
+            raw[:vision] = vision
+            labels = extract_image_labels(vision)
+            if vision_warning
+              labels << warning_label_for_error(vision_warning[:error_class], prefix: "image_analysis_error")
+              raw[:vision_warning] = vision_warning
+            end
+            labels = labels.uniq
+            image_description =
+              if labels.any?
+                "Static video detected; analyzed representative frame. #{build_image_description_from_vision(vision, labels: labels)}".strip
+              else
+                "Static video detected, but frame analysis was unavailable due to a local AI timeout or connection issue."
+              end
+          else
+            video, video_warning = safe_media_analysis(stage: "video_analysis", media_type: "video") do
+              analyze_video_media(media_hash)
+            end
+            raw[:video] = video
+            labels = extract_video_labels(video)
+            if video_warning
+              labels << warning_label_for_error(video_warning[:error_class], prefix: "video_analysis_error")
+              raw[:video_warning] = video_warning
+            end
+            labels = labels.uniq
+            image_description =
+              if labels.any?
+                build_image_description_from_video(video, labels: labels)
+              else
+                "Video analysis unavailable due to a local AI timeout or connection issue."
+              end
+          end
         else
           labels = []
           image_description = "No image or video content available for visual description."
@@ -246,6 +281,8 @@ module Ai
             "comment_generation_fallback_used" => ActiveModel::Type::Boolean.new.cast(comment_generation[:fallback_used]),
             "comment_generation_error" => comment_generation[:error_message].to_s.presence,
             "personalization_tokens" => labels.first(5),
+            "video_processing_mode" => mode_for(media_hash: media_hash, raw: raw),
+            "video_static_detected" => static_video_detected?(media_hash: media_hash, raw: raw),
             "confidence" => labels.any? ? 0.65 : 0.45,
             "evidence" => labels.any? ? "Local AI labels: #{labels.first(5).join(', ')}" : "No labels detected; used tag rules only"
           }
@@ -267,6 +304,46 @@ module Ai
           { type: "LABEL_DETECTION", maxResults: 15 },
           { type: "TEXT_DETECTION", maxResults: 10 }
         ]
+      end
+
+      def classify_video_processing(media)
+        bytes = media[:bytes]
+        return {
+          processing_mode: "dynamic_video",
+          frame_bytes: nil,
+          frame_content_type: nil,
+          metadata: { reason: "video_bytes_missing" }
+        } if bytes.blank?
+
+        result = @video_frame_change_detector_service.classify(
+          video_bytes: bytes,
+          reference_id: media[:reference_id].to_s.presence || "post_media",
+          content_type: media[:content_type]
+        )
+        result.is_a?(Hash) ? result : { processing_mode: "dynamic_video", metadata: { reason: "frame_change_detector_invalid_result" } }
+      rescue StandardError => e
+        {
+          processing_mode: "dynamic_video",
+          frame_bytes: nil,
+          frame_content_type: nil,
+          metadata: {
+            reason: "frame_change_detection_failed",
+            error_class: e.class.name,
+            error_message: normalize_error_message(e.message)
+          }
+        }
+      end
+
+      def mode_for(media_hash:, raw:)
+        return nil unless media_hash[:type].to_s == "video"
+
+        raw.dig(:video_processing, :processing_mode).to_s.presence || "dynamic_video"
+      end
+
+      def static_video_detected?(media_hash:, raw:)
+        return false unless media_hash[:type].to_s == "video"
+
+        raw.dig(:video_processing, :processing_mode).to_s == "static_image"
       end
 
       def analyze_image_media(media)

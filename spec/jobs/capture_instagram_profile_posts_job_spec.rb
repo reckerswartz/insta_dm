@@ -1,15 +1,13 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class CaptureInstagramProfilePostsJobTest < ActiveSupport::TestCase
+RSpec.describe "CaptureInstagramProfilePostsJobTest" do
   include ActiveJob::TestHelper
-
-  setup do
+  before do
     clear_enqueued_jobs
     clear_performed_jobs
   end
-
-  test "capture job queues follow-up post analysis job with captured candidates" do
+  it "capture job queues follow-up post analysis job with captured candidates" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
     post = profile.instagram_profile_posts.create!(
@@ -67,8 +65,7 @@ class CaptureInstagramProfilePostsJobTest < ActiveSupport::TestCase
     assert_equal "queued", analysis_log.status
     assert_equal 1, analysis_log.metadata["queued_post_count"].to_i
   end
-
-  test "capture job skips scan when profile exceeds followers threshold" do
+  it "capture job skips scan when profile exceeds followers threshold" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(
       username: "profile_#{SecureRandom.hex(4)}",

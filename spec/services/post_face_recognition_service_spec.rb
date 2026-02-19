@@ -1,12 +1,11 @@
-require "test_helper"
+require "rails_helper"
 require "base64"
 require "securerandom"
 require "stringio"
 
-class PostFaceRecognitionServiceTest < ActiveSupport::TestCase
+RSpec.describe "PostFaceRecognitionServiceTest" do
   PNG_1PX_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6k8fQAAAAASUVORK5CYII=".freeze
-
-  test "process stores matched faces for image posts" do
+  it "process stores matched faces for image posts" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
     person = InstagramStoryPerson.create!(

@@ -1,7 +1,7 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class FaceIdentityResolutionServiceTest < ActiveSupport::TestCase
+RSpec.describe "FaceIdentityResolutionServiceTest" do
   def build_account_profile
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(
@@ -36,8 +36,7 @@ class FaceIdentityResolutionServiceTest < ActiveSupport::TestCase
       processing_status: "processed"
     )
   end
-
-  test "promotes dominant recurring person as primary identity across posts and stories" do
+  it "promotes dominant recurring person as primary identity across posts and stories" do
     account, profile = build_account_profile
 
     dominant = InstagramStoryPerson.create!(
@@ -90,8 +89,7 @@ class FaceIdentityResolutionServiceTest < ActiveSupport::TestCase
     assert behavior.present?
     assert_equal dominant.id, behavior.behavioral_summary.dig("face_identity_profile", "person_id")
   end
-
-  test "links extracted usernames to detected faces and tracks collaborator relationship" do
+  it "links extracted usernames to detected faces and tracks collaborator relationship" do
     account, profile = build_account_profile
 
     primary = InstagramStoryPerson.create!(

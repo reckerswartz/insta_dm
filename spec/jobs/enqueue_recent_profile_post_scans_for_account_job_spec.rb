@@ -1,8 +1,8 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class EnqueueRecentProfilePostScansForAccountJobTest < ActiveSupport::TestCase
-  test "filters out excluded/high-follower profiles before enqueueing scan jobs" do
+RSpec.describe "EnqueueRecentProfilePostScansForAccountJobTest" do
+  it "filters out excluded/high-follower profiles before enqueueing scan jobs" do
     account = InstagramAccount.create!(
       username: "acct_#{SecureRandom.hex(4)}",
       cookies_json: [{ name: "sessionid", value: "ok" }].to_json

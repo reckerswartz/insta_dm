@@ -1,8 +1,8 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class InstagramClientStoryAssignmentTest < ActiveSupport::TestCase
-  test "normalized story context prefers canonical numeric story id from live url" do
+RSpec.describe "InstagramClientStoryAssignmentTest" do
+  it "normalized story context prefers canonical numeric story id from live url" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
     driver = Struct.new(:current_url).new("https://www.instagram.com/stories/reenapandey6668/3834650166490093993/")
@@ -22,8 +22,7 @@ class InstagramClientStoryAssignmentTest < ActiveSupport::TestCase
     assert_equal "reenapandey6668:3834650166490093993", normalized[:story_key]
     assert_equal "https://www.instagram.com/stories/reenapandey6668/3834650166490093993/", normalized[:url]
   end
-
-  test "story id hint extraction decodes ig_cache_key media id" do
+  it "story id hint extraction decodes ig_cache_key media id" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
 
@@ -32,8 +31,7 @@ class InstagramClientStoryAssignmentTest < ActiveSupport::TestCase
 
     assert_equal "3834712783221666503", hinted_story_id
   end
-
-  test "resolve_story_media_for_current_context is api only when story cannot be resolved" do
+  it "resolve_story_media_for_current_context is api only when story cannot be resolved" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
     client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:| nil }
@@ -51,8 +49,7 @@ class InstagramClientStoryAssignmentTest < ActiveSupport::TestCase
     assert_nil media[:url]
     assert_equal "123", media[:story_id]
   end
-
-  test "extract_story_item keeps carousel media metadata from api payload" do
+  it "extract_story_item keeps carousel media metadata from api payload" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
 

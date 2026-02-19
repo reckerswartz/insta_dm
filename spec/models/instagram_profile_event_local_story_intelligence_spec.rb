@@ -1,8 +1,8 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class InstagramProfileEventLocalStoryIntelligenceTest < ActiveSupport::TestCase
-  test "persist_local_story_intelligence stores structured metadata" do
+RSpec.describe "InstagramProfileEventLocalStoryIntelligenceTest" do
+  it "persist_local_story_intelligence stores structured metadata" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
     event = InstagramProfileEvent.create!(
@@ -38,8 +38,7 @@ class InstagramProfileEventLocalStoryIntelligenceTest < ActiveSupport::TestCase
     assert_equal 2, event.metadata["face_count"]
     assert_equal [ { "person_id" => 123, "role" => "secondary_person" } ], event.metadata["face_people"]
   end
-
-  test "local_story_intelligence_blank is false when face context exists" do
+  it "local_story_intelligence_blank is false when face context exists" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
     event = InstagramProfileEvent.create!(
@@ -63,8 +62,7 @@ class InstagramProfileEventLocalStoryIntelligenceTest < ActiveSupport::TestCase
 
     assert_equal false, event.send(:local_story_intelligence_blank?, payload)
   end
-
-  test "local_story_intelligence_blank is false when scene context exists" do
+  it "local_story_intelligence_blank is false when scene context exists" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
     event = InstagramProfileEvent.create!(
@@ -91,8 +89,7 @@ class InstagramProfileEventLocalStoryIntelligenceTest < ActiveSupport::TestCase
 
     assert_equal false, event.send(:local_story_intelligence_blank?, payload)
   end
-
-  test "local_story_intelligence_payload derives objects from object detections" do
+  it "local_story_intelligence_payload derives objects from object detections" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
     event = InstagramProfileEvent.create!(
@@ -122,8 +119,7 @@ class InstagramProfileEventLocalStoryIntelligenceTest < ActiveSupport::TestCase
     assert_includes payload[:topics], "Coffee Cup"
     assert_includes payload[:topics], "Laptop"
   end
-
-  test "story_excluded_from_narrative detects third-party classifications" do
+  it "story_excluded_from_narrative detects third-party classifications" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
     event = InstagramProfileEvent.create!(

@@ -1,8 +1,8 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class DownloadInstagramProfileAvatarJobTest < ActiveSupport::TestCase
-  test "skips invalid placeholder avatar url without failing the action log" do
+RSpec.describe "DownloadInstagramProfileAvatarJobTest" do
+  it "skips invalid placeholder avatar url without failing the action log" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(6)}")
     profile = account.instagram_profiles.create!(
       username: "profile_#{SecureRandom.hex(6)}",

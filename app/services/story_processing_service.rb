@@ -14,6 +14,7 @@ class StoryProcessingService
     video_audio_extraction_service: VideoAudioExtractionService.new,
     speech_transcription_service: SpeechTranscriptionService.new,
     video_metadata_service: VideoMetadataService.new,
+    video_frame_change_detector_service: VideoFrameChangeDetectorService.new,
     content_understanding_service: StoryContentUnderstandingService.new,
     response_generation_service: ResponseGenerationService.new,
     face_identity_resolution_service: FaceIdentityResolutionService.new
@@ -28,6 +29,7 @@ class StoryProcessingService
     @video_audio_extraction_service = video_audio_extraction_service
     @speech_transcription_service = speech_transcription_service
     @video_metadata_service = video_metadata_service
+    @video_frame_change_detector_service = video_frame_change_detector_service
     @content_understanding_service = content_understanding_service
     @response_generation_service = response_generation_service
     @face_identity_resolution_service = face_identity_resolution_service
@@ -128,11 +130,39 @@ class StoryProcessingService
   end
 
   def process_video_story(media_payload)
-    probe = @video_metadata_service.probe(
+    mode = @video_frame_change_detector_service.classify(
       video_bytes: media_payload[:bytes],
-      story_id: media_payload[:story_id],
+      reference_id: media_payload[:story_id],
       content_type: media_payload[:content_type]
     )
+    if mode[:processing_mode].to_s == "static_image" && mode[:frame_bytes].present?
+      result = process_image_story(
+        media_payload.merge(
+          media_type: "image",
+          image_bytes: mode[:frame_bytes]
+        )
+      )
+      result[:duration_seconds] = mode[:duration_seconds] if mode[:duration_seconds].to_f.positive?
+      result[:processing_metadata] = (result[:processing_metadata].is_a?(Hash) ? result[:processing_metadata] : {}).merge(
+        source: "video_static_single_frame",
+        frame_change_detection: mode[:metadata]
+      )
+      return result
+    end
+
+    probe =
+      if mode[:duration_seconds].to_f.positive? || mode.dig(:metadata, :video_probe).is_a?(Hash)
+        {
+          duration_seconds: mode[:duration_seconds],
+          metadata: mode.dig(:metadata, :video_probe).is_a?(Hash) ? mode.dig(:metadata, :video_probe) : {}
+        }
+      else
+        @video_metadata_service.probe(
+          video_bytes: media_payload[:bytes],
+          story_id: media_payload[:story_id],
+          content_type: media_payload[:content_type]
+        )
+      end
     frames_result = @video_frame_extraction_service.extract(
       video_bytes: media_payload[:bytes],
       story_id: media_payload[:story_id],
@@ -178,6 +208,7 @@ class StoryProcessingService
       processing_metadata: {
         source: "video_multistage",
         video_probe: probe[:metadata],
+        frame_change_detection: mode[:metadata],
         frame_extraction: frames_result[:metadata],
         audio_extraction: audio[:metadata],
         transcription: transcript[:metadata]

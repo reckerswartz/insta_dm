@@ -1,7 +1,7 @@
-require "test_helper"
+require "rails_helper"
 
-class ProfileAnalysisCollectorTest < ActiveSupport::TestCase
-  test "marks missing posts as deleted and restores when they reappear" do
+RSpec.describe "ProfileAnalysisCollectorTest" do
+  it "marks missing posts as deleted and restores when they reappear" do
     account = InstagramAccount.create!(username: "collector_test_account")
     profile = account.instagram_profiles.create!(username: "collector_profile")
 
@@ -120,8 +120,7 @@ class ProfileAnalysisCollectorTest < ActiveSupport::TestCase
     assert_not ActiveModel::Type::Boolean.new.cast(existing_deleted_candidate.metadata["deleted_from_source"])
     assert profile.instagram_profile_posts.exists?(shortcode: "new_1")
   end
-
-  test "skips media re-download when media_id is unchanged" do
+  it "skips media re-download when media_id is unchanged" do
     account = InstagramAccount.create!(username: "collector_dedupe_account")
     profile = account.instagram_profiles.create!(username: "collector_dedupe_profile")
 
@@ -185,8 +184,7 @@ class ProfileAnalysisCollectorTest < ActiveSupport::TestCase
     assert post.reload.media.attached?
     assert_equal "media_123", post.metadata["media_id"]
   end
-
-  test "marks updated post as analysis candidate when analysis inputs change" do
+  it "marks updated post as analysis candidate when analysis inputs change" do
     account = InstagramAccount.create!(username: "collector_analysis_account")
     profile = account.instagram_profiles.create!(username: "collector_analysis_profile")
 

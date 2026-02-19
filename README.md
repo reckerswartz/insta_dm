@@ -29,6 +29,58 @@ bin/dev
 
 Open `http://localhost:3000`.
 
+## Testing (RSpec + Parallel + VCR)
+
+This project uses RSpec as the primary test framework.
+
+Run all specs:
+
+```bash
+bundle exec rspec
+```
+
+Run specs in parallel (auto-prepares test DB shards):
+
+```bash
+bin/parallel_rspec
+```
+
+Control worker count:
+
+```bash
+RSPEC_WORKERS=4 bin/parallel_rspec
+```
+
+### VCR recording and replay
+
+Third-party HTTP responses are recorded with VCR and replayed during tests.
+
+- Cassette path: `spec/vcr_cassettes/<scope>/...`
+- Default scope: `test`
+- Default record mode:
+  - local: `once`
+  - CI: `none`
+
+Common usage:
+
+```bash
+# replay only (fail if cassette missing)
+VCR_RECORD_MODE=none bundle exec rspec
+
+# record new interactions only when cassette is missing
+VCR_RECORD_MODE=once bundle exec rspec
+
+# re-record all interactions
+VCR_RECORD_MODE=all bundle exec rspec
+```
+
+To separate cassette sets by environment-like scope (for local refresh workflows):
+
+```bash
+VCR_CASSETTE_SCOPE=development VCR_RECORD_MODE=all bundle exec rspec
+VCR_CASSETTE_SCOPE=production VCR_RECORD_MODE=all bundle exec rspec
+```
+
 Default local infrastructure:
 - Postgres: `127.0.0.1:5432` (`postgres/postgres`)
 - Redis: `127.0.0.1:6379`

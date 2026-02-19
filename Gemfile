@@ -59,6 +59,13 @@ group :development, :test do
   gem "rubocop-rails-omakase", require: false
 end
 
+group :test do
+  gem "parallel_tests", "~> 4.0"
+  gem "rspec-rails", "~> 8.0"
+  gem "vcr", "~> 6.3"
+  gem "webmock", "~> 3.23"
+end
+
 group :development do
   # Use console on exceptions pages [https://github.com/rails/web-console]
   # gem 'web-console'

@@ -1,8 +1,8 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class AnalyzeInstagramProfilePostJobTest < ActiveSupport::TestCase
-  test "marks post as policy-skipped for high-follower profiles" do
+RSpec.describe "AnalyzeInstagramProfilePostJobTest" do
+  it "marks post as policy-skipped for high-follower profiles" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(
       username: "profile_#{SecureRandom.hex(4)}",

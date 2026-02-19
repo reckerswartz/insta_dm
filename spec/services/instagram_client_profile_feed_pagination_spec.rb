@@ -1,8 +1,8 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class InstagramClientProfileFeedPaginationTest < ActiveSupport::TestCase
-  test "profile feed fetch paginates using next_max_id and aggregates pages" do
+RSpec.describe "InstagramClientProfileFeedPaginationTest" do
+  it "profile feed fetch paginates using next_max_id and aggregates pages" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
 

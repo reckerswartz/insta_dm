@@ -126,6 +126,7 @@ class AnalyzeInstagramPostJob < ApplicationJob
       return {
         type: "video",
         content_type: content_type,
+        reference_id: "instagram_post_#{post.id}",
         bytes: blob.download
       }
     end

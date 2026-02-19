@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+if [[ "${RAILS_ENV:-}" == "" ]]; then
+  export RAILS_ENV="test"
+fi
+
+if [[ "${VCR_RECORD_MODE:-}" == "" && "${CI:-}" != "" ]]; then
+  export VCR_RECORD_MODE="none"
+fi
+
+if [[ "${RSPEC_WORKERS:-}" == "" ]]; then
+  RSPEC_WORKERS="$(ruby -e 'require \"etc\"; print [Etc.nprocessors, 8].min')"
+  export RSPEC_WORKERS
+fi
+export PARALLEL_TEST_PROCESSORS="${RSPEC_WORKERS}"
+
+if [[ "${SKIP_DB_PREPARE:-0}" != "1" ]]; then
+  bundle exec rails db:test:prepare
+  bundle exec rake parallel:create parallel:load_schema
+fi
+
+if [[ "${RSPEC_WORKERS}" -le 1 ]]; then
+  bundle exec rspec "$@"
+else
+  bundle exec parallel_rspec spec -n "${RSPEC_WORKERS}" --serialize-stdout "$@"
+fi

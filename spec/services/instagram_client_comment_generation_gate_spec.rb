@@ -1,8 +1,8 @@
-require "test_helper"
+require "rails_helper"
 require "securerandom"
 
-class InstagramClientCommentGenerationGateTest < ActiveSupport::TestCase
-  test "post comment suggestions are blocked when profile preparation is not ready" do
+RSpec.describe "InstagramClientCommentGenerationGateTest" do
+  it "post comment suggestions are blocked when profile preparation is not ready" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
