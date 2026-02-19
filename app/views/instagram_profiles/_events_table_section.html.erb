@@ -5,6 +5,7 @@
     class="tabulator-shell"
     data-controller="profile-events-table"
     data-profile-events-table-url-value="<%= events_instagram_profile_path(profile, format: :json) %>"
+    data-profile-events-table-account-id-value="<%= profile.instagram_account_id %>"
     data-profile-events-table-profile-id-value="<%= profile.id %>"
     data-profile-events-table-profile-username-value="<%= profile.username %>"
   >

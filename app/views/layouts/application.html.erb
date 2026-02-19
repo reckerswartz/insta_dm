@@ -18,6 +18,9 @@
   </head>
 
   <body class="app-body">
+    <% if current_account.present? %>
+      <%= turbo_stream_from current_account %>
+    <% end %>
     <a class="skip-link" href="#mainContent">Skip to main content</a>
     <div class="app-shell" id="appShell">
       <aside class="app-sidebar" id="appSidebar" aria-label="Primary navigation">
@@ -29,40 +32,104 @@
           </div>
         </div>
 
+        <p class="sidebar-section-label">Workspace</p>
         <nav class="sidebar-nav" role="navigation" aria-label="Main">
           <%= top_nav_link_to instagram_accounts_path, section: :accounts, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon" aria-hidden="true">DB</span>
-            <span>Dashboard</span>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M3 4h18v7H3V4Zm0 9h8v7H3v-7Zm10 0h8v7h-8v-7Z"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">Dashboard</span>
+              <span class="sidebar-link-hint">Accounts and health</span>
+            </span>
           <% end %>
 
           <%= top_nav_link_to instagram_profiles_path, section: :profiles, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon" aria-hidden="true">PF</span>
-            <span>Profiles</span>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 12a5 5 0 1 0-5-5 5 5 0 0 0 5 5Zm0 2c-4.4 0-8 2.2-8 5v1h16v-1c0-2.8-3.6-5-8-5Z"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">Profiles</span>
+              <span class="sidebar-link-hint">People and history</span>
+            </span>
+          <% end %>
+
+          <%= top_nav_link_to instagram_posts_path, section: :posts, class: "sidebar-link" do %>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v10l4.5-4.5 3.2 3.2 3.8-3.8L20 14V5H4Zm5 4.8a1.8 1.8 0 1 0-1.8-1.8A1.8 1.8 0 0 0 9 9.8Z"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">Feed Posts</span>
+              <span class="sidebar-link-hint">Captured feed media</span>
+            </span>
           <% end %>
 
           <%= top_nav_link_to ai_dashboard_index_path, section: :ai_dashboard, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon" aria-hidden="true">AI</span>
-            <span>AI Dashboard</span>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 2 4 5v6c0 5 3.5 9.7 8 11 4.5-1.3 8-6 8-11V5l-8-3Zm0 5a3 3 0 1 1-3 3 3 3 0 0 1 3-3Zm-4.8 8.9a6.2 6.2 0 0 1 9.6 0"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">AI Services</span>
+              <span class="sidebar-link-hint">Local model health</span>
+            </span>
           <% end %>
 
+          <p class="sidebar-section-label">Operations</p>
+
           <%= top_nav_link_to admin_background_jobs_path, section: :jobs, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon" aria-hidden="true">JB</span>
-            <span>Jobs</span>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M3 6h18v4H3V6Zm0 6h12v4H3v-4Zm14 0h4v8h-4v-8Zm-9 6h7v2H8v-2Z"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">Jobs</span>
+              <span class="sidebar-link-hint">Queues and workers</span>
+            </span>
           <% end %>
 
           <%= top_nav_link_to admin_background_job_failures_path, section: :failures, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon" aria-hidden="true">FL</span>
-            <span>Failures</span>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 3 1 21h22L12 3Zm0 5.5 5.5 9.5H6.5L12 8.5Zm-1 3v3h2v-3h-2Zm0 4h2v2h-2v-2Z"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">Failures</span>
+              <span class="sidebar-link-hint">Retries and details</span>
+            </span>
           <% end %>
 
           <%= top_nav_link_to admin_issues_path, section: :issues, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon" aria-hidden="true">IS</span>
-            <span>Issues</span>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 15h-2v-2h2v2Zm0-4h-2V7h2v6Z"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">Issues</span>
+              <span class="sidebar-link-hint">Track resolution state</span>
+            </span>
           <% end %>
 
           <%= top_nav_link_to admin_storage_ingestions_path, section: :storage, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon" aria-hidden="true">ST</span>
-            <span>Storage</span>
+            <span class="sidebar-link-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M12 2 3 6.2V12c0 5 3.8 9.5 9 10 5.2-.5 9-5 9-10V6.2L12 2Zm0 2.3 6.8 3.2L12 10.7 5.2 7.5 12 4.3Zm-7 5.2 6 2.8v6.9c-3.4-.7-6-3.8-6-7.4V9.5Zm8 9.7v-6.9l6-2.8v2.3c0 3.6-2.6 6.7-6 7.4Z"></path>
+              </svg>
+            </span>
+            <span class="sidebar-link-body">
+              <span class="sidebar-link-title">Storage</span>
+              <span class="sidebar-link-hint">Attachment ingest log</span>
+            </span>
           <% end %>
         </nav>
 
@@ -71,6 +138,7 @@
           <span>Session Active</span>
         </div>
       </aside>
+      <button type="button" class="sidebar-backdrop" id="sidebarBackdrop" aria-label="Close navigation menu"></button>
 
       <div class="app-main">
         <header class="app-topbar">
@@ -81,10 +149,21 @@
             aria-label="Toggle navigation"
             aria-expanded="false"
           >
-            Navigation
+            Menu
           </button>
 
-          <div class="topbar-page-title"><%= page_title %></div>
+          <div class="topbar-title-wrap">
+            <div class="topbar-page-title"><%= page_title %></div>
+            <p class="topbar-page-subtitle">Desktop operations console</p>
+          </div>
+
+          <% if current_account %>
+            <nav class="topbar-shortcuts" aria-label="Quick navigation">
+              <%= link_to "Profiles", instagram_profiles_path, class: "topbar-shortcut-link" %>
+              <%= link_to "Posts", instagram_posts_path, class: "topbar-shortcut-link" %>
+              <%= link_to "Jobs", admin_background_jobs_path, class: "topbar-shortcut-link" %>
+            </nav>
+          <% end %>
 
           <div class="topbar-account" role="status" aria-live="polite">
             <% if current_account %>
@@ -112,7 +191,16 @@
           <% end %>
         </div>
 
-        <div id="notifications" role="status" aria-live="polite" aria-label="Application notifications"></div>
+        <div
+          id="notifications"
+          class="notifications-overlay"
+          data-controller="notification-center"
+          data-notification-center-max-value="5"
+          data-notification-center-ttl-ms-value="4500"
+          role="status"
+          aria-live="polite"
+          aria-label="Application notifications"
+        ></div>
 
         <%= render "shared/modals" %>
 
@@ -129,6 +217,12 @@
         const toggleBtn = document.getElementById("sidebarToggleBtn");
         const body = document.body;
         const sidebar = document.getElementById("appSidebar");
+        const sidebarBackdrop = document.getElementById("sidebarBackdrop");
+
+        function closeSidebar() {
+          body.classList.remove("sidebar-open");
+          toggleBtn?.setAttribute("aria-expanded", "false");
+        }
 
         if (!toggleBtn || toggleBtn.dataset.bound === "1") return;
         toggleBtn.dataset.bound = "1";
@@ -138,11 +232,12 @@
           toggleBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
         });
 
+        sidebarBackdrop?.addEventListener("click", closeSidebar);
+
         sidebar?.querySelectorAll("a").forEach(function(link) {
           link.addEventListener("click", function() {
             if (window.innerWidth > 1024) return;
-            body.classList.remove("sidebar-open");
-            toggleBtn.setAttribute("aria-expanded", "false");
+            closeSidebar();
           });
         });
 
@@ -152,24 +247,20 @@
 
           const clickedInsideSidebar = sidebar.contains(event.target);
           const clickedToggle = toggleBtn.contains(event.target);
+          const clickedBackdrop = sidebarBackdrop?.contains(event.target);
 
-          if (!clickedInsideSidebar && !clickedToggle) {
-            body.classList.remove("sidebar-open");
-            toggleBtn.setAttribute("aria-expanded", "false");
-          }
+          if (!clickedInsideSidebar && !clickedToggle && !clickedBackdrop) closeSidebar();
         });
 
         document.addEventListener("keydown", function(event) {
           if (event.key !== "Escape") return;
           if (!body.classList.contains("sidebar-open")) return;
-          body.classList.remove("sidebar-open");
-          toggleBtn.setAttribute("aria-expanded", "false");
+          closeSidebar();
         });
 
         window.addEventListener("resize", function() {
           if (window.innerWidth <= 1024) return;
-          body.classList.remove("sidebar-open");
-          toggleBtn.setAttribute("aria-expanded", "false");
+          closeSidebar();
         });
 
         setTimeout(function() {

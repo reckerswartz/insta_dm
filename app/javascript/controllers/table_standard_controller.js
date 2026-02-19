@@ -54,6 +54,7 @@ export default class extends Controller {
       pagination: this.paginationValue,
       paginationSize: this.paginationSizeValue,
       paginationSizeSelector: [...DEFAULT_PAGE_SIZES],
+      paginationButtonCount: 7,
       paginationCounter: "rows",
       movableColumns: true,
       resizableColumnFit: true,

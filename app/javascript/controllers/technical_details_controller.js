@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { notifyApp } from "../lib/notifications"
 
 export default class extends Controller {
   static targets = ["modal", "loading", "error", "details"]
@@ -52,9 +53,9 @@ export default class extends Controller {
 
     try {
       await navigator.clipboard.writeText(this.lastTechnicalPayload)
-      this.showInlineMessage("Technical data copied to clipboard.", "notice")
+      notifyApp("Technical data copied to clipboard.", "notice")
     } catch (_) {
-      this.showInlineMessage("Clipboard copy was blocked by the browser.", "error")
+      notifyApp("Clipboard copy was blocked by the browser.", "error")
     }
   }
 
@@ -174,17 +175,6 @@ export default class extends Controller {
         <pre class="json-display">${this.esc(JSON.stringify(data || {}, null, 2))}</pre>
       </div>
     `
-  }
-
-  showInlineMessage(message, type) {
-    const container = document.getElementById("notifications")
-    if (!container) return
-
-    const el = document.createElement("div")
-    el.className = `notification ${type}`
-    el.textContent = message
-    container.appendChild(el)
-    setTimeout(() => el.remove(), 3500)
   }
 
   formatDate(value) {

@@ -1,21 +1,25 @@
 <% content_for :title, @account.username %>
 
-<%= turbo_stream_from @account %>
-
 <div class="page">
-  <header class="page-header">
-    <h1><%= @account.username %></h1>
-    <p class="meta">
-      Login state: <strong><%= @account.login_state %></strong>
-      <% if @account.last_synced_at %>
-        | Last sync: <strong><%= relative_time_with_tooltip(@account.last_synced_at) %></strong>
-      <% end %>
-    </p>
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1><%= @account.username %></h1>
+      <p class="meta">
+        Login state: <strong><%= @account.login_state %></strong>
+        <% if @account.last_synced_at %>
+          | Last sync: <strong><%= relative_time_with_tooltip(@account.last_synced_at) %></strong>
+        <% end %>
+      </p>
+    </div>
+    <div class="page-toolbar-actions">
+      <%= link_to "Dashboard", instagram_accounts_path, class: "btn secondary" %>
+      <%= link_to "Profiles", instagram_profiles_path, class: "btn secondary" %>
+      <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
+    </div>
   </header>
 
   <%= render "account_health_auth_section" %>
 
-  <!-- Story Archive Section - Moved to top for priority visibility -->
   <section
     class="card"
     data-controller="story-media-archive llm-comment technical-details"
@@ -25,7 +29,7 @@
     data-llm-comment-account-id-value="<%= @account.id %>"
     data-technical-details-account-id-value="<%= @account.id %>"
   >
-    <h2>📱 Downloaded Story Archive</h2>
+    <h2>Downloaded Story Archive</h2>
     <p class="meta">Dynamically loads archived story media with infinite scrolling. Filter by date to review what was downloaded on a specific day.</p>
 
     <div class="actions-row">

@@ -13,7 +13,13 @@ module Instagram
       @client = Instagram::Client.new(account: account)
     end
 
-    def collect_and_persist!(posts_limit: nil, comments_limit: 8, track_missing_as_deleted: false, sync_source: "instagram_profile_analysis_dataset")
+    def collect_and_persist!(
+      posts_limit: nil,
+      comments_limit: 8,
+      track_missing_as_deleted: false,
+      sync_source: "instagram_profile_analysis_dataset",
+      download_media: true
+    )
       dataset = @client.fetch_profile_analysis_dataset!(
         username: @profile.username,
         posts_limit: posts_limit,
@@ -40,7 +46,12 @@ module Instagram
       }
 
       persisted_posts = Array(dataset[:posts]).map do |post_data|
-        result = persist_profile_post!(post_data, synced_at: synced_at, sync_source: sync_source)
+        result = persist_profile_post!(
+          post_data,
+          synced_at: synced_at,
+          sync_source: sync_source,
+          download_media: ActiveModel::Type::Boolean.new.cast(download_media)
+        )
         next nil unless result
 
         post = result[:post]
@@ -115,7 +126,7 @@ module Instagram
       nil
     end
 
-    def persist_profile_post!(post_data, synced_at:, sync_source:)
+    def persist_profile_post!(post_data, synced_at:, sync_source:, download_media:)
       shortcode = post_data[:shortcode].to_s.strip
       return nil if shortcode.blank?
 
@@ -128,6 +139,9 @@ module Instagram
       merged_metadata = existing_metadata.merge(
         "media_type" => post_data[:media_type],
         "media_id" => post_data[:media_id],
+        "post_kind" => post_data[:post_kind],
+        "product_type" => post_data[:product_type],
+        "is_repost" => ActiveModel::Type::Boolean.new.cast(post_data[:is_repost]),
         "comments_count_api" => post_data[:comments_count],
         "source" => sync_source.to_s
       )
@@ -149,11 +163,13 @@ module Instagram
       post.metadata = merged_metadata
       post.save!
 
-      sync_media!(
-        post: post,
-        media_url: post_data[:media_url].presence || post_data[:image_url],
-        media_id: post_data[:media_id]
-      )
+      if download_media
+        sync_media!(
+          post: post,
+          media_url: post_data[:media_url].presence || post_data[:image_url],
+          media_id: post_data[:media_id]
+        )
+      end
       sync_comments!(
         post: post,
         comments: post_data[:comments],

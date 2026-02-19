@@ -1,7 +1,15 @@
 require "stringio"
+require "net/http"
 
 class CaptureInstagramProfilePostsJob < ApplicationJob
   queue_as :post_downloads
+
+  DOWNLOAD_TARGET_RECENT_POSTS = 50
+  CAPTURE_FETCH_LIMIT = 120
+
+  retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 4
+  retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 4
+  retry_on Timeout::Error, wait: :polynomially_longer, attempts: 3
 
   def perform(instagram_account_id:, instagram_profile_id:, profile_action_log_id: nil, comments_limit: 20)
     account = InstagramAccount.find(instagram_account_id)
@@ -49,10 +57,11 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
     end
 
     collected = Instagram::ProfileAnalysisCollector.new(account: account, profile: profile).collect_and_persist!(
-      posts_limit: 100,
+      posts_limit: CAPTURE_FETCH_LIMIT,
       comments_limit: comments_limit_i,
       track_missing_as_deleted: true,
-      sync_source: "profile_posts_manual_capture"
+      sync_source: "profile_posts_manual_capture",
+      download_media: false
     )
 
     persisted_posts = Array(collected[:posts])
@@ -61,7 +70,6 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
     updated_shortcodes = Array(summary[:updated_shortcodes])
     restored_shortcodes = Array(summary[:restored_shortcodes])
     deleted_shortcodes = Array(summary[:deleted_shortcodes])
-    analysis_candidate_shortcodes = Array(summary[:analysis_candidate_shortcodes])
 
     event_counts = create_post_capture_events!(
       profile: profile,
@@ -70,11 +78,12 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
       restored_shortcodes: restored_shortcodes,
       deleted_shortcodes: deleted_shortcodes
     )
-    analysis_enqueue = enqueue_post_analysis_followup!(
+
+    download_plan = build_download_plan(profile: profile)
+    queued_downloads = enqueue_profile_post_downloads!(
       account: account,
       profile: profile,
-      persisted_posts: persisted_posts,
-      analysis_candidate_shortcodes: analysis_candidate_shortcodes
+      posts: download_plan[:to_queue]
     )
 
     profile.update!(last_synced_at: Time.current)
@@ -92,12 +101,16 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
         updated_count: summary[:updated_count].to_i,
         unchanged_count: summary[:unchanged_count].to_i,
         deleted_count: summary[:deleted_count].to_i,
-        analysis_candidates_count: analysis_enqueue[:candidate_count],
-        total_analysis_candidates: analysis_enqueue[:total_candidates_count],
-        analysis_job_queued: analysis_enqueue[:queued],
+        recent_download_target: DOWNLOAD_TARGET_RECENT_POSTS,
+        recent_downloadable_posts: download_plan[:recent_candidates].length,
+        recent_already_downloaded: download_plan[:already_downloaded_count],
+        recent_missing_downloads: download_plan[:missing_count],
+        queued_download_jobs: queued_downloads[:queued_count],
+        queue_failures: queued_downloads[:failures].length,
         captured_events_count: event_counts[:captured],
         deleted_events_count: event_counts[:deleted],
-        restored_events_count: event_counts[:restored]
+        restored_events_count: event_counts[:restored],
+        downloadable_manifest_count: download_plan[:manifest].length
       }
     )
 
@@ -107,7 +120,7 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
       partial: "shared/notification",
       locals: {
         kind: "notice",
-        message: "Post capture completed for #{profile.username}. New: #{summary[:created_count].to_i}, restored: #{summary[:restored_count].to_i}, deleted flagged: #{summary[:deleted_count].to_i}, queued for analysis: #{analysis_enqueue[:candidate_count]}."
+        message: "Post capture completed for #{profile.username}. New: #{summary[:created_count].to_i}, restored: #{summary[:restored_count].to_i}, deleted flagged: #{summary[:deleted_count].to_i}, queued downloads: #{queued_downloads[:queued_count]}, already downloaded in recent set: #{download_plan[:already_downloaded_count]}/#{DOWNLOAD_TARGET_RECENT_POSTS}."
       }
     )
 
@@ -124,15 +137,17 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
         updated_shortcodes: updated_shortcodes.first(40),
         restored_shortcodes: restored_shortcodes.first(40),
         deleted_shortcodes: deleted_shortcodes.first(40),
-        analysis_candidate_shortcodes: analysis_candidate_shortcodes.first(120),
-        analysis_candidates_count: analysis_enqueue[:candidate_count],
-        total_analysis_candidates: analysis_enqueue[:total_candidates_count],
-        analysis_job_queued: analysis_enqueue[:queued],
-        analysis_job_id: analysis_enqueue[:job_id],
-        analysis_action_log_id: analysis_enqueue[:action_log_id],
+        recent_download_target: DOWNLOAD_TARGET_RECENT_POSTS,
+        recent_downloadable_posts: download_plan[:recent_candidates].length,
+        recent_already_downloaded: download_plan[:already_downloaded_count],
+        recent_missing_downloads: download_plan[:missing_count],
+        queued_download_jobs: queued_downloads[:queued_count],
+        queued_download_post_ids: queued_downloads[:post_ids].first(DOWNLOAD_TARGET_RECENT_POSTS),
+        queue_failures: queued_downloads[:failures].first(20),
+        download_manifest: download_plan[:manifest].first(DOWNLOAD_TARGET_RECENT_POSTS),
         captured_events_count: event_counts[:captured]
       },
-      log_text: "Captured posts (new=#{summary[:created_count].to_i}, restored=#{summary[:restored_count].to_i}, updated=#{summary[:updated_count].to_i}, deleted=#{summary[:deleted_count].to_i}, queued_for_analysis=#{analysis_enqueue[:candidate_count]})."
+      log_text: "Captured posts (new=#{summary[:created_count].to_i}, restored=#{summary[:restored_count].to_i}, updated=#{summary[:updated_count].to_i}, deleted=#{summary[:deleted_count].to_i}, queued_downloads=#{queued_downloads[:queued_count]}, already_downloaded_recent=#{download_plan[:already_downloaded_count]})."
     )
   rescue StandardError => e
     Ops::StructuredLogger.error(
@@ -224,66 +239,109 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
     counts
   end
 
-  def enqueue_post_analysis_followup!(account:, profile:, persisted_posts:, analysis_candidate_shortcodes:)
-    candidates = resolve_analysis_candidates(
-      profile: profile,
-      persisted_posts: persisted_posts,
-      analysis_candidate_shortcodes: analysis_candidate_shortcodes
-    )
-    return { queued: false, candidate_count: 0, job_id: nil, action_log_id: nil } if candidates.empty?
+  def build_download_plan(profile:)
+    recent_candidates = profile.instagram_profile_posts
+      .with_attached_media
+      .recent_first
+      .limit(CAPTURE_FETCH_LIMIT)
+      .select { |post| downloadable_profile_post?(post) }
+      .first(DOWNLOAD_TARGET_RECENT_POSTS)
 
-    # Limit to first 50 posts for initial analysis
-    limited_candidates = candidates.first(50)
+    already_downloaded_count = recent_candidates.count { |post| post.media.attached? }
+    missing_posts = recent_candidates.reject { |post| post.media.attached? }
+    required = [DOWNLOAD_TARGET_RECENT_POSTS - already_downloaded_count, 0].max
+    to_queue = missing_posts.first(required)
 
-    analysis_log = profile.instagram_profile_action_logs.create!(
-      instagram_account: account,
-      action: "analyze_profile_posts",
-      status: "queued",
-      trigger_source: "job",
-      occurred_at: Time.current,
-      metadata: {
-        requested_by: self.class.name,
-        queued_post_ids: limited_candidates,
-        queued_post_count: limited_candidates.length,
-        total_candidates_count: candidates.length,
-        analysis_batch: "initial_50"
-      }
-    )
-
-    job = AnalyzeCapturedInstagramProfilePostsJob.perform_later(
-      instagram_account_id: account.id,
-      instagram_profile_id: profile.id,
-      profile_action_log_id: analysis_log.id,
-      post_ids: limited_candidates,
-      refresh_profile_insights: true
-    )
-    analysis_log.update!(active_job_id: job.job_id, queue_name: job.queue_name)
+    manifest = recent_candidates.map do |post|
+      metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+      {
+        post_id: post.id,
+        shortcode: post.shortcode,
+        post_kind: metadata["post_kind"].to_s.presence || "post",
+        product_type: metadata["product_type"].to_s.presence,
+        repost: ActiveModel::Type::Boolean.new.cast(metadata["is_repost"]),
+        media_type: metadata["media_type"],
+        media_id: metadata["media_id"],
+        media_url: post.source_media_url.to_s.presence || metadata["media_url_video"].to_s.presence || metadata["media_url_image"].to_s.presence,
+        taken_at: post.taken_at&.iso8601,
+        downloaded: post.media.attached?
+      }.compact
+    end
 
     {
-      queued: true,
-      candidate_count: limited_candidates.length,
-      total_candidates_count: candidates.length,
-      job_id: job.job_id,
-      action_log_id: analysis_log.id
+      recent_candidates: recent_candidates,
+      already_downloaded_count: already_downloaded_count,
+      missing_count: missing_posts.length,
+      to_queue: to_queue,
+      manifest: manifest
     }
-  rescue StandardError => e
-    Rails.logger.warn("[CaptureInstagramProfilePostsJob] unable to queue post-analysis followup: #{e.class}: #{e.message}")
-    { queued: false, candidate_count: candidates&.length.to_i, job_id: nil, action_log_id: nil }
   end
 
-  def resolve_analysis_candidates(profile:, persisted_posts:, analysis_candidate_shortcodes:)
-    shortcodes = Array(analysis_candidate_shortcodes).map(&:to_s).map(&:strip).reject(&:blank?).uniq
-    return [] if shortcodes.empty?
+  def enqueue_profile_post_downloads!(account:, profile:, posts:)
+    post_ids = []
+    failures = []
 
-    by_shortcode = Array(persisted_posts).index_by { |post| post.shortcode.to_s }
-    ids = shortcodes.filter_map do |shortcode|
-      post = by_shortcode[shortcode] || profile.instagram_profile_posts.find_by(shortcode: shortcode)
+    Array(posts).each do |post|
       next unless post
-      next if ActiveModel::Type::Boolean.new.cast(post.metadata.is_a?(Hash) ? post.metadata["deleted_from_source"] : nil)
+      next unless downloadable_profile_post?(post)
 
-      post.id
+      mark_download_queued!(post: post)
+      job = DownloadInstagramProfilePostMediaJob.perform_later(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        trigger_analysis: true
+      )
+      post_ids << post.id
+      profile.record_event!(
+        kind: "profile_post_media_download_queued",
+        external_id: "profile_post_media_download_queued:#{post.id}:#{job.job_id}",
+        occurred_at: Time.current,
+        metadata: {
+          source: self.class.name,
+          instagram_profile_post_id: post.id,
+          shortcode: post.shortcode,
+          active_job_id: job.job_id
+        }
+      )
+    rescue StandardError => e
+      failures << {
+        instagram_profile_post_id: post&.id,
+        shortcode: post&.shortcode.to_s.presence,
+        error_class: e.class.name,
+        error_message: e.message.to_s.byteslice(0, 220)
+      }.compact
+      next
     end
-    ids.uniq
+
+    {
+      queued_count: post_ids.length,
+      post_ids: post_ids,
+      failures: failures
+    }
+  end
+
+  def downloadable_profile_post?(post)
+    return false unless post
+    return false if ActiveModel::Type::Boolean.new.cast(post.metadata.is_a?(Hash) ? post.metadata["deleted_from_source"] : nil)
+
+    source_url = post.source_media_url.to_s.strip
+    return true if source_url.present?
+
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    metadata["media_url_video"].to_s.strip.present? || metadata["media_url_image"].to_s.strip.present?
+  end
+
+  def mark_download_queued!(post:)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    post.update!(
+      metadata: metadata.merge(
+        "download_status" => "queued",
+        "download_queued_at" => Time.current.utc.iso8601(3),
+        "download_queued_by" => self.class.name,
+        "download_error" => nil
+      )
+    )
   end
 
   def profile_post_event_metadata(post:, reason:)

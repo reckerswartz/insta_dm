@@ -1,40 +1,44 @@
 <% content_for :title, "Job Failure" %>
 
 <div class="page">
-  <header class="page-header">
-    <h1>Job Failure</h1>
-    <p class="meta"><code><%= @failure.job_class %></code> at <strong><%= relative_time_with_tooltip(@failure.occurred_at) %></strong></p>
-  </header>
-
-  <section class="card">
-    <div class="actions-row">
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1>Job Failure</h1>
+      <p class="meta"><code><%= @failure.job_class %></code> at <strong><%= relative_time_with_tooltip(@failure.occurred_at) %></strong></p>
+    </div>
+    <div class="page-toolbar-actions">
       <%= link_to "Back to Failures", admin_background_job_failures_path, class: "btn secondary" %>
-      <%= link_to "Dashboard", admin_background_jobs_path, class: "btn secondary" %>
+      <%= link_to "Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
       <% if @failure.retryable_now? %>
         <%= button_to "Retry Job", admin_retry_background_job_failure_path(@failure), method: :post, class: "btn" %>
       <% end %>
     </div>
+  </header>
 
-    <p class="meta">
-      ActiveJob ID: <code><%= @failure.active_job_id %></code><br>
-      Queue: <strong><%= @failure.queue_name %></strong><br>
-      Failure kind: <strong><%= @failure.failure_kind %></strong><br>
-      Retryable: <strong><%= @failure.retryable_now? ? "Yes" : "No" %></strong><br>
-      Scope:
-      <strong>
-        <% if @failure.instagram_profile_id.present? %>
-          profile
-        <% elsif @failure.instagram_account_id.present? %>
-          account
-        <% else %>
-          system
-        <% end %>
-      </strong><br>
-      Account ID: <code><%= @failure.instagram_account_id.presence || "-" %></code><br>
-      Profile ID: <code><%= @failure.instagram_profile_id.presence || "-" %></code><br>
-      Provider job id: <code><%= @failure.provider_job_id.presence || "-" %></code><br>
-      SolidQueue job id (if applicable): <code><%= @failure.solid_queue_job_id.presence || "-" %></code>
-    </p>
+  <section class="card">
+    <div class="stat">
+      <div class="stat-label">Failure Context</div>
+      <div class="stat-kv"><span class="muted">ActiveJob ID</span><code><%= @failure.active_job_id %></code></div>
+      <div class="stat-kv"><span class="muted">Queue</span><strong><%= @failure.queue_name %></strong></div>
+      <div class="stat-kv"><span class="muted">Failure kind</span><strong><%= @failure.failure_kind %></strong></div>
+      <div class="stat-kv"><span class="muted">Retryable now</span><strong><%= @failure.retryable_now? ? "Yes" : "No" %></strong></div>
+      <div class="stat-kv">
+        <span class="muted">Scope</span>
+        <strong>
+          <% if @failure.instagram_profile_id.present? %>
+            profile
+          <% elsif @failure.instagram_account_id.present? %>
+            account
+          <% else %>
+            system
+          <% end %>
+        </strong>
+      </div>
+      <div class="stat-kv"><span class="muted">Account ID</span><code><%= @failure.instagram_account_id.presence || "-" %></code></div>
+      <div class="stat-kv"><span class="muted">Profile ID</span><code><%= @failure.instagram_profile_id.presence || "-" %></code></div>
+      <div class="stat-kv"><span class="muted">Provider job ID</span><code><%= @failure.provider_job_id.presence || "-" %></code></div>
+      <div class="stat-kv"><span class="muted">SolidQueue job ID</span><code><%= @failure.solid_queue_job_id.presence || "-" %></code></div>
+    </div>
 
     <h2>Error</h2>
     <pre><%= "#{@failure.error_class}: #{@failure.error_message}" %></pre>

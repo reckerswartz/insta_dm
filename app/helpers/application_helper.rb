@@ -61,6 +61,8 @@ module ApplicationHelper
       :accounts
     when "instagram_profiles", "instagram_profile_actions", "instagram_profile_posts", "instagram_profile_messages"
       :profiles
+    when "instagram_posts"
+      :posts
     when "ai_dashboard"
       :ai_dashboard
     when "admin/background_jobs"
@@ -91,6 +93,8 @@ module ApplicationHelper
         instagram_profile_posts
         instagram_profile_messages
       ].include?(controller_path)
+    when :posts
+      controller_path == "instagram_posts"
     when :ai_dashboard
       controller_path == "ai_dashboard"
     when :jobs

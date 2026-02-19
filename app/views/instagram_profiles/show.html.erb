@@ -1,7 +1,5 @@
 <% content_for :title, @profile.username %>
 
-<%= turbo_stream_from @account %>
-
 <div
   class="page"
   data-controller="profile-sections-loader"
@@ -9,15 +7,21 @@
   data-profile-sections-loader-poll-ms-value="900"
   data-profile-sections-loader-max-wait-ms-value="18000"
 >
-  <header class="page-header">
-    <h1><%= @profile.username %></h1>
-    <p class="meta">
-      Following: <strong><%= @profile.following ? "Yes" : "No" %></strong>
-      | Follows you: <strong><%= @profile.follows_you ? "Yes" : "No" %></strong>
-      | Mutual: <strong><%= @profile.mutual? ? "Yes" : "No" %></strong>
-      | Can message: <strong><%= @profile.can_message.nil? ? "Unknown" : (@profile.can_message ? "Yes" : "No") %></strong>
-      | Last active: <strong><%= relative_time_with_tooltip(@profile.last_active_at) %></strong>
-    </p>
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1><%= @profile.username %></h1>
+      <p class="meta">
+        Following: <strong><%= @profile.following ? "Yes" : "No" %></strong>
+        | Follows you: <strong><%= @profile.follows_you ? "Yes" : "No" %></strong>
+        | Mutual: <strong><%= @profile.mutual? ? "Yes" : "No" %></strong>
+        | Can message: <strong><%= @profile.can_message.nil? ? "Unknown" : (@profile.can_message ? "Yes" : "No") %></strong>
+        | Last active: <strong><%= relative_time_with_tooltip(@profile.last_active_at) %></strong>
+      </p>
+    </div>
+    <div class="page-toolbar-actions">
+      <%= link_to "Back to Profiles", instagram_profiles_path, class: "btn secondary" %>
+      <%= link_to "Account Dashboard", instagram_account_path(@account), class: "btn secondary" %>
+    </div>
   </header>
 
   <section class="card">
@@ -220,7 +224,4 @@
     </section>
   <% end %>
 
-  <div class="actions-row">
-    <%= link_to "Back to Profiles", instagram_profiles_path, class: "btn secondary" %>
-  </div>
 </div>

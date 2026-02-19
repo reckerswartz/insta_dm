@@ -5,12 +5,27 @@ import {
   adaptiveTableHeight,
   escapeHtml,
   runTableCleanups,
+  subscribeToOperationsTopics,
   tabulatorBaseOptions,
 } from "../lib/tabulator_helpers"
+
+const ICONS = {
+  view: `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M12 5c-6.6 0-10 6.2-10 7s3.4 7 10 7 10-6.2 10-7-3.4-7-10-7Zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10Zm0-2.3a2.7 2.7 0 1 0 0-5.4 2.7 2.7 0 0 0 0 5.4Z"/>
+    </svg>
+  `,
+  download: `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M11 3h2v10.1l3.6-3.6 1.4 1.4-6 6-6-6 1.4-1.4L11 13.1V3Zm-7 14h16v4H4v-4Z"/>
+    </svg>
+  `,
+}
 
 export default class extends Controller {
   static values = {
     url: String,
+    accountId: Number,
     profileId: Number,
     profileUsername: String,
   }
@@ -70,8 +85,8 @@ export default class extends Controller {
           field: "media_download_url",
           headerSort: false,
           hozAlign: "center",
-          minWidth: 210,
-          width: 220,
+          minWidth: 120,
+          width: 130,
           formatter: (cell) => {
             const row = cell.getRow().getData() || {}
             const viewUrl = row.media_url
@@ -84,7 +99,7 @@ export default class extends Controller {
               links.push(`
                 <button
                   type="button"
-                  class="btn small"
+                  class="btn small icon-only"
                   data-action="click->profile-events-table#openMedia"
                   data-media-url="${escapeHtml(viewUrl)}"
                   data-media-download-url="${escapeHtml(downloadUrl || viewUrl)}"
@@ -93,13 +108,15 @@ export default class extends Controller {
                   data-video-static-frame-only="${escapeHtml(String(row.video_static_frame_only || ""))}"
                   data-activity-kind="${escapeHtml(row.kind || "event")}"
                   data-occurred-at="${escapeHtml(row.occurred_at || row.detected_at || "")}"
+                  title="View media"
+                  aria-label="View media"
                 >
-                  View
+                  ${ICONS.view}
                 </button>
               `)
             }
             if (downloadUrl) {
-              links.push(`<a class="btn small secondary" href="${escapeHtml(downloadUrl)}" target="_blank" rel="noreferrer">Download</a>`)
+              links.push(`<a class="btn small secondary icon-only" href="${escapeHtml(downloadUrl)}" target="_blank" rel="noreferrer" title="Download media" aria-label="Download media">${ICONS.download}</a>`)
             }
 
             return `<div class="table-actions">${links.join("")}</div>`
@@ -110,6 +127,16 @@ export default class extends Controller {
 
     this.table = new Tabulator(this.tableEl, options)
     attachTabulatorBehaviors(this, this.table, { storageKey: "profile-events-table", paginationSize: 50 })
+
+    subscribeToOperationsTopics(this, {
+      accountId: this.accountIdValue,
+      topics: ["profile_events_changed"],
+      shouldRefresh: (message) => {
+        const incomingProfileId = Number(message?.payload?.profile_id)
+        return Number.isFinite(incomingProfileId) && incomingProfileId === this.profileIdValue
+      },
+      onRefresh: () => this.table?.replaceData(),
+    })
   }
 
   disconnect() {

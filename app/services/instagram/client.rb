@@ -3849,6 +3849,12 @@ module Instagram
       return nil unless item.is_a?(Hash)
 
       media_type = item["media_type"].to_i
+      product_type = item["product_type"].to_s.downcase
+      post_kind = product_type.include?("clips") ? "reel" : "post"
+      is_repost =
+        ActiveModel::Type::Boolean.new.cast(item["is_repost"]) ||
+        item.dig("reshared_content", "pk").present? ||
+        item["reshare_count"].to_i.positive?
       image_url = nil
       video_url = nil
 
@@ -3883,6 +3889,9 @@ module Instagram
       {
         shortcode: shortcode,
         media_id: media_pk.to_s.presence,
+        post_kind: post_kind,
+        product_type: product_type.presence,
+        is_repost: is_repost,
         taken_at: taken_at,
         caption: item.dig("caption", "text").to_s.presence,
         media_url: media_url,

@@ -322,10 +322,38 @@ class InstagramProfileActionsController < ApplicationController
         active_job_id: job.job_id,
         queue_name: job.queue_name
       )
+      annotate_queue_worker_health!(log: log)
     rescue StandardError => e
       log.mark_failed!(error_message: "Queueing failed: #{e.message}")
       raise
     end
+  end
+
+  def annotate_queue_worker_health!(log:)
+    return unless Rails.application.config.active_job.queue_adapter.to_s == "sidekiq"
+
+    require "sidekiq/api"
+    process_count = Sidekiq::ProcessSet.new.size
+    return unless process_count.zero?
+
+    metadata = log.metadata.is_a?(Hash) ? log.metadata : {}
+    log.update!(
+      metadata: metadata.merge(
+        "queue_worker_warning" => "No active Sidekiq worker process detected when job was enqueued.",
+        "queue_worker_warning_at" => Time.current.utc.iso8601(3)
+      )
+    )
+    Ops::StructuredLogger.warn(
+      event: "jobs.enqueued_without_workers",
+      payload: {
+        action_log_id: log.id,
+        action: log.action,
+        active_job_id: log.active_job_id,
+        queue_name: log.queue_name
+      }
+    )
+  rescue StandardError
+    nil
   end
 
   def cleanup_profile_debug_files(username)

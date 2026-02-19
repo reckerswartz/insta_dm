@@ -1,2 +1,12 @@
-<h1>Recipients#update_all</h1>
-<p>Find me in app/views/recipients/update_all.html.erb</p>
+<% content_for :title, "Recipients Updated" %>
+
+<div class="page">
+  <section class="card">
+    <h1>Recipients Updated</h1>
+    <p class="meta">Selection changes were saved successfully.</p>
+    <div class="actions-row">
+      <%= link_to "Dashboard", instagram_accounts_path, class: "btn secondary" %>
+      <%= link_to "Profiles", instagram_profiles_path, class: "btn secondary" %>
+    </div>
+  </section>
+</div>

@@ -6,6 +6,7 @@ import { default as HelloController } from "./hello_controller"
 import { default as AuditMediaModalController } from "./audit-media-modal_controller"
 import { default as BackgroundJobFailuresTableController } from "./background_job_failures_table_controller"
 import { default as LlmCommentController } from "./llm_comment_controller"
+import { default as NotificationCenterController } from "./notification_center_controller"
 import { default as IssuesTableController } from "./issues_table_controller"
 import { default as PostsTableController } from "./posts_table_controller"
 import { default as ProfilePostModalController } from "./profile-post-modal_controller"
@@ -23,6 +24,7 @@ application.register("hello", HelloController)
 application.register("audit-media-modal", AuditMediaModalController)
 application.register("background-job-failures-table", BackgroundJobFailuresTableController)
 application.register("llm-comment", LlmCommentController)
+application.register("notification-center", NotificationCenterController)
 application.register("issues-table", IssuesTableController)
 application.register("posts-table", PostsTableController)
 application.register("profile-post-modal", ProfilePostModalController)

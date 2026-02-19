@@ -1,19 +1,20 @@
 <% content_for :title, "Application Issues" %>
 
 <div class="page">
-  <header class="page-header">
-    <h1>Application Issues</h1>
-    <p class="meta">Track open, pending, and resolved application-level issues with retry support for linked failed jobs.</p>
-  </header>
-
-  <section class="card">
-    <div class="actions-row">
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1>Application Issues</h1>
+      <p class="meta">Track open, pending, and resolved application-level issues with retry support for linked failed jobs.</p>
+    </div>
+    <div class="page-toolbar-actions">
       <%= link_to "Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
       <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
       <%= link_to "Storage Ingestions", admin_storage_ingestions_path, class: "btn secondary" %>
     </div>
+  </header>
 
-    <p class="meta mt-2">Use header filters/sorting and inline status controls. Shift + wheel scrolls horizontally, click-drag pans, and updates stream live.</p>
+  <section class="card">
+    <p class="meta">Use header filters/sorting and inline status controls. Shift + wheel scrolls horizontally, click-drag pans, and updates stream live.</p>
 
     <div
       class="tabulator-shell"

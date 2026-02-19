@@ -1,24 +1,23 @@
 <% content_for :title, "Post #{@post.shortcode}" %>
 
 <div class="page">
-  <header class="page-header">
-    <h1>Post <code><%= @post.shortcode %></code></h1>
-    <p class="meta">
-      Author: <strong><%= @post.author_username.presence || "-" %></strong>
-      | Detected: <strong><%= relative_time_with_tooltip(@post.detected_at) %></strong>
-      | Status: <strong><%= @post.status %></strong>
-    </p>
-  </header>
-
-  <section class="card">
-    <div class="actions-row">
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1>Post <code><%= @post.shortcode %></code></h1>
+      <p class="meta">
+        Author: <strong><%= @post.author_username.presence || "-" %></strong>
+        | Detected: <strong><%= relative_time_with_tooltip(@post.detected_at) %></strong>
+        | Status: <strong><%= @post.status %></strong>
+      </p>
+    </div>
+    <div class="page-toolbar-actions">
       <%= link_to "Back to Posts", instagram_posts_path, class: "btn secondary" %>
-      <%= link_to "Open on Instagram", @post.permalink, target: "_blank", rel: "noreferrer", class: "btn" %>
       <% if @post.instagram_profile %>
         <%= link_to "Open Profile", instagram_profile_path(@post.instagram_profile), class: "btn secondary" %>
       <% end %>
+      <%= link_to "Open on Instagram", @post.permalink, target: "_blank", rel: "noreferrer", class: "btn" %>
     </div>
-  </section>
+  </header>
 
   <section class="card">
     <h2>Media</h2>
@@ -76,7 +75,4 @@
     <% end %>
   </section>
 
-  <div class="actions-row">
-    <%= link_to "Back", instagram_posts_path, class: "btn secondary" %>
-  </div>
 </div>

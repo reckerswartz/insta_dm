@@ -1,2 +1,12 @@
-<h1>Syncs#create</h1>
-<p>Find me in app/views/syncs/create.html.erb</p>
+<% content_for :title, "Sync Started" %>
+
+<div class="page">
+  <section class="card">
+    <h1>Sync Started</h1>
+    <p class="meta">Background synchronization has been queued. Live updates will appear on the account and profile pages.</p>
+    <div class="actions-row">
+      <%= link_to "Dashboard", instagram_accounts_path, class: "btn secondary" %>
+      <%= link_to "Profiles", instagram_profiles_path, class: "btn secondary" %>
+    </div>
+  </section>
+</div>

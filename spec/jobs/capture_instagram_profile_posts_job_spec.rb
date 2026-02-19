@@ -7,7 +7,7 @@ RSpec.describe "CaptureInstagramProfilePostsJobTest" do
     clear_enqueued_jobs
     clear_performed_jobs
   end
-  it "capture job queues follow-up post analysis job with captured candidates" do
+  it "capture job builds download manifest and queues profile post media downloads" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
     post = profile.instagram_profile_posts.create!(
@@ -22,7 +22,10 @@ RSpec.describe "CaptureInstagramProfilePostsJobTest" do
     )
 
     collector_stub = Struct.new(:result) do
-      def collect_and_persist!(**_kwargs)
+      attr_reader :captured_kwargs
+
+      def collect_and_persist!(**kwargs)
+        @captured_kwargs = kwargs
         result
       end
     end.new(
@@ -38,14 +41,13 @@ RSpec.describe "CaptureInstagramProfilePostsJobTest" do
           restored_shortcodes: [],
           updated_shortcodes: [],
           deleted_shortcodes: [],
-          analysis_candidate_shortcodes: ["post_a1"],
           feed_fetch: { "source" => "http_feed_api", "pages_fetched" => 1 }
         }
       }
     )
 
     with_profile_collector_stub(collector_stub) do
-      assert_enqueued_with(job: AnalyzeCapturedInstagramProfilePostsJob) do
+      assert_enqueued_with(job: DownloadInstagramProfilePostMediaJob) do
         CaptureInstagramProfilePostsJob.perform_now(
           instagram_account_id: account.id,
           instagram_profile_id: profile.id,
@@ -54,16 +56,13 @@ RSpec.describe "CaptureInstagramProfilePostsJobTest" do
       end
     end
 
+    assert_equal false, ActiveModel::Type::Boolean.new.cast(collector_stub.captured_kwargs[:download_media])
     capture_log = profile.instagram_profile_action_logs.where(action: "capture_profile_posts").order(id: :desc).first
     assert_not_nil capture_log
     assert_equal "succeeded", capture_log.status
-    assert_equal 1, capture_log.metadata["analysis_candidates_count"].to_i
-    assert_equal true, ActiveModel::Type::Boolean.new.cast(capture_log.metadata["analysis_job_queued"])
-
-    analysis_log = profile.instagram_profile_action_logs.where(action: "analyze_profile_posts").order(id: :desc).first
-    assert_not_nil analysis_log
-    assert_equal "queued", analysis_log.status
-    assert_equal 1, analysis_log.metadata["queued_post_count"].to_i
+    assert_equal 50, capture_log.metadata["recent_download_target"].to_i
+    assert_equal 1, capture_log.metadata["queued_download_jobs"].to_i
+    assert_equal 1, Array(capture_log.metadata["download_manifest"]).length
   end
   it "capture job skips scan when profile exceeds followers threshold" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
@@ -78,7 +77,7 @@ RSpec.describe "CaptureInstagramProfilePostsJobTest" do
     end
 
     with_profile_collector_stub(collector_stub) do
-      assert_no_enqueued_jobs only: AnalyzeCapturedInstagramProfilePostsJob do
+      assert_no_enqueued_jobs only: DownloadInstagramProfilePostMediaJob do
         CaptureInstagramProfilePostsJob.perform_now(
           instagram_account_id: account.id,
           instagram_profile_id: profile.id,

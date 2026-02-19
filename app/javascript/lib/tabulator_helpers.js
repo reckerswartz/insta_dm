@@ -1,11 +1,18 @@
-import { cable } from "@hotwired/turbo-rails"
+import { getCableConsumer } from "./cable_consumer"
 
 const DEFAULT_PAGE_SIZES = [25, 50, 100, 200]
 const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,.btn,[role='button']"
 let operationsConsumer
 
+function controllerOwnsTable(controller, table) {
+  if (!controller || !table) return false
+  if (controller.table && controller.table === table) return true
+  if (controller.tableInstance && controller.tableInstance === table) return true
+  return false
+}
+
 function getOperationsConsumer() {
-  if (!operationsConsumer) operationsConsumer = cable.createConsumer()
+  if (!operationsConsumer) operationsConsumer = getCableConsumer()
   return operationsConsumer
 }
 
@@ -114,6 +121,7 @@ export function tabulatorBaseOptions({
     paginationMode: "remote",
     paginationSize: selectedPageSize,
     paginationSizeSelector: pageSizeSelector,
+    paginationButtonCount: 7,
     paginationCounter: "rows",
 
     sortMode: "remote",
@@ -140,9 +148,10 @@ export function attachTabulatorBehaviors(controller, table, { storageKey = null,
   if (!controller || !table) return
 
   const rafId = window.requestAnimationFrame(() => {
-    if (!controller.table || controller.table !== table) return
+    if (!controllerOwnsTable(controller, table)) return
     installTableInteractions(controller, table)
     installAdaptiveResizing(controller, table)
+    installPaginationControls(controller, table)
   })
 
   registerCleanup(controller, () => window.cancelAnimationFrame(rafId))
@@ -162,13 +171,123 @@ export function attachTabulatorBehaviors(controller, table, { storageKey = null,
   })
 }
 
+export function installPaginationControls(controller, table) {
+  if (!table?.options?.pagination) return
+
+  const tableEl = table.element
+  if (!tableEl?.parentElement) return
+
+  const bar = document.createElement("div")
+  bar.className = "tabulator-external-pagination"
+  bar.innerHTML = `
+    <div class="tabulator-pagination-actions" role="group" aria-label="Table pagination controls">
+      <button type="button" class="btn small secondary icon-only" data-page-nav="first" aria-label="First page" title="First page">
+        <span aria-hidden="true">&laquo;</span>
+      </button>
+      <button type="button" class="btn small secondary icon-only" data-page-nav="prev" aria-label="Previous page" title="Previous page">
+        <span aria-hidden="true">&lsaquo;</span>
+      </button>
+      <span class="tabulator-pagination-meta" data-page-meta>Page 1 of 1</span>
+      <button type="button" class="btn small secondary icon-only" data-page-nav="next" aria-label="Next page" title="Next page">
+        <span aria-hidden="true">&rsaquo;</span>
+      </button>
+      <button type="button" class="btn small secondary icon-only" data-page-nav="last" aria-label="Last page" title="Last page">
+        <span aria-hidden="true">&raquo;</span>
+      </button>
+    </div>
+  `
+
+  tableEl.insertAdjacentElement("afterend", bar)
+
+  const metaEl = bar.querySelector("[data-page-meta]")
+  const firstBtn = bar.querySelector("[data-page-nav='first']")
+  const prevBtn = bar.querySelector("[data-page-nav='prev']")
+  const nextBtn = bar.querySelector("[data-page-nav='next']")
+  const lastBtn = bar.querySelector("[data-page-nav='last']")
+
+  const goToPage = (page) => {
+    const maxPage = Number(table.getPageMax?.()) || 1
+    const target = Math.max(1, Math.min(maxPage, Number(page) || 1))
+    if (typeof table.setPage === "function") table.setPage(target)
+  }
+
+  const syncUi = () => {
+    const currentPage = Number(table.getPage?.()) || 1
+    const maxPageRaw = Number(table.getPageMax?.())
+    const maxPage = Number.isFinite(maxPageRaw) && maxPageRaw > 0 ? maxPageRaw : 1
+
+    if (metaEl) metaEl.textContent = `Page ${currentPage} of ${maxPage}`
+    if (firstBtn) firstBtn.disabled = currentPage <= 1
+    if (prevBtn) prevBtn.disabled = currentPage <= 1
+    if (nextBtn) nextBtn.disabled = currentPage >= maxPage
+    if (lastBtn) lastBtn.disabled = currentPage >= maxPage
+  }
+
+  const onFirst = () => goToPage(1)
+  const onPrev = () => {
+    if (typeof table.previousPage === "function") {
+      table.previousPage()
+      return
+    }
+    const currentPage = Number(table.getPage?.()) || 1
+    goToPage(currentPage - 1)
+  }
+  const onNext = () => {
+    if (typeof table.nextPage === "function") {
+      table.nextPage()
+      return
+    }
+    const currentPage = Number(table.getPage?.()) || 1
+    goToPage(currentPage + 1)
+  }
+  const onLast = () => {
+    const maxPage = Number(table.getPageMax?.()) || 1
+    goToPage(maxPage)
+  }
+
+  firstBtn?.addEventListener("click", onFirst)
+  prevBtn?.addEventListener("click", onPrev)
+  nextBtn?.addEventListener("click", onNext)
+  lastBtn?.addEventListener("click", onLast)
+
+  const onPageLoaded = () => syncUi()
+  const onDataLoaded = () => syncUi()
+  const onRenderComplete = () => syncUi()
+  const onPageSizeChanged = () => {
+    if (typeof table.setPage === "function") table.setPage(1)
+    syncUi()
+  }
+
+  table.on("pageLoaded", onPageLoaded)
+  table.on("dataLoaded", onDataLoaded)
+  table.on("renderComplete", onRenderComplete)
+  table.on("pageSizeChanged", onPageSizeChanged)
+
+  const initialSync = window.requestAnimationFrame(syncUi)
+
+  registerCleanup(controller, () => {
+    window.cancelAnimationFrame(initialSync)
+    firstBtn?.removeEventListener("click", onFirst)
+    prevBtn?.removeEventListener("click", onPrev)
+    nextBtn?.removeEventListener("click", onNext)
+    lastBtn?.removeEventListener("click", onLast)
+    if (typeof table.off === "function") {
+      table.off("pageLoaded", onPageLoaded)
+      table.off("dataLoaded", onDataLoaded)
+      table.off("renderComplete", onRenderComplete)
+      table.off("pageSizeChanged", onPageSizeChanged)
+    }
+    bar.remove()
+  })
+}
+
 export function installAdaptiveResizing(controller, table) {
   let rafId = null
 
   const redraw = () => {
     rafId = null
 
-    if (!controller.table || !table) return
+    if (!table || !controllerOwnsTable(controller, table)) return
 
     const nextHeight = controller._tableHeight?.()
     if (nextHeight) table.setHeight(nextHeight)
@@ -298,14 +417,17 @@ export function installTableInteractions(controller, table) {
 
 export function subscribeToOperationsTopics(controller, {
   accountId = 0,
+  includeGlobal = false,
   topics = [],
   debounceMs = 450,
+  shouldRefresh = null,
   onRefresh = null,
 } = {}) {
   if (!Array.isArray(topics) || topics.length === 0) return
 
   const uniqueTopics = new Set(topics)
   const consumer = getOperationsConsumer()
+  const shouldRefreshForMessage = typeof shouldRefresh === "function" ? shouldRefresh : () => true
   const refresh = typeof onRefresh === "function" ? onRefresh : () => controller.table?.replaceData()
 
   let refreshTimer = null
@@ -322,10 +444,12 @@ export function subscribeToOperationsTopics(controller, {
     {
       channel: "OperationsChannel",
       account_id: Number(accountId) || 0,
+      include_global: Boolean(includeGlobal || Number(accountId) <= 0),
     },
     {
       received: (message) => {
         if (!message || !uniqueTopics.has(String(message.topic || ""))) return
+        if (!shouldRefreshForMessage(message)) return
         scheduleRefresh()
       },
     }

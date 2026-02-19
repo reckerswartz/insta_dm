@@ -4,7 +4,10 @@
   <% else %>
     <p class="meta">
       Sync: <strong><%= sync_run.kind %></strong>
-      | Status: <strong><%= sync_run.status %></strong>
+      | Status:
+      <span class="pill <%= sync_run.status == "failed" ? "failed" : (sync_run.status == "completed" ? "succeeded" : "running") %>">
+        <%= sync_run.status %>
+      </span>
       <% if sync_run.started_at %>
         | Started: <strong><%= relative_time_with_tooltip(sync_run.started_at) %></strong>
       <% end %>

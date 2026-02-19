@@ -1,15 +1,16 @@
 <% content_for :title, "Feed Posts" %>
 
 <div class="page">
-  <header class="page-header">
-    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-      <div>
-        <h1>Feed Posts</h1>
-        <p class="meta">Captured from your home feed during feed capture runs. Analyze results and decide manual interactions.</p>
-      </div>
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1>Feed Posts</h1>
+      <p class="meta">Captured from your home feed during feed capture runs. Analyze results and decide manual interactions.</p>
+    </div>
+    <div class="page-toolbar-actions">
       <% if current_account %>
         <%= link_to "Account Dashboard", instagram_account_path(current_account), class: "btn secondary" %>
       <% end %>
+      <%= link_to "Profiles", instagram_profiles_path, class: "btn secondary" %>
     </div>
   </header>
 
@@ -29,7 +30,12 @@
     <h2>Posts Data Table</h2>
     <p class="meta">Use header filters/sorting. Shift + wheel scrolls horizontally, and click-drag pans vertically/horizontally.</p>
 
-    <div class="tabulator-shell" data-controller="posts-table" data-posts-table-url-value="<%= instagram_posts_path(format: :json) %>">
+    <div
+      class="tabulator-shell"
+      data-controller="posts-table"
+      data-posts-table-url-value="<%= instagram_posts_path(format: :json) %>"
+      data-posts-table-account-id-value="<%= current_account&.id.to_i %>"
+    >
       <div class="tabulator-host" data-posts-table-target="table"></div>
     </div>
   </section>

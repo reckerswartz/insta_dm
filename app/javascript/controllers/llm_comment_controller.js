@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
-import { createConsumer } from "@rails/actioncable"
+import { getCableConsumer } from "../lib/cable_consumer"
+import { notifyApp } from "../lib/notifications"
 
 export default class extends Controller {
   static values = { accountId: Number }
@@ -37,7 +38,7 @@ export default class extends Controller {
     } catch (error) {
       this.pendingEventIds.delete(key)
       this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
-      this.showNotification(`Failed to generate comment: ${error.message}`, "error")
+      notifyApp(`Failed to generate comment: ${error.message}`, "error")
     }
   }
 
@@ -46,7 +47,7 @@ export default class extends Controller {
     if (this.subscription) return
 
     try {
-      this.consumer = createConsumer()
+      this.consumer = getCableConsumer()
       this.subscription = this.consumer.subscriptions.create(
         {
           channel: "LlmCommentGenerationChannel",
@@ -61,7 +62,7 @@ export default class extends Controller {
           },
           rejected: () => {
             this.wsConnected = false
-            this.showNotification("Real-time updates are unavailable. Please refresh and retry.", "error")
+            notifyApp("Real-time updates are unavailable. Please refresh and retry.", "error")
           },
           received: (data) => this.handleReceived(data),
         },
@@ -161,13 +162,13 @@ export default class extends Controller {
       case "skipped":
         this.pendingEventIds.delete(eventId)
         this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
-        this.showNotification(data?.message || "Comment generation skipped: no usable local context.", "notice")
+        notifyApp(data?.message || "Comment generation skipped: no usable local context.", "notice")
         break
       case "error":
       case "failed":
         this.pendingEventIds.delete(eventId)
         this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
-        this.showNotification(`Failed to generate comment: ${data?.error || data?.message || "Unknown error"}`, "error")
+        notifyApp(`Failed to generate comment: ${data?.error || data?.message || "Unknown error"}`, "error")
         break
       default:
         break
@@ -197,7 +198,7 @@ export default class extends Controller {
     }
 
     this.updateButtonsForEvent(eventId, { disabled: true, label: "Completed", loading: false, eta: null })
-    this.showNotification("Comment generated successfully.", "success")
+    notifyApp("Comment generated successfully.", "success")
   }
 
   updateButtonsForEvent(eventId, state) {
@@ -238,18 +239,6 @@ export default class extends Controller {
     const rangeHigh = Math.ceil(sec * 1.5)
     const queue = Number.isFinite(Number(queueSize)) ? ` (queue: ${Number(queueSize)})` : ""
     return `Estimated ${rangeLow}-${rangeHigh}s${queue}`
-  }
-
-  showNotification(message, type = "notice") {
-    const container = document.getElementById("notifications")
-    if (!container) return
-
-    const notification = document.createElement("div")
-    notification.className = `notification ${type}`
-    notification.textContent = message
-    container.appendChild(notification)
-
-    setTimeout(() => notification.remove(), 4500)
   }
 
   formatDate(value) {

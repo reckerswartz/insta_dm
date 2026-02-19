@@ -11,12 +11,14 @@ module Ops
         "operations:account:#{account_id}"
       end
 
-      def broadcast!(topic:, account_id: nil, payload: {}, throttle_key: nil, throttle_seconds: 0.8)
+      def broadcast!(topic:, account_id: nil, payload: {}, throttle_key: nil, throttle_seconds: 0.8, include_global: nil)
         return if throttled?(topic: topic, account_id: account_id, throttle_key: throttle_key, throttle_seconds: throttle_seconds)
 
+        normalized_account_id = account_id.to_i
+        broadcast_global = include_global.nil? ? normalized_account_id <= 0 : ActiveModel::Type::Boolean.new.cast(include_global)
         message = base_message(topic: topic, payload: payload)
-        ActionCable.server.broadcast(global_stream, message)
-        ActionCable.server.broadcast(account_stream(account_id), message) if account_id.to_i.positive?
+        ActionCable.server.broadcast(global_stream, message) if broadcast_global
+        ActionCable.server.broadcast(account_stream(normalized_account_id), message) if normalized_account_id.positive?
       rescue StandardError => e
         Rails.logger.warn("[ops.live_update] broadcast failed: #{e.class}: #{e.message}")
       end

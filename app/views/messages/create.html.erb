@@ -1,2 +1,12 @@
-<h1>Messages#create</h1>
-<p>Find me in app/views/messages/create.html.erb</p>
+<% content_for :title, "Message Queued" %>
+
+<div class="page">
+  <section class="card">
+    <h1>Message Queued</h1>
+    <p class="meta">The message request has been accepted. Track progress from the related profile or account dashboard.</p>
+    <div class="actions-row">
+      <%= link_to "Dashboard", instagram_accounts_path, class: "btn secondary" %>
+      <%= link_to "Profiles", instagram_profiles_path, class: "btn secondary" %>
+    </div>
+  </section>
+</div>

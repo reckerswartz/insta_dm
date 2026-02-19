@@ -1,6 +1,12 @@
 class LlmCommentGenerationChannel < ApplicationCable::Channel
   def subscribed
-    stream_from "llm_comment_generation_#{params[:account_id]}"
+    requested_account_id = params[:account_id].to_i
+    if requested_account_id <= 0
+      reject
+      return
+    end
+
+    stream_from "llm_comment_generation_#{requested_account_id}"
   end
 
   def unsubscribed

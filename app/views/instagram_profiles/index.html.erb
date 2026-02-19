@@ -1,18 +1,17 @@
 <% content_for :title, "Instagram Profiles" %>
 
-<%= turbo_stream_from @account %>
-
 <div class="page">
-  <header class="page-header">
-    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-      <div>
-        <h1>Profiles</h1>
-        <p class="meta">
-          Browse profiles for <strong><%= @account.username %></strong>. Manage authentication and account-level tools on the
-          <%= link_to "account dashboard", instagram_account_path(@account), class: "link-inline" %>.
-        </p>
-      </div>
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1>Profiles</h1>
+      <p class="meta">
+        Browse profiles for <strong><%= @account.username %></strong>. Manage authentication and account-level tools on the
+        <%= link_to "account dashboard", instagram_account_path(@account), class: "link-inline" %>.
+      </p>
+    </div>
+    <div class="page-toolbar-actions">
       <%= link_to "Account Dashboard", instagram_account_path(@account), class: "btn secondary" %>
+      <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
     </div>
   </header>
 
@@ -41,7 +40,12 @@
     <h2>Profiles Data Table</h2>
     <p class="meta">Use header filters/sorting. Shift + wheel scrolls horizontally, and click-drag pans vertically/horizontally.</p>
 
-    <div class="tabulator-shell" data-controller="profiles-table" data-profiles-table-url-value="<%= instagram_profiles_path(format: :json) %>">
+    <div
+      class="tabulator-shell"
+      data-controller="profiles-table"
+      data-profiles-table-url-value="<%= instagram_profiles_path(format: :json) %>"
+      data-profiles-table-account-id-value="<%= @account.id %>"
+    >
       <div class="tabulator-host" data-profiles-table-target="table"></div>
     </div>
   </section>

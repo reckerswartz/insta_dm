@@ -120,6 +120,7 @@ export default class extends Controller {
 
     subscribeToOperationsTopics(this, {
       accountId: this.accountIdValue,
+      includeGlobal: true,
       topics: ["storage_ingestions_changed"],
       onRefresh: () => this.table?.replaceData(),
     })

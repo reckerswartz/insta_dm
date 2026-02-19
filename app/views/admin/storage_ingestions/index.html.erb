@@ -1,19 +1,20 @@
 <% content_for :title, "Storage Ingestions" %>
 
 <div class="page">
-  <header class="page-header">
-    <h1>Active Storage Ingestions</h1>
-    <p class="meta">Recent Active Storage records, including the background job responsible for creating each attachment.</p>
-  </header>
-
-  <section class="card">
-    <div class="actions-row">
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1>Active Storage Ingestions</h1>
+      <p class="meta">Recent Active Storage records, including the background job responsible for creating each attachment.</p>
+    </div>
+    <div class="page-toolbar-actions">
       <%= link_to "Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
       <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
       <%= link_to "Application Issues", admin_issues_path, class: "btn secondary" %>
     </div>
+  </header>
 
-    <p class="meta mt-2">Use header filters/sorting. Shift + wheel scrolls horizontally, click-drag pans, and attachment updates stream live over ActionCable.</p>
+  <section class="card">
+    <p class="meta">Use header filters/sorting. Shift + wheel scrolls horizontally, click-drag pans, and attachment updates stream live over ActionCable.</p>
 
     <div
       class="tabulator-shell"
