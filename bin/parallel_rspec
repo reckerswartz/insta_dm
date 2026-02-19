@@ -26,5 +26,9 @@ fi
 if [[ "${RSPEC_WORKERS}" -le 1 ]]; then
   bundle exec rspec "$@"
 else
-  bundle exec parallel_rspec spec -n "${RSPEC_WORKERS}" --serialize-stdout "$@"
+  if [[ "${PARALLEL_RSPEC_TEST_OPTIONS:-}" == "" ]]; then
+    bundle exec parallel_rspec spec -n "${RSPEC_WORKERS}" --serialize-stdout "$@"
+  else
+    bundle exec parallel_rspec spec -n "${RSPEC_WORKERS}" --serialize-stdout --test-options "${PARALLEL_RSPEC_TEST_OPTIONS}" "$@"
+  fi
 fi

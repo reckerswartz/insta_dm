@@ -13,6 +13,7 @@ RSpec.describe "UI JavaScript Stability (Core Routes)", :diagnostic, :slow, :ext
       ],
       max_actions: Integer(ENV.fetch("UI_AUDIT_MAX_ACTIONS_CORE", "6")),
       include_table_actions: ENV.fetch("UI_AUDIT_INCLUDE_TABLE_ACTIONS", "0") == "1",
+      include_nav_actions: ENV.fetch("UI_AUDIT_INCLUDE_NAV_ACTIONS", "0") == "1",
     )
 
     expect(report.dig(:totals, :errors)).to eq(0), format_ui_audit_issues(report)

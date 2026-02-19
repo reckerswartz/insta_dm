@@ -20,7 +20,14 @@
         <div class="status-indicator online">
           <div>
             <strong>AI microservice online</strong>
-            <div class="status-time"><%= relative_time_with_tooltip(@service_status[:last_check]) %></div>
+            <div class="status-time">
+              <%= relative_time_with_tooltip(@service_status[:last_check]) %>
+              <% if @service_status[:stale] %>
+                <span class="meta">(cached, refresh queued)</span>
+              <% elsif @service_status[:source].to_s == "live" %>
+                <span class="meta">(live check)</span>
+              <% end %>
+            </div>
           </div>
           <span class="pill">Healthy</span>
         </div>
@@ -40,7 +47,14 @@
         <div class="status-indicator offline">
           <div>
             <strong>AI microservice offline</strong>
-            <div class="status-time"><%= relative_time_with_tooltip(@service_status[:last_check]) %></div>
+            <div class="status-time">
+              <%= relative_time_with_tooltip(@service_status[:last_check]) %>
+              <% if @service_status[:stale] %>
+                <span class="meta">(cached, refresh queued)</span>
+              <% elsif @service_status[:source].to_s == "live" %>
+                <span class="meta">(live check)</span>
+              <% end %>
+            </div>
           </div>
           <span class="pill">Unavailable</span>
         </div>

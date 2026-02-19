@@ -49,7 +49,7 @@ module Ai
         raise NotImplementedError
       end
 
-      def analyze_post!(_post_payload:, _media: nil)
+      def analyze_post!(_post_payload:, _media: nil, _provider_options: {})
         raise NotImplementedError
       end
 

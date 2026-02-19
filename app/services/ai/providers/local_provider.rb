@@ -140,7 +140,8 @@ module Ai
         }
       end
 
-      def analyze_post!(post_payload:, media: nil)
+      def analyze_post!(post_payload:, media: nil, provider_options: {})
+        options = normalize_provider_options(provider_options)
         media_hash = media.is_a?(Hash) ? media : {}
         labels = []
         raw = {}
@@ -149,7 +150,7 @@ module Ai
         case media_hash[:type].to_s
         when "image"
           vision, vision_warning = safe_media_analysis(stage: "image_analysis", media_type: "image") do
-            analyze_image_media(media_hash)
+            analyze_image_media(media_hash, provider_options: options)
           end
           raw[:vision] = vision
           labels = extract_image_labels(vision)
@@ -178,7 +179,7 @@ module Ai
               bytes: mode[:frame_bytes]
             }
             vision, vision_warning = safe_media_analysis(stage: "image_analysis", media_type: "image") do
-              analyze_image_media(static_media)
+              analyze_image_media(static_media, provider_options: options)
             end
             raw[:vision] = vision
             labels = extract_image_labels(vision)
@@ -195,7 +196,7 @@ module Ai
               end
           else
             video, video_warning = safe_media_analysis(stage: "video_analysis", media_type: "video") do
-              analyze_video_media(media_hash)
+              analyze_video_media(media_hash, provider_options: options)
             end
             raw[:video] = video
             labels = extract_video_labels(video)
@@ -249,7 +250,9 @@ module Ai
         end
 
         comment_generation =
-          if visual_labels.any?
+          if !options[:include_comment_generation]
+            comment_generation_disabled_result
+          elsif visual_labels.any?
             generate_engagement_comments_with_fallback(
               post_payload: post_payload,
               image_description: image_description,
@@ -265,7 +268,8 @@ module Ai
           prompt: {
             provider: key,
             media_type: media_hash[:type].to_s,
-            rule_based: true
+            rule_based: true,
+            provider_options: options
           },
           response_text: "local_ai_rule_based_post_analysis",
           response_raw: raw.merge(
@@ -314,12 +318,89 @@ module Ai
         @ollama_client ||= Ai::OllamaClient.new
       end
 
-      def image_features
-        [
-          { type: "LABEL_DETECTION", maxResults: 15 },
-          { type: "TEXT_DETECTION", maxResults: 10 },
-          { type: "FACE_DETECTION", maxResults: 8 }
-        ]
+      def image_features(provider_options = {})
+        options = normalize_provider_options(provider_options)
+        types = image_feature_types_for_options(options: options)
+
+        rows = []
+        rows << { type: "LABEL_DETECTION", maxResults: 15 } if types.include?("LABEL_DETECTION")
+        rows << { type: "TEXT_DETECTION", maxResults: 10 } if types.include?("TEXT_DETECTION")
+        rows << { type: "FACE_DETECTION", maxResults: 8 } if types.include?("FACE_DETECTION")
+        rows = [ { type: "LABEL_DETECTION", maxResults: 15 } ] if rows.empty?
+        rows
+      end
+
+      def image_feature_types_for_options(options:)
+        types = []
+        types << "LABEL_DETECTION"
+        types << "TEXT_DETECTION" if options[:include_ocr]
+        types << "FACE_DETECTION" if options[:include_faces]
+        types.uniq
+      end
+
+      def video_feature_types_for_options(options:)
+        return [] unless options[:include_video_analysis]
+
+        feature_types = [ "LABEL_DETECTION", "SHOT_CHANGE_DETECTION" ]
+        feature_types << "FACE_DETECTION" if options[:include_faces]
+        feature_types.uniq
+      end
+
+      def normalize_provider_options(provider_options)
+        raw = provider_options.is_a?(Hash) ? provider_options : {}
+        options = {
+          visual_only: ActiveModel::Type::Boolean.new.cast(raw[:visual_only] || raw["visual_only"]),
+          include_faces: true,
+          include_ocr: true,
+          include_comment_generation: true,
+          include_video_analysis: true
+        }
+
+        options[:include_faces] =
+          if raw.key?(:include_faces) || raw.key?("include_faces")
+            ActiveModel::Type::Boolean.new.cast(raw[:include_faces] || raw["include_faces"])
+          elsif options[:visual_only]
+            false
+          else
+            true
+          end
+
+        options[:include_ocr] =
+          if raw.key?(:include_ocr) || raw.key?("include_ocr")
+            ActiveModel::Type::Boolean.new.cast(raw[:include_ocr] || raw["include_ocr"])
+          elsif options[:visual_only]
+            false
+          else
+            true
+          end
+
+        options[:include_comment_generation] =
+          if raw.key?(:include_comment_generation) || raw.key?("include_comment_generation")
+            ActiveModel::Type::Boolean.new.cast(raw[:include_comment_generation] || raw["include_comment_generation"])
+          else
+            true
+          end
+
+        options[:include_video_analysis] =
+          if raw.key?(:include_video_analysis) || raw.key?("include_video_analysis")
+            ActiveModel::Type::Boolean.new.cast(raw[:include_video_analysis] || raw["include_video_analysis"])
+          else
+            true
+          end
+
+        options
+      end
+
+      def comment_generation_disabled_result
+        {
+          model: ollama_model,
+          raw: {},
+          source: "policy",
+          status: "disabled_by_provider_options",
+          fallback_used: false,
+          error_message: nil,
+          comment_suggestions: []
+        }
       end
 
       def classify_video_processing(media)
@@ -362,23 +443,26 @@ module Ai
         raw.dig(:video_processing, :processing_mode).to_s == "static_image"
       end
 
-      def analyze_image_media(media)
+      def analyze_image_media(media, provider_options: {})
         if media[:bytes].present?
           # Ensure bytes are properly encoded for binary data
           bytes_data = media[:bytes].is_a?(String) ? media[:bytes].force_encoding("BINARY") : media[:bytes]
-          client.analyze_image_bytes!(bytes_data, features: image_features)
+          client.analyze_image_bytes!(bytes_data, features: image_features(provider_options))
         elsif media[:url].to_s.start_with?("http://", "https://")
-          client.analyze_image_uri!(media[:url], features: image_features)
+          client.analyze_image_uri!(media[:url], features: image_features(provider_options))
         else
           {}
         end
       end
 
-      def analyze_video_media(media)
+      def analyze_video_media(media, provider_options: {})
+        feature_types = video_feature_types_for_options(options: normalize_provider_options(provider_options))
+        return { response: { annotationResults: [ {} ] } } if feature_types.empty?
+
         bytes = media[:bytes]
         raise "Video blob unavailable" if bytes.blank?
 
-        client.analyze_video_bytes!(bytes, features: [ "LABEL_DETECTION", "SHOT_CHANGE_DETECTION" ])
+        client.analyze_video_bytes!(bytes, features: feature_types)
       end
 
       def extract_image_labels(vision_response)

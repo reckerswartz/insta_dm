@@ -51,27 +51,70 @@ Control worker count:
 RSPEC_WORKERS=4 bin/parallel_rspec
 ```
 
-### Selenium UI verification (responsive smoke)
+### Diagnostics audits (migrated to RSpec)
 
-Run the Selenium UI verifier to exercise navigation/actions and capture temporary screenshots for multiple viewports:
+Time-consuming audit scripts were migrated into `spec/diagnostics` so results are CI-friendly, taggable, and parallelizable.
+
+Migrated script entrypoints:
+- `script/ui_js_stability_audit.rb` -> `spec/diagnostics/ui_js_stability_core_spec.rb`, `spec/diagnostics/ui_js_stability_admin_spec.rb`, `spec/diagnostics/ui_story_archive_responsiveness_spec.rb`, `spec/diagnostics/ui_profile_page_stability_spec.rb`, `spec/diagnostics/ui_profile_modal_responsiveness_spec.rb`
+- `script/ui_selenium_verify.rb` -> same `diagnostic_ui` RSpec files as above
+- `script/story_archive_ui_audit.rb` -> `spec/diagnostics/ui_story_archive_responsiveness_spec.rb`
+- `script/profile_page_ui_audit.rb` -> `spec/diagnostics/ui_profile_page_stability_spec.rb`, `spec/diagnostics/ui_profile_modal_responsiveness_spec.rb`
+- `script/prompt_signal_audit.rb` -> `spec/diagnostics/prompt_signal_coverage_spec.rb`
+
+Run diagnostics:
 
 ```bash
-ruby script/ui_selenium_verify.rb
+# fast diagnostics only (DB/API/jobs/media/prompt checks)
+bundle exec rspec spec/diagnostics --tag '~external_app'
+
+# live Selenium diagnostics only (requires running app server)
+bundle exec rspec spec/diagnostics --tag diagnostic_ui
+
+# full diagnostics suite
+bundle exec rspec spec/diagnostics
 ```
 
-Useful options:
+Parallel diagnostics:
 
 ```bash
-# limit actions per page and target specific viewports/routes
-UI_VERIFY_MAX_ACTIONS=2 UI_VERIFY_VIEWPORTS=mobile,portrait,desktop,4k UI_VERIFY_ROUTES=/,/instagram_profiles ruby script/ui_selenium_verify.rb
+# run diagnostics in parallel workers
+RSPEC_WORKERS=4 bin/parallel_rspec spec/diagnostics
 
-# disable deep Tabulator pagination/state/interaction verification if needed
-UI_VERIFY_TABLE_CHECKS=0 ruby script/ui_selenium_verify.rb
+# forward rspec options to each worker
+PARALLEL_RSPEC_TEST_OPTIONS="--tag ~external_app" RSPEC_WORKERS=4 bin/parallel_rspec spec/diagnostics
+
+# balanced grouping for heavy Selenium files (recommended for CI)
+bundle exec parallel_rspec spec/diagnostics -n 4 --serialize-stdout --specify-groups 'spec/diagnostics/ui_js_stability_core_spec.rb|spec/diagnostics/ui_js_stability_admin_spec.rb|spec/diagnostics/ui_story_archive_responsiveness_spec.rb'
 ```
 
-Artifacts are written to:
-- `tmp/ui_verify/<timestamp>/report.json`
-- `tmp/ui_verify/<timestamp>/*.png`
+Measured performance (local):
+- Legacy standalone UI audit reports (`tmp/ui_audit/*/report.json`, 9 runs): average `145.7s`, median `124s`, max `262s` for 9 pages.
+- RSpec diagnostics sequential (`bundle exec rspec spec/diagnostics`): `~100-116s` in current runs.
+- RSpec diagnostics parallel (balanced `parallel_rspec` command above): `67.19s` wall time in current run (`~42%` faster than a `115.79s` sequential run).
+
+Artifacts and logs:
+- Selenium diagnostic artifacts are written to `tmp/diagnostic_specs/rspec_ui_audit/<run_id>/report.json`.
+- Reports include `started_at`, `finished_at`, `duration_seconds`, page actions, and normalized issue lists.
+
+When to use RSpec vs scripts:
+- Use RSpec (`spec/diagnostics`) for CI/CD, reliable reporting, and parallel execution.
+- Keep `script/*_audit.rb` commands for convenience only; they are now thin wrappers around RSpec.
+
+Troubleshooting tips:
+- Ensure app health endpoint is up: `curl http://127.0.0.1:3000/up`.
+- Override target app with `UI_AUDIT_BASE_URL`.
+- Provide deterministic targets when auto-discovery is not enough:
+`UI_AUDIT_STORY_ACCOUNT_PATH=/instagram_accounts/:id`,
+`UI_AUDIT_PROFILE_PATH=/instagram_profiles/:id`.
+- Strict mode for CI:
+`UI_AUDIT_REQUIRE_SERVER=1`,
+`UI_AUDIT_REQUIRE_STORY_ACCOUNT_PATH=1`,
+`UI_AUDIT_REQUIRE_PROFILE_PATH=1`,
+`UI_AUDIT_REQUIRE_PROFILE_MODAL=1`.
+- Optional deeper interaction coverage:
+`UI_AUDIT_INCLUDE_TABLE_ACTIONS=1`,
+`UI_AUDIT_INCLUDE_NAV_ACTIONS=1`.
 
 ### VCR recording and replay
 

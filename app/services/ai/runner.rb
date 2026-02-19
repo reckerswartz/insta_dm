@@ -7,7 +7,15 @@ module Ai
       @account = account
     end
 
-    def analyze!(purpose:, analyzable:, payload:, media: nil, media_fingerprint: nil, allow_cached: true)
+    def analyze!(
+      purpose:,
+      analyzable:,
+      payload:,
+      media: nil,
+      media_fingerprint: nil,
+      allow_cached: true,
+      provider_options: {}
+    )
       fingerprint = if purpose == "post"
         media_fingerprint.to_s.presence || compute_media_fingerprint(media)
       end
@@ -31,7 +39,8 @@ module Ai
           started_at: Time.current,
           media_fingerprint: fingerprint,
           metadata: {
-            provider_display_name: provider.display_name
+            provider_display_name: provider.display_name,
+            provider_options: (provider_options.is_a?(Hash) ? provider_options : {})
           }
         )
 
@@ -41,7 +50,7 @@ module Ai
             when "profile"
               provider.analyze_profile!(profile_payload: payload, media: media)
             when "post"
-              provider.analyze_post!(post_payload: payload, media: media)
+              provider.analyze_post!(post_payload: payload, media: media, provider_options: provider_options)
             else
               raise "Unsupported AI purpose: #{purpose}"
             end

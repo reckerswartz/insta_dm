@@ -7,14 +7,15 @@ require "selenium-webdriver"
 
 module Diagnostics
   class SeleniumUiAudit
-    SAFE_BUTTON_DENYLIST = /(delete|destroy|clear|stop all|force|retry all|wipe|remove|drop|truncate|reset|background|run all tests|object detection|face detection|face embedding|face comparison|refresh status)/i
+    SAFE_BUTTON_DENYLIST = /(delete|destroy|clear|stop all|force|retry all|wipe|remove|drop|truncate|reset|background|run all tests|object detection|face detection|face embedding|face comparison|refresh status|manual browser login|validate session|export stored cookies|import cookies|sync followers|sync following|download archives|run archive)/i
 
-    def initialize(base_url:, routes:, max_actions: 12, wait_seconds: 16, include_table_actions: false, output_dir: nil)
+    def initialize(base_url:, routes:, max_actions: 12, wait_seconds: 16, include_table_actions: false, include_nav_actions: false, output_dir: nil)
       @base_url = base_url
       @routes = Array(routes).map { |route| absolute_url(route) }.uniq
       @max_actions = Integer(max_actions)
       @wait_seconds = Integer(wait_seconds)
       @include_table_actions = include_table_actions
+      @include_nav_actions = include_nav_actions
       @output_dir = output_dir || default_output_dir
       FileUtils.mkdir_p(@output_dir)
       @pages = []
@@ -22,6 +23,7 @@ module Diagnostics
     end
 
     def run!
+      started_at = Time.now.utc
       driver = build_driver
 
       @routes.each do |route|
@@ -29,8 +31,11 @@ module Diagnostics
       end
 
       @issues = @pages.flat_map { |page| page[:issues] }
+      finished_at = Time.now.utc
       report = {
-        started_at: Time.now.utc.iso8601,
+        started_at: started_at.iso8601,
+        finished_at: finished_at.iso8601,
+        duration_seconds: (finished_at - started_at).round(2),
         base_url: @base_url,
         routes: @routes,
         pages: @pages,
@@ -216,7 +221,9 @@ module Diagnostics
     def build_actions(driver)
       current_url = canonicalize(driver.current_url)
       actions = []
-      actions.concat(collect_click_actions(driver, "a.sidebar-link, a.topbar-shortcut-link", :nav_click, current_url))
+      if @include_nav_actions
+        actions.concat(collect_click_actions(driver, "a.sidebar-link, a.topbar-shortcut-link", :nav_click, current_url))
+      end
       actions.concat(collect_click_actions(driver, "button[data-bs-toggle='modal']", :open_modal, current_url))
       actions.concat(collect_click_actions(driver, "button.story-preview-button, button[data-action='profile-post-modal#open']", :open_profile_modal, current_url))
       if @include_table_actions
@@ -364,6 +371,7 @@ module Diagnostics
         detail = entry.message.to_s
         next if detail.empty?
         next unless level == "SEVERE" || level == "WARNING"
+        next if benign_console_noise?(detail)
 
         severity = level == "SEVERE" ? "error" : "warning"
         type = detail.include?("Uncaught") ? "uncaught_exception" : "console_#{level.downcase}"
@@ -385,11 +393,16 @@ module Diagnostics
 
       Array(probe["uncaught"]).each do |err|
         detail = "#{err['message']} #{err['source']}:#{err['line']}:#{err['col']}".strip
+        next if benign_abort_message?(detail)
+
         page[:issues] << issue(page[:route], action_name, "error", "uncaught_exception", detail)
       end
 
       Array(probe["rejections"]).each do |err|
-        page[:issues] << issue(page[:route], action_name, "error", "unhandled_rejection", err["reason"].to_s)
+        detail = err["reason"].to_s
+        next if benign_abort_message?(detail)
+
+        page[:issues] << issue(page[:route], action_name, "error", "unhandled_rejection", detail)
       end
 
       Array(probe["failedRequests"]).each do |req|
@@ -425,6 +438,23 @@ module Diagnostics
         seen << key
         true
       end
+    end
+
+    def benign_abort_message?(detail)
+      text = detail.to_s
+      return false if text.empty?
+
+      text.match?(/the user aborted a request/i) ||
+        text.match?(/\babort(?:ed|error)?\b/i) ||
+        text.match?(/data load error: .*failed to fetch/i)
+    end
+
+    def benign_console_noise?(detail)
+      text = detail.to_s
+      return false if text.empty?
+
+      benign_abort_message?(text) ||
+        text.match?(%r{/favicon\.ico .*failed to load resource}i)
     end
 
     def canonicalize(url)

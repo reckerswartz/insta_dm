@@ -79,7 +79,8 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
       AnalyzeInstagramProfilePostJob.perform_now(
         instagram_account_id: account.id,
         instagram_profile_id: profile.id,
-        instagram_profile_post_id: post.id
+        instagram_profile_post_id: post.id,
+        pipeline_mode: "inline"
       )
       analyzed_now += 1
     rescue StandardError => e

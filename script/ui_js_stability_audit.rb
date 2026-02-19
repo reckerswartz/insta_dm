@@ -7,6 +7,8 @@ args = [
   "bundle", "exec", "rspec",
   "spec/diagnostics/ui_js_stability_core_spec.rb",
   "spec/diagnostics/ui_js_stability_admin_spec.rb",
+  "spec/diagnostics/ui_story_archive_responsiveness_spec.rb",
+  "spec/diagnostics/ui_profile_page_stability_spec.rb",
   "spec/diagnostics/ui_profile_modal_responsiveness_spec.rb",
   "--tag", "diagnostic_ui",
   *ARGV,

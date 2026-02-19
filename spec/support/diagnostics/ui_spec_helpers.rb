@@ -29,7 +29,48 @@ module Diagnostics
       false
     end
 
-    def run_ui_audit(routes:, max_actions:, include_table_actions: false)
+    def fetch_ui_html(path)
+      response = Net::HTTP.get_response(URI.join(ui_audit_base_url, path))
+      return nil unless response.code.to_i.between?(200, 299)
+
+      response.body.to_s
+    rescue StandardError
+      nil
+    end
+
+    def discover_account_show_path
+      html = fetch_ui_html("/")
+      return nil if html.to_s.empty?
+
+      html[%r{/instagram_accounts/\d+}]
+    end
+
+    def discover_profile_show_path(account_path: nil)
+      path = account_path.to_s.strip
+      path = discover_account_show_path if path.empty?
+      return nil if path.to_s.empty?
+
+      html = fetch_ui_html(path)
+      return nil if html.to_s.empty?
+
+      html[%r{/instagram_profiles/\d+}]
+    end
+
+    def resolve_story_account_path
+      configured = ENV.fetch("UI_AUDIT_STORY_ACCOUNT_PATH", "").strip
+      return configured unless configured.empty?
+
+      discover_account_show_path
+    end
+
+    def resolve_profile_path
+      configured = ENV.fetch("UI_AUDIT_PROFILE_PATH", "").strip
+      return configured unless configured.empty?
+
+      discover_profile_show_path(account_path: ENV.fetch("UI_AUDIT_PROFILE_ACCOUNT_PATH", "").strip)
+    end
+
+    def run_ui_audit(routes:, max_actions:, include_table_actions: false, include_nav_actions: false)
       output_dir = Rails.root.join("tmp/diagnostic_specs/rspec_ui_audit/#{SecureRandom.hex(6)}").to_s
       Diagnostics::SeleniumUiAudit.new(
         base_url: ui_audit_base_url,
@@ -37,6 +78,7 @@ module Diagnostics
         max_actions: max_actions,
         wait_seconds: ui_audit_wait_seconds,
         include_table_actions: include_table_actions,
+        include_nav_actions: include_nav_actions,
         output_dir: output_dir,
       ).run!
     end

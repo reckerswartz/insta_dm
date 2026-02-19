@@ -1,14 +1,21 @@
-require "base64"
-require "digest"
-require "uri"
-
 class AnalyzeInstagramProfilePostJob < ApplicationJob
-  queue_as :ai
+  queue_as :ai_visual_queue
 
-  MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
-  MAX_INLINE_VIDEO_BYTES = 12 * 1024 * 1024
+  DEFAULT_TASK_FLAGS = {
+    analyze_visual: true,
+    analyze_faces: true,
+    run_ocr: true,
+    run_video: true,
+    run_metadata: true
+  }.freeze
 
-  def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:)
+  def perform(
+    instagram_account_id:,
+    instagram_profile_id:,
+    instagram_profile_post_id:,
+    task_flags: {},
+    pipeline_mode: "async"
+  )
     account = InstagramAccount.find(instagram_account_id)
     profile = account.instagram_profiles.find(instagram_profile_id)
     post = profile.instagram_profile_posts.find(instagram_profile_post_id)
@@ -23,33 +30,23 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       return
     end
 
-    payload = build_payload(profile: profile, post: post)
-    media = build_media_payload(post)
+    resolved_flags = resolve_task_flags(post: post, task_flags: task_flags)
 
-    run = Ai::Runner.new(account: account).analyze!(
-      purpose: "post",
-      analyzable: post,
-      payload: payload,
-      media: media,
-      media_fingerprint: media_fingerprint_for(post: post, media: media)
-    )
+    if pipeline_mode.to_s == "inline"
+      perform_inline(
+        account: account,
+        profile: profile,
+        post: post,
+        task_flags: resolved_flags
+      )
+      return
+    end
 
-    post.update!(
-      ai_status: "analyzed",
-      analyzed_at: Time.current,
-      ai_provider: run[:provider].key,
-      ai_model: run.dig(:result, :model),
-      analysis: run.dig(:result, :analysis)
-    )
-    face_recognition_result = PostFaceRecognitionService.new.process!(post: post)
-    merge_face_summary!(post: post, face_recognition_result: face_recognition_result)
-    Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: run.dig(:result, :analysis))
-
-    Turbo::StreamsChannel.broadcast_append_to(
-      account,
-      target: "notifications",
-      partial: "shared/notification",
-      locals: { kind: "notice", message: "Profile post analyzed: #{post.shortcode}." }
+    start_orchestrated_pipeline!(
+      account: account,
+      profile: profile,
+      post: post,
+      task_flags: resolved_flags
     )
   rescue StandardError => e
     post&.update!(ai_status: "failed") if defined?(post) && post&.persisted?
@@ -66,68 +63,137 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
 
   private
 
-  def build_payload(profile:, post:)
-    {
-      post: {
-        shortcode: post.shortcode,
-        caption: post.caption,
-        taken_at: post.taken_at&.iso8601,
-        permalink: post.permalink_url,
-        likes_count: post.likes_count,
-        comments_count: post.comments_count,
-        comments: post.instagram_profile_post_comments.recent_first.limit(25).map do |c|
-          {
-            author_username: c.author_username,
-            body: c.body,
-            commented_at: c.commented_at&.iso8601
-          }
-        end
-      },
-      author_profile: {
-        username: profile.username,
-        display_name: profile.display_name,
-        bio: profile.bio,
-        can_message: profile.can_message,
-        tags: profile.profile_tags.pluck(:name).sort
-      },
-      rules: {
-        require_manual_review: true,
-        style: "gen_z_light"
-      }
-    }
+  def start_orchestrated_pipeline!(account:, profile:, post:, task_flags:)
+    pipeline_state = Ai::PostAnalysisPipelineState.new(post: post)
+    run_id = pipeline_state.start!(
+      task_flags: task_flags,
+      source_job: self.class.name
+    )
+
+    enqueue_step_job!(
+      step: "visual",
+      job_class: ProcessPostVisualAnalysisJob,
+      account: account,
+      profile: profile,
+      post: post,
+      run_id: run_id,
+      pipeline_state: pipeline_state
+    )
+
+    enqueue_step_job!(
+      step: "face",
+      job_class: ProcessPostFaceAnalysisJob,
+      account: account,
+      profile: profile,
+      post: post,
+      run_id: run_id,
+      pipeline_state: pipeline_state
+    )
+
+    enqueue_step_job!(
+      step: "ocr",
+      job_class: ProcessPostOcrAnalysisJob,
+      account: account,
+      profile: profile,
+      post: post,
+      run_id: run_id,
+      pipeline_state: pipeline_state
+    )
+
+    enqueue_step_job!(
+      step: "video",
+      job_class: ProcessPostVideoAnalysisJob,
+      account: account,
+      profile: profile,
+      post: post,
+      run_id: run_id,
+      pipeline_state: pipeline_state
+    )
+
+    FinalizePostAnalysisPipelineJob.perform_later(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id,
+      attempts: 0
+    )
   end
 
-  def build_media_payload(post)
-    return { type: "none" } unless post.media.attached?
+  def enqueue_step_job!(step:, job_class:, account:, profile:, post:, run_id:, pipeline_state:)
+    return unless pipeline_state.required_steps(run_id: run_id).include?(step)
 
-    blob = post.media.blob
-    return { type: "none" } unless blob
-    content_type = blob.content_type.to_s
-    is_image = content_type.start_with?("image/")
-    is_video = content_type.start_with?("video/")
-    return { type: "none" } unless is_image || is_video
+    job = job_class.perform_later(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id
+    )
 
-    if is_image && blob.byte_size.to_i > MAX_INLINE_IMAGE_BYTES
-      media_url = post.source_media_url.to_s
-      return { type: "image", content_type: content_type, url: media_url } if media_url.present?
-    elsif is_video && blob.byte_size.to_i > MAX_INLINE_VIDEO_BYTES
-      media_url = post.source_media_url.to_s
-      return { type: "video", content_type: content_type, url: media_url } if media_url.present?
+    pipeline_state.mark_step_queued!(
+      run_id: run_id,
+      step: step,
+      queue_name: job.queue_name,
+      active_job_id: job.job_id,
+      result: {
+        enqueued_by: self.class.name,
+        enqueued_at: Time.current.iso8601(3)
+      }
+    )
+  rescue StandardError => e
+    pipeline_state.mark_step_completed!(
+      run_id: run_id,
+      step: step,
+      status: "failed",
+      error: "enqueue_failed: #{e.class}: #{e.message}",
+      result: {
+        reason: "enqueue_failed"
+      }
+    )
+  end
+
+  def perform_inline(account:, profile:, post:, task_flags:)
+    builder = Ai::PostAnalysisContextBuilder.new(profile: profile, post: post)
+    run = nil
+
+    if task_flags[:analyze_visual]
+      payload = builder.payload
+      media = builder.media_payload
+      run = Ai::Runner.new(account: account).analyze!(
+        purpose: "post",
+        analyzable: post,
+        payload: payload,
+        media: media,
+        media_fingerprint: builder.media_fingerprint(media: media),
+        provider_options: inline_provider_options(task_flags: task_flags)
+      )
+
+      post.update!(
+        ai_status: "analyzed",
+        analyzed_at: Time.current,
+        ai_provider: run[:provider].key,
+        ai_model: run.dig(:result, :model),
+        analysis: run.dig(:result, :analysis)
+      )
     end
 
-    data = blob.download
-    payload = {
-      type: is_video ? "video" : "image",
-      content_type: content_type,
-      bytes: data
-    }
-    if is_image
-      encoded = Base64.strict_encode64(data)
-      payload[:image_data_url] = "data:#{content_type};base64,#{encoded}"
+    if task_flags[:analyze_faces]
+      face_recognition_result = PostFaceRecognitionService.new.process!(post: post)
+      merge_face_summary!(post: post, face_recognition_result: face_recognition_result)
     end
-    payload
-  rescue StandardError
-    { type: "none" }
+
+    if task_flags[:run_metadata]
+      analysis_hash = post.analysis.is_a?(Hash) ? post.analysis : {}
+      Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: analysis_hash)
+    end
+
+    post.update!(ai_status: "analyzed", analyzed_at: Time.current) unless post.ai_status.to_s == "analyzed"
+
+    Turbo::StreamsChannel.broadcast_append_to(
+      account,
+      target: "notifications",
+      partial: "shared/notification",
+      locals: { kind: "notice", message: "Profile post analyzed: #{post.shortcode}." }
+    )
   end
 
   def merge_face_summary!(post:, face_recognition_result:)
@@ -151,32 +217,31 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
     nil
   end
 
-  def media_fingerprint_for(post:, media:)
-    return post.media_url_fingerprint.to_s if post.media_url_fingerprint.to_s.present?
+  def resolve_task_flags(post:, task_flags:)
+    flags = DEFAULT_TASK_FLAGS.deep_dup
+    incoming = task_flags.is_a?(Hash) ? task_flags : {}
 
-    if post.media.attached?
-      checksum = post.media.blob&.checksum.to_s
-      return "blob:#{checksum}" if checksum.present?
+    incoming.each do |key, value|
+      symbol_key = key.to_s.underscore.to_sym
+      next unless flags.key?(symbol_key)
+
+      flags[symbol_key] = ActiveModel::Type::Boolean.new.cast(value)
     end
 
-    normalized_url = normalize_url(post.source_media_url)
-    return Digest::SHA256.hexdigest(normalized_url) if normalized_url.present?
+    unless post.media.attached? && post.media.blob&.content_type.to_s.start_with?("video/")
+      flags[:run_video] = false
+    end
 
-    bytes = media[:bytes]
-    return Digest::SHA256.hexdigest(bytes) if bytes.present?
-
-    nil
+    flags
   end
 
-  def normalize_url(raw)
-    value = raw.to_s.strip
-    return nil if value.blank?
-
-    uri = URI.parse(value)
-    return value unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
-
-    "#{uri.scheme}://#{uri.host}#{uri.path}"
-  rescue StandardError
-    value
+  def inline_provider_options(task_flags:)
+    {
+      visual_only: false,
+      include_faces: ActiveModel::Type::Boolean.new.cast(task_flags[:analyze_faces]),
+      include_ocr: ActiveModel::Type::Boolean.new.cast(task_flags[:run_ocr]),
+      include_comment_generation: true,
+      include_video_analysis: ActiveModel::Type::Boolean.new.cast(task_flags[:run_video])
+    }
   end
 end

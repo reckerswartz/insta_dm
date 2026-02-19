@@ -6,7 +6,7 @@ RSpec.describe Ai::Providers::LocalProvider do
 
     private
 
-    def analyze_image_media(_media)
+    def analyze_image_media(_media, provider_options: {})
       raise image_error if image_error
 
       {
@@ -17,7 +17,7 @@ RSpec.describe Ai::Providers::LocalProvider do
       }
     end
 
-    def analyze_video_media(_media)
+    def analyze_video_media(_media, provider_options: {})
       raise video_error if video_error
 
       {

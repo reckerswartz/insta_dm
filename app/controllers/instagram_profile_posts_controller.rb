@@ -7,10 +7,19 @@ class InstagramProfilePostsController < ApplicationController
 
     post.update!(ai_status: "pending") if post.ai_status == "failed"
 
+    task_flags = {
+      analyze_visual: boolean_param(params[:analyze_visual], default: true),
+      analyze_faces: boolean_param(params[:analyze_faces], default: true),
+      run_ocr: boolean_param(params[:run_ocr], default: true),
+      run_video: boolean_param(params[:run_video], default: true),
+      run_metadata: boolean_param(params[:run_metadata], default: true)
+    }
+
     AnalyzeInstagramProfilePostJob.perform_later(
       instagram_account_id: current_account.id,
       instagram_profile_id: profile.id,
-      instagram_profile_post_id: post.id
+      instagram_profile_post_id: post.id,
+      task_flags: task_flags
     )
 
     respond_to do |format|
@@ -206,5 +215,13 @@ class InstagramProfilePostsController < ApplicationController
       end
       format.json { render json: { error: e.message }, status: :unprocessable_entity }
     end
+  end
+
+  private
+
+  def boolean_param(value, default:)
+    return default if value.nil?
+
+    ActiveModel::Type::Boolean.new.cast(value)
   end
 end

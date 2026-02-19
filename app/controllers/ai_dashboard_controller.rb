@@ -64,8 +64,16 @@ class AiDashboardController < ApplicationController
   private
 
   def check_ai_services(force: false)
-    health = Ops::LocalAiHealth.check(force: force)
-    checked_at = Time.current
+    health = if force
+      Ops::LocalAiHealth.check(force: true)
+    else
+      Ops::LocalAiHealth.status
+    end
+
+    enqueue_health_refresh_if_needed(health: health) unless force
+
+    checked_at = parse_health_checked_at(health[:checked_at])
+    stale = ActiveModel::Type::Boolean.new.cast(health[:stale])
 
     if ActiveModel::Type::Boolean.new.cast(health[:ok])
       service_map = health.dig(:details, :microservice, :services) || {}
@@ -73,29 +81,21 @@ class AiDashboardController < ApplicationController
         "ollama" => Array(health.dig(:details, :ollama, :models)).any?
       )
 
-      Ops::IssueTracker.record_ai_service_check!(
-        ok: true,
-        message: "Local AI stack healthy",
-        metadata: health
-      )
-
       {
         status: "online",
         services: service_map,
+        stale: stale,
+        source: health[:source].to_s,
         last_check: checked_at
       }
     else
       message = health[:error].presence || "Local AI stack unavailable"
 
-      Ops::IssueTracker.record_ai_service_check!(
-        ok: false,
-        message: message,
-        metadata: health
-      )
-
       {
         status: "offline",
         message: message,
+        stale: stale,
+        source: health[:source].to_s,
         last_check: checked_at
       }
     end
@@ -103,6 +103,29 @@ class AiDashboardController < ApplicationController
 
   def refresh_requested?
     ActiveModel::Type::Boolean.new.cast(params[:refresh])
+  end
+
+  def enqueue_health_refresh_if_needed(health:)
+    stale = ActiveModel::Type::Boolean.new.cast(health[:stale])
+    unhealthy = !ActiveModel::Type::Boolean.new.cast(health[:ok])
+    return unless stale || unhealthy
+
+    throttle_key = "ops:local_ai_health:refresh_enqueued"
+    return if Rails.cache.read(throttle_key)
+
+    job = CheckAiMicroserviceHealthJob.perform_later
+    Rails.cache.write(throttle_key, job.job_id, expires_in: 45.seconds)
+  rescue StandardError
+    nil
+  end
+
+  def parse_health_checked_at(value)
+    text = value.to_s.strip
+    return Time.current if text.blank?
+
+    Time.iso8601(text)
+  rescue StandardError
+    Time.current
   end
 
   def test_vision_service(test_type)
