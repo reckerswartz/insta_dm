@@ -1,4 +1,5 @@
 require "rails_helper"
+require "securerandom"
 
 RSpec.describe "ProfileAnalysisCollectorTest" do
   it "marks missing posts as deleted and restores when they reappear" do
@@ -183,6 +184,73 @@ RSpec.describe "ProfileAnalysisCollectorTest" do
     assert_equal false, download_called
     assert post.reload.media.attached?
     assert_equal "media_123", post.metadata["media_id"]
+  end
+  it "reuses saved post media across accounts by media identifier" do
+    source_account = InstagramAccount.create!(username: "collector_source_#{SecureRandom.hex(3)}")
+    source_profile = source_account.instagram_profiles.create!(username: "collector_source_profile_#{SecureRandom.hex(3)}")
+    source_post = source_profile.instagram_profile_posts.create!(
+      instagram_account: source_account,
+      shortcode: "shared_media_1",
+      caption: "source",
+      permalink: "https://instagram.com/p/shared_media_1/",
+      source_media_url: "https://cdn.example.com/source.jpg",
+      likes_count: 3,
+      comments_count: 0,
+      metadata: { "media_id" => "shared_media_id_1", "media_type" => 1 },
+      last_synced_at: 1.day.ago
+    )
+    source_post.media.attach(
+      io: StringIO.new("cached-shared-image"),
+      filename: "cached.jpg",
+      content_type: "image/jpeg"
+    )
+
+    target_account = InstagramAccount.create!(username: "collector_target_#{SecureRandom.hex(3)}")
+    target_profile = target_account.instagram_profiles.create!(username: "collector_target_profile_#{SecureRandom.hex(3)}")
+
+    dataset = {
+      profile: {},
+      posts: [
+        {
+          shortcode: "shared_media_1",
+          media_id: "shared_media_id_1",
+          media_type: 1,
+          taken_at: Time.current,
+          caption: "target",
+          permalink: "https://instagram.com/p/shared_media_1/",
+          media_url: "https://cdn.example.com/new-signed-url.jpg?token=xyz",
+          image_url: nil,
+          likes_count: 2,
+          comments_count: 0,
+          comments: []
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_analysis_dataset!) { |**_kwargs| dataset }
+
+    download_called = false
+    with_client_stub(client_stub) do
+      collector = Instagram::ProfileAnalysisCollector.new(account: target_account, profile: target_profile)
+      collector.define_singleton_method(:download_media) do |_url, **_kwargs|
+        download_called = true
+        raise "download_media should not be called when cached media is available"
+      end
+
+      collector.collect_and_persist!(
+        posts_limit: nil,
+        comments_limit: 8,
+        track_missing_as_deleted: false,
+        sync_source: "test_capture"
+      )
+    end
+
+    target_post = target_profile.instagram_profile_posts.find_by(shortcode: "shared_media_1")
+    assert_not_nil target_post
+    assert target_post.media.attached?
+    assert_equal false, download_called
+    assert_equal source_post.media.blob.id, target_post.media.blob.id
   end
   it "marks updated post as analysis candidate when analysis inputs change" do
     account = InstagramAccount.create!(username: "collector_analysis_account")

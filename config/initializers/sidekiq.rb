@@ -5,6 +5,23 @@ redis_url = ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0")
 
 Sidekiq.configure_server do |config|
   config.redis = { url: redis_url }
+
+  # Isolate local compute-heavy workloads from general queue throughput.
+  if config.respond_to?(:capsule)
+    ai_concurrency = ENV.fetch("SIDEKIQ_AI_CONCURRENCY", 1).to_i.clamp(1, 2)
+    frame_concurrency = ENV.fetch("SIDEKIQ_FRAME_CONCURRENCY", 1).to_i.clamp(1, 2)
+
+    config.capsule("ai_single_lane") do |cap|
+      cap.concurrency = ai_concurrency
+      cap.queues = %w[ai]
+    end
+
+    config.capsule("frame_generation_lane") do |cap|
+      cap.concurrency = frame_concurrency
+      cap.queues = %w[frame_generation]
+    end
+  end
+
   config.error_handlers << proc do |error, context, _|
     Ops::StructuredLogger.error(
       event: "sidekiq.error",

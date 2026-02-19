@@ -1,7 +1,7 @@
 require "set"
 
 class SyncRecentProfilePostsForProfileJob < ApplicationJob
-  queue_as :profiles
+  queue_as :post_downloads
 
   VISITED_TAG = "profile_posts_scanned".freeze
   ANALYZED_TAG = "profile_posts_analyzed".freeze

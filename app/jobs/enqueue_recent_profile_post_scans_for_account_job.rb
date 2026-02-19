@@ -1,5 +1,5 @@
 class EnqueueRecentProfilePostScansForAccountJob < ApplicationJob
-  queue_as :profiles
+  queue_as :post_downloads
 
   VISITED_TAG = SyncRecentProfilePostsForProfileJob::VISITED_TAG
   ANALYZED_TAG = SyncRecentProfilePostsForProfileJob::ANALYZED_TAG

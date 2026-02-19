@@ -129,7 +129,7 @@
               </button>
             <% elsif image_url.present? && is_video %>
               <div class="story-media-preview story-video-player-shell">
-                <video controls preload="none" playsinline src="<%= image_url %>" data-controller="video-player"></video>
+                <video controls preload="none" playsinline src="<%= image_url %>" data-controller="video-player" data-video-player-autoplay-value="false" data-video-player-load-on-play-value="true"></video>
               </div>
             <% else %>
               <div class="story-media-preview">

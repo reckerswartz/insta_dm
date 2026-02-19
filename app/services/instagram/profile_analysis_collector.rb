@@ -201,6 +201,10 @@ module Instagram
       fp = Digest::SHA256.hexdigest(url)
       return false if post.media.attached? && post.media_url_fingerprint.to_s == fp
 
+      if attach_media_from_local_cache!(post: post, incoming_media_id: incoming_media_id, fingerprint: fp)
+        return true
+      end
+
       io, content_type, filename = download_media(url)
       post.media.purge if post.media.attached?
       post.media.attach(io: io, filename: filename, content_type: content_type)
@@ -211,6 +215,64 @@ module Instagram
       false
     ensure
       io&.close if defined?(io) && io.respond_to?(:close)
+    end
+
+    def attach_media_from_local_cache!(post:, incoming_media_id:, fingerprint:)
+      blob = cached_profile_post_blob(post: post, incoming_media_id: incoming_media_id)
+      return false unless blob
+
+      if post.media.attached? && post.media.blob_id == blob.id
+        if post.media_url_fingerprint.to_s != fingerprint
+          post.update!(media_url_fingerprint: fingerprint)
+          return true
+        end
+        return false
+      end
+
+      post.media.purge if post.media.attached?
+      post.media.attach(blob)
+      post.update!(media_url_fingerprint: fingerprint)
+      true
+    rescue StandardError => e
+      Rails.logger.warn("[ProfileAnalysisCollector] local media cache attach failed for shortcode=#{post.shortcode}: #{e.class}: #{e.message}")
+      false
+    end
+
+    def cached_profile_post_blob(post:, incoming_media_id:)
+      by_media_id = cached_blob_from_profile_posts(post: post, incoming_media_id: incoming_media_id)
+      return by_media_id if by_media_id
+
+      by_shortcode = cached_blob_from_profile_posts(post: post, incoming_media_id: nil)
+      return by_shortcode if by_shortcode
+
+      cached_blob_from_feed_posts(shortcode: post.shortcode)
+    end
+
+    def cached_blob_from_profile_posts(post:, incoming_media_id:)
+      scope = InstagramProfilePost.joins(:media_attachment).where.not(id: post.id)
+      if incoming_media_id.to_s.present?
+        scope = scope.where("metadata ->> 'media_id' = ?", incoming_media_id.to_s)
+      else
+        shortcode = post.shortcode.to_s.strip
+        return nil if shortcode.blank?
+
+        scope = scope.where(shortcode: shortcode)
+      end
+
+      candidate = scope.order(updated_at: :desc, id: :desc).first
+      candidate&.media&.blob
+    end
+
+    def cached_blob_from_feed_posts(shortcode:)
+      value = shortcode.to_s.strip
+      return nil if value.blank?
+
+      candidate = InstagramPost
+        .joins(:media_attachment)
+        .where(shortcode: value)
+        .order(media_downloaded_at: :desc, id: :desc)
+        .first
+      candidate&.media&.blob
     end
 
     def sync_comments!(post:, comments:, expected_comments_count:)

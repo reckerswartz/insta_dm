@@ -19,7 +19,7 @@ production:
 
   purge_expired_post_media:
     class: PurgeExpiredInstagramPostMediaJob
-    queue: profiles
+    queue: post_downloads
     args: [{ limit: 500 }]
     schedule: every hour at minute 37
 
@@ -42,7 +42,7 @@ production:
 
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
-    queue: profiles
+    queue: story_downloads
     args: [{ max_stories: 10, force_analyze_all: false }]
     schedule: every hour at minute 22
 
@@ -54,14 +54,14 @@ production:
 
   profile_recent_posts_scan_all_accounts:
     class: EnqueueRecentProfilePostScansForAllAccountsJob
-    queue: profiles
+    queue: post_downloads
     args: [{ limit_per_account: 8, posts_limit: 3, comments_limit: 8 }]
     schedule: every hour at minute 8
 
 development:
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
-    queue: profiles
+    queue: story_downloads
     args: [{ max_stories: 10, force_analyze_all: false }]
     schedule: every 2 hours
 
@@ -73,6 +73,6 @@ development:
 
   profile_recent_posts_scan_all_accounts:
     class: EnqueueRecentProfilePostScansForAllAccountsJob
-    queue: profiles
+    queue: post_downloads
     args: [{ limit_per_account: 5, posts_limit: 3, comments_limit: 8 }]
     schedule: every 2 hours

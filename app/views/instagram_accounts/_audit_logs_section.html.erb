@@ -57,6 +57,8 @@
                       data-media-url="<%= entry[:media_url] %>"
                       data-media-download-url="<%= entry[:media_download_url] %>"
                       data-media-content-type="<%= entry[:media_content_type] %>"
+                      data-media-preview-image-url="<%= entry[:media_preview_image_url] %>"
+                      data-video-static-frame-only="<%= entry[:video_static_frame_only] %>"
                       data-profile-id="<%= entry[:profile_id] %>"
                       data-profile-username="<%= entry[:profile_username] %>"
                       data-activity-kind="<%= entry[:kind] %>"
@@ -86,10 +88,11 @@
               <video
                 data-audit-media-modal-target="video"
                 data-controller="video-player"
-                data-video-player-autoplay-value="true"
+                data-video-player-autoplay-value="false"
+                data-video-player-load-on-play-value="true"
                 controls
                 playsinline
-                preload="metadata"
+                preload="none"
               ></video>
             </div>
           </div>

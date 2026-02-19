@@ -1,5 +1,5 @@
 class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
-  queue_as :profiles
+  queue_as :story_downloads
 
   def perform(opts = nil, **kwargs)
     params = normalize_params(opts, kwargs, max_stories: 10, force_analyze_all: false)

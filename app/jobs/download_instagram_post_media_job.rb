@@ -2,7 +2,7 @@ require "net/http"
 require "digest"
 
 class DownloadInstagramPostMediaJob < ApplicationJob
-  queue_as :profiles
+  queue_as :post_downloads
 
   MAX_IMAGE_BYTES = 6 * 1024 * 1024
   MAX_VIDEO_BYTES = 80 * 1024 * 1024
@@ -13,6 +13,8 @@ class DownloadInstagramPostMediaJob < ApplicationJob
 
     url = post.media_url.to_s.strip
     return if url.blank?
+
+    return if attach_media_from_local_cache!(post: post)
 
     io, content_type, filename = download(url)
     post.media.attach(io: io, filename: filename, content_type: content_type)
@@ -63,5 +65,37 @@ class DownloadInstagramPostMediaJob < ApplicationJob
     return "mov" if content_type.include?("quicktime")
 
     "bin"
+  end
+
+  def attach_media_from_local_cache!(post:)
+    blob = cached_media_blob_for(post: post)
+    return false unless blob
+
+    post.media.attach(blob)
+    post.update!(media_downloaded_at: Time.current)
+    true
+  rescue StandardError => e
+    Rails.logger.warn("[DownloadInstagramPostMediaJob] local media cache attach failed post_id=#{post.id}: #{e.class}: #{e.message}")
+    false
+  end
+
+  def cached_media_blob_for(post:)
+    shortcode = post.shortcode.to_s.strip
+    return nil if shortcode.blank?
+
+    cached_feed_post = InstagramPost
+      .joins(:media_attachment)
+      .where(shortcode: shortcode)
+      .where.not(id: post.id)
+      .order(media_downloaded_at: :desc, id: :desc)
+      .first
+    return cached_feed_post.media.blob if cached_feed_post&.media&.attached?
+
+    cached_profile_post = InstagramProfilePost
+      .joins(:media_attachment)
+      .where(shortcode: shortcode)
+      .order(updated_at: :desc, id: :desc)
+      .first
+    cached_profile_post&.media&.blob
   end
 end

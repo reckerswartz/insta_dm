@@ -1,5 +1,5 @@
 class SyncProfileStoriesForAccountJob < ApplicationJob
-  queue_as :profiles
+  queue_as :story_downloads
 
   STORY_BATCH_LIMIT = 10
   STORIES_PER_PROFILE = SyncInstagramProfileStoriesJob::MAX_STORIES

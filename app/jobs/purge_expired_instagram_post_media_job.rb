@@ -1,5 +1,5 @@
 class PurgeExpiredInstagramPostMediaJob < ApplicationJob
-  queue_as :profiles
+  queue_as :post_downloads
 
   def perform(opts = nil, **kwargs)
     params = normalize_params(opts, kwargs, limit: 200)

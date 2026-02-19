@@ -1,7 +1,7 @@
 require "stringio"
 
 class CaptureInstagramProfilePostsJob < ApplicationJob
-  queue_as :profiles
+  queue_as :post_downloads
 
   def perform(instagram_account_id:, instagram_profile_id:, profile_action_log_id: nil, comments_limit: 20)
     account = InstagramAccount.find(instagram_account_id)

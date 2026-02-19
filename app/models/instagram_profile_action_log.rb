@@ -60,13 +60,7 @@ class InstagramProfileActionLog < ApplicationRecord
     account = instagram_account
     return unless account
 
-    entries = Ops::AuditLogBuilder.for_account(instagram_account: account, limit: 120)
-    Turbo::StreamsChannel.broadcast_replace_to(
-      account,
-      target: "account_audit_logs_section",
-      partial: "instagram_accounts/audit_logs_section",
-      locals: { recent_audit_entries: entries }
-    )
+    RefreshAccountAuditLogsJob.enqueue_for(instagram_account_id: account.id, limit: 120)
   rescue StandardError
     nil
   end

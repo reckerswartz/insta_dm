@@ -432,16 +432,19 @@ class InstagramProfilesController < ApplicationController
 
   def tabulator_events_payload(events:, total:, pages:)
     data = events.map do |e|
+      metadata = e.metadata.is_a?(Hash) ? e.metadata : {}
       {
         id: e.id,
         kind: e.kind,
         external_id: e.external_id,
         occurred_at: e.occurred_at&.iso8601,
         detected_at: e.detected_at&.iso8601,
-        metadata_json: metadata_preview_json(e.metadata),
+        metadata_json: metadata_preview_json(metadata),
         media_content_type: (e.media.attached? ? e.media.blob.content_type : nil),
         media_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true) : nil),
-        media_download_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true, disposition: "attachment") : nil)
+        media_download_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true, disposition: "attachment") : nil),
+        media_preview_image_url: preferred_video_preview_image_url(metadata: metadata),
+        video_static_frame_only: static_video_preview?(metadata: metadata)
       }
     end
 
@@ -457,6 +460,27 @@ class InstagramProfilesController < ApplicationController
     return json if json.length <= 1200
 
     "#{json[0, 1200]}..."
+  end
+
+  def static_video_preview?(metadata:)
+    data = metadata.is_a?(Hash) ? metadata : {}
+    processing = data["processing_metadata"].is_a?(Hash) ? data["processing_metadata"] : {}
+    frame_change = processing["frame_change_detection"].is_a?(Hash) ? processing["frame_change_detection"] : {}
+    local_intel = data["local_story_intelligence"].is_a?(Hash) ? data["local_story_intelligence"] : {}
+
+    processing["source"].to_s == "video_static_single_frame" ||
+      frame_change["processing_mode"].to_s == "static_image" ||
+      local_intel["video_processing_mode"].to_s == "static_image"
+  end
+
+  def preferred_video_preview_image_url(metadata:)
+    data = metadata.is_a?(Hash) ? metadata : {}
+    direct = data["image_url"].to_s.presence
+    return direct if direct.present?
+
+    variants = Array(data["carousel_media"])
+    candidate = variants.find { |entry| entry.is_a?(Hash) && entry["image_url"].to_s.present? }
+    candidate.is_a?(Hash) ? candidate["image_url"].to_s.presence : nil
   end
 
   def extract_tabulator_sorters

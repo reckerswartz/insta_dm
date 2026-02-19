@@ -28,7 +28,7 @@ development:
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
     active_job: true
-    queue: profiles
+    queue: story_downloads
     args:
       - max_stories: 10
         force_analyze_all: false
@@ -45,7 +45,7 @@ development:
   profile_recent_posts_scan_all_accounts:
     class: EnqueueRecentProfilePostScansForAllAccountsJob
     active_job: true
-    queue: profiles
+    queue: post_downloads
     args:
       - limit_per_account: 5
         posts_limit: 3
@@ -82,7 +82,7 @@ production:
   purge_expired_post_media:
     class: PurgeExpiredInstagramPostMediaJob
     active_job: true
-    queue: profiles
+    queue: post_downloads
     args:
       - limit: 500
     cron: "37 * * * *"
@@ -108,7 +108,7 @@ production:
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
     active_job: true
-    queue: profiles
+    queue: story_downloads
     args:
       - max_stories: 10
         force_analyze_all: false
@@ -125,7 +125,7 @@ production:
   profile_recent_posts_scan_all_accounts:
     class: EnqueueRecentProfilePostScansForAllAccountsJob
     active_job: true
-    queue: profiles
+    queue: post_downloads
     args:
       - limit_per_account: 8
         posts_limit: 3

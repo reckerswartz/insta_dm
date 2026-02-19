@@ -471,19 +471,16 @@ class InstagramProfileEvent < ApplicationRecord
     account = instagram_profile&.instagram_account
     return unless account
 
-    entries = Ops::AuditLogBuilder.for_account(instagram_account: account, limit: 120)
-    Turbo::StreamsChannel.broadcast_replace_to(
-      account,
-      target: "account_audit_logs_section",
-      partial: "instagram_accounts/audit_logs_section",
-      locals: { recent_audit_entries: entries }
-    )
+    RefreshAccountAuditLogsJob.enqueue_for(instagram_account_id: account.id, limit: 120)
   rescue StandardError
     nil
   end
 
   def append_profile_history_narrative
-    Ai::ProfileHistoryNarrativeBuilder.append_event!(self)
+    AppendProfileHistoryNarrativeJob.perform_later(
+      instagram_profile_event_id: id,
+      mode: "event"
+    )
   rescue StandardError
     nil
   end
@@ -858,7 +855,11 @@ class InstagramProfileEvent < ApplicationRecord
     return if story_excluded_from_narrative?(ownership: ownership, policy: policy)
 
     history_payload = payload.merge(description: build_story_image_description(local_story_intelligence: payload))
-    Ai::ProfileHistoryNarrativeBuilder.append_story_intelligence!(self, intelligence: history_payload)
+    AppendProfileHistoryNarrativeJob.perform_later(
+      instagram_profile_event_id: id,
+      mode: "story_intelligence",
+      intelligence: history_payload
+    )
   rescue StandardError
     nil
   end
@@ -926,7 +927,11 @@ class InstagramProfileEvent < ApplicationRecord
       generation_policy: generation_policy,
       description: build_story_image_description(local_story_intelligence: verified_story_facts)
     )
-    Ai::ProfileHistoryNarrativeBuilder.append_story_intelligence!(self, intelligence: history_payload)
+    AppendProfileHistoryNarrativeJob.perform_later(
+      instagram_profile_event_id: id,
+      mode: "story_intelligence",
+      intelligence: history_payload
+    )
   rescue StandardError
     nil
   end

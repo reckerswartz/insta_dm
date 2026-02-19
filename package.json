@@ -23,7 +23,6 @@
     "@hotwired/turbo-rails": "^8.0.23",
     "@popperjs/core": "^2.11.8",
     "bootstrap": "^5.3.8",
-    "hls.js": "^1.6.14",
     "plyr": "^3.8.3",
     "sass": "^1.97.3",
     "tabulator-tables": "^6.3.1"

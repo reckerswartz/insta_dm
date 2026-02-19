@@ -1,5 +1,5 @@
 class SyncAllHomeStoriesJob < ApplicationJob
-  queue_as :profiles
+  queue_as :story_downloads
 
   MAX_CYCLES = 30
 

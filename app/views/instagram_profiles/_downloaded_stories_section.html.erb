@@ -28,6 +28,26 @@
         <% skipped = ActiveModel::Type::Boolean.new.cast(meta["skipped"]) %>
         <% skip_reason = meta["skip_reason"].to_s.presence %>
         <% story_link = meta["permalink"].to_s.presence || "#{Instagram::Client::INSTAGRAM_BASE_URL}/stories/#{story_profile&.username}/" %>
+        <% processing_meta = meta["processing_metadata"].is_a?(Hash) ? meta["processing_metadata"] : {} %>
+        <% frame_change = processing_meta["frame_change_detection"].is_a?(Hash) ? processing_meta["frame_change_detection"] : {} %>
+        <% local_intel = meta["local_story_intelligence"].is_a?(Hash) ? meta["local_story_intelligence"] : {} %>
+        <% static_video = is_video && (
+          processing_meta["source"].to_s == "video_static_single_frame" ||
+          frame_change["processing_mode"].to_s == "static_image" ||
+          local_intel["video_processing_mode"].to_s == "static_image"
+        ) %>
+        <% poster_url = begin
+          direct = meta["image_url"].to_s.presence
+          if direct.present?
+            direct
+          else
+            variants = Array(meta["carousel_media"])
+            candidate = variants.find { |entry| entry.is_a?(Hash) && entry["image_url"].to_s.present? }
+            candidate.is_a?(Hash) ? candidate["image_url"].to_s.presence : nil
+          end
+        rescue StandardError
+          nil
+        end %>
 
         <article class="story-media-card">
           <div class="story-card-banner">
@@ -50,13 +70,21 @@
           </div>
 
           <% if is_video %>
-            <div class="story-media-preview story-video-player-shell">
+            <div class="story-media-preview story-video-player-shell <%= static_video ? 'story-video-static-preview' : '' %>">
               <video
                 controls
                 preload="none"
                 playsinline
                 src="<%= view_url %>"
                 data-controller="video-player"
+                data-video-player-load-on-play-value="true"
+                data-video-player-static-value="<%= static_video %>"
+                data-video-static="<%= static_video %>"
+                <% if poster_url.present? %>
+                  poster="<%= poster_url %>"
+                  data-video-player-poster-url-value="<%= poster_url %>"
+                  data-video-poster-url="<%= poster_url %>"
+                <% end %>
               ></video>
             </div>
           <% else %>
@@ -68,6 +96,9 @@
           <div class="story-media-meta">
             <p class="meta"><strong><%= event.kind.to_s.humanize %></strong> | <%= relative_time_with_tooltip(occurred) %></p>
             <p class="meta">Type: <%= content_type.presence || "-" %></p>
+            <% if static_video %>
+              <p class="meta">Static visual video detected: image-first preview enabled.</p>
+            <% end %>
             <% if objects.any? || hashtags.any? || mentions.any? || face_count.positive? %>
               <p class="meta">Analysis: <%= objects.any? ? "objects=#{objects.join(', ')}" : nil %><%= objects.any? && (hashtags.any? || mentions.any? || face_count.positive?) ? " | " : "" %><%= hashtags.any? ? "hashtags=#{hashtags.join(', ')}" : nil %><%= hashtags.any? && (mentions.any? || face_count.positive?) ? " | " : "" %><%= mentions.any? ? "mentions=#{mentions.join(', ')}" : nil %><%= mentions.any? && face_count.positive? ? " | " : "" %><%= face_count.positive? ? "faces=#{face_count}" : nil %></p>
             <% end %>

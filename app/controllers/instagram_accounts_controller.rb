@@ -501,6 +501,8 @@ class InstagramAccountsController < ApplicationController
       else
         profile&.profile_pic_url.to_s.presence
       end
+    video_static_frame_only = static_video_preview?(metadata: metadata)
+    media_preview_image_url = preferred_video_preview_image_url(metadata: metadata)
 
     {
       id: event.id,
@@ -515,6 +517,8 @@ class InstagramAccountsController < ApplicationController
       media_url: Rails.application.routes.url_helpers.rails_blob_path(event.media, only_path: true),
       media_download_url: Rails.application.routes.url_helpers.rails_blob_path(event.media, only_path: true, disposition: "attachment"),
       media_content_type: blob&.content_type.to_s.presence || metadata["media_content_type"].to_s,
+      media_preview_image_url: media_preview_image_url,
+      video_static_frame_only: video_static_frame_only,
       media_bytes: metadata["media_bytes"].to_i.positive? ? metadata["media_bytes"].to_i : blob&.byte_size.to_i,
       media_width: metadata["media_width"],
       media_height: metadata["media_height"],
@@ -539,6 +543,27 @@ class InstagramAccountsController < ApplicationController
       story_ownership_summary: ownership_data["summary"].to_s.presence,
       story_ownership_confidence: ownership_data["confidence"]
     }
+  end
+
+  def static_video_preview?(metadata:)
+    data = metadata.is_a?(Hash) ? metadata : {}
+    processing = data["processing_metadata"].is_a?(Hash) ? data["processing_metadata"] : {}
+    frame_change = processing["frame_change_detection"].is_a?(Hash) ? processing["frame_change_detection"] : {}
+    local_intel = data["local_story_intelligence"].is_a?(Hash) ? data["local_story_intelligence"] : {}
+
+    processing["source"].to_s == "video_static_single_frame" ||
+      frame_change["processing_mode"].to_s == "static_image" ||
+      local_intel["video_processing_mode"].to_s == "static_image"
+  end
+
+  def preferred_video_preview_image_url(metadata:)
+    data = metadata.is_a?(Hash) ? metadata : {}
+    direct = data["image_url"].to_s.presence
+    return direct if direct.present?
+
+    variants = Array(data["carousel_media"])
+    candidate = variants.find { |entry| entry.is_a?(Hash) && entry["image_url"].to_s.present? }
+    candidate.is_a?(Hash) ? candidate["image_url"].to_s.presence : nil
   end
 
   def normalize_navigation_format

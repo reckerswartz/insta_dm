@@ -9,6 +9,8 @@ export default class extends Controller {
     const mediaUrl = data.mediaUrl || ""
     const downloadUrl = data.mediaDownloadUrl || mediaUrl || "#"
     const contentType = (data.mediaContentType || "").toLowerCase()
+    const previewImageUrl = data.mediaPreviewImageUrl || ""
+    const staticVideo = this.toBoolean(data.videoStaticFrameOnly)
     const profileId = (data.profileId || "").trim()
     const profile = (data.profileUsername || "").trim()
     const activity = data.activityKind || "-"
@@ -44,9 +46,11 @@ export default class extends Controller {
     if (isVideo) {
       this.videoTarget.dataset.videoSource = mediaUrl
       this.videoTarget.dataset.videoContentType = contentType
+      this.videoTarget.dataset.videoPosterUrl = previewImageUrl
+      this.videoTarget.dataset.videoStatic = staticVideo ? "true" : "false"
       this.videoTarget.dispatchEvent(
         new CustomEvent("video-player:load", {
-          detail: { src: mediaUrl, contentType, autoplay: true },
+          detail: { src: mediaUrl, contentType, posterUrl: previewImageUrl, staticVideo, autoplay: false, immediate: false, preload: "none" },
         }),
       )
 
@@ -79,5 +83,11 @@ export default class extends Controller {
     } else {
       this.videoTarget.classList.add("media-shell-hidden")
     }
+  }
+
+  toBoolean(raw) {
+    if (typeof raw === "boolean") return raw
+    const value = String(raw || "").trim().toLowerCase()
+    return ["1", "true", "yes", "on"].includes(value)
   }
 }

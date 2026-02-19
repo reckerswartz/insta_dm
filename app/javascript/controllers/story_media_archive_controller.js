@@ -1,6 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 
-const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,[role='button']"
+const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,[role='button'],video,.plyr"
 
 export default class extends Controller {
   static targets = ["gallery", "loader", "empty", "scroll", "dateInput", "refreshSignal", "loadButton"]
@@ -111,12 +111,10 @@ export default class extends Controller {
       }
 
       const prepared = items.filter((item) => item && typeof item.id !== "undefined" && item.id !== null)
-      const html = prepared.map((item) => {
+      prepared.forEach((item) => {
         this.itemsById.set(String(item.id), item)
-        return this.cardHtml(item)
-      }).join("")
-
-      if (html) this.galleryTarget.insertAdjacentHTML("beforeend", html)
+      })
+      await this.appendPreparedItems(prepared)
       this.totalLoaded += prepared.length
 
       this.hasMore = Boolean(payload.has_more)
@@ -139,6 +137,31 @@ export default class extends Controller {
         this.loaderTarget.hidden = true
       }
     }
+  }
+
+  async appendPreparedItems(items) {
+    if (!Array.isArray(items) || items.length === 0) return
+
+    const chunkSize = 6
+    for (let start = 0; start < items.length; start += chunkSize) {
+      const html = items
+        .slice(start, start + chunkSize)
+        .map((item) => this.cardHtml(item))
+        .join("")
+
+      if (html) this.galleryTarget.insertAdjacentHTML("beforeend", html)
+      if (start + chunkSize < items.length) await this.yieldToBrowser()
+    }
+  }
+
+  yieldToBrowser() {
+    return new Promise((resolve) => {
+      if ("requestAnimationFrame" in window) {
+        window.requestAnimationFrame(() => resolve())
+        return
+      }
+      setTimeout(resolve, 0)
+    })
   }
 
   installRefreshSignalObserver() {
@@ -198,9 +221,34 @@ export default class extends Controller {
     const eventId = String(item.id)
     const contentType = String(item.media_content_type || "")
     const isVideo = contentType.startsWith("video/")
-    const mediaHtml = isVideo ?
-      `<video preload="none" muted playsinline src="${this.esc(item.media_url)}"></video>` :
-      `<img loading="lazy" src="${this.esc(item.media_url)}" alt="Story media preview" />`
+    const videoStatic = this.videoIsStatic(item)
+    const previewHtml = isVideo ?
+      `
+        <div class="story-media-preview story-video-player-shell ${videoStatic ? "story-video-static-preview" : ""}">
+          ${this.videoElementHtml({
+            src: item.media_url,
+            contentType,
+            posterUrl: this.videoPosterUrl(item),
+            staticVideo: videoStatic,
+            preload: "none",
+            controls: true,
+            muted: false,
+            autoplay: false,
+            deferSourceLoad: true,
+            deferUntilVisible: true,
+          })}
+        </div>
+      ` :
+      `
+        <button
+          type="button"
+          class="story-media-preview story-preview-button"
+          data-event-id="${this.esc(eventId)}"
+          data-action="click->story-media-archive#openStoryModal"
+        >
+          <img loading="lazy" src="${this.esc(item.media_url)}" alt="Story media preview" />
+        </button>
+      `
 
     const bytes = Number(item.media_bytes || 0)
     const sizeText = bytes > 0 ? `${(bytes / 1024).toFixed(1)} KB` : "-"
@@ -242,17 +290,11 @@ export default class extends Controller {
           ${igIcon}
         </div>
 
-        <button
-          type="button"
-          class="story-media-preview story-preview-button"
-          data-event-id="${this.esc(eventId)}"
-          data-action="click->story-media-archive#openStoryModal"
-        >
-          ${mediaHtml}
-        </button>
+        ${previewHtml}
 
         <div class="story-media-meta">
           <p class="meta">Type: ${this.esc(contentType || "-")} | Size: ${this.esc(sizeText)} | Dim: ${this.esc(dimensions)}</p>
+          ${videoStatic ? `<p class="meta">Static visual video detected: image-first preview enabled.</p>` : ""}
           ${skippedBlock}
           ${replyCommentBlock}
           ${this.buildLlmCommentSection(item)}
@@ -268,7 +310,6 @@ export default class extends Controller {
   }
 
   buildLlmCommentSection(item) {
-    const eventId = String(item.id)
     const status = String(item.llm_comment_status || "").toLowerCase()
     const ownershipLabel = String(item.story_ownership_label || "").trim()
     const ownershipSummary = String(item.story_ownership_summary || "").trim()
@@ -356,19 +397,24 @@ export default class extends Controller {
   modalHtml(item) {
     const contentType = String(item.media_content_type || "")
     const isVideo = contentType.startsWith("video/")
+    const videoStatic = this.videoIsStatic(item)
+    const posterUrl = this.videoPosterUrl(item)
     const downloaded = this.formatDate(item.downloaded_at)
     const mediaHtml = isVideo ?
       `
-        <div class="story-video-player-shell">
-          <video
-            controls
-            autoplay
-            preload="none"
-            playsinline
-            src="${this.esc(item.media_url)}"
-            data-controller="video-player"
-            data-video-player-autoplay-value="true"
-          ></video>
+        <div class="story-video-player-shell ${videoStatic ? "story-video-static-preview" : ""}">
+          ${this.videoElementHtml({
+            src: item.media_url,
+            contentType,
+            posterUrl: posterUrl,
+            staticVideo: videoStatic,
+            preload: "none",
+            controls: true,
+            muted: false,
+            autoplay: false,
+            deferSourceLoad: true,
+            deferUntilVisible: false,
+          })}
         </div>
       ` :
       `<img src="${this.esc(item.media_url)}" alt="Story media" />`
@@ -408,6 +454,7 @@ export default class extends Controller {
               <p><strong>Profile:</strong> @${this.esc(item.profile_username || "unknown")}</p>
               <p class="meta"><strong>Downloaded:</strong> ${this.esc(downloaded)}</p>
               <p class="meta"><strong>Type:</strong> ${this.esc(contentType || "-")}</p>
+              ${videoStatic ? `<p class="meta"><strong>Playback mode:</strong> Static visual + optional audio/video playback.</p>` : ""}
               ${item.reply_comment ? `<p><strong>Reply sent:</strong> ${this.esc(item.reply_comment)}</p>` : ""}
               ${comment}
               <div class="story-detail-actions">
@@ -424,6 +471,59 @@ export default class extends Controller {
 
   handleModalKeydown(event) {
     if (event.key === "Escape") this.closeStoryModal()
+  }
+
+  videoElementHtml({
+    src,
+    contentType = "",
+    posterUrl,
+    staticVideo,
+    preload,
+    controls,
+    muted,
+    autoplay,
+    deferSourceLoad = false,
+    deferUntilVisible = false,
+  }) {
+    const attrs = [
+      `preload="${this.esc(preload || "metadata")}"`,
+      controls ? "controls" : "",
+      "playsinline",
+      muted ? "muted" : "",
+      autoplay ? "autoplay" : "",
+      "data-controller=\"video-player\"",
+      `data-video-player-static-value="${staticVideo ? "true" : "false"}"`,
+      `data-video-player-defer-until-visible-value="${deferUntilVisible ? "true" : "false"}"`,
+      `data-video-player-preload-value="${this.esc(preload || "none")}"`,
+      "data-video-player-load-on-play-value=\"true\"",
+      `data-video-content-type="${this.esc(contentType)}"`,
+    ].filter(Boolean)
+
+    if (deferSourceLoad) {
+      attrs.push(`data-video-source="${this.esc(src || "")}"`)
+    } else {
+      attrs.push(`src="${this.esc(src || "")}"`)
+    }
+
+    if (posterUrl) {
+      attrs.push(`poster="${this.esc(posterUrl)}"`)
+      attrs.push(`data-video-player-poster-url-value="${this.esc(posterUrl)}"`)
+      attrs.push(`data-video-poster-url="${this.esc(posterUrl)}"`)
+    }
+
+    attrs.push(`data-video-static="${staticVideo ? "true" : "false"}"`)
+    return `<video ${attrs.join(" ")}></video>`
+  }
+
+  videoPosterUrl(item) {
+    return String(item.media_preview_image_url || item.poster_url || "").trim()
+  }
+
+  videoIsStatic(item) {
+    const raw = item.video_static_frame_only
+    if (typeof raw === "boolean") return raw
+    if (typeof raw === "string") return ["1", "true", "yes", "on"].includes(raw.toLowerCase())
+    return false
   }
 
   installScrollEnhancements() {

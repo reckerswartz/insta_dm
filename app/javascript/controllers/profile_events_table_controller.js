@@ -89,6 +89,8 @@ export default class extends Controller {
                   data-media-url="${escapeHtml(viewUrl)}"
                   data-media-download-url="${escapeHtml(downloadUrl || viewUrl)}"
                   data-media-content-type="${escapeHtml(contentType)}"
+                  data-media-preview-image-url="${escapeHtml(row.media_preview_image_url || "")}"
+                  data-video-static-frame-only="${escapeHtml(String(row.video_static_frame_only || ""))}"
                   data-activity-kind="${escapeHtml(row.kind || "event")}"
                   data-occurred-at="${escapeHtml(row.occurred_at || row.detected_at || "")}"
                 >
@@ -135,6 +137,8 @@ export default class extends Controller {
     if (!mediaUrl) return
 
     const contentType = String(data.mediaContentType || "").toLowerCase()
+    const previewImageUrl = String(data.mediaPreviewImageUrl || "")
+    const staticVideo = this.toBoolean(data.videoStaticFrameOnly)
     const mediaPath = mediaUrl.split("?")[0].toLowerCase()
     const isVideo = contentType.startsWith("video/") ||
       mediaPath.endsWith(".mp4") ||
@@ -166,9 +170,11 @@ export default class extends Controller {
       this.mediaVideoShellEl.classList.remove("media-shell-hidden")
       this.mediaVideoEl.dataset.videoSource = mediaUrl
       this.mediaVideoEl.dataset.videoContentType = contentType
+      this.mediaVideoEl.dataset.videoPosterUrl = previewImageUrl
+      this.mediaVideoEl.dataset.videoStatic = staticVideo ? "true" : "false"
       this.mediaVideoEl.dispatchEvent(
         new CustomEvent("video-player:load", {
-          detail: { src: mediaUrl, contentType, autoplay: true },
+          detail: { src: mediaUrl, contentType, posterUrl: previewImageUrl, staticVideo, autoplay: false, immediate: false, preload: "none" },
         }),
       )
     } else {
@@ -206,7 +212,7 @@ export default class extends Controller {
         <div>
           <img data-profile-media-image alt="Profile event media" class="modal-media-image" />
           <div data-profile-media-video-shell class="story-video-player-shell audit-video-player-shell media-shell-hidden">
-            <video data-profile-media-video data-controller="video-player" data-video-player-autoplay-value="true" controls playsinline preload="none"></video>
+            <video data-profile-media-video data-controller="video-player" data-video-player-autoplay-value="false" data-video-player-load-on-play-value="true" controls playsinline preload="none"></video>
           </div>
         </div>
         <div>
@@ -244,5 +250,11 @@ export default class extends Controller {
 
   _tableHeight() {
     return adaptiveTableHeight(this.tableEl, { min: 340, max: 760, bottomPadding: 38 })
+  }
+
+  toBoolean(raw) {
+    if (typeof raw === "boolean") return raw
+    const value = String(raw || "").trim().toLowerCase()
+    return ["1", "true", "yes", "on"].includes(value)
   }
 }

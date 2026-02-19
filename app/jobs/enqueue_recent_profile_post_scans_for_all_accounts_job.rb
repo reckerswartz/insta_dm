@@ -1,5 +1,5 @@
 class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
-  queue_as :profiles
+  queue_as :post_downloads
 
   # Accept a single hash (e.g. from Sidekiq cron/schedule) or keyword args from perform_later(...)
   def perform(opts = nil, **kwargs)

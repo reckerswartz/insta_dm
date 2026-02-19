@@ -2,9 +2,13 @@
 :timeout: 25
 
 :queues:
+  # `ai` and `frame_generation` are handled by dedicated Sidekiq capsules
+  # in `config/initializers/sidekiq.rb` to cap local compute concurrency.
   - [sync, 4]
-  - [ai, 3]
-  - [profiles, 3]
+  - [story_downloads, 3]
+  - [post_downloads, 3]
+  - [profiles, 2]
   - [messages, 2]
   - [avatars, 1]
+  - [maintenance, 1]
   - [default, 1]

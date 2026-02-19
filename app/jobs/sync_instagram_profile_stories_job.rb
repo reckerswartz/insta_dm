@@ -4,7 +4,7 @@ require "digest"
 require "stringio"
 
 class SyncInstagramProfileStoriesJob < ApplicationJob
-  queue_as :profiles
+  queue_as :story_downloads
 
   MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
   MAX_INLINE_VIDEO_BYTES = 10 * 1024 * 1024
@@ -132,6 +132,11 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
 
       existing_download_event = latest_story_download_event(profile: profile, story_id: story_id)
       reused_media = load_existing_story_media(event: existing_download_event)
+      reused_media ||= load_cached_story_media_for_profile(
+        account: account,
+        profile: profile,
+        story: story
+      )
       if reused_media
         bytes = reused_media[:bytes]
         content_type = reused_media[:content_type]
@@ -581,6 +586,13 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     if existing_event&.media&.attached?
       return { downloaded: false, reused: true, event: existing_event }
     end
+    reused_media = load_cached_story_media_for_profile(
+      account: account,
+      profile: profile,
+      story: story,
+      skip_reason: skip_reason
+    )
+    return { downloaded: false, reused: true, event: reused_media[:event] } if reused_media
 
     media_url = story[:media_url].to_s.strip
     return { downloaded: false, reused: false, event: nil } if media_url.blank?
@@ -760,6 +772,80 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     }
   rescue StandardError
     nil
+  end
+
+  def load_cached_story_media_for_profile(account:, profile:, story:, skip_reason: nil)
+    story_id = story[:story_id].to_s.strip
+    return nil if story_id.blank?
+
+    cache_hit = find_cached_story_media(story_id: story_id, excluding_profile_id: profile.id)
+    return nil unless cache_hit
+
+    event = build_cached_story_download_event(
+      account: account,
+      profile: profile,
+      story: story,
+      story_id: story_id,
+      blob: cache_hit[:blob],
+      cache_source: cache_hit[:source],
+      cache_source_id: cache_hit[:source_id],
+      skip_reason: skip_reason
+    )
+    return nil unless event
+
+    load_existing_story_media(event: event)
+  rescue StandardError => e
+    Rails.logger.warn("[SyncInstagramProfileStoriesJob] cached media reuse failed for story_id=#{story_id}: #{e.class}: #{e.message}")
+    nil
+  end
+
+  def find_cached_story_media(story_id:, excluding_profile_id:)
+    cached_story = InstagramStory
+      .joins(:media_attachment)
+      .where(story_id: story_id)
+      .where.not(instagram_profile_id: excluding_profile_id)
+      .order(taken_at: :desc, id: :desc)
+      .first
+    if cached_story&.media&.attached?
+      return { blob: cached_story.media.blob, source: "instagram_story", source_id: cached_story.id }
+    end
+
+    cached_event = InstagramProfileEvent
+      .joins(:media_attachment)
+      .with_attached_media
+      .where(kind: "story_downloaded")
+      .where.not(instagram_profile_id: excluding_profile_id)
+      .where("external_id LIKE ?", "story_downloaded:#{story_id}:%")
+      .order(detected_at: :desc, id: :desc)
+      .first
+    return nil unless cached_event&.media&.attached?
+
+    { blob: cached_event.media.blob, source: "instagram_profile_event", source_id: cached_event.id }
+  end
+
+  def build_cached_story_download_event(account:, profile:, story:, story_id:, blob:, cache_source:, cache_source_id:, skip_reason: nil)
+    downloaded_at = Time.current
+    metadata = base_story_metadata(profile: profile, story: story).merge(
+      downloaded_at: downloaded_at.iso8601,
+      media_filename: blob.filename.to_s,
+      media_content_type: blob.content_type.to_s,
+      media_bytes: blob.byte_size.to_i,
+      reused_local_cache: true,
+      reused_local_cache_source: cache_source.to_s,
+      reused_local_cache_source_id: cache_source_id
+    )
+    metadata[:skip_reason] = skip_reason.to_s if skip_reason.present?
+    metadata[:skipped] = true if skip_reason.present?
+
+    event = profile.record_event!(
+      kind: "story_downloaded",
+      external_id: "story_downloaded:#{story_id}:#{downloaded_at.utc.iso8601(6)}",
+      occurred_at: downloaded_at,
+      metadata: metadata
+    )
+    event.media.attach(blob) unless event.media.attached?
+    InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
+    event
   end
 
   def capture_story_html_snapshot(profile:, story:, story_index:)

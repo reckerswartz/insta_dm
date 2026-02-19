@@ -975,6 +975,7 @@ dialog.modal::backdrop {
   border-radius: 12px;
   overflow: hidden;
   background: #040a17;
+  position: relative;
 }
 
 .story-video-player-shell .plyr {
@@ -988,6 +989,39 @@ dialog.modal::backdrop {
   max-height: 76vh;
   object-fit: contain;
   background: #040a17;
+}
+
+.story-media-preview.story-video-player-shell .plyr video,
+.story-media-preview.story-video-player-shell > video {
+  max-height: 360px;
+  min-height: 220px;
+  object-fit: cover;
+}
+
+.story-detail-media .story-video-player-shell .plyr video,
+.story-detail-media .story-video-player-shell > video,
+.audit-video-player-shell .plyr video,
+.audit-video-player-shell > video {
+  max-height: 72vh;
+  min-height: 0;
+  object-fit: contain;
+}
+
+.story-video-player-shell.story-video-static-preview::after {
+  content: "Static image first";
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #ffdca8;
+  border: 1px solid rgba(255, 181, 74, 0.48);
+  background: rgba(36, 23, 3, 0.76);
+  pointer-events: none;
 }
 
 .story-video-player-shell .plyr__control {

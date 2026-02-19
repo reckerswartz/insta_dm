@@ -17,7 +17,7 @@ default: &default
       processes: <%= ENV.fetch("MESSAGE_JOB_CONCURRENCY", 1) %>
       polling_interval: 0.1
 
-    - queues: [profiles, avatars]
+    - queues: [profiles, avatars, story_downloads, post_downloads, frame_generation, maintenance, ai]
       threads: <%= ENV.fetch("PROFILE_JOB_THREADS", 2) %>
       processes: <%= ENV.fetch("PROFILE_JOB_CONCURRENCY", 1) %>
       polling_interval: 0.15
