@@ -1,7 +1,7 @@
 <% content_for :title, @profile.username %>
 
 <div
-  class="page"
+  class="page profile-page"
   data-controller="profile-sections-loader"
   data-profile-sections-loader-retry-limit-value="3"
   data-profile-sections-loader-poll-ms-value="900"
@@ -10,13 +10,28 @@
   <header class="page-header page-toolbar">
     <div class="page-toolbar-main">
       <h1><%= @profile.username %></h1>
-      <p class="meta">
-        Following: <strong><%= @profile.following ? "Yes" : "No" %></strong>
-        | Follows you: <strong><%= @profile.follows_you ? "Yes" : "No" %></strong>
-        | Mutual: <strong><%= @profile.mutual? ? "Yes" : "No" %></strong>
-        | Can message: <strong><%= @profile.can_message.nil? ? "Unknown" : (@profile.can_message ? "Yes" : "No") %></strong>
-        | Last active: <strong><%= relative_time_with_tooltip(@profile.last_active_at) %></strong>
-      </p>
+      <ul class="profile-status-list" aria-label="Profile status summary">
+        <li class="profile-status-chip">
+          Following
+          <strong><%= @profile.following ? "Yes" : "No" %></strong>
+        </li>
+        <li class="profile-status-chip">
+          Follows you
+          <strong><%= @profile.follows_you ? "Yes" : "No" %></strong>
+        </li>
+        <li class="profile-status-chip">
+          Mutual
+          <strong><%= @profile.mutual? ? "Yes" : "No" %></strong>
+        </li>
+        <li class="profile-status-chip">
+          Can message
+          <strong><%= @profile.can_message.nil? ? "Unknown" : (@profile.can_message ? "Yes" : "No") %></strong>
+        </li>
+        <li class="profile-status-chip">
+          Last active
+          <strong><%= relative_time_with_tooltip(@profile.last_active_at) %></strong>
+        </li>
+      </ul>
     </div>
     <div class="page-toolbar-actions">
       <%= link_to "Back to Profiles", instagram_profiles_path, class: "btn secondary" %>
@@ -24,15 +39,20 @@
     </div>
   </header>
 
-  <section class="card">
+  <nav class="profile-quick-links" aria-label="Profile sections">
+    <a class="profile-quick-link" href="#profile_overview">Overview</a>
+    <a class="profile-quick-link" href="#profile_details">Details</a>
+    <a class="profile-quick-link" href="#profile_ai_analysis">AI</a>
+    <a class="profile-quick-link" href="#profile_captured_posts_<%= @profile.id %>">Posts</a>
+    <a class="profile-quick-link" href="#profile_downloaded_stories_<%= @profile.id %>">Stories</a>
+    <a class="profile-quick-link" href="#profile_messages_<%= @profile.id %>">Messages</a>
+    <a class="profile-quick-link" href="#profile_actions_<%= @profile.id %>">Actions</a>
+    <a class="profile-quick-link" href="#profile_events_table_<%= @profile.id %>">History</a>
+  </nav>
+
+  <section id="profile_overview" class="card">
     <h2>At a Glance</h2>
-    <div class="stat-grid">
-      <div class="stat">
-        <div class="stat-label">Profile</div>
-        <div class="stat-kv"><span class="muted">Name</span><strong><%= @profile.display_name.presence || "-" %></strong></div>
-        <div class="stat-kv"><span class="muted">Messageability</span><strong><%= @profile.can_message.nil? ? "Unknown" : (@profile.can_message ? "Yes" : "No") %></strong></div>
-        <div class="stat-kv"><span class="muted">Restriction</span><strong><%= @profile.restriction_reason.presence || "-" %></strong></div>
-      </div>
+    <div class="stat-grid profile-overview-grid">
       <div class="stat">
         <div class="stat-label">Posts (Image Input)</div>
         <div class="stat-kv"><span class="muted">Captured total</span><strong><%= @profile_posts_total_count %></strong></div>
@@ -46,11 +66,12 @@
         <div class="stat-kv"><span class="muted">Messages</span><strong><%= @messages_count %></strong></div>
         <div class="stat-kv"><span class="muted">Action logs</span><strong><%= @action_logs_count %></strong></div>
         <div class="stat-kv"><span class="muted">Last analyzed</span><strong><%= relative_time_with_tooltip(@profile.ai_last_analyzed_at) %></strong></div>
+        <div class="stat-kv"><span class="muted">Restriction</span><strong><%= @profile.restriction_reason.presence || "-" %></strong></div>
       </div>
     </div>
   </section>
 
-  <section class="card">
+  <section id="profile_details" class="card">
     <div class="profile-header">
       <% if @profile.avatar.attached? %>
         <%= image_tag @profile.avatar, class: "avatar large", alt: @profile.username %>
@@ -60,71 +81,80 @@
         <%= image_tag "default_avatar.svg", class: "avatar large", alt: @profile.username %>
       <% end %>
 
-      <div>
+      <div class="profile-header-content">
         <h2 class="profile-title"><%= @profile.display_label %></h2>
-        <p class="meta">
-          Instagram: <%= link_to "#{Instagram::Client::INSTAGRAM_BASE_URL}/#{@profile.username}/", "#{Instagram::Client::INSTAGRAM_BASE_URL}/#{@profile.username}/", target: "_blank", rel: "noreferrer" %>
-        </p>
-        <% if @profile.avatar.attached? %>
-          <p class="meta">
-            Avatar: <%= link_to "download", rails_blob_path(@profile.avatar, disposition: "attachment"), class: "btn small secondary" %>
-          </p>
-        <% end %>
-        <% if @profile.restriction_reason.present? %>
-          <p class="meta">Restriction: <strong><%= @profile.restriction_reason %></strong></p>
-        <% end %>
 
-        <p class="meta">
-          Tags:
-          <% if @profile.profile_tags.any? %>
-            <strong><%= @profile.profile_tags.pluck(:name).sort.join(", ") %></strong>
-          <% else %>
-            <span class="muted">none</span>
+        <div class="profile-meta-list">
+          <p class="meta profile-meta-row">
+            Instagram:
+            <%= link_to "#{Instagram::Client::INSTAGRAM_BASE_URL}/#{@profile.username}/", "#{Instagram::Client::INSTAGRAM_BASE_URL}/#{@profile.username}/", target: "_blank", rel: "noreferrer" %>
+          </p>
+          <% if @profile.avatar.attached? %>
+            <p class="meta profile-meta-row">
+              Avatar:
+              <%= link_to "download", rails_blob_path(@profile.avatar, disposition: "attachment"), class: "btn small secondary" %>
+            </p>
           <% end %>
-        </p>
+          <p class="meta profile-meta-row">
+            Tags:
+            <% if @profile.profile_tags.any? %>
+              <strong><%= @profile.profile_tags.pluck(:name).sort.join(", ") %></strong>
+            <% else %>
+              <span class="muted">none</span>
+            <% end %>
+          </p>
+        </div>
+
+        <p class="meta profile-action-note">Actions below run as background jobs.</p>
 
         <div class="actions-row">
-          <%= button_to "Capture Profile Posts (Background)", capture_posts_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Fetch Profile Details (Background)", fetch_details_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Verify Messageability (Background)", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Sync Avatar (Background)", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Analyze Stories (10) (Background)", sync_stories_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Force Analyze All Stories (10) (Background)",
-                sync_stories_force_instagram_profile_path(@profile),
-                method: :post,
-                class: "btn secondary",
-                form: {
-                  data: {
-                    confirm_modal: true,
-                    confirm_title: "Force story re-analysis?",
-                    confirm_message: "Re-run story analysis for up to 10 latest stories for this profile?"
-                  }
-                } %>
+          <%= button_to "Capture Posts", capture_posts_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          <%= button_to "Fetch Details", fetch_details_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          <%= button_to "Verify Messageability", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          <%= button_to "Sync Avatar", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
         </div>
+
+        <details class="details-box profile-secondary-actions">
+          <summary>Story analysis actions</summary>
+          <div class="actions-row mt-2">
+            <%= button_to "Analyze Stories (10)", sync_stories_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+            <%= button_to "Force Re-analyze Stories (10)",
+                  sync_stories_force_instagram_profile_path(@profile),
+                  method: :post,
+                  class: "btn secondary",
+                  form: {
+                    data: {
+                      confirm_modal: true,
+                      confirm_title: "Force story re-analysis?",
+                      confirm_message: "Re-run story analysis for up to 10 latest stories for this profile?"
+                    }
+                  } %>
+          </div>
+        </details>
       </div>
     </div>
   </section>
 
   <%= render "profile_tags_section", profile: @profile, available_tags: @available_tags %>
 
-  <section class="card">
+  <section id="profile_message_form" class="card">
     <h2>Send Message</h2>
     <div id="message_form">
       <%= render "instagram_messages/form", profile: @profile, message: @new_message %>
     </div>
   </section>
 
-  <section class="card">
+  <section id="profile_ai_analysis" class="card">
     <h2>AI Profile Analysis</h2>
     <p class="meta">
       Generates an AI summary from locally captured profile details, image posts, and comments. Demographic values are stored as AI estimates with confidence.
     </p>
 
     <div class="actions-row">
-      <%= button_to "Analyze Profile (Active AI Provider) (Background)", analyze_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+      <%= button_to "Analyze Profile", analyze_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
     </div>
 
-    <div class="stat-grid">
+    <div class="stat-grid profile-overview-grid">
       <div class="stat">
         <div class="stat-label">Demographic Estimates</div>
         <div class="stat-kv"><span class="muted">Age</span><strong><%= @profile.ai_estimated_age.presence || "-" %></strong></div>

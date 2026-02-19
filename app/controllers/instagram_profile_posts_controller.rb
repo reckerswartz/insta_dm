@@ -16,7 +16,7 @@ class InstagramProfilePostsController < ApplicationController
     respond_to do |format|
       format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: "Post analysis queued for #{post.shortcode}." }
       format.turbo_stream do
-        profile_posts = profile.instagram_profile_posts.includes(:instagram_profile_post_comments, :ai_analyses, media_attachment: :blob).recent_first.limit(100)
+        profile_posts = profile.instagram_profile_posts.includes(:instagram_profile_post_comments, :ai_analyses, { instagram_post_faces: :instagram_story_person }, media_attachment: :blob, preview_image_attachment: :blob).recent_first.limit(100)
         render turbo_stream: [
           turbo_stream.append(
             "notifications",
@@ -108,7 +108,7 @@ class InstagramProfilePostsController < ApplicationController
     respond_to do |format|
       format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: message }
       format.turbo_stream do
-        profile_posts = profile.instagram_profile_posts.includes(:instagram_profile_post_comments, :ai_analyses, media_attachment: :blob).recent_first.limit(100)
+        profile_posts = profile.instagram_profile_posts.includes(:instagram_profile_post_comments, :ai_analyses, { instagram_post_faces: :instagram_story_person }, media_attachment: :blob, preview_image_attachment: :blob).recent_first.limit(100)
         render turbo_stream: [
           turbo_stream.append(
             "notifications",

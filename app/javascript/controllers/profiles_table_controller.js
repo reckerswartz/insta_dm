@@ -10,19 +10,9 @@ import {
 } from "../lib/tabulator_helpers"
 
 const ICONS = {
-  open: `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M12 5c-6.6 0-10 6.2-10 7s3.4 7 10 7 10-6.2 10-7-3.4-7-10-7Zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10Zm0-2.3a2.7 2.7 0 1 0 0-5.4 2.7 2.7 0 0 0 0 5.4Z"/>
-    </svg>
-  `,
-  fetch: `
+  refresh: `
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="M12 4a8 8 0 0 1 7.7 6h2.1A10 10 0 0 0 12 2v3l4 3-4 3V4Zm0 16a8 8 0 0 1-7.7-6H2.2A10 10 0 0 0 12 22v-3l-4-3 4-3v7Z"/>
-    </svg>
-  `,
-  verify: `
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm-1 13-3-3 1.4-1.4L11 12.2l3.6-3.6L16 10l-5 5Z"/>
     </svg>
   `,
   avatar: `
@@ -60,14 +50,46 @@ export default class extends Controller {
           width: 86,
           minWidth: 70,
           headerSort: false,
+          download: false,
           formatter: (cell) => {
+            const row = cell.getRow().getData()
+            const openUrl = `/instagram_profiles/${row.id}`
             const url = cell.getValue()
-            if (!url) return "<div class='avatar placeholder'></div>"
-            return `<img class="avatar" src="${escapeHtml(url)}" alt="" loading="lazy">`
+            const avatarInner = url
+              ? `<img class="avatar" src="${escapeHtml(url)}" alt="" loading="lazy">`
+              : "<div class='avatar placeholder'></div>"
+
+            return `<a class="avatar-link profile-view-link profile-view-link-avatar" href="${escapeHtml(openUrl)}" title="View profile" aria-label="View profile">${avatarInner}</a>`
           },
         },
-        { title: "Username", field: "username", headerSort: true, headerFilter: "input", minWidth: 170, width: 190 },
-        { title: "Name", field: "display_name", headerSort: true, headerFilter: "input", minWidth: 210, width: 240 },
+        {
+          title: "Username",
+          field: "username",
+          headerSort: true,
+          headerFilter: "input",
+          minWidth: 170,
+          width: 190,
+          formatter: (cell) => {
+            const row = cell.getRow().getData()
+            const openUrl = `/instagram_profiles/${row.id}`
+            const username = escapeHtml(cell.getValue() || "-")
+            return `<a class="table-link profile-view-link profile-view-link-username" href="${escapeHtml(openUrl)}" title="View profile">${username}</a>`
+          },
+        },
+        {
+          title: "Name",
+          field: "display_name",
+          headerSort: true,
+          headerFilter: "input",
+          minWidth: 210,
+          width: 240,
+          formatter: (cell) => {
+            const row = cell.getRow().getData()
+            const openUrl = `/instagram_profiles/${row.id}`
+            const name = escapeHtml(cell.getValue() || "-")
+            return `<a class="table-link profile-view-link profile-view-link-name" href="${escapeHtml(openUrl)}" title="View profile">${name}</a>`
+          },
+        },
         {
           title: "Following",
           field: "following",
@@ -133,21 +155,20 @@ export default class extends Controller {
           title: "Actions",
           field: "id",
           headerSort: false,
-          minWidth: 210,
-          width: 230,
+          download: false,
+          minWidth: 150,
+          width: 168,
           formatter: (cell) => {
             const row = cell.getRow().getData()
-            const openUrl = `/instagram_profiles/${row.id}`
             const fetchUrl = `/instagram_profiles/${row.id}/fetch_details`
             const verifyUrl = `/instagram_profiles/${row.id}/verify_messageability`
             const avatarUrl = `/instagram_profiles/${row.id}/download_avatar`
             const analyzeUrl = `/instagram_profiles/${row.id}/analyze`
+            const refreshUrls = [fetchUrl, verifyUrl].join(",")
 
             return `
               <div class="table-actions no-wrap">
-                <a class="btn small icon-only" href="${openUrl}" title="Open profile" aria-label="Open profile">${ICONS.open}</a>
-                <button class="btn small secondary icon-only" data-action="profiles-table#post" data-url="${fetchUrl}" title="Fetch profile details" aria-label="Fetch profile details">${ICONS.fetch}</button>
-                <button class="btn small secondary icon-only" data-action="profiles-table#post" data-url="${verifyUrl}" title="Verify messageability" aria-label="Verify messageability">${ICONS.verify}</button>
+                <button class="btn small secondary icon-only" data-action="profiles-table#postSequence" data-urls="${refreshUrls}" title="Refresh profile details + messageability" aria-label="Refresh profile details + messageability">${ICONS.refresh}</button>
                 <button class="btn small secondary icon-only" data-action="profiles-table#post" data-url="${avatarUrl}" title="Sync avatar" aria-label="Sync avatar">${ICONS.avatar}</button>
                 <button class="btn small secondary icon-only" data-action="profiles-table#post" data-url="${analyzeUrl}" title="Analyze profile" aria-label="Analyze profile">${ICONS.analyze}</button>
               </div>
@@ -195,6 +216,36 @@ export default class extends Controller {
         },
         credentials: "same-origin",
       })
+    } finally {
+      button.disabled = false
+    }
+  }
+
+  async postSequence(event) {
+    event.preventDefault()
+
+    const button = event.currentTarget
+    const urls = String(button?.dataset?.urls || "")
+      .split(",")
+      .map((url) => url.trim())
+      .filter((url) => url.length > 0)
+
+    if (urls.length === 0) return
+
+    button.disabled = true
+
+    try {
+      for (const url of urls) {
+        await fetch(url, {
+          method: "POST",
+          headers: {
+            "X-CSRF-Token": this.csrfToken,
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "text/vnd.turbo-stream.html, text/html, application/xhtml+xml",
+          },
+          credentials: "same-origin",
+        })
+      }
     } finally {
       button.disabled = false
     }

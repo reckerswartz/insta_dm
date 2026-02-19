@@ -5,16 +5,35 @@ class VectorMatchingService
     @threshold = threshold.to_f.positive? ? threshold.to_f : DEFAULT_THRESHOLD
   end
 
-  def match_or_create!(account:, profile:, embedding:, occurred_at: Time.current)
+  def match_or_create!(account:, profile:, embedding:, occurred_at: Time.current, observation_signature: nil)
     vector = normalize(embedding)
     raise ArgumentError, "embedding vector is required" if vector.empty?
 
     best = best_match(profile: profile, vector: vector)
     if best && best[:similarity] >= @threshold
       person = best[:person]
-      upsert_person_embedding!(person: person, vector: vector, occurred_at: occurred_at)
+      observation = upsert_person_embedding!(
+        person: person,
+        vector: vector,
+        occurred_at: occurred_at,
+        observation_signature: observation_signature
+      )
       role = person.role == "primary_user" ? "primary_user" : "secondary_person"
-      return { person: person, matched: true, similarity: best[:similarity], role: role }
+      return {
+        person: person,
+        matched: true,
+        similarity: best[:similarity],
+        role: role,
+        observation_recorded: observation[:recorded]
+      }
+    end
+
+    normalized_signature = normalize_observation_signature(observation_signature)
+    metadata = { source: "auto_cluster" }
+    if normalized_signature.present?
+      metadata["observation_signatures"] = [ normalized_signature ]
+      metadata["observation_signatures_count"] = 1
+      metadata["last_observation_signature"] = normalized_signature
     end
 
     attrs = {
@@ -25,7 +44,7 @@ class VectorMatchingService
       last_seen_at: occurred_at,
       appearance_count: 1,
       canonical_embedding: vector,
-      metadata: { source: "auto_cluster" }
+      metadata: metadata
     }
     attrs[:canonical_embedding_vector] = vector if pgvector_column_available?
     person = InstagramStoryPerson.create!(attrs)
@@ -34,7 +53,8 @@ class VectorMatchingService
       person: person,
       matched: false,
       similarity: best&.dig(:similarity),
-      role: person.role
+      role: person.role,
+      observation_recorded: true
     }
   end
 
@@ -87,9 +107,23 @@ class VectorMatchingService
     end.compact.max_by { |item| item[:similarity] }
   end
 
-  def upsert_person_embedding!(person:, vector:, occurred_at:)
+  def upsert_person_embedding!(person:, vector:, occurred_at:, observation_signature:)
     current_count = person.appearance_count.to_i
     current = normalize(person.canonical_embedding)
+    metadata = person.metadata.is_a?(Hash) ? person.metadata.deep_dup : {}
+
+    normalized_signature = normalize_observation_signature(observation_signature)
+    known_signatures = Array(metadata["observation_signatures"]).map(&:to_s).reject(&:blank?)
+    duplicate_observation = normalized_signature.present? && known_signatures.include?(normalized_signature)
+
+    if duplicate_observation
+      attrs = {
+        first_seen_at: person.first_seen_at || occurred_at,
+        last_seen_at: [ person.last_seen_at, occurred_at ].compact.max
+      }
+      person.update!(attrs)
+      return { recorded: false, duplicate: true }
+    end
 
     updated_vector = if current.length == vector.length && current_count.positive?
       merged = current.each_with_index.map do |value, idx|
@@ -106,8 +140,18 @@ class VectorMatchingService
       first_seen_at: person.first_seen_at || occurred_at,
       last_seen_at: [ person.last_seen_at, occurred_at ].compact.max
     }
+
+    if normalized_signature.present?
+      updated_signatures = (known_signatures << normalized_signature).uniq.last(400)
+      metadata["observation_signatures"] = updated_signatures
+      metadata["observation_signatures_count"] = updated_signatures.length
+      metadata["last_observation_signature"] = normalized_signature
+      attrs[:metadata] = metadata
+    end
+
     attrs[:canonical_embedding_vector] = updated_vector if person.respond_to?(:canonical_embedding_vector=)
     person.update!(attrs)
+    { recorded: true, duplicate: false }
   end
 
   def cosine_similarity(a, b)
@@ -151,5 +195,12 @@ class VectorMatchingService
 
   def vector_literal(vector)
     "[" + vector.map { |value| format("%.8f", value.to_f) }.join(",") + "]"
+  end
+
+  def normalize_observation_signature(value)
+    token = value.to_s.strip
+    return nil if token.blank?
+
+    token.byteslice(0, 255)
   end
 end

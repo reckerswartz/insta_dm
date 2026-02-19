@@ -7,6 +7,7 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
 
   MAX_IMAGE_BYTES = 6 * 1024 * 1024
   MAX_VIDEO_BYTES = 80 * 1024 * 1024
+  MAX_PREVIEW_IMAGE_BYTES = 3 * 1024 * 1024
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 4
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 4
@@ -71,12 +72,24 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     media_url = resolve_media_url(post)
     return mark_download_skipped!(profile: profile, post: post, reason: "missing_media_url") if media_url.blank?
 
+    attached_and_valid = false
     if post.media.attached?
+      integrity = blob_integrity_for(post.media.blob)
+      if integrity[:valid]
+        attached_and_valid = true
+      else
+        mark_corrupt_media_detected!(post: post, reason: integrity[:reason])
+      end
+    end
+
+    if attached_and_valid
+      ensure_preview_image_for_video!(post: post, media_url: media_url)
       record_download_success!(profile: profile, post: post, source: "already_attached", media_url: media_url)
       return { status: "already_downloaded", source: "already_attached" }
     end
 
     if attach_media_from_local_cache!(post: post)
+      ensure_preview_image_for_video!(post: post, media_url: media_url)
       record_download_success!(profile: profile, post: post, source: "local_cache", media_url: media_url)
       return { status: "downloaded", source: "local_cache" }
     end
@@ -84,7 +97,15 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     io = nil
     begin
       io, content_type, filename = download_media(media_url)
-      post.media.attach(io: io, filename: filename, content_type: content_type)
+      blob = ActiveStorage::Blob.create_and_upload!(
+        io: io,
+        filename: filename,
+        content_type: content_type,
+        identify: false
+      )
+      attach_blob_to_post!(post: post, blob: blob)
+      downloaded_bytes = io.respond_to?(:string) ? io.string.to_s : nil
+      ensure_preview_image_for_video!(post: post, media_url: media_url, video_bytes: downloaded_bytes, content_type: content_type)
       post.update!(
         media_url_fingerprint: Digest::SHA256.hexdigest(media_url),
         metadata: merged_metadata(post: post).merge(
@@ -215,6 +236,18 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     nil
   end
 
+  def mark_corrupt_media_detected!(post:, reason:)
+    post.update!(
+      metadata: merged_metadata(post: post).merge(
+        "download_status" => "corrupt_detected",
+        "download_error" => "integrity_check_failed: #{reason}",
+        "download_corrupt_detected_at" => Time.current.utc.iso8601(3)
+      )
+    )
+  rescue StandardError
+    nil
+  end
+
   def post_deleted?(post)
     ActiveModel::Type::Boolean.new.cast(merged_metadata(post: post)["deleted_from_source"])
   end
@@ -247,10 +280,11 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
 
     source_url = resolve_media_url(post)
     fingerprint = source_url.present? ? Digest::SHA256.hexdigest(source_url) : post.media_url_fingerprint.to_s.presence
-    post.media.attach(blob)
+    attach_blob_to_post!(post: post, blob: blob)
     post.update!(
       media_url_fingerprint: fingerprint
     )
+    attach_preview_from_local_cache!(post: post)
     true
   rescue StandardError => e
     Rails.logger.warn("[DownloadInstagramProfilePostMediaJob] local media cache attach failed post_id=#{post.id}: #{e.class}: #{e.message}")
@@ -269,7 +303,9 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
         .where("metadata ->> 'media_id' = ?", media_id)
         .order(updated_at: :desc, id: :desc)
         .first
-      return by_media_id.media.blob if by_media_id&.media&.attached?
+      if by_media_id&.media&.attached? && blob_integrity_for(by_media_id.media.blob)[:valid]
+        return by_media_id.media.blob
+      end
     end
 
     if shortcode.present?
@@ -278,17 +314,207 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
         .where.not(id: post.id)
         .where(shortcode: shortcode)
         .order(updated_at: :desc, id: :desc)
-        .first
-      return by_shortcode_profile.media.blob if by_shortcode_profile&.media&.attached?
+      by_shortcode_profile.each do |candidate|
+        next unless candidate&.media&.attached?
+
+        blob = candidate.media.blob
+        return blob if blob_integrity_for(blob)[:valid]
+      end
 
       by_shortcode_feed = InstagramPost
         .joins(:media_attachment)
         .where(shortcode: shortcode)
         .order(media_downloaded_at: :desc, id: :desc)
-        .first
-      return by_shortcode_feed.media.blob if by_shortcode_feed&.media&.attached?
+      by_shortcode_feed.each do |candidate|
+        next unless candidate&.media&.attached?
+
+        blob = candidate.media.blob
+        return blob if blob_integrity_for(blob)[:valid]
+      end
     end
 
+    nil
+  end
+
+  def attach_preview_from_local_cache!(post:)
+    return false if post.preview_image.attached?
+
+    metadata = merged_metadata(post: post)
+    media_id = metadata["media_id"].to_s.strip
+    shortcode = post.shortcode.to_s.strip
+
+    if media_id.present?
+      by_media_id = InstagramProfilePost
+        .joins(:preview_image_attachment)
+        .where.not(id: post.id)
+        .where("metadata ->> 'media_id' = ?", media_id)
+        .order(updated_at: :desc, id: :desc)
+        .first
+      if by_media_id&.preview_image&.attached?
+        attach_preview_blob_to_post!(post: post, blob: by_media_id.preview_image.blob)
+        return true
+      end
+    end
+
+    return false if shortcode.blank?
+
+    by_shortcode = InstagramProfilePost
+      .joins(:preview_image_attachment)
+      .where.not(id: post.id)
+      .where(shortcode: shortcode)
+      .order(updated_at: :desc, id: :desc)
+      .first
+    if by_shortcode&.preview_image&.attached?
+      attach_preview_blob_to_post!(post: post, blob: by_shortcode.preview_image.blob)
+      return true
+    end
+
+    false
+  rescue StandardError
+    false
+  end
+
+  def ensure_preview_image_for_video!(post:, media_url:, video_bytes: nil, content_type: nil)
+    return false unless post.media.attached?
+    return false unless post.media.blob&.content_type.to_s.start_with?("video/")
+    return true if post.preview_image.attached?
+
+    metadata = merged_metadata(post: post)
+    if attach_preview_from_local_cache!(post: post)
+      stamp_preview_metadata!(post: post, source: "local_cache")
+      return true
+    end
+
+    poster_url = preferred_preview_image_url(post: post, media_url: media_url, metadata: metadata)
+    if poster_url.present?
+      downloaded = download_preview_image(poster_url)
+      if downloaded
+        attach_preview_image_bytes!(
+          post: post,
+          image_bytes: downloaded[:bytes],
+          content_type: downloaded[:content_type],
+          filename: downloaded[:filename]
+        )
+        stamp_preview_metadata!(post: post, source: "remote_image_url")
+        return true
+      end
+    end
+
+    bytes = video_bytes.to_s.b
+    if bytes.blank? && post.media.attached? && post.media.blob.byte_size.to_i <= MAX_VIDEO_BYTES
+      bytes = post.media.blob.download.to_s.b
+    end
+    return false if bytes.blank?
+
+    extracted = VideoThumbnailService.new.extract_first_frame(
+      video_bytes: bytes,
+      reference_id: "profile_post_#{post.id}",
+      content_type: content_type || post.media.blob.content_type
+    )
+    return false unless extracted[:ok]
+
+    attach_preview_image_bytes!(
+      post: post,
+      image_bytes: extracted[:image_bytes],
+      content_type: extracted[:content_type],
+      filename: extracted[:filename]
+    )
+    stamp_preview_metadata!(post: post, source: "ffmpeg_first_frame")
+    true
+  rescue StandardError => e
+    Rails.logger.warn("[DownloadInstagramProfilePostMediaJob] preview attach failed post_id=#{post.id}: #{e.class}: #{e.message}")
+    false
+  end
+
+  def preferred_preview_image_url(post:, media_url:, metadata:)
+    candidates = [
+      metadata["preview_image_url"],
+      metadata["poster_url"],
+      metadata["image_url"],
+      metadata["media_url_image"],
+      metadata["media_url"]
+    ]
+    source_media = post.source_media_url.to_s.strip
+    source_looks_video = source_media.downcase.match?(/\.(mp4|mov|webm)(\?|$)/)
+    candidates << source_media if source_media.present? && !source_looks_video
+    candidates << media_url.to_s if media_url.to_s.present? && !source_looks_video
+    candidates.compact.map { |v| v.to_s.strip }.find(&:present?)
+  end
+
+  def download_preview_image(url, redirects_left: 3)
+    uri = URI.parse(url)
+    return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = (uri.scheme == "https")
+    http.open_timeout = 8
+    http.read_timeout = 20
+
+    req = Net::HTTP::Get.new(uri.request_uri)
+    req["Accept"] = "image/*,*/*;q=0.8"
+    req["User-Agent"] = "Mozilla/5.0"
+    req["Referer"] = Instagram::Client::INSTAGRAM_BASE_URL
+    res = http.request(req)
+
+    if res.is_a?(Net::HTTPRedirection) && res["location"].present?
+      return nil if redirects_left.to_i <= 0
+      next_url = normalize_redirect_url(base_uri: uri, location: res["location"])
+      return nil if next_url.blank?
+
+      return download_preview_image(next_url, redirects_left: redirects_left.to_i - 1)
+    end
+
+    return nil unless res.is_a?(Net::HTTPSuccess)
+
+    body = res.body.to_s.b
+    return nil if body.bytesize <= 0 || body.bytesize > MAX_PREVIEW_IMAGE_BYTES
+    return nil if html_payload?(body)
+
+    content_type = res["content-type"].to_s.split(";").first.to_s
+    return nil unless content_type.start_with?("image/")
+    validate_known_signature!(body: body, content_type: content_type)
+
+    ext = extension_for_content_type(content_type)
+    {
+      bytes: body,
+      content_type: content_type,
+      filename: "profile_post_preview_#{Digest::SHA256.hexdigest(url)[0, 12]}.#{ext}"
+    }
+  rescue StandardError
+    nil
+  end
+
+  def attach_preview_image_bytes!(post:, image_bytes:, content_type:, filename:)
+    blob = ActiveStorage::Blob.create_and_upload!(
+      io: StringIO.new(image_bytes),
+      filename: filename,
+      content_type: content_type.to_s.presence || "image/jpeg",
+      identify: false
+    )
+    attach_preview_blob_to_post!(post: post, blob: blob)
+  end
+
+  def attach_preview_blob_to_post!(post:, blob:)
+    return unless blob
+
+    if post.preview_image.attached? && post.preview_image.attachment.present?
+      attachment = post.preview_image.attachment
+      attachment.update!(blob: blob) if attachment.blob_id != blob.id
+      return
+    end
+
+    post.preview_image.attach(blob)
+  end
+
+  def stamp_preview_metadata!(post:, source:)
+    post.update!(
+      metadata: merged_metadata(post: post).merge(
+        "preview_image_status" => "attached",
+        "preview_image_source" => source.to_s,
+        "preview_image_attached_at" => Time.current.utc.iso8601(3)
+      )
+    )
+  rescue StandardError
     nil
   end
 
@@ -321,7 +547,10 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     body = res.body.to_s
     content_type = res["content-type"].to_s.split(";").first.presence || "application/octet-stream"
     limit = content_type.start_with?("video/") ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES
+    raise "empty media payload" if body.bytesize <= 0
     raise "media too large" if body.bytesize > limit
+    raise "unexpected html payload" if html_payload?(body)
+    validate_known_signature!(body: body, content_type: content_type)
 
     ext = extension_for_content_type(content_type)
     io = StringIO.new(body)
@@ -348,5 +577,60 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     return "mov" if content_type.include?("quicktime")
 
     "bin"
+  end
+
+  def blob_integrity_for(blob)
+    return { valid: false, reason: "missing_blob" } unless blob
+    return { valid: false, reason: "non_positive_byte_size" } if blob.byte_size.to_i <= 0
+
+    service = blob.service
+    if service.respond_to?(:path_for, true)
+      path = service.send(:path_for, blob.key)
+      return { valid: false, reason: "missing_file_on_disk" } unless path && File.exist?(path)
+
+      file_size = File.size(path)
+      return { valid: false, reason: "zero_byte_file" } if file_size <= 0
+      return { valid: false, reason: "byte_size_mismatch" } if blob.byte_size.to_i.positive? && file_size != blob.byte_size.to_i
+    end
+
+    { valid: true, reason: nil }
+  rescue StandardError => e
+    { valid: false, reason: "integrity_check_error: #{e.class}" }
+  end
+
+  def attach_blob_to_post!(post:, blob:)
+    raise "missing blob for attach" unless blob
+
+    if post.media.attached? && post.media.attachment.present?
+      attachment = post.media.attachment
+      attachment.update!(blob: blob) if attachment.blob_id != blob.id
+      return
+    end
+
+    post.media.attach(blob)
+  end
+
+  def html_payload?(body)
+    sample = body.to_s.byteslice(0, 4096).to_s.downcase
+    sample.include?("<html") || sample.start_with?("<!doctype html")
+  end
+
+  def validate_known_signature!(body:, content_type:)
+    type = content_type.to_s.downcase
+    return if type.blank?
+    return if type.include?("octet-stream")
+
+    case
+    when type.include?("jpeg")
+      raise "invalid jpeg signature" unless body.start_with?("\xFF\xD8".b)
+    when type.include?("png")
+      raise "invalid png signature" unless body.start_with?("\x89PNG\r\n\x1A\n".b)
+    when type.include?("gif")
+      raise "invalid gif signature" unless body.start_with?("GIF87a".b) || body.start_with?("GIF89a".b)
+    when type.include?("webp")
+      raise "invalid webp signature" unless body.bytesize >= 12 && body.byteslice(0, 4) == "RIFF" && body.byteslice(8, 4) == "WEBP"
+    when type.start_with?("video/")
+      raise "invalid video signature" unless body.bytesize >= 12 && body.byteslice(4, 4) == "ftyp"
+    end
   end
 end

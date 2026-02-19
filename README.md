@@ -51,6 +51,28 @@ Control worker count:
 RSPEC_WORKERS=4 bin/parallel_rspec
 ```
 
+### Selenium UI verification (responsive smoke)
+
+Run the Selenium UI verifier to exercise navigation/actions and capture temporary screenshots for multiple viewports:
+
+```bash
+ruby script/ui_selenium_verify.rb
+```
+
+Useful options:
+
+```bash
+# limit actions per page and target specific viewports/routes
+UI_VERIFY_MAX_ACTIONS=2 UI_VERIFY_VIEWPORTS=mobile,portrait,desktop,4k UI_VERIFY_ROUTES=/,/instagram_profiles ruby script/ui_selenium_verify.rb
+
+# disable deep Tabulator pagination/state/interaction verification if needed
+UI_VERIFY_TABLE_CHECKS=0 ruby script/ui_selenium_verify.rb
+```
+
+Artifacts are written to:
+- `tmp/ui_verify/<timestamp>/report.json`
+- `tmp/ui_verify/<timestamp>/*.png`
+
 ### VCR recording and replay
 
 Third-party HTTP responses are recorded with VCR and replayed during tests.

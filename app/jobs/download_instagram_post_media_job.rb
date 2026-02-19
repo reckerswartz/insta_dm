@@ -9,7 +9,10 @@ class DownloadInstagramPostMediaJob < ApplicationJob
 
   def perform(instagram_post_id:)
     post = InstagramPost.find(instagram_post_id)
-    return if post.media.attached?
+    if post.media.attached?
+      integrity = blob_integrity_for(post.media.blob)
+      return if integrity[:valid]
+    end
 
     url = post.media_url.to_s.strip
     return if url.blank?
@@ -17,7 +20,13 @@ class DownloadInstagramPostMediaJob < ApplicationJob
     return if attach_media_from_local_cache!(post: post)
 
     io, content_type, filename = download(url)
-    post.media.attach(io: io, filename: filename, content_type: content_type)
+    blob = ActiveStorage::Blob.create_and_upload!(
+      io: io,
+      filename: filename,
+      content_type: content_type,
+      identify: false
+    )
+    attach_blob_to_post!(post: post, blob: blob)
     post.update!(media_downloaded_at: Time.current)
   rescue StandardError
     post&.update!(purge_at: 6.hours.from_now) if post
@@ -48,12 +57,70 @@ class DownloadInstagramPostMediaJob < ApplicationJob
     body = res.body.to_s
     content_type = res["content-type"].to_s.split(";").first.presence || "application/octet-stream"
     limit = content_type.start_with?("video/") ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES
+    raise "empty media payload" if body.bytesize <= 0
     raise "media too large" if body.bytesize > limit
+    raise "unexpected html payload" if html_payload?(body)
+    validate_known_signature!(body: body, content_type: content_type)
 
     ext = extension_for_content_type(content_type)
     io = StringIO.new(body)
     io.set_encoding(Encoding::BINARY) if io.respond_to?(:set_encoding)
     [io, content_type, "post_#{Digest::SHA256.hexdigest(url)[0, 12]}.#{ext}"]
+  end
+
+  def blob_integrity_for(blob)
+    return { valid: false, reason: "missing_blob" } unless blob
+    return { valid: false, reason: "non_positive_byte_size" } if blob.byte_size.to_i <= 0
+
+    service = blob.service
+    if service.respond_to?(:path_for, true)
+      path = service.send(:path_for, blob.key)
+      return { valid: false, reason: "missing_file_on_disk" } unless path && File.exist?(path)
+
+      file_size = File.size(path)
+      return { valid: false, reason: "zero_byte_file" } if file_size <= 0
+      return { valid: false, reason: "byte_size_mismatch" } if blob.byte_size.to_i.positive? && file_size != blob.byte_size.to_i
+    end
+
+    { valid: true, reason: nil }
+  rescue StandardError
+    { valid: false, reason: "integrity_check_error" }
+  end
+
+  def html_payload?(body)
+    sample = body.to_s.byteslice(0, 4096).to_s.downcase
+    sample.include?("<html") || sample.start_with?("<!doctype html")
+  end
+
+  def validate_known_signature!(body:, content_type:)
+    type = content_type.to_s.downcase
+    return if type.blank?
+    return if type.include?("octet-stream")
+
+    case
+    when type.include?("jpeg")
+      raise "invalid jpeg signature" unless body.start_with?("\xFF\xD8".b)
+    when type.include?("png")
+      raise "invalid png signature" unless body.start_with?("\x89PNG\r\n\x1A\n".b)
+    when type.include?("gif")
+      raise "invalid gif signature" unless body.start_with?("GIF87a".b) || body.start_with?("GIF89a".b)
+    when type.include?("webp")
+      raise "invalid webp signature" unless body.bytesize >= 12 && body.byteslice(0, 4) == "RIFF" && body.byteslice(8, 4) == "WEBP"
+    when type.start_with?("video/")
+      raise "invalid video signature" unless body.bytesize >= 12 && body.byteslice(4, 4) == "ftyp"
+    end
+  end
+
+  def attach_blob_to_post!(post:, blob:)
+    raise "missing blob for attach" unless blob
+
+    if post.media.attached? && post.media.attachment.present?
+      attachment = post.media.attachment
+      attachment.update!(blob: blob) if attachment.blob_id != blob.id
+      return
+    end
+
+    post.media.attach(blob)
   end
 
   def extension_for_content_type(content_type)
@@ -71,7 +138,7 @@ class DownloadInstagramPostMediaJob < ApplicationJob
     blob = cached_media_blob_for(post: post)
     return false unless blob
 
-    post.media.attach(blob)
+    attach_blob_to_post!(post: post, blob: blob)
     post.update!(media_downloaded_at: Time.current)
     true
   rescue StandardError => e
@@ -89,13 +156,21 @@ class DownloadInstagramPostMediaJob < ApplicationJob
       .where.not(id: post.id)
       .order(media_downloaded_at: :desc, id: :desc)
       .first
-    return cached_feed_post.media.blob if cached_feed_post&.media&.attached?
+    if cached_feed_post&.media&.attached?
+      blob = cached_feed_post.media.blob
+      return blob if blob_integrity_for(blob)[:valid]
+    end
 
     cached_profile_post = InstagramProfilePost
       .joins(:media_attachment)
       .where(shortcode: shortcode)
       .order(updated_at: :desc, id: :desc)
       .first
-    cached_profile_post&.media&.blob
+    if cached_profile_post&.media&.attached?
+      blob = cached_profile_post.media.blob
+      return blob if blob_integrity_for(blob)[:valid]
+    end
+
+    nil
   end
 end

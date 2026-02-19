@@ -2,7 +2,13 @@ import { getCableConsumer } from "./cable_consumer"
 
 const DEFAULT_PAGE_SIZES = [25, 50, 100, 200]
 const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,.btn,[role='button']"
+const TABLE_REFRESH_WARN_MS = 1600
 let operationsConsumer
+let tableAddonSequence = 0
+
+function tabulatorDebugWarningsEnabled() {
+  return Boolean(window.__TABULATOR_DEBUG_WARNINGS === true)
+}
 
 function controllerOwnsTable(controller, table) {
   if (!controller || !table) return false
@@ -11,9 +17,80 @@ function controllerOwnsTable(controller, table) {
   return false
 }
 
+function tableStillMounted(table) {
+  const tableEl = table?.element
+  if (!tableEl || !tableEl.isConnected) return false
+  const holder = tableEl.querySelector(".tabulator-tableholder")
+  // Tabulator redraw/height logic requires an attached holder element.
+  return Boolean(holder && holder.isConnected)
+}
+
+function tableCanRedraw(table) {
+  const tableEl = table?.element
+  if (!tableEl || !tableEl.isConnected) return false
+  if (tableEl.offsetParent === null && window.getComputedStyle(tableEl).position !== "fixed") return false
+
+  const holder = tableEl.querySelector(".tabulator-tableholder")
+  if (!holder || !holder.isConnected) return false
+
+  const holderWidth = holder.getBoundingClientRect?.().width
+  if (!Number.isFinite(holderWidth) || holderWidth <= 0) return false
+
+  if (table?.rowManager && !table.rowManager.element) return false
+  return true
+}
+
 function getOperationsConsumer() {
   if (!operationsConsumer) operationsConsumer = getCableConsumer()
   return operationsConsumer
+}
+
+function ensureTableAddonId(tableEl) {
+  if (!tableEl) return `table-addon-${Date.now()}-${++tableAddonSequence}`
+  if (!tableEl.dataset.tabulatorAddonId) {
+    tableEl.dataset.tabulatorAddonId = `tabulator-addon-${++tableAddonSequence}`
+  }
+  return tableEl.dataset.tabulatorAddonId
+}
+
+function registerTableDebugReference(table, storageKey) {
+  if (typeof window === "undefined" || !table) return null
+
+  if (!window.__appTabulatorRegistry) {
+    window.__appTabulatorRegistry = {}
+  }
+
+  const registry = window.__appTabulatorRegistry
+  const baseKey = storageKey ? String(storageKey) : `table-${++tableAddonSequence}`
+
+  let registryKey = baseKey
+  let suffix = 1
+  while (registry[registryKey] && registry[registryKey] !== table) {
+    suffix += 1
+    registryKey = `${baseKey}-${suffix}`
+  }
+
+  registry[registryKey] = table
+  if (table.element) table.element.dataset.tabulatorRegistryKey = registryKey
+  return registryKey
+}
+
+function unregisterTableDebugReference(table, registryKey) {
+  if (typeof window === "undefined" || !registryKey) return
+  const registry = window.__appTabulatorRegistry
+  if (!registry) return
+
+  if (!table || registry[registryKey] === table) {
+    delete registry[registryKey]
+  }
+
+  if (table?.element) {
+    delete table.element.dataset.tabulatorRegistryKey
+  }
+
+  if (Object.keys(registry).length === 0) {
+    delete window.__appTabulatorRegistry
+  }
 }
 
 function readPreferredPageSize(storageKey, fallback, allowedSizes) {
@@ -60,11 +137,26 @@ export function runTableCleanups(controller) {
   controller._tableCleanups = []
 }
 
-export function adaptiveTableHeight(element, { min = 340, max = 860, bottomPadding = 42, fallbackOffset = 280 } = {}) {
+export function adaptiveTableHeight(element, {
+  min = 340,
+  max = 860,
+  bottomPadding = 42,
+  fallbackOffset = 280,
+  compactMin = 220,
+  offscreenViewportFactor = 1.1,
+} = {}) {
   const viewport = window.innerHeight || 900
-  const top = element?.getBoundingClientRect?.().top
+  const rect = element?.getBoundingClientRect?.()
+  const top = rect?.top
   const available = Number.isFinite(top) ? (viewport - top - bottomPadding) : (viewport - fallbackOffset)
-  const bounded = Math.max(min, Math.min(max, available))
+
+  const compactFloor = Math.max(180, Math.min(min, compactMin))
+  const isFarOffscreen = Number.isFinite(top) && (
+    top > (viewport * offscreenViewportFactor) ||
+    top < (viewport * -offscreenViewportFactor)
+  )
+  const effectiveMin = isFarOffscreen ? compactFloor : min
+  const bounded = Math.max(effectiveMin, Math.min(max, available))
   return `${Math.round(bounded)}px`
 }
 
@@ -128,12 +220,24 @@ export function tabulatorBaseOptions({
     filterMode: "remote",
     initialSort,
 
+    ...(storageKey ? {
+      persistenceMode: "local",
+      persistenceID: storageKey,
+      persistence: {
+        sort: true,
+        filter: true,
+        headerFilter: true,
+        page: { page: true, size: true },
+        columns: ["width", "visible"],
+      },
+    } : {}),
+
     movableColumns: true,
     resizableColumnFit: true,
     renderHorizontal: "virtual",
-    renderVerticalBuffer: 600,
-    headerFilterLiveFilterDelay: 450,
-    layoutColumnsOnNewData: true,
+    renderVerticalBuffer: 360,
+    headerFilterLiveFilterDelay: 550,
+    layoutColumnsOnNewData: false,
 
     columnDefaults: {
       vertAlign: "middle",
@@ -144,17 +248,53 @@ export function tabulatorBaseOptions({
   }
 }
 
-export function attachTabulatorBehaviors(controller, table, { storageKey = null, paginationSize = 50 } = {}) {
+export function attachTabulatorBehaviors(
+  controller,
+  table,
+  { storageKey = null, paginationSize = 50 } = {},
+) {
   if (!controller || !table) return
+
+  const tableEl = table.element
+  const addonId = ensureTableAddonId(tableEl)
+  const debugRegistryKey = registerTableDebugReference(table, storageKey)
+
+  if (storageKey && tableEl) {
+    tableEl.dataset.tabulatorStorageKey = storageKey
+  }
+  if (tableEl) {
+    tableEl.classList.add("tabulator-pagination-managed")
+    tableEl.dataset.tabulatorPaginationMode = table?.options?.pagination ? "external" : "disabled"
+  }
 
   const rafId = window.requestAnimationFrame(() => {
     if (!controllerOwnsTable(controller, table)) return
     installTableInteractions(controller, table)
     installAdaptiveResizing(controller, table)
-    installPaginationControls(controller, table)
+    installTableLifecycleMonitor(controller, table, { storageKey })
+    installPaginationControls(controller, table, { addonId, force: true })
   })
 
   registerCleanup(controller, () => window.cancelAnimationFrame(rafId))
+
+  const onTableBuilt = () => installPaginationControls(controller, table, { addonId, force: true })
+  const onDataLoaded = () => installPaginationControls(controller, table, { addonId, force: true })
+  table.on("tableBuilt", onTableBuilt)
+  table.on("dataLoaded", onDataLoaded)
+
+  registerCleanup(controller, () => {
+    if (typeof table.off === "function") {
+      table.off("tableBuilt", onTableBuilt)
+      table.off("dataLoaded", onDataLoaded)
+    }
+    unregisterTableDebugReference(table, debugRegistryKey)
+    if (tableEl) {
+      tableEl.classList.remove("tabulator-pagination-managed")
+      delete tableEl.dataset.tabulatorPaginationMode
+      delete tableEl.dataset.tabulatorAddonId
+      if (storageKey) delete tableEl.dataset.tabulatorStorageKey
+    }
+  })
 
   if (!storageKey) return
 
@@ -171,15 +311,44 @@ export function attachTabulatorBehaviors(controller, table, { storageKey = null,
   })
 }
 
-export function installPaginationControls(controller, table) {
-  if (!table?.options?.pagination) return
+export function installPaginationControls(controller, table, { addonId = null, force = false } = {}) {
+  if (!table?.options?.pagination) return false
 
   const tableEl = table.element
-  if (!tableEl?.parentElement) return
+  if (!tableEl?.parentElement) return false
+
+  const hasPageModule = Boolean(table.modules?.page)
+  const hasFooter = Boolean(tableEl.querySelector(".tabulator-footer"))
+  if (!hasPageModule || !hasFooter) return false
+
+  const resolvedAddonId = addonId || ensureTableAddonId(tableEl)
+  const existingBar = tableEl.parentElement.querySelector(`.tabulator-external-pagination[data-tabulator-addon-for="${resolvedAddonId}"]`)
+  if (existingBar) return true
+
+  const configuredPageSizes = Array.isArray(table.options?.paginationSizeSelector)
+    ? table.options.paginationSizeSelector.filter((size) => Number(size) > 0).map((size) => Number(size))
+    : []
+  const defaultPageSize = Number(table.options?.paginationSize) || 25
+  const selectedPageSize = Number(table.modules?.page?.size) || defaultPageSize
+  const pageSizes = Array.from(new Set([defaultPageSize, selectedPageSize, ...configuredPageSizes]))
+    .filter((size) => Number(size) > 0)
+    .sort((a, b) => a - b)
 
   const bar = document.createElement("div")
   bar.className = "tabulator-external-pagination"
+  bar.dataset.tabulatorAddonFor = resolvedAddonId
+
+  const optionsHtml = pageSizes.map((size) => `<option value="${size}">${size}</option>`).join("")
   bar.innerHTML = `
+    <div class="tabulator-pagination-meta-group">
+      <label class="tabulator-page-size-control" aria-label="Rows per page">
+        <span>Rows</span>
+        <select data-page-size>
+          ${optionsHtml}
+        </select>
+      </label>
+      <span class="tabulator-pagination-summary" data-page-summary>Showing 0 results</span>
+    </div>
     <div class="tabulator-pagination-actions" role="group" aria-label="Table pagination controls">
       <button type="button" class="btn small secondary icon-only" data-page-nav="first" aria-label="First page" title="First page">
         <span aria-hidden="true">&laquo;</span>
@@ -199,28 +368,82 @@ export function installPaginationControls(controller, table) {
 
   tableEl.insertAdjacentElement("afterend", bar)
 
+  const pageSizeSelect = bar.querySelector("[data-page-size]")
+  const summaryEl = bar.querySelector("[data-page-summary]")
   const metaEl = bar.querySelector("[data-page-meta]")
   const firstBtn = bar.querySelector("[data-page-nav='first']")
   const prevBtn = bar.querySelector("[data-page-nav='prev']")
   const nextBtn = bar.querySelector("[data-page-nav='next']")
   const lastBtn = bar.querySelector("[data-page-nav='last']")
 
+  if (tableEl) {
+    tableEl.classList.add("tabulator-pagination-managed")
+    tableEl.dataset.tabulatorPaginationMode = "external"
+  }
+
+  const pageStats = () => {
+    const pageModule = table.modules?.page
+    const mode = String(pageModule?.mode || table.options?.paginationMode || "local")
+    const currentPage = Number(pageModule?.page) || 1
+    const pageSizeRaw = Number(pageModule?.size)
+    const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? pageSizeRaw : defaultPageSize
+    const pageRows = Array.isArray(table.getRows?.("visible")) ? table.getRows("visible").length : 0
+
+    let totalRows
+    if (mode === "remote") {
+      const remoteEstimate = Number(pageModule?.remoteRowCountEstimate)
+      if (Number.isFinite(remoteEstimate) && remoteEstimate >= 0) {
+        totalRows = remoteEstimate
+      } else {
+        const pageMax = Number(pageModule?.max) || 1
+        if (pageMax <= 1) {
+          totalRows = pageRows
+        } else if (currentPage >= pageMax) {
+          totalRows = ((pageMax - 1) * pageSize) + pageRows
+        } else {
+          totalRows = pageMax * pageSize
+        }
+      }
+    } else {
+      const activeCount = Number(table.getDataCount?.("active"))
+      totalRows = Number.isFinite(activeCount) && activeCount >= 0 ? activeCount : pageRows
+    }
+
+    const hasRows = pageRows > 0 && totalRows > 0
+    const start = hasRows ? (((currentPage - 1) * pageSize) + 1) : 0
+    const end = hasRows ? Math.min(totalRows, (start + pageRows - 1)) : 0
+
+    return {
+      currentPage,
+      pageSize,
+      pageRows,
+      totalRows,
+      start,
+      end,
+      maxPage: Math.max(1, Number(pageModule?.max) || 1),
+    }
+  }
+
   const goToPage = (page) => {
-    const maxPage = Number(table.getPageMax?.()) || 1
+    const maxPage = Number(table.modules?.page?.max) || 1
     const target = Math.max(1, Math.min(maxPage, Number(page) || 1))
     if (typeof table.setPage === "function") table.setPage(target)
   }
 
   const syncUi = () => {
-    const currentPage = Number(table.getPage?.()) || 1
-    const maxPageRaw = Number(table.getPageMax?.())
-    const maxPage = Number.isFinite(maxPageRaw) && maxPageRaw > 0 ? maxPageRaw : 1
+    const stats = pageStats()
 
-    if (metaEl) metaEl.textContent = `Page ${currentPage} of ${maxPage}`
-    if (firstBtn) firstBtn.disabled = currentPage <= 1
-    if (prevBtn) prevBtn.disabled = currentPage <= 1
-    if (nextBtn) nextBtn.disabled = currentPage >= maxPage
-    if (lastBtn) lastBtn.disabled = currentPage >= maxPage
+    if (metaEl) metaEl.textContent = `Page ${stats.currentPage} of ${stats.maxPage}`
+    if (summaryEl) {
+      summaryEl.textContent = stats.totalRows > 0
+        ? `Showing ${stats.start}-${stats.end} of ${Number(stats.totalRows).toLocaleString()}`
+        : "Showing 0 results"
+    }
+    if (pageSizeSelect) pageSizeSelect.value = String(stats.pageSize)
+    if (firstBtn) firstBtn.disabled = stats.currentPage <= 1
+    if (prevBtn) prevBtn.disabled = stats.currentPage <= 1
+    if (nextBtn) nextBtn.disabled = stats.currentPage >= stats.maxPage
+    if (lastBtn) lastBtn.disabled = stats.currentPage >= stats.maxPage
   }
 
   const onFirst = () => goToPage(1)
@@ -229,7 +452,7 @@ export function installPaginationControls(controller, table) {
       table.previousPage()
       return
     }
-    const currentPage = Number(table.getPage?.()) || 1
+    const currentPage = Number(table.modules?.page?.page) || 1
     goToPage(currentPage - 1)
   }
   const onNext = () => {
@@ -237,11 +460,11 @@ export function installPaginationControls(controller, table) {
       table.nextPage()
       return
     }
-    const currentPage = Number(table.getPage?.()) || 1
+    const currentPage = Number(table.modules?.page?.page) || 1
     goToPage(currentPage + 1)
   }
   const onLast = () => {
-    const maxPage = Number(table.getPageMax?.()) || 1
+    const maxPage = Number(table.modules?.page?.max) || 1
     goToPage(maxPage)
   }
 
@@ -249,6 +472,14 @@ export function installPaginationControls(controller, table) {
   prevBtn?.addEventListener("click", onPrev)
   nextBtn?.addEventListener("click", onNext)
   lastBtn?.addEventListener("click", onLast)
+  const onPageSizeSelect = () => {
+    const nextSize = Number(pageSizeSelect?.value)
+    if (!Number.isFinite(nextSize) || nextSize <= 0) return
+    if (typeof table.setPageSize === "function") table.setPageSize(nextSize)
+    if (typeof table.setPage === "function") table.setPage(1)
+    syncUi()
+  }
+  pageSizeSelect?.addEventListener("change", onPageSizeSelect)
 
   const onPageLoaded = () => syncUi()
   const onDataLoaded = () => syncUi()
@@ -271,30 +502,115 @@ export function installPaginationControls(controller, table) {
     prevBtn?.removeEventListener("click", onPrev)
     nextBtn?.removeEventListener("click", onNext)
     lastBtn?.removeEventListener("click", onLast)
+    pageSizeSelect?.removeEventListener("change", onPageSizeSelect)
     if (typeof table.off === "function") {
       table.off("pageLoaded", onPageLoaded)
       table.off("dataLoaded", onDataLoaded)
       table.off("renderComplete", onRenderComplete)
       table.off("pageSizeChanged", onPageSizeChanged)
     }
+    if (tableEl) {
+      tableEl.classList.remove("tabulator-pagination-managed")
+      delete tableEl.dataset.tabulatorPaginationMode
+    }
     bar.remove()
+  })
+
+  return true
+}
+
+export function installTableLifecycleMonitor(controller, table, { storageKey = null } = {}) {
+  const label = storageKey || table?.element?.dataset?.tabulatorAddonId || "table"
+  let loadStartedAt = 0
+  let memoryInterval = null
+  let memoryWarned = false
+
+  const now = () => (window.performance?.now ? window.performance.now() : Date.now())
+  const onDataLoading = () => {
+    loadStartedAt = now()
+  }
+  const onDataLoaded = () => {
+    if (!loadStartedAt) return
+    const elapsed = now() - loadStartedAt
+    if (elapsed >= TABLE_REFRESH_WARN_MS && tabulatorDebugWarningsEnabled()) {
+      console.warn(`Tabulator table [${label}] data load took ${Math.round(elapsed)}ms`)
+    }
+    loadStartedAt = 0
+  }
+
+  table.on("dataLoading", onDataLoading)
+  table.on("dataLoaded", onDataLoaded)
+
+  const heap = window.performance?.memory
+  if (heap && Number(heap.jsHeapSizeLimit) > 0) {
+    memoryInterval = window.setInterval(() => {
+      if (!controllerOwnsTable(controller, table)) return
+
+      const used = Number(window.performance?.memory?.usedJSHeapSize) || 0
+      const limit = Number(window.performance?.memory?.jsHeapSizeLimit) || 0
+      if (used <= 0 || limit <= 0) return
+
+      const usage = used / limit
+      if (usage >= 0.9 && !memoryWarned) {
+        memoryWarned = true
+        if (tabulatorDebugWarningsEnabled()) {
+          console.warn(`Tabulator table [${label}] heap usage is high (${Math.round(usage * 100)}%)`)
+        }
+      } else if (usage <= 0.78) {
+        memoryWarned = false
+      }
+    }, 30000)
+  }
+
+  registerCleanup(controller, () => {
+    if (typeof table.off === "function") {
+      table.off("dataLoading", onDataLoading)
+      table.off("dataLoaded", onDataLoaded)
+    }
+
+    if (memoryInterval) {
+      window.clearInterval(memoryInterval)
+    }
   })
 }
 
 export function installAdaptiveResizing(controller, table) {
   let rafId = null
+  let lastHeight = null
+  let pendingRedraw = false
 
   const redraw = () => {
     rafId = null
 
     if (!table || !controllerOwnsTable(controller, table)) return
+    if (!tableStillMounted(table)) return
+    if (!tableCanRedraw(table)) return
 
-    const nextHeight = controller._tableHeight?.()
-    if (nextHeight) table.setHeight(nextHeight)
-    table.redraw(true)
+    try {
+      const nextHeight = controller._tableHeight?.()
+      const heightChanged = Boolean(nextHeight) && nextHeight !== lastHeight
+
+      if (heightChanged && typeof table.setHeight === "function") {
+        table.setHeight(nextHeight)
+        lastHeight = nextHeight
+      }
+
+      if ((heightChanged || pendingRedraw) && typeof table.redraw === "function") {
+        table.redraw(true)
+      }
+    } catch (error) {
+      // During Turbo navigation/destroy, Tabulator can briefly lose internals.
+      if (!tableStillMounted(table)) return
+      const message = String(error?.message || "")
+      if (message.includes("getBoundingClientRect")) return
+      throw error
+    } finally {
+      pendingRedraw = false
+    }
   }
 
   const requestRedraw = () => {
+    pendingRedraw = true
     if (rafId) return
     rafId = window.requestAnimationFrame(redraw)
   }
@@ -304,14 +620,43 @@ export function installAdaptiveResizing(controller, table) {
   let observer
   const resizeTarget = table.element?.parentElement || table.element
   if (typeof ResizeObserver !== "undefined" && resizeTarget) {
-    observer = new ResizeObserver(() => requestRedraw())
+    let lastObservedWidth = null
+    observer = new ResizeObserver((entries) => {
+      const width = entries?.[0]?.contentRect?.width
+
+      if (!Number.isFinite(width)) {
+        requestRedraw()
+        return
+      }
+
+      if (lastObservedWidth === null) {
+        lastObservedWidth = width
+        requestRedraw()
+        return
+      }
+
+      if (Math.abs(width - lastObservedWidth) <= 0.5) return
+      lastObservedWidth = width
+      requestRedraw()
+    })
     observer.observe(resizeTarget)
   }
+
+  let visibilityObserver
+  if (typeof IntersectionObserver !== "undefined" && table.element) {
+    visibilityObserver = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) requestRedraw()
+    }, { root: null, threshold: 0.01 })
+    visibilityObserver.observe(table.element)
+  }
+
+  requestRedraw()
 
   registerCleanup(controller, () => {
     if (rafId) window.cancelAnimationFrame(rafId)
     window.removeEventListener("resize", requestRedraw)
     observer?.disconnect()
+    visibilityObserver?.disconnect()
   })
 }
 
@@ -427,18 +772,81 @@ export function subscribeToOperationsTopics(controller, {
 
   const uniqueTopics = new Set(topics)
   const consumer = getOperationsConsumer()
+  if (!consumer?.subscriptions || typeof consumer.subscriptions.create !== "function") return
   const shouldRefreshForMessage = typeof shouldRefresh === "function" ? shouldRefresh : () => true
   const refresh = typeof onRefresh === "function" ? onRefresh : () => controller.table?.replaceData()
 
   let refreshTimer = null
+  let refreshQueued = false
+  let refreshInFlight = false
+  let lastRefreshAt = 0
 
-  const scheduleRefresh = () => {
+  const scheduleRefresh = (delayMs = debounceMs) => {
+    refreshQueued = true
     if (refreshTimer) window.clearTimeout(refreshTimer)
+
+    const minGapMs = 220
+    const elapsedSinceLast = Date.now() - lastRefreshAt
+    const cooldownMs = elapsedSinceLast >= minGapMs ? 0 : (minGapMs - elapsedSinceLast)
+    const normalizedDelayMs = Number.isFinite(Number(delayMs)) ? Number(delayMs) : debounceMs
+    const nextDelayMs = Math.max(60, normalizedDelayMs, cooldownMs)
+
     refreshTimer = window.setTimeout(() => {
       refreshTimer = null
-      refresh()
-    }, debounceMs)
+      runRefresh()
+    }, nextDelayMs)
   }
+
+  const runRefresh = () => {
+    if (refreshInFlight) {
+      refreshQueued = true
+      return
+    }
+
+    if (document.visibilityState === "hidden") {
+      refreshQueued = true
+      return
+    }
+
+    const activeTable = controller.table || controller.tableInstance
+    if (activeTable && !tableStillMounted(activeTable)) {
+      refreshQueued = true
+      return
+    }
+
+    refreshInFlight = true
+    refreshQueued = false
+
+    const startedAt = window.performance?.now ? window.performance.now() : Date.now()
+
+    Promise.resolve()
+      .then(() => refresh())
+      .catch(() => {
+        // Ignore refresh errors; future events will retry.
+      })
+      .finally(() => {
+        const endedAt = window.performance?.now ? window.performance.now() : Date.now()
+        const elapsedMs = endedAt - startedAt
+        if (elapsedMs >= TABLE_REFRESH_WARN_MS && tabulatorDebugWarningsEnabled()) {
+          console.warn(`Tabulator refresh for topics [${Array.from(uniqueTopics).join(", ")}] took ${Math.round(elapsedMs)}ms`)
+        }
+
+        refreshInFlight = false
+        lastRefreshAt = Date.now()
+
+        if (refreshQueued) {
+          scheduleRefresh(120)
+        }
+      })
+  }
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState !== "visible") return
+    if (!refreshQueued && !refreshTimer) return
+    scheduleRefresh(80)
+  }
+
+  document.addEventListener("visibilitychange", onVisibilityChange, { passive: true })
 
   const subscription = consumer.subscriptions.create(
     {
@@ -457,6 +865,7 @@ export function subscribeToOperationsTopics(controller, {
 
   registerCleanup(controller, () => {
     if (refreshTimer) window.clearTimeout(refreshTimer)
+    document.removeEventListener("visibilitychange", onVisibilityChange)
     consumer.subscriptions.remove(subscription)
   })
 }

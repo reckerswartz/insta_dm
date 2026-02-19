@@ -116,8 +116,8 @@ export default class extends Controller {
       // Ignore to avoid hard-failing profile page behavior.
     }
 
-    if (window.console && typeof window.console.warn === "function") {
-      window.console.warn(`[profile-sections-loader] reload ${frame.id} due to ${reason}`)
+    if (window.__PROFILE_SECTIONS_DEBUG === true && window.console && typeof window.console.debug === "function") {
+      window.console.debug(`[profile-sections-loader] reload ${frame.id} due to ${reason}`)
     }
   }
 }

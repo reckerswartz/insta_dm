@@ -220,6 +220,7 @@ class StoryProcessingService
     Array(detected_faces).each do |face|
       face_image_bytes = face[:image_bytes].presence || fallback_image_bytes
       next if face_image_bytes.blank?
+      observation_signature = face_observation_signature(story_id: story_id, face: face)
 
       embedding_payload = @face_embedding_service.embed(
         media_payload: {
@@ -233,7 +234,8 @@ class StoryProcessingService
         account: @story.instagram_account,
         profile: @story.instagram_profile,
         embedding: embedding_payload[:vector],
-        occurred_at: @story.taken_at || Time.current
+        occurred_at: @story.taken_at || Time.current,
+        observation_signature: observation_signature
       )
       update_person_face_attributes!(person: match[:person], face: face)
 
@@ -253,12 +255,27 @@ class StoryProcessingService
           age: face[:age],
           age_range: face[:age_range],
           gender: face[:gender],
-          gender_score: face[:gender_score].to_f
+          gender_score: face[:gender_score].to_f,
+          observation_signature: observation_signature
         }
       }
       attrs[:embedding_vector] = embedding_payload[:vector] if InstagramStoryFace.column_names.include?("embedding_vector")
       @story.instagram_story_faces.create!(attrs)
     end
+  end
+
+  def face_observation_signature(story_id:, face:)
+    bbox = face[:bounding_box].is_a?(Hash) ? face[:bounding_box] : {}
+    [
+      "story",
+      story_id.to_s,
+      face[:frame_index].to_i,
+      face[:timestamp_seconds].to_f.round(3),
+      bbox["x1"],
+      bbox["y1"],
+      bbox["x2"],
+      bbox["y2"]
+    ].map(&:to_s).join(":")
   end
 
   def load_media_payload

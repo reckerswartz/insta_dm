@@ -32,4 +32,35 @@ RSpec.describe "DownloadInstagramPostMediaJobTest" do
     assert_not_nil target_post.media_downloaded_at
     assert_equal source_post.media.blob.id, target_post.media.blob.id
   end
+
+  it "re-downloads feed post media when existing attached blob is corrupt on disk" do
+    account = InstagramAccount.create!(username: "feed_corrupt_#{SecureRandom.hex(4)}")
+    post = account.instagram_posts.create!(
+      shortcode: "feed_corrupt_shortcode_1",
+      detected_at: Time.current,
+      media_url: "https://cdn.example.com/feed-corrupt.jpg"
+    )
+    post.media.attach(
+      io: StringIO.new("\xFF\xD8\xFF\xE0original-feed".b),
+      filename: "feed_original.jpg",
+      content_type: "image/jpeg"
+    )
+    original_blob_id = post.media.blob.id
+    path = post.media.blob.service.send(:path_for, post.media.blob.key)
+    File.binwrite(path, "".b)
+
+    replacement_io = StringIO.new("\xFF\xD8\xFF\xE0replacement-feed".b)
+    replacement_io.set_encoding(Encoding::BINARY)
+
+    job = DownloadInstagramPostMediaJob.new
+    allow(job).to receive(:download).and_return([replacement_io, "image/jpeg", "feed_replacement.jpg"])
+
+    job.perform(instagram_post_id: post.id)
+
+    post.reload
+    assert post.media.attached?
+    refute_equal original_blob_id, post.media.blob.id
+    assert_not_nil post.media_downloaded_at
+    assert_equal true, post.media.blob.byte_size.positive?
+  end
 end

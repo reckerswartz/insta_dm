@@ -53,7 +53,7 @@ RSpec.describe "PostFaceRecognitionServiceTest" do
         @person = person
       end
 
-      def match_or_create!(account:, profile:, embedding:, occurred_at:)
+      def match_or_create!(account:, profile:, embedding:, occurred_at:, observation_signature: nil)
         { person: @person, role: "secondary_person", similarity: 0.97 }
       end
     end.new(person)
@@ -96,7 +96,87 @@ RSpec.describe "PostFaceRecognitionServiceTest" do
     assert_equal 1, post.metadata.dig("face_recognition", "face_count")
     assert_equal "secondary_person", post.instagram_post_faces.first.role
     assert_equal person.id, post.instagram_post_faces.first.instagram_story_person_id
+    assert_equal "post_media_image", post.metadata.dig("face_recognition", "detection_source")
     assert_equal "Participants: person_123", post.metadata.dig("face_recognition", "participant_summary")
     assert_equal 1, fake_identity_resolver.calls.length
+  end
+
+  it "processes video posts using preview image when available" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
+    person = InstagramStoryPerson.create!(
+      instagram_account: account,
+      instagram_profile: profile,
+      role: "secondary_person",
+      appearance_count: 1,
+      first_seen_at: Time.current,
+      last_seen_at: Time.current,
+      canonical_embedding: [ 0.2, 0.3, 0.4 ]
+    )
+
+    post = InstagramProfilePost.create!(
+      instagram_account: account,
+      instagram_profile: profile,
+      shortcode: "post_#{SecureRandom.hex(3)}",
+      taken_at: Time.current
+    )
+    post.media.attach(
+      io: StringIO.new("video-binary"),
+      filename: "sample.mp4",
+      content_type: "video/mp4"
+    )
+    post.preview_image.attach(
+      io: StringIO.new(Base64.decode64(PNG_1PX_BASE64)),
+      filename: "preview.png",
+      content_type: "image/png"
+    )
+
+    fake_detection = Class.new do
+      def detect(media_payload:)
+        {
+          faces: [ { confidence: 0.88, bounding_box: { "x1" => 2, "y1" => 2, "x2" => 9, "y2" => 9 }, landmarks: [], likelihoods: {} } ],
+          ocr_text: "",
+          content_signals: [ "person" ],
+          hashtags: [],
+          mentions: []
+        }
+      end
+    end.new
+
+    fake_embedding = Class.new do
+      def embed(media_payload:, face:)
+        { vector: [ 0.31, 0.22, 0.13 ], version: "test_v2" }
+      end
+    end.new
+
+    fake_matcher = Class.new do
+      def initialize(person)
+        @person = person
+      end
+
+      def match_or_create!(account:, profile:, embedding:, occurred_at:, observation_signature: nil)
+        { person: @person, role: "secondary_person", similarity: 0.95 }
+      end
+    end.new(person)
+
+    fake_identity_resolver = Class.new do
+      def resolve_for_post!(post:, extracted_usernames:, content_summary:)
+        { skipped: false, summary: { participants: [], participant_summary_text: "No identifiable participants found." } }
+      end
+    end.new
+
+    service = PostFaceRecognitionService.new(
+      face_detection_service: fake_detection,
+      face_embedding_service: fake_embedding,
+      vector_matching_service: fake_matcher,
+      face_identity_resolution_service: fake_identity_resolver
+    )
+
+    result = service.process!(post: post)
+    post.reload
+
+    assert_equal false, result[:skipped]
+    assert_equal 1, post.instagram_post_faces.count
+    assert_equal "post_preview_image", post.metadata.dig("face_recognition", "detection_source")
   end
 end

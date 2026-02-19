@@ -28,7 +28,7 @@ module Ops
           InstagramProfileEvent
             .joins(:instagram_profile)
             .where(instagram_profiles: { instagram_account_id: account.id })
-            .includes(:instagram_profile, media_attachment: :blob)
+            .includes(:instagram_profile, media_attachment: :blob, preview_image_attachment: :blob)
             .order(detected_at: :desc, id: :desc)
             .limit(cap)
             .map do |event|
@@ -47,7 +47,7 @@ module Ops
                 media_url: media_attached ? Rails.application.routes.url_helpers.rails_blob_path(event.media, only_path: true) : nil,
                 media_download_url: media_attached ? Rails.application.routes.url_helpers.rails_blob_path(event.media, disposition: "attachment", only_path: true) : nil,
                 media_content_type: media_attached ? event.media.blob&.content_type.to_s : nil,
-                media_preview_image_url: preferred_video_preview_image_url(metadata: metadata),
+                media_preview_image_url: preferred_video_preview_image_url(event: event, metadata: metadata),
                 video_static_frame_only: static_video_preview?(metadata: metadata)
               }
             end
@@ -71,7 +71,11 @@ module Ops
           local_intel["video_processing_mode"].to_s == "static_image"
       end
 
-      def preferred_video_preview_image_url(metadata:)
+      def preferred_video_preview_image_url(event:, metadata:)
+        if event.preview_image.attached?
+          return Rails.application.routes.url_helpers.rails_blob_path(event.preview_image, only_path: true)
+        end
+
         data = metadata.is_a?(Hash) ? metadata : {}
         direct = data["image_url"].to_s.presence
         return direct if direct.present?

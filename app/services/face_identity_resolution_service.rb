@@ -62,6 +62,9 @@ class FaceIdentityResolutionService
 
     stats = profile_face_stats(profile: profile)
     primary_identity = promote_primary_identity!(profile: profile, stats: stats)
+    participants = refresh_participants_with_latest_people(participants: participants, profile: profile)
+    apply_username_links!(participants: participants, usernames: usernames, profile: profile)
+    sync_source_face_roles!(source: source, source_type: source_type)
 
     collaborator_index = build_collaborator_index(profile: profile, primary_person_id: primary_identity[:person_id])
     update_collaborator_relationships!(profile: profile, collaborator_index: collaborator_index)
@@ -72,10 +75,11 @@ class FaceIdentityResolutionService
       stats: stats,
       collaborator_index: collaborator_index
     )
+    participants_payload = participants.map { |row| row.except(:person) }
 
     summary_text = build_summary_text(
       profile: profile,
-      participants: participants,
+      participants: participants_payload,
       primary_identity: primary_identity,
       usernames: usernames,
       unknown_face_count: unknown_face_count
@@ -86,7 +90,7 @@ class FaceIdentityResolutionService
       source_id: source.id,
       extracted_usernames: usernames,
       unknown_face_count: unknown_face_count,
-      participants: participants,
+      participants: participants_payload,
       primary_identity: primary_identity,
       username_face_matches: username_matches,
       participant_summary_text: summary_text,
@@ -418,13 +422,36 @@ class FaceIdentityResolutionService
     participants.map do |row|
       person = row[:person]
       collaborator = collaborator_index[person.id] || {}
+      appearances = counts[person.id].to_i
+      role = person.role.to_s
       row.merge(
+        role: role,
+        owner_match: role == "primary_user",
+        recurring_face: appearances > 1,
         appearances: counts[person.id].to_i,
         relationship: collaborator[:relationship] || person.metadata&.dig("relationship"),
         co_appearances_with_primary: collaborator[:co_appearances_with_primary].to_i,
         linked_usernames: linked_usernames(person)
       )
     end.uniq { |row| [ row[:person_id], row[:match_similarity].round(4), row[:detector_confidence].round(4) ] }
+  end
+
+  def refresh_participants_with_latest_people(participants:, profile:)
+    ids = participants.map { |row| row[:person_id] }.compact.uniq
+    return participants if ids.empty?
+
+    by_id = profile.instagram_story_people.where(id: ids).index_by(&:id)
+    participants.map do |row|
+      latest = by_id[row[:person_id]]
+      next row unless latest
+
+      row.merge(
+        person: latest,
+        role: latest.role.to_s,
+        label: latest.label.to_s.presence,
+        linked_usernames: linked_usernames(latest)
+      )
+    end
   end
 
   def build_summary_text(profile:, participants:, primary_identity:, usernames:, unknown_face_count:)
@@ -502,6 +529,27 @@ class FaceIdentityResolutionService
     event_meta["face_identity"] = summary
     event_meta["participant_summary"] = summary[:participant_summary_text].to_s
     event.update_columns(metadata: event_meta, updated_at: Time.current)
+  rescue StandardError
+    nil
+  end
+
+  def sync_source_face_roles!(source:, source_type:)
+    case source_type
+    when "post"
+      source.instagram_post_faces.includes(:instagram_story_person).find_each do |face|
+        next unless face.instagram_story_person
+        next if face.role.to_s == face.instagram_story_person.role.to_s
+
+        face.update_columns(role: face.instagram_story_person.role.to_s, updated_at: Time.current)
+      end
+    when "story"
+      source.instagram_story_faces.includes(:instagram_story_person).find_each do |face|
+        next unless face.instagram_story_person
+        next if face.role.to_s == face.instagram_story_person.role.to_s
+
+        face.update_columns(role: face.instagram_story_person.role.to_s, updated_at: Time.current)
+      end
+    end
   rescue StandardError
     nil
   end

@@ -4,6 +4,8 @@ class InstagramAccountsController < ApplicationController
   STORY_SYNC_LIMIT = SyncHomeStoryCarouselJob::STORY_BATCH_LIMIT
   CONTINUOUS_STORY_SYNC_CYCLE_LIMIT = SyncAllHomeStoriesJob::MAX_CYCLES
   ACTIONS_TODO_POST_MAX_AGE_DAYS = 5
+  STORY_ARCHIVE_SLOW_REQUEST_MS = Integer(ENV.fetch("STORY_ARCHIVE_SLOW_REQUEST_MS", "2000"))
+  STORY_ARCHIVE_PREVIEW_ENQUEUE_TTL_SECONDS = Integer(ENV.fetch("STORY_ARCHIVE_PREVIEW_ENQUEUE_TTL_SECONDS", "900"))
 
   before_action :set_account, only: %i[
     show update destroy select manual_login import_cookies export_cookies validate_session
@@ -12,6 +14,7 @@ class InstagramAccountsController < ApplicationController
     run_continuous_processing
   ]
   before_action :normalize_navigation_format, only: %i[show]
+  around_action :log_story_media_archive_request, only: %i[story_media_archive]
 
   def index
     @accounts = InstagramAccount.order(:id).to_a
@@ -299,6 +302,7 @@ class InstagramAccountsController < ApplicationController
         .joins(:media_attachment)
         .includes(:instagram_profile)
         .with_attached_media
+        .with_attached_preview_image
         .where(
           instagram_profiles: { instagram_account_id: @account.id },
           kind: InstagramProfileEvent::STORY_ARCHIVE_EVENT_KINDS
@@ -502,7 +506,7 @@ class InstagramAccountsController < ApplicationController
         profile&.profile_pic_url.to_s.presence
       end
     video_static_frame_only = static_video_preview?(metadata: metadata)
-    media_preview_image_url = preferred_video_preview_image_url(metadata: metadata)
+    media_preview_image_url = preferred_video_preview_image_url(event: event, metadata: metadata)
 
     {
       id: event.id,
@@ -556,14 +560,59 @@ class InstagramAccountsController < ApplicationController
       local_intel["video_processing_mode"].to_s == "static_image"
   end
 
-  def preferred_video_preview_image_url(metadata:)
+  def preferred_video_preview_image_url(event:, metadata:)
+    if event.preview_image.attached?
+      return Rails.application.routes.url_helpers.rails_blob_path(event.preview_image, only_path: true)
+    end
+
     data = metadata.is_a?(Hash) ? metadata : {}
     direct = data["image_url"].to_s.presence
     return direct if direct.present?
 
     variants = Array(data["carousel_media"])
     candidate = variants.find { |entry| entry.is_a?(Hash) && entry["image_url"].to_s.present? }
-    candidate.is_a?(Hash) ? candidate["image_url"].to_s.presence : nil
+    variant_url = candidate.is_a?(Hash) ? candidate["image_url"].to_s.presence : nil
+    return variant_url if variant_url.present?
+
+    local_video_preview_representation_url(event: event)
+  end
+
+  def local_video_preview_representation_url(event:)
+    return nil unless event.media.attached?
+    return nil unless event.media.blob&.content_type.to_s.start_with?("video/")
+
+    enqueue_story_preview_generation(event: event)
+    nil
+  rescue StandardError
+    nil
+  end
+
+  def enqueue_story_preview_generation(event:)
+    return if event.preview_image.attached?
+
+    cache_key = "story_archive:preview_enqueue:#{event.id}"
+    Rails.cache.fetch(cache_key, expires_in: STORY_ARCHIVE_PREVIEW_ENQUEUE_TTL_SECONDS.seconds) do
+      GenerateStoryPreviewImageJob.perform_later(instagram_profile_event_id: event.id)
+      true
+    end
+  rescue StandardError => e
+    Rails.logger.warn("[story_media_archive] preview enqueue failed event_id=#{event.id}: #{e.class}: #{e.message}")
+  end
+
+  def log_story_media_archive_request
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    yield
+  ensure
+    elapsed_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000.0).round(1)
+    return if elapsed_ms < STORY_ARCHIVE_SLOW_REQUEST_MS
+
+    pool_stats = ActiveRecord::Base.connection_pool.stat rescue {}
+    Rails.logger.warn(
+      "[story_media_archive] slow request " \
+      "account_id=#{@account&.id} elapsed_ms=#{elapsed_ms} " \
+      "pool_size=#{pool_stats[:size]} pool_busy=#{pool_stats[:busy]} " \
+      "pool_waiting=#{pool_stats[:waiting]}"
+    )
   end
 
   def normalize_navigation_format

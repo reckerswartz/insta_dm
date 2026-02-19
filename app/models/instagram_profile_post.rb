@@ -6,6 +6,7 @@ class InstagramProfilePost < ApplicationRecord
   has_many :ai_analyses, as: :analyzable, dependent: :destroy
 
   has_one_attached :media
+  has_one_attached :preview_image
 
   validates :shortcode, presence: true
 

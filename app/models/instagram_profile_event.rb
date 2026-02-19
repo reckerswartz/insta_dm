@@ -14,6 +14,7 @@ class InstagramProfileEvent < ApplicationRecord
   belongs_to :instagram_profile
 
   has_one_attached :media
+  has_one_attached :preview_image
   has_many :instagram_stories, foreign_key: :source_event_id, dependent: :nullify
 
   validates :kind, presence: true
@@ -1145,6 +1146,7 @@ class InstagramProfileEvent < ApplicationRecord
     Array(detected_faces).first(5).filter_map do |face|
       candidate_image_bytes = face[:image_bytes].presence || fallback_image_bytes
       next if candidate_image_bytes.blank?
+      observation_signature = event_face_observation_signature(story_id: story_id, face: face)
 
       vector_payload = embedding_service.embed(
         media_payload: { story_id: story_id.to_s, media_type: "image", image_bytes: candidate_image_bytes },
@@ -1157,7 +1159,8 @@ class InstagramProfileEvent < ApplicationRecord
         account: account,
         profile: profile,
         embedding: vector,
-        occurred_at: occurred_at || detected_at || Time.current
+        occurred_at: occurred_at || detected_at || Time.current,
+        observation_signature: observation_signature
       )
       person = match[:person]
       update_person_face_attributes_for_event!(person: person, face: face)
@@ -1174,6 +1177,21 @@ class InstagramProfileEvent < ApplicationRecord
     end
   rescue StandardError
     []
+  end
+
+  def event_face_observation_signature(story_id:, face:)
+    bbox = face[:bounding_box].is_a?(Hash) ? face[:bounding_box] : {}
+    [
+      "event",
+      id,
+      story_id.to_s,
+      face[:frame_index].to_i,
+      face[:timestamp_seconds].to_f.round(3),
+      bbox["x1"],
+      bbox["y1"],
+      bbox["x2"],
+      bbox["y2"]
+    ].map(&:to_s).join(":")
   end
 
   def update_person_face_attributes_for_event!(person:, face:)

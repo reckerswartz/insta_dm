@@ -83,7 +83,11 @@ RSpec.describe "FaceIdentityResolutionServiceTest" do
     assert_equal "secondary_person", secondary.role
     assert_equal dominant.id, out.dig(:summary, :primary_identity, :person_id)
     assert_equal true, out.dig(:summary, :primary_identity, :confirmed)
+    assert_equal "primary_user", out.dig(:summary, :participants, 0, :role)
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(out.dig(:summary, :participants, 0, :owner_match))
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(out.dig(:summary, :participants, 0, :recurring_face))
     assert_equal dominant.id, post1.metadata.dig("face_identity", "primary_identity", "person_id")
+    assert_equal "primary_user", post1.instagram_post_faces.first.reload.role
 
     behavior = profile.instagram_profile_behavior_profile
     assert behavior.present?

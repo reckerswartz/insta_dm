@@ -50,11 +50,42 @@
 
   <% if visible_posts.any? %>
     <div data-controller="profile-post-modal">
-      <div class="story-media-grid profile-story-grid">
+      <div class="story-media-scroll profile-posts-scroll">
+        <div class="story-media-grid profile-story-grid">
         <% visible_posts.each do |pp| %>
           <% comments = pp.instagram_profile_post_comments.recent_first.limit(12).map { |c| "#{c.author_username.presence || 'user'}: #{c.body}" } %>
           <% analysis = pp.analysis.is_a?(Hash) ? pp.analysis : {} %>
           <% metadata = pp.metadata.is_a?(Hash) ? pp.metadata : {} %>
+          <% face_recognition = metadata["face_recognition"].is_a?(Hash) ? metadata["face_recognition"] : {} %>
+          <% face_identity = metadata["face_identity"].is_a?(Hash) ? metadata["face_identity"] : {} %>
+          <% face_participants = Array(face_identity["participants"]).select { |row| row.is_a?(Hash) } %>
+          <% if face_participants.empty? %>
+            <% face_participants = Array(face_recognition.dig("identity", "participants")).select { |row| row.is_a?(Hash) } %>
+          <% end %>
+          <% post_faces = pp.instagram_post_faces.to_a %>
+          <% detected_face_count = face_recognition["face_count"].to_i %>
+          <% detected_face_count = post_faces.length if detected_face_count <= 0 && post_faces.any? %>
+          <% owner_faces_count = post_faces.count { |face| face.role.to_s == "primary_user" } %>
+          <% recurring_faces_count = face_participants.count { |row| ActiveModel::Type::Boolean.new.cast(row["recurring_face"]) || row["appearances"].to_i > 1 } %>
+          <% owner_faces_count = face_participants.count { |row| row["role"].to_s == "primary_user" } if owner_faces_count <= 0 && face_participants.any? %>
+          <% face_summary_payload = {
+            face_count: detected_face_count,
+            owner_faces_count: owner_faces_count,
+            recurring_faces_count: recurring_faces_count,
+            detection_source: face_recognition["detection_source"].to_s.presence,
+            participant_summary: face_recognition["participant_summary"].to_s.presence,
+            participants: face_participants.first(12).map do |row|
+              {
+                person_id: row["person_id"],
+                role: row["role"],
+                label: row["label"],
+                appearances: row["appearances"],
+                recurring_face: row["recurring_face"],
+                relationship: row["relationship"],
+                co_appearances_with_primary: row["co_appearances_with_primary"]
+              }.compact
+            end
+          } %>
           <% suggestions = Array(analysis["comment_suggestions"]) %>
           <% comment_gen_status = analysis["comment_generation_status"].to_s.presence || "unknown" %>
           <% comment_gen_source = analysis["comment_generation_source"].to_s.presence || "unknown" %>
@@ -64,6 +95,15 @@
           <% download_url = pp.media.attached? ? rails_blob_path(pp.media, disposition: "attachment") : nil %>
           <% content_type = pp.media.attached? ? pp.media.blob.content_type.to_s : "" %>
           <% is_video = content_type.start_with?("video/") || metadata["media_type"].to_i == 2 %>
+          <% poster_url =
+            if pp.preview_image.attached?
+              rails_blob_path(pp.preview_image, only_path: true)
+            else
+              metadata["preview_image_url"].to_s.presence ||
+                metadata["poster_url"].to_s.presence ||
+                metadata["image_url"].to_s.presence ||
+                metadata["media_url_image"].to_s.presence
+            end %>
           <% deleted_from_source = ActiveModel::Type::Boolean.new.cast(metadata["deleted_from_source"]) %>
           <% deleted_at = metadata["deleted_detected_at"].to_s.presence %>
           <% deleted_label =
@@ -121,12 +161,27 @@
                 data-forward-url="<%= forward_comment_instagram_profile_instagram_profile_post_path(profile, pp) %>"
                 data-comments-json="<%= h(comments.to_json) %>"
                 data-suggestions-json="<%= h(suggestions.to_json) %>"
+                data-face-summary-json="<%= h(face_summary_payload.to_json) %>"
               >
                 <img loading="lazy" src="<%= image_url %>" alt="Captured post media for <%= profile.username %>" />
               </button>
             <% elsif image_url.present? && is_video %>
               <div class="story-media-preview story-video-player-shell">
-                <video controls preload="none" playsinline src="<%= image_url %>" data-controller="video-player" data-video-player-autoplay-value="false" data-video-player-load-on-play-value="true"></video>
+                <video
+                  controls
+                  preload="none"
+                  playsinline
+                  data-controller="video-player"
+                  data-video-source="<%= image_url %>"
+                  data-video-content-type="<%= content_type %>"
+                  data-video-player-autoplay-value="false"
+                  data-video-player-load-on-play-value="true"
+                  <% if poster_url.present? %>
+                    poster="<%= poster_url %>"
+                    data-video-player-poster-url-value="<%= poster_url %>"
+                    data-video-poster-url="<%= poster_url %>"
+                  <% end %>
+                ></video>
               </div>
             <% else %>
               <div class="story-media-preview">
@@ -152,6 +207,37 @@
                   | comments <%= comment_gen_source %> (<%= comment_gen_status %>)
                 <% end %>
               </p>
+              <% if detected_face_count.positive? || face_participants.any? %>
+                <div class="post-face-summary">
+                  <p class="meta">
+                    Faces: <strong><%= detected_face_count %></strong>
+                    <% if owner_faces_count.positive? %>
+                      | Owner matches: <strong><%= owner_faces_count %></strong>
+                    <% end %>
+                    <% if recurring_faces_count.positive? %>
+                      | Recurring: <strong><%= recurring_faces_count %></strong>
+                    <% end %>
+                    <% if face_recognition["detection_source"].to_s.present? %>
+                      | Source: <%= face_recognition["detection_source"] %>
+                    <% end %>
+                  </p>
+                  <% if face_participants.any? %>
+                    <div class="post-face-chip-row">
+                      <% face_participants.first(6).each do |participant| %>
+                        <% role = participant["role"].to_s.presence || "unknown" %>
+                        <% person_id = participant["person_id"] %>
+                        <% recurring = ActiveModel::Type::Boolean.new.cast(participant["recurring_face"]) || participant["appearances"].to_i > 1 %>
+                        <span class="pill face-pill <%= role == "primary_user" ? "owner" : "person" %>">
+                          <%= participant["label"].to_s.presence || "person_#{person_id}" %>
+                          <% if recurring %>
+                            · recurring
+                          <% end %>
+                        </span>
+                      <% end %>
+                    </div>
+                  <% end %>
+                </div>
+              <% end %>
               <% if deleted_from_source %>
                 <p class="meta story-skipped-badge">Deleted on source: <%= deleted_label %></p>
               <% end %>
@@ -183,6 +269,7 @@
                     data-forward-url="<%= forward_comment_instagram_profile_instagram_profile_post_path(profile, pp) %>"
                     data-comments-json="<%= h(comments.to_json) %>"
                     data-suggestions-json="<%= h(suggestions.to_json) %>"
+                    data-face-summary-json="<%= h(face_summary_payload.to_json) %>"
                   >
                     View
                   </button>
@@ -198,6 +285,7 @@
             </div>
           </article>
         <% end %>
+        </div>
       </div>
 
       <dialog data-profile-post-modal-target="dialog" class="modal">
@@ -224,6 +312,8 @@
             <h4>Suggested comments</h4>
             <p class="meta">Click <strong>Forward Comment</strong> to queue posting on this exact Instagram post.</p>
             <div data-profile-post-modal-target="suggestions"></div>
+            <h4>Detected faces</h4>
+            <div data-profile-post-modal-target="faces"></div>
           </div>
         </div>
       </dialog>

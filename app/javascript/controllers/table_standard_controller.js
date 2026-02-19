@@ -42,6 +42,7 @@ export default class extends Controller {
     table.parentNode.insertBefore(host, table)
 
     this._tableHeight = () => adaptiveTableHeight(host, { min: 300, max: 780, bottomPadding: 36 })
+    const storageKey = this.storageKeyValue || null
 
     const options = {
       layout: "fitDataStretch",
@@ -58,8 +59,21 @@ export default class extends Controller {
       paginationCounter: "rows",
       movableColumns: true,
       resizableColumnFit: true,
-      renderHorizontal: "virtual",
-      renderVerticalBuffer: 500,
+      renderHorizontal: "basic",
+      renderVerticalBuffer: 360,
+      headerFilterLiveFilterDelay: 550,
+      layoutColumnsOnNewData: false,
+      ...(storageKey ? {
+        persistenceMode: "local",
+        persistenceID: storageKey,
+        persistence: {
+          sort: true,
+          filter: true,
+          headerFilter: true,
+          page: { page: true, size: true },
+          columns: ["width", "visible"],
+        },
+      } : {}),
       columnDefaults: {
         vertAlign: "middle",
       },
@@ -67,7 +81,7 @@ export default class extends Controller {
 
     this.tableInstance = new Tabulator(host, options)
     attachTabulatorBehaviors(this, this.tableInstance, {
-      storageKey: this.storageKeyValue || null,
+      storageKey,
       paginationSize: this.paginationSizeValue,
     })
 
@@ -99,6 +113,7 @@ export default class extends Controller {
         sorter: "string",
         headerFilter: isActionCol ? false : "input",
         headerFilterLiveFilter: true,
+        download: !isActionCol,
         formatter: (cell) => cell.getValue(),
       }
     })

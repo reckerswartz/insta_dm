@@ -84,6 +84,7 @@ export default class extends Controller {
           title: "Media",
           field: "media_download_url",
           headerSort: false,
+          download: false,
           hozAlign: "center",
           minWidth: 120,
           width: 130,

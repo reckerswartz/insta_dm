@@ -11,7 +11,7 @@ class AiDashboardController < ApplicationController
   AI_SERVICE_URL = "http://localhost:8000"
 
   def index
-    @service_status = check_ai_services
+    @service_status = check_ai_services(force: refresh_requested?)
     @test_results = {}
   end
 
@@ -63,8 +63,8 @@ class AiDashboardController < ApplicationController
 
   private
 
-  def check_ai_services
-    health = Ops::LocalAiHealth.check(force: true)
+  def check_ai_services(force: false)
+    health = Ops::LocalAiHealth.check(force: force)
     checked_at = Time.current
 
     if ActiveModel::Type::Boolean.new.cast(health[:ok])
@@ -99,6 +99,10 @@ class AiDashboardController < ApplicationController
         last_check: checked_at
       }
     end
+  end
+
+  def refresh_requested?
+    ActiveModel::Type::Boolean.new.cast(params[:refresh])
   end
 
   def test_vision_service(test_type)

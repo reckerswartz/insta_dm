@@ -9,6 +9,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
   MAX_INLINE_VIDEO_BYTES = 10 * 1024 * 1024
   MAX_STORIES = 10
+  MAX_PREVIEW_IMAGE_BYTES = 3 * 1024 * 1024
 
   def perform(instagram_account_id:, instagram_profile_id:, profile_action_log_id: nil, max_stories: MAX_STORIES, force_analyze_all: false, auto_reply: false, require_auto_reply_tag: false)
     account = InstagramAccount.find(instagram_account_id)
@@ -164,6 +165,13 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       end
 
       attach_media_to_event(upload_event, bytes: bytes, filename: filename, content_type: content_type)
+      ensure_story_preview_image!(
+        event: downloaded_event,
+        story: story,
+        media_bytes: bytes,
+        media_content_type: content_type,
+        user_agent: account.user_agent
+      )
       ingested_story = ingest_story_for_processing(
         account: account,
         profile: profile,
@@ -452,6 +460,141 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     Digest::SHA256.hexdigest(fallback)
   end
 
+  def ensure_story_preview_image!(event:, story:, media_bytes:, media_content_type:, user_agent:)
+    return false unless event&.media&.attached?
+    return false unless event.media.blob&.content_type.to_s.start_with?("video/")
+    return true if event.preview_image.attached?
+
+    preview_url = preferred_story_preview_url(story: story)
+    if preview_url.present?
+      downloaded = download_preview_image(url: preview_url, user_agent: user_agent)
+      if downloaded
+        attach_preview_image_bytes!(
+          event: event,
+          image_bytes: downloaded[:bytes],
+          content_type: downloaded[:content_type],
+          filename: downloaded[:filename]
+        )
+        stamp_story_preview_metadata!(event: event, source: "remote_image_url")
+        return true
+      end
+    end
+
+    extracted = VideoThumbnailService.new.extract_first_frame(
+      video_bytes: media_bytes.to_s.b,
+      reference_id: "story_event_#{event.id}",
+      content_type: media_content_type
+    )
+    return false unless extracted[:ok]
+
+    attach_preview_image_bytes!(
+      event: event,
+      image_bytes: extracted[:image_bytes],
+      content_type: extracted[:content_type],
+      filename: extracted[:filename]
+    )
+    stamp_story_preview_metadata!(event: event, source: "ffmpeg_first_frame")
+    true
+  rescue StandardError => e
+    Rails.logger.warn("[SyncInstagramProfileStoriesJob] preview attach failed event_id=#{event&.id}: #{e.class}: #{e.message}")
+    false
+  end
+
+  def preferred_story_preview_url(story:)
+    candidates = [
+      story[:image_url].to_s,
+      story[:thumbnail_url].to_s,
+      story[:preview_image_url].to_s
+    ]
+
+    Array(story[:carousel_media]).each do |entry|
+      data = entry.is_a?(Hash) ? entry : {}
+      candidates << data[:image_url].to_s
+      candidates << data["image_url"].to_s
+    end
+
+    candidates.map(&:strip).find(&:present?)
+  rescue StandardError
+    nil
+  end
+
+  def download_preview_image(url:, user_agent:, redirects_left: 3)
+    uri = URI.parse(url)
+    return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = (uri.scheme == "https")
+    http.open_timeout = 8
+    http.read_timeout = 20
+
+    req = Net::HTTP::Get.new(uri.request_uri)
+    req["Accept"] = "image/*,*/*;q=0.8"
+    req["User-Agent"] = user_agent.to_s.presence || "Mozilla/5.0"
+    req["Referer"] = Instagram::Client::INSTAGRAM_BASE_URL
+    res = http.request(req)
+
+    if res.is_a?(Net::HTTPRedirection) && res["location"].present?
+      return nil if redirects_left.to_i <= 0
+
+      redirected_url = normalize_redirect_url(base_uri: uri, location: res["location"])
+      return nil if redirected_url.blank?
+
+      return download_preview_image(url: redirected_url, user_agent: user_agent, redirects_left: redirects_left.to_i - 1)
+    end
+
+    return nil unless res.is_a?(Net::HTTPSuccess)
+
+    body = res.body.to_s.b
+    return nil if body.bytesize <= 0 || body.bytesize > MAX_PREVIEW_IMAGE_BYTES
+    return nil if html_payload?(body)
+
+    content_type = res["content-type"].to_s.split(";").first.to_s
+    return nil unless content_type.start_with?("image/")
+
+    validate_known_signature!(body: body, content_type: content_type)
+    ext = extension_for_content_type(content_type: content_type)
+
+    {
+      bytes: body,
+      content_type: content_type,
+      filename: "story_preview_#{Digest::SHA256.hexdigest(url)[0, 12]}.#{ext}"
+    }
+  rescue StandardError
+    nil
+  end
+
+  def attach_preview_image_bytes!(event:, image_bytes:, content_type:, filename:)
+    blob = ActiveStorage::Blob.create_and_upload!(
+      io: StringIO.new(image_bytes),
+      filename: filename,
+      content_type: content_type.to_s.presence || "image/jpeg",
+      identify: false
+    )
+    attach_preview_blob_to_event!(event: event, blob: blob)
+  end
+
+  def attach_preview_blob_to_event!(event:, blob:)
+    return unless blob
+
+    if event.preview_image.attached? && event.preview_image.attachment.present?
+      attachment = event.preview_image.attachment
+      attachment.update!(blob: blob) if attachment.blob_id != blob.id
+      return
+    end
+
+    event.preview_image.attach(blob)
+  end
+
+  def stamp_story_preview_metadata!(event:, source:)
+    metadata = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
+    metadata["preview_image_status"] = "attached"
+    metadata["preview_image_source"] = source.to_s
+    metadata["preview_image_attached_at"] = Time.current.utc.iso8601(3)
+    event.update!(metadata: metadata)
+  rescue StandardError
+    nil
+  end
+
   def build_story_payload(profile:, story:)
     story_history = recent_story_history_context(profile: profile)
     history_narrative = profile.history_narrative_text(max_chunks: 3)
@@ -734,6 +877,40 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     return "mov" if content_type.include?("quicktime")
 
     "bin"
+  end
+
+  def normalize_redirect_url(base_uri:, location:)
+    target = URI.join(base_uri.to_s, location.to_s).to_s
+    parsed = URI.parse(target)
+    return nil unless parsed.is_a?(URI::HTTP) || parsed.is_a?(URI::HTTPS)
+
+    parsed.to_s
+  rescue URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def html_payload?(body)
+    sample = body.to_s.byteslice(0, 4096).to_s.downcase
+    sample.include?("<html") || sample.start_with?("<!doctype html")
+  end
+
+  def validate_known_signature!(body:, content_type:)
+    type = content_type.to_s.downcase
+    return if type.blank?
+    return if type.include?("octet-stream")
+
+    case
+    when type.include?("jpeg")
+      raise "invalid jpeg signature" unless body.start_with?("\xFF\xD8".b)
+    when type.include?("png")
+      raise "invalid png signature" unless body.start_with?("\x89PNG\r\n\x1A\n".b)
+    when type.include?("gif")
+      raise "invalid gif signature" unless body.start_with?("GIF87a".b) || body.start_with?("GIF89a".b)
+    when type.include?("webp")
+      raise "invalid webp signature" unless body.bytesize >= 12 && body.byteslice(0, 4) == "RIFF" && body.byteslice(8, 4) == "WEBP"
+    when type.start_with?("video/")
+      raise "invalid video signature" unless body.bytesize >= 12 && body.byteslice(4, 4) == "ftyp"
+    end
   end
 
   def ingest_story_for_processing(account:, profile:, story:, downloaded_event:, bytes:, content_type:, filename:, force_reprocess:)

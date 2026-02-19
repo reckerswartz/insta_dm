@@ -66,6 +66,35 @@
     <% end %>
 
     <% if @post.metadata.is_a?(Hash) && @post.metadata["face_recognition"].present? %>
+      <% face_recognition = @post.metadata["face_recognition"].is_a?(Hash) ? @post.metadata["face_recognition"] : {} %>
+      <% identity = face_recognition["identity"].is_a?(Hash) ? face_recognition["identity"] : {} %>
+      <% participants = Array(identity["participants"]).select { |row| row.is_a?(Hash) } %>
+      <div class="post-face-summary mt-section">
+        <p class="meta">
+          Faces: <strong><%= face_recognition["face_count"].to_i %></strong>
+          <% if face_recognition["detection_source"].to_s.present? %>
+            | Source: <%= face_recognition["detection_source"] %>
+          <% end %>
+        </p>
+        <% if participants.any? %>
+          <div class="post-face-chip-row">
+            <% participants.first(10).each do |participant| %>
+              <% role = participant["role"].to_s.presence || "unknown" %>
+              <% person_id = participant["person_id"] %>
+              <% label = participant["label"].to_s.presence || "person_#{person_id}" %>
+              <span class="pill face-pill <%= role == "primary_user" ? "owner" : "person" %>">
+                <%= label %>
+                <% if participant["appearances"].to_i > 1 %>
+                  · recurring
+                <% end %>
+              </span>
+            <% end %>
+          </div>
+          <% if identity["participant_summary_text"].to_s.present? %>
+            <p class="meta"><%= identity["participant_summary_text"] %></p>
+          <% end %>
+        <% end %>
+      </div>
       <details class="details-box mt-section">
         <summary>Show Face Recognition Metadata</summary>
         <div class="table-scroll">

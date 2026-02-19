@@ -19,6 +19,8 @@ module.exports = {
     extensions: [".js", ".json"],
     alias: {
       "@": path.resolve(ROOT, "app/javascript"),
+      // Force the bundled turbo build to avoid runtime-split ActionCable chunk loading.
+      "@hotwired/turbo-rails": path.resolve(ROOT, "node_modules/@hotwired/turbo-rails/app/assets/javascripts/turbo.js"),
     },
   },
   cache: {

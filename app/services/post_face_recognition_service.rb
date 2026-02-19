@@ -15,10 +15,10 @@ class PostFaceRecognitionService
     return { skipped: true, reason: "post_missing" } unless post
     return { skipped: true, reason: "media_missing" } unless post.media.attached?
 
-    content_type = post.media.blob&.content_type.to_s
-    return { skipped: true, reason: "unsupported_content_type", content_type: content_type } unless content_type.start_with?("image/")
+    source_payload = load_face_detection_payload(post: post)
+    return source_payload if source_payload[:skipped]
 
-    image_bytes = post.media.download
+    image_bytes = source_payload[:image_bytes]
     detection = @face_detection_service.detect(
       media_payload: {
         story_id: "post:#{post.id}",
@@ -29,7 +29,13 @@ class PostFaceRecognitionService
     post.instagram_post_faces.delete_all
     matches = []
 
-    Array(detection[:faces]).each do |face|
+    Array(detection[:faces]).each_with_index do |face, index|
+      observation_signature = face_observation_signature(
+        post: post,
+        face: face,
+        index: index,
+        detection_source: source_payload[:detection_source]
+      )
       embedding_payload = @face_embedding_service.embed(
         media_payload: {
           story_id: "post:#{post.id}",
@@ -45,7 +51,8 @@ class PostFaceRecognitionService
         account: post.instagram_account,
         profile: post.instagram_profile,
         embedding: vector,
-        occurred_at: post.taken_at || Time.current
+        occurred_at: post.taken_at || Time.current,
+        observation_signature: observation_signature
       )
 
       person = match[:person]
@@ -59,12 +66,14 @@ class PostFaceRecognitionService
         embedding: vector,
         bounding_box: face[:bounding_box],
         metadata: {
+          source: source_payload[:detection_source],
           landmarks: face[:landmarks],
           likelihoods: face[:likelihoods],
           age: face[:age],
           age_range: face[:age_range],
           gender: face[:gender],
-          gender_score: face[:gender_score].to_f
+          gender_score: face[:gender_score].to_f,
+          observation_signature: observation_signature
         }
       )
 
@@ -72,7 +81,10 @@ class PostFaceRecognitionService
         person_id: person.id,
         role: match[:role],
         label: person.label,
-        similarity: match[:similarity]
+        similarity: match[:similarity],
+        owner_match: match[:role].to_s == "primary_user",
+        recurring_face: person.appearance_count.to_i > 1,
+        appearances: person.appearance_count.to_i
       }.compact
     end
 
@@ -80,6 +92,7 @@ class PostFaceRecognitionService
     metadata["face_recognition"] = {
       "face_count" => Array(detection[:faces]).length,
       "matched_people" => matches,
+      "detection_source" => source_payload[:detection_source],
       "ocr_text" => detection[:ocr_text].to_s,
       "objects" => Array(detection[:content_signals]),
       "hashtags" => Array(detection[:hashtags]),
@@ -123,6 +136,73 @@ class PostFaceRecognitionService
   end
 
   private
+
+  def load_face_detection_payload(post:)
+    content_type = post.media.blob&.content_type.to_s
+    if content_type.start_with?("image/")
+      return {
+        skipped: false,
+        image_bytes: post.media.download,
+        detection_source: "post_media_image",
+        content_type: content_type
+      }
+    end
+
+    if content_type.start_with?("video/")
+      if post.preview_image.attached?
+        return {
+          skipped: false,
+          image_bytes: post.preview_image.download,
+          detection_source: "post_preview_image",
+          content_type: post.preview_image.blob&.content_type.to_s
+        }
+      end
+
+      begin
+        generated_preview = post.media.preview(resize_to_limit: [ 960, 960 ]).processed
+        preview_blob = generated_preview.respond_to?(:image) ? generated_preview.image : nil
+        return {
+          skipped: false,
+          image_bytes: generated_preview.download,
+          detection_source: "post_generated_video_preview",
+          content_type: preview_blob&.content_type.to_s.presence || "image/jpeg"
+        }
+      rescue StandardError
+        return {
+          skipped: true,
+          reason: "video_preview_unavailable",
+          content_type: content_type
+        }
+      end
+    end
+
+    {
+      skipped: true,
+      reason: "unsupported_content_type",
+      content_type: content_type
+    }
+  rescue StandardError => e
+    {
+      skipped: true,
+      reason: "media_load_error",
+      error: e.message.to_s,
+      content_type: content_type.to_s
+    }
+  end
+
+  def face_observation_signature(post:, face:, index:, detection_source:)
+    bbox = face[:bounding_box].is_a?(Hash) ? face[:bounding_box] : {}
+    [
+      "post",
+      post.id,
+      detection_source.to_s,
+      index.to_i,
+      bbox["x1"],
+      bbox["y1"],
+      bbox["x2"],
+      bbox["y2"]
+    ].map(&:to_s).join(":")
+  end
 
   def update_person_face_attributes!(person:, face:)
     return unless person

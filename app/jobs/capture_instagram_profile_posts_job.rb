@@ -365,12 +365,7 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
     return unless post.media.attached?
     return if event.media.attached?
 
-    blob = post.media.blob
-    event.media.attach(
-      io: StringIO.new(blob.download),
-      filename: blob.filename.to_s,
-      content_type: blob.content_type
-    )
+    event.media.attach(post.media.blob)
   rescue StandardError => e
     Rails.logger.warn("[CaptureInstagramProfilePostsJob] unable to attach post media to event #{event&.id}: #{e.class}: #{e.message}")
   end

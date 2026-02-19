@@ -244,7 +244,7 @@
       }
 
       refreshButton?.addEventListener("click", function() {
-        window.location.reload()
+        window.location.assign("<%= ai_dashboard_index_path(refresh: 1) %>")
       })
 
       testAllButton?.addEventListener("click", function() {

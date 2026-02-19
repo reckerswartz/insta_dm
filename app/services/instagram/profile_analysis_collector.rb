@@ -141,6 +141,11 @@ module Instagram
         "media_id" => post_data[:media_id],
         "post_kind" => post_data[:post_kind],
         "product_type" => post_data[:product_type],
+        "media_url" => post_data[:media_url].to_s.presence,
+        "media_url_image" => post_data[:image_url].to_s.presence,
+        "media_url_video" => post_data[:video_url].to_s.presence,
+        "image_url" => post_data[:image_url].to_s.presence,
+        "video_url" => post_data[:video_url].to_s.presence,
         "is_repost" => ActiveModel::Type::Boolean.new.cast(post_data[:is_repost]),
         "comments_count_api" => post_data[:comments_count],
         "source" => sync_source.to_s
@@ -222,8 +227,13 @@ module Instagram
       end
 
       io, content_type, filename = download_media(url)
-      post.media.purge if post.media.attached?
-      post.media.attach(io: io, filename: filename, content_type: content_type)
+      blob = ActiveStorage::Blob.create_and_upload!(
+        io: io,
+        filename: filename,
+        content_type: content_type,
+        identify: false
+      )
+      attach_blob_to_post!(post: post, blob: blob)
       post.update!(media_url_fingerprint: fp)
       true
     rescue StandardError => e
@@ -236,6 +246,7 @@ module Instagram
     def attach_media_from_local_cache!(post:, incoming_media_id:, fingerprint:)
       blob = cached_profile_post_blob(post: post, incoming_media_id: incoming_media_id)
       return false unless blob
+      return false unless blob_integrity_for(blob)[:valid]
 
       if post.media.attached? && post.media.blob_id == blob.id
         if post.media_url_fingerprint.to_s != fingerprint
@@ -245,8 +256,7 @@ module Instagram
         return false
       end
 
-      post.media.purge if post.media.attached?
-      post.media.attach(blob)
+      attach_blob_to_post!(post: post, blob: blob)
       post.update!(media_url_fingerprint: fingerprint)
       true
     rescue StandardError => e
@@ -275,20 +285,32 @@ module Instagram
         scope = scope.where(shortcode: shortcode)
       end
 
-      candidate = scope.order(updated_at: :desc, id: :desc).first
-      candidate&.media&.blob
+      scope.order(updated_at: :desc, id: :desc).each do |candidate|
+        next unless candidate&.media&.attached?
+
+        blob = candidate.media.blob
+        return blob if blob_integrity_for(blob)[:valid]
+      end
+
+      nil
     end
 
     def cached_blob_from_feed_posts(shortcode:)
       value = shortcode.to_s.strip
       return nil if value.blank?
 
-      candidate = InstagramPost
+      InstagramPost
         .joins(:media_attachment)
         .where(shortcode: value)
         .order(media_downloaded_at: :desc, id: :desc)
-        .first
-      candidate&.media&.blob
+        .each do |candidate|
+          next unless candidate&.media&.attached?
+
+          blob = candidate.media.blob
+          return blob if blob_integrity_for(blob)[:valid]
+        end
+
+      nil
     end
 
     def sync_comments!(post:, comments:, expected_comments_count:)
@@ -358,7 +380,10 @@ module Instagram
       body = res.body.to_s
       content_type = res["content-type"].to_s.split(";").first.presence || "application/octet-stream"
       size_limit = content_type.start_with?("video/") ? MAX_POST_VIDEO_BYTES : MAX_POST_IMAGE_BYTES
+      raise "empty media payload" if body.bytesize <= 0
       raise "media too large" if body.bytesize > size_limit
+      raise "unexpected html payload" if html_payload?(body)
+      validate_known_signature!(body: body, content_type: content_type)
 
       ext = extension_for_content_type(content_type: content_type)
       io = StringIO.new(body)
@@ -385,6 +410,61 @@ module Instagram
       return "mov" if content_type.include?("quicktime")
 
       "bin"
+    end
+
+    def blob_integrity_for(blob)
+      return { valid: false, reason: "missing_blob" } unless blob
+      return { valid: false, reason: "non_positive_byte_size" } if blob.byte_size.to_i <= 0
+
+      service = blob.service
+      if service.respond_to?(:path_for, true)
+        path = service.send(:path_for, blob.key)
+        return { valid: false, reason: "missing_file_on_disk" } unless path && File.exist?(path)
+
+        file_size = File.size(path)
+        return { valid: false, reason: "zero_byte_file" } if file_size <= 0
+        return { valid: false, reason: "byte_size_mismatch" } if blob.byte_size.to_i.positive? && file_size != blob.byte_size.to_i
+      end
+
+      { valid: true, reason: nil }
+    rescue StandardError => e
+      { valid: false, reason: "integrity_check_error: #{e.class}" }
+    end
+
+    def html_payload?(body)
+      sample = body.to_s.byteslice(0, 4096).to_s.downcase
+      sample.include?("<html") || sample.start_with?("<!doctype html")
+    end
+
+    def validate_known_signature!(body:, content_type:)
+      type = content_type.to_s.downcase
+      return if type.blank?
+      return if type.include?("octet-stream")
+
+      case
+      when type.include?("jpeg")
+        raise "invalid jpeg signature" unless body.start_with?("\xFF\xD8".b)
+      when type.include?("png")
+        raise "invalid png signature" unless body.start_with?("\x89PNG\r\n\x1A\n".b)
+      when type.include?("gif")
+        raise "invalid gif signature" unless body.start_with?("GIF87a".b) || body.start_with?("GIF89a".b)
+      when type.include?("webp")
+        raise "invalid webp signature" unless body.bytesize >= 12 && body.byteslice(0, 4) == "RIFF" && body.byteslice(8, 4) == "WEBP"
+      when type.start_with?("video/")
+        raise "invalid video signature" unless body.bytesize >= 12 && body.byteslice(4, 4) == "ftyp"
+      end
+    end
+
+    def attach_blob_to_post!(post:, blob:)
+      raise "missing blob for attach" unless blob
+
+      if post.media.attached? && post.media.attachment.present?
+        attachment = post.media.attachment
+        attachment.update!(blob: blob) if attachment.blob_id != blob.id
+        return
+      end
+
+      post.media.attach(blob)
     end
 
     def mark_missing_posts_as_deleted!(fetched_shortcodes:, synced_at:, sync_source:)

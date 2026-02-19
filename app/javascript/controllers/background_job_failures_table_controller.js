@@ -110,6 +110,7 @@ export default class extends Controller {
           title: "Actions",
           field: "open_url",
           headerSort: false,
+          download: false,
           minWidth: 200,
           width: 220,
           formatter: (cell) => {

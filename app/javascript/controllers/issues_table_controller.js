@@ -123,6 +123,7 @@ export default class extends Controller {
           title: "Actions",
           field: "id",
           headerSort: false,
+          download: false,
           minWidth: 420,
           width: 450,
           formatter: (cell) => {

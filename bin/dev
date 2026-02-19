@@ -4,8 +4,10 @@
 require "bundler/setup"
 require "json"
 require "fileutils"
+require "net/http"
 require "socket"
 require "time"
+require "uri"
 
 ROOT = File.expand_path("..", __dir__)
 PID_DIR = File.join(ROOT, "tmp", "pids")
@@ -15,6 +17,13 @@ APP_TOKEN = File.basename(ROOT).downcase
 SIDEKIQ_QUIET_SECONDS = Integer(ENV.fetch("SIDEKIQ_QUIET_SECONDS", "8"))
 STOP_TIMEOUT_SECONDS = Integer(ENV.fetch("DEV_STOP_TIMEOUT_SECONDS", "30"))
 PORT_RELEASE_TIMEOUT_SECONDS = Integer(ENV.fetch("DEV_PORT_RELEASE_TIMEOUT_SECONDS", "12"))
+SERVICE_LOG_DIR = File.join(ROOT, "log", "dev_services")
+WEB_PORT = Integer(ENV.fetch("PORT", "3000"))
+DEV_ATTACH_TTY = ENV.fetch("DEV_ATTACH_TTY", "false") == "true"
+WEB_HEALTHCHECK_ENABLED = ENV.fetch("DEV_WEB_HEALTHCHECK_ENABLED", "true") == "true"
+WEB_HEALTHCHECK_INTERVAL_SECONDS = ENV.fetch("DEV_WEB_HEALTHCHECK_INTERVAL_SECONDS", "5").to_f.clamp(1.0, 30.0)
+WEB_HEALTHCHECK_TIMEOUT_SECONDS = ENV.fetch("DEV_WEB_HEALTHCHECK_TIMEOUT_SECONDS", "1.5").to_f.clamp(0.2, 10.0)
+WEB_HEALTHCHECK_FAILURE_THRESHOLD = Integer(ENV.fetch("DEV_WEB_HEALTHCHECK_FAILURE_THRESHOLD", "3")).clamp(1, 10)
 
 Service = Struct.new(:name, :cmd, :match_token, :pid, :pgid, keyword_init: true)
 
@@ -39,6 +48,20 @@ rescue Errno::ESRCH
   false
 rescue Errno::EPERM
   true
+end
+
+def process_state(pid)
+  return nil unless process_alive?(pid)
+
+  status_path = "/proc/#{pid.to_i}/status"
+  return nil unless File.exist?(status_path)
+
+  line = File.foreach(status_path).find { |row| row.start_with?("State:") }
+  return nil unless line
+
+  line.split[1].to_s
+rescue StandardError
+  nil
 end
 
 def command_line(pid)
@@ -260,11 +283,21 @@ end
 def build_services(rails_args)
   env_path = ENV.fetch("PATH", "")
   ffmpeg_bin = ENV.fetch("FFMPEG_BIN", "$HOME/.local/bin/ffmpeg")
+  debug_open = ENV["RUBY_DEBUG_OPEN"].to_s
 
   [
     Service.new(
       name: "web",
-      cmd: ["env", "PATH=#{env_path}", "WEBPACK_DEV_SERVER=true", "RUBY_DEBUG_OPEN=true", "FFMPEG_BIN=#{ffmpeg_bin}", "bin/rails", "server", *rails_args],
+      cmd: [
+        "env",
+        "PATH=#{env_path}",
+        "WEBPACK_DEV_SERVER=true",
+        ("RUBY_DEBUG_OPEN=#{debug_open}" unless debug_open.empty?),
+        "FFMPEG_BIN=#{ffmpeg_bin}",
+        "bin/rails",
+        "server",
+        *rails_args
+      ].compact,
       match_token: "bin/rails server"
     ),
     Service.new(
@@ -449,6 +482,13 @@ def status_from_state
   end
 end
 
+def spawn_service(service)
+  pid = Process.spawn(*service.cmd, chdir: ROOT, pgroup: true, in: File::NULL)
+  service.pid = pid
+  service.pgid = pid
+  log("Started #{service.name} PID #{pid}")
+end
+
 def start_stack(rails_args)
   stop_from_state if File.exist?(STATE_FILE)
   ensure_rails_pidfile_consistency!
@@ -460,18 +500,15 @@ def start_stack(rails_args)
   system("yarn", "build:css", chdir: ROOT) || warn_log("CSS build failed")
 
   services = build_services(rails_args)
-  services.each do |service|
-    pid = Process.spawn(*service.cmd, chdir: ROOT, pgroup: true)
-    service.pid = pid
-    service.pgid = pid
-    log("Started #{service.name} PID #{pid}")
-  end
+  services.each { |service| spawn_service(service) }
 
   write_state(supervisor_pid: Process.pid, services: services, local_ai_started: local_ai_started)
 
   shutdown_signal = nil
   Signal.trap("INT") { shutdown_signal ||= "INT" }
   Signal.trap("TERM") { shutdown_signal ||= "TERM" }
+  last_web_state = nil
+  web_stopped_cycles = 0
 
   loop do
     if shutdown_signal
@@ -479,6 +516,23 @@ def start_stack(rails_args)
       stop_local_ai_if_started({ "local_ai_started" => local_ai_started })
       remove_state
       exit(0)
+    end
+
+    web_service = services.find { |service| service.name == "web" }
+    if web_service && signalable_service?(web_service, strict_match: false)
+      current_web_state = process_state(web_service.pid)
+      if current_web_state && current_web_state != last_web_state
+        log("Web process PID #{web_service.pid} state changed #{last_web_state || 'unknown'} -> #{current_web_state}")
+      end
+      last_web_state = current_web_state
+
+      if current_web_state == "T"
+        web_stopped_cycles += 1
+        warn_log("Web process PID #{web_service.pid} is stopped (State=T, cycle=#{web_stopped_cycles}). Sending CONT to resume request handling.")
+        send_signal_to_service(web_service, "CONT")
+      else
+        web_stopped_cycles = 0
+      end
     end
 
     begin

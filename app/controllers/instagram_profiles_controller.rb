@@ -92,7 +92,7 @@ class InstagramProfilesController < ApplicationController
   def captured_posts_section
     profile_posts =
       @profile.instagram_profile_posts
-        .includes(:instagram_profile_post_comments, :ai_analyses, media_attachment: :blob)
+        .includes(:instagram_profile_post_comments, :ai_analyses, { instagram_post_faces: :instagram_story_person }, media_attachment: :blob, preview_image_attachment: :blob)
         .recent_first
         .limit(40)
 
@@ -108,6 +108,7 @@ class InstagramProfilesController < ApplicationController
       @profile.instagram_profile_events
         .joins(:media_attachment)
         .with_attached_media
+        .with_attached_preview_image
         .where(kind: InstagramProfileEvent::STORY_ARCHIVE_EVENT_KINDS)
         .order(detected_at: :desc, id: :desc)
         .limit(18)
@@ -146,7 +147,7 @@ class InstagramProfilesController < ApplicationController
   end
 
   def events
-    scope = @profile.instagram_profile_events.with_attached_media
+    scope = @profile.instagram_profile_events.with_attached_media.with_attached_preview_image
     scope = apply_tabulator_event_filters(scope)
 
     @q = params[:q].to_s.strip
@@ -443,7 +444,7 @@ class InstagramProfilesController < ApplicationController
         media_content_type: (e.media.attached? ? e.media.blob.content_type : nil),
         media_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true) : nil),
         media_download_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true, disposition: "attachment") : nil),
-        media_preview_image_url: preferred_video_preview_image_url(metadata: metadata),
+        media_preview_image_url: preferred_video_preview_image_url(event: e, metadata: metadata),
         video_static_frame_only: static_video_preview?(metadata: metadata)
       }
     end
@@ -473,14 +474,31 @@ class InstagramProfilesController < ApplicationController
       local_intel["video_processing_mode"].to_s == "static_image"
   end
 
-  def preferred_video_preview_image_url(metadata:)
+  def preferred_video_preview_image_url(event:, metadata:)
+    if event.preview_image.attached?
+      return Rails.application.routes.url_helpers.rails_blob_path(event.preview_image, only_path: true)
+    end
+
     data = metadata.is_a?(Hash) ? metadata : {}
     direct = data["image_url"].to_s.presence
     return direct if direct.present?
 
     variants = Array(data["carousel_media"])
     candidate = variants.find { |entry| entry.is_a?(Hash) && entry["image_url"].to_s.present? }
-    candidate.is_a?(Hash) ? candidate["image_url"].to_s.presence : nil
+    variant_url = candidate.is_a?(Hash) ? candidate["image_url"].to_s.presence : nil
+    return variant_url if variant_url.present?
+
+    local_video_preview_representation_url(event: event)
+  end
+
+  def local_video_preview_representation_url(event:)
+    return nil unless event.media.attached?
+    return nil unless event.media.blob&.content_type.to_s.start_with?("video/")
+
+    preview = event.media.preview(resize_to_limit: [640, 640]).processed
+    view_context.url_for(preview)
+  rescue StandardError
+    nil
   end
 
   def extract_tabulator_sorters

@@ -37,7 +37,12 @@
           local_intel["video_processing_mode"].to_s == "static_image"
         ) %>
         <% poster_url = begin
-          direct = meta["image_url"].to_s.presence
+          direct =
+            if event.preview_image.attached?
+              rails_blob_path(event.preview_image, only_path: true)
+            else
+              meta["image_url"].to_s.presence
+            end
           if direct.present?
             direct
           else
@@ -48,6 +53,13 @@
         rescue StandardError
           nil
         end %>
+        <% if is_video && poster_url.blank? && event.media.attached? %>
+          <% begin %>
+            <% poster_url = url_for(event.media.preview(resize_to_limit: [640, 640]).processed) %>
+          <% rescue StandardError %>
+            <% poster_url = nil %>
+          <% end %>
+        <% end %>
 
         <article class="story-media-card">
           <div class="story-card-banner">
@@ -75,8 +87,9 @@
                 controls
                 preload="none"
                 playsinline
-                src="<%= view_url %>"
                 data-controller="video-player"
+                data-video-source="<%= view_url %>"
+                data-video-content-type="<%= content_type %>"
                 data-video-player-load-on-play-value="true"
                 data-video-player-static-value="<%= static_video %>"
                 data-video-static="<%= static_video %>"
