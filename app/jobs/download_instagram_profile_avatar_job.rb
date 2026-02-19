@@ -45,14 +45,10 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
       return
     end
 
-    # If we're forcing, purge the old avatar to avoid accumulating blobs.
-    if profile.avatar.attached? && (force || profile.avatar_url_fingerprint.to_s != fp)
-      profile.avatar.purge
-    end
-
     io, filename, content_type = fetch_url(url, user_agent: account.user_agent)
 
-    profile.avatar.attach(
+    attach_avatar!(
+      profile: profile,
       io: io,
       filename: filename,
       content_type: content_type
@@ -108,6 +104,28 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
   end
 
   private
+
+  def attach_avatar!(profile:, io:, filename:, content_type:)
+    attachment = profile.avatar_attachment
+
+    unless attachment.present?
+      profile.avatar.attach(
+        io: io,
+        filename: filename,
+        content_type: content_type
+      )
+      return
+    end
+
+    # Avoid destroying the attachment row because ActiveStorageIngestion keeps
+    # a foreign-key reference to attachment ids for storage observability.
+    new_blob = ActiveStorage::Blob.create_and_upload!(
+      io: io,
+      filename: filename,
+      content_type: content_type
+    )
+    attachment.update!(blob: new_blob)
+  end
 
   def find_or_create_action_log(account:, profile:, action:, profile_action_log_id:)
     log = profile.instagram_profile_action_logs.find_by(id: profile_action_log_id) if profile_action_log_id.present?
