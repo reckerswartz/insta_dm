@@ -52,10 +52,12 @@ class UIClickAudit
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-infobars")
+    chrome_options.add_option("goog:loggingPrefs", { browser: "ALL" })
 
     @driver = Selenium::WebDriver.for(:chrome, options: chrome_options)
     @driver.manage.timeouts.page_load = 22
     @driver.manage.timeouts.script_timeout = 10
+    @browser_logs_supported = true
   end
 
   def run
@@ -178,12 +180,16 @@ class UIClickAudit
       page: path,
       title: @driver.title,
       baseline_screenshot: baseline,
+      browser_logs: drain_browser_logs(context: "#{path}:initial"),
       tested: [],
     }
 
     elements.each_with_index do |probe, element_index|
       page_result[:tested] << test_element(path, probe, element_index)
+      page_result[:browser_logs].concat(drain_browser_logs(context: "#{path}:after_click_#{element_index + 1}"))
     end
+
+    page_result[:browser_logs].concat(drain_browser_logs(context: "#{path}:complete"))
 
     @results << page_result
   rescue StandardError => e
@@ -192,6 +198,7 @@ class UIClickAudit
       title: nil,
       baseline_screenshot: nil,
       error: e.message,
+      browser_logs: drain_browser_logs(context: "#{path}:error"),
       tested: [],
     }
   end
@@ -448,10 +455,12 @@ class UIClickAudit
 
   def write_report!
     flattened = @results.flat_map { |row| row[:tested] || [] }
+    browser_logs = @results.flat_map { |row| row[:browser_logs] || [] }
     worked_count = flattened.count { |item| item[:worked] }
     useful_count = flattened.count { |item| item[:useful] }
     errors_count = flattened.count { |item| %w[error timeout].include?(item[:status]) }
     missing_count = flattened.count { |item| item[:status] == "missing" }
+    browser_error_count = browser_logs.count { |entry| severe_browser_log?(entry) }
 
     report = {
       generated_at: Time.now.utc.iso8601,
@@ -468,6 +477,8 @@ class UIClickAudit
         useful_actions: useful_count,
         errors: errors_count,
         missing_after_reload: missing_count,
+        browser_log_entries: browser_logs.length,
+        browser_log_errors: browser_error_count,
       },
     }
 
@@ -477,6 +488,41 @@ class UIClickAudit
     puts "\nUI click audit complete"
     puts "Report: #{report_path}"
     puts "Summary: #{report[:summary]}"
+  end
+
+  def drain_browser_logs(context:)
+    return [] unless @browser_logs_supported
+
+    entries =
+      if @driver.respond_to?(:logs)
+        Array(@driver.logs.get(:browser))
+      elsif @driver.manage.respond_to?(:logs)
+        Array(@driver.manage.logs.get(:browser))
+      else
+        []
+      end
+
+    entries.map do |entry|
+      {
+        context: context,
+        level: entry.level.to_s,
+        timestamp: Time.at(entry.timestamp.to_f / 1000.0).utc.iso8601,
+        message: entry.message.to_s,
+      }
+    end
+  rescue Selenium::WebDriver::Error::UnknownError, Selenium::WebDriver::Error::UnsupportedOperationError, NoMethodError
+    @browser_logs_supported = false
+    []
+  end
+
+  def severe_browser_log?(entry)
+    level = entry[:level].to_s.upcase
+    message = entry[:message].to_s
+
+    return true if level == "SEVERE"
+    return true if message.match?(/ChunkLoadError|Failed to load resource|Uncaught/i)
+
+    false
   end
 end
 

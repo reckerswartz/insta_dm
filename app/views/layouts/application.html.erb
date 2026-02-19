@@ -11,7 +11,14 @@
     <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
     <%= yield :styles %>
     <% if Rails.env.development? && ENV["WEBPACK_DEV_SERVER"] == "true" %>
-      <%= javascript_include_tag "http://127.0.0.1:3035/application.js", "data-turbo-track": "reload", defer: true, crossorigin: "anonymous" %>
+      <% webpack_host = ENV.fetch("WEBPACK_DEV_SERVER_HOST", "127.0.0.1") %>
+      <% webpack_port = ENV.fetch("WEBPACK_DEV_SERVER_PORT", "3035") %>
+      <% webpack_public_path = ENV.fetch("WEBPACK_PUBLIC_PATH", "/assets/") %>
+      <% webpack_public_path = "/#{webpack_public_path}" unless webpack_public_path.start_with?("/") %>
+      <% webpack_public_path = "#{webpack_public_path}/" unless webpack_public_path.end_with?("/") %>
+      <% webpack_src = "http://#{webpack_host}:#{webpack_port}#{webpack_public_path}application.js" %>
+      <% fallback_src = asset_path("application.js") %>
+      <%= javascript_include_tag webpack_src, "data-turbo-track": "reload", defer: true, crossorigin: "anonymous", onerror: "this.onerror=null;this.src='#{fallback_src}';this.removeAttribute('crossorigin');" %>
     <% else %>
       <%= javascript_include_tag "application", "data-turbo-track": "reload", defer: true %>
     <% end %>
@@ -266,8 +273,8 @@
         setTimeout(function() {
           const alerts = document.querySelectorAll(".alert");
           alerts.forEach(function(alert) {
-            if (!window.bootstrap || !bootstrap.Alert) return;
-            bootstrap.Alert.getOrCreateInstance(alert).close();
+            if (!window.bootstrap?.Alert) return;
+            window.bootstrap.Alert.getOrCreateInstance(alert).close();
           });
         }, 5000);
       });

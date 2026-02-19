@@ -15,7 +15,7 @@
     "build:production": "NODE_ENV=production webpack --config webpack.config.js",
     "build:css": "sass ./app/assets/stylesheets/application.sass.scss:./app/assets/builds/application.css --no-source-map --load-path=node_modules",
     "watch": "NODE_ENV=development webpack --config webpack.config.js --watch",
-    "dev:server": "NODE_ENV=development webpack serve --config webpack.config.js",
+    "dev:server": "WEBPACK_SERVE=true NODE_ENV=development webpack serve --config webpack.config.js",
     "watch:css": "sass ./app/assets/stylesheets/application.sass.scss:./app/assets/builds/application.css --no-source-map --load-path=node_modules --watch"
   },
   "dependencies": {

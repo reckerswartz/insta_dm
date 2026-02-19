@@ -2,9 +2,31 @@ const { merge } = require("webpack-merge")
 const webpack = require("webpack")
 const baseConfig = require("./base")
 
+const DEV_SERVER_HOST = process.env.WEBPACK_DEV_SERVER_HOST || "127.0.0.1"
+const DEV_SERVER_PORT = Number(process.env.WEBPACK_DEV_SERVER_PORT || 3035)
+const DEV_SERVER_PROTOCOL = process.env.WEBPACK_DEV_SERVER_PROTOCOL || "http"
+const DEV_SERVER_ORIGIN = process.env.WEBPACK_DEV_SERVER_ORIGIN || `${DEV_SERVER_PROTOCOL}://${DEV_SERVER_HOST}:${DEV_SERVER_PORT}`
+
+const configuredPublicPath = process.env.WEBPACK_PUBLIC_PATH || "/assets/"
+const normalizedPublicPath = (() => {
+  let value = configuredPublicPath
+  if (!value.startsWith("/")) value = `/${value}`
+  if (!value.endsWith("/")) value = `${value}/`
+  return value
+})()
+
+const runningDevServer =
+  process.env.WEBPACK_SERVE === "true" ||
+  process.argv.includes("serve") ||
+  process.argv.some((arg) => /webpack-dev-server/i.test(arg))
+const runtimePublicPath = runningDevServer ? `${DEV_SERVER_ORIGIN}${normalizedPublicPath}` : normalizedPublicPath
+
 module.exports = merge(baseConfig, {
   mode: "development",
   devtool: "eval-cheap-module-source-map",
+  output: {
+    publicPath: runtimePublicPath,
+  },
   optimization: {
     minimize: false,
     moduleIds: "named",
@@ -12,8 +34,8 @@ module.exports = merge(baseConfig, {
   },
   plugins: [new webpack.HotModuleReplacementPlugin()],
   devServer: {
-    host: process.env.WEBPACK_DEV_SERVER_HOST || "127.0.0.1",
-    port: Number(process.env.WEBPACK_DEV_SERVER_PORT || 3035),
+    host: DEV_SERVER_HOST,
+    port: DEV_SERVER_PORT,
     hot: true,
     liveReload: true,
     compress: true,
@@ -31,7 +53,7 @@ module.exports = merge(baseConfig, {
     },
     static: false,
     devMiddleware: {
-      publicPath: "/assets/",
+      publicPath: normalizedPublicPath,
       writeToDisk: true,
     },
     watchFiles: {

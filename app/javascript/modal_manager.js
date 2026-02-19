@@ -8,10 +8,11 @@ class ModalManager {
   init() {
     const universalEl = document.getElementById("universalModal")
     const loadingEl = document.getElementById("loadingModal")
-    if (!universalEl || !loadingEl || !window.bootstrap) return
+    const bootstrapApi = window.bootstrap
+    if (!universalEl || !loadingEl || !bootstrapApi) return
 
-    this.modal = bootstrap.Modal.getOrCreateInstance(universalEl)
-    this.loadingModal = bootstrap.Modal.getOrCreateInstance(loadingEl)
+    this.modal = bootstrapApi.Modal.getOrCreateInstance(universalEl)
+    this.loadingModal = bootstrapApi.Modal.getOrCreateInstance(loadingEl)
     this.ready = true
 
     universalEl.addEventListener("hidden.bs.modal", () => {

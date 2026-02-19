@@ -1,227 +1,553 @@
 #!/usr/bin/env ruby
+# frozen_string_literal: true
 
 require "bundler/setup"
+require "json"
+require "fileutils"
+require "socket"
+require "time"
 
-# --- Service Refresh Logic ---
-def kill_process_on_port(port)
-  pid = `lsof -ti tcp:#{port}`.strip
-  unless pid.empty?
-    puts "🛑 Killing process on port #{port} (PID: #{pid})..."
-    begin
-      Process.kill("TERM", pid.to_i)
-      sleep 2
-      Process.kill("KILL", pid.to_i) rescue nil
-    rescue => e
-      puts "⚠️  Could not kill process #{pid}: #{e.message}"
-    end
-  end
+ROOT = File.expand_path("..", __dir__)
+PID_DIR = File.join(ROOT, "tmp", "pids")
+STATE_FILE = File.join(PID_DIR, "dev_services.json")
+APP_TOKEN = File.basename(ROOT).downcase
+
+SIDEKIQ_QUIET_SECONDS = Integer(ENV.fetch("SIDEKIQ_QUIET_SECONDS", "8"))
+STOP_TIMEOUT_SECONDS = Integer(ENV.fetch("DEV_STOP_TIMEOUT_SECONDS", "30"))
+PORT_RELEASE_TIMEOUT_SECONDS = Integer(ENV.fetch("DEV_PORT_RELEASE_TIMEOUT_SECONDS", "12"))
+
+Service = Struct.new(:name, :cmd, :match_token, :pid, :pgid, keyword_init: true)
+
+def log(message)
+  puts("[dev] #{message}")
 end
 
-# Kill Rails (port 3000), AI Microservice (8000), Ollama (11434)
-kill_process_on_port(3000)
-kill_process_on_port(8000)
-kill_process_on_port(11434)
-
-# Kill asset builders (yarn watch, yarn watch:css) and jobs by name
-%w[yarn jobs].each do |proc|
-  pids = `pgrep -f "#{proc}"`.split
-  pids.each do |pid|
-    puts "🛑 Killing #{proc} process (PID: #{pid})..."
-    begin
-      Process.kill("TERM", pid.to_i)
-      sleep 1
-      Process.kill("KILL", pid.to_i) rescue nil
-    rescue => e
-      puts "⚠️  Could not kill #{proc} process #{pid}: #{e.message}"
-    end
-  end
+def warn_log(message)
+  puts("[dev][warn] #{message}")
 end
 
-# Remove AI microservice PID file if exists
-if File.exist?("tmp/ai_microservice.pid")
-  File.delete("tmp/ai_microservice.pid") rescue nil
+def error_log(message)
+  warn("[dev][error] #{message}")
 end
 
-env = ENV.to_h
-env["REDIS_URL"] ||= "redis://127.0.0.1:6379/0"
+def process_alive?(pid)
+  return false if pid.to_i <= 0
 
-web = ["./bin/rails", "server", *ARGV]
-jobs = ["./bin/jobs"]
-css = ["yarn", "watch:css"]
-js = ["yarn", "watch"]
+  Process.kill(0, pid.to_i)
+  true
+rescue Errno::ESRCH
+  false
+rescue Errno::EPERM
+  true
+end
 
-# Check if local AI services should be started
-start_ai_services = ENV.fetch("START_LOCAL_AI", "true") == "true"
-ai_services_pids = []
+def command_line(pid)
+  return "" unless process_alive?(pid)
 
-if start_ai_services
-  puts "🤖 Starting Local AI Services..."
-  
-  # Start Ollama if not running
-  ollama_running = system("curl -s http://localhost:11434/api/tags > /dev/null 2>&1")
-  unless ollama_running
-    puts "🔥 Starting Ollama..."
-    # Check if Ollama service exists and start it
-    if system("systemctl list-unit-files | grep -q ollama.service")
-      puts "📋 Starting Ollama systemd service..."
-      system("systemctl start ollama")
-      sleep 5
-    else
-      # Start Ollama directly in background
-      puts "🔧 Starting Ollama directly..."
-      ai_services_pids << Process.spawn("ollama serve > /dev/null 2>&1")
-      sleep 8  # Give more time for Ollama to fully start
-    end
-  end
-  
-  # Start AI Microservice if not running
-  microservice_running = system("curl -s http://localhost:8000/health > /dev/null 2>&1")
-  unless microservice_running
-    puts "🧠 Starting AI Microservice..."
-    microservice_log = File.expand_path("log/ai_microservice.log", Dir.pwd)
-    microservice_env = {
-      "PYTHONPATH" => ".",
-      "PYTHONUNBUFFERED" => "1",
-      "LOCAL_AI_RELOAD" => ENV.fetch("LOCAL_AI_RELOAD", "false"),
-      "LOCAL_AI_LOG_LEVEL" => ENV.fetch("LOCAL_AI_LOG_LEVEL", "info")
-    }
-    
-    # Setup microservice if needed
-    unless Dir.exist?("ai_microservice/ai_microservice_env")
-      puts "📦 Setting up AI Microservice environment..."
-      system("cd ai_microservice && ./setup.sh > /dev/null 2>&1")
-    end
-    
-    # Ensure directories exist
-    system("mkdir -p tmp log")
-    
-    # Test basic setup first
-    puts "🧪 Testing microservice setup..."
-    test_result = system("cd ai_microservice && ai_microservice_env/bin/python test_setup.py > /dev/null 2>&1")
-    
-    if test_result
-      puts "✅ Microservice setup looks good"
-      # Try full version first
-      ai_services_pids << Process.spawn(
-        microservice_env,
-        "ai_microservice_env/bin/python",
-        "main.py",
-        chdir: "ai_microservice",
-        out: microservice_log,
-        err: microservice_log
-      )
-    else
-      puts "⚠️  Using simplified microservice (some features may be limited)"
-      # Use simplified version
-      ai_services_pids << Process.spawn(
-        microservice_env,
-        "ai_microservice_env/bin/python",
-        "main_simple.py",
-        chdir: "ai_microservice",
-        out: microservice_log,
-        err: microservice_log
-      )
-    end
-    
-    # Store PID for management
-    File.write("tmp/ai_microservice.pid", ai_services_pids.last.to_s)
-    sleep 5
-  end
-  
-  # Verify services are running
-  ollama_ok = system("curl -s http://localhost:11434/api/tags > /dev/null 2>&1")
-  microservice_ok = system("curl -s http://localhost:8000/health > /dev/null 2>&1")
-  
-  if ollama_ok && microservice_ok
-    puts "✅ Local AI Services started successfully!"
+  `ps -o command= -p #{pid.to_i}`.to_s.strip
+rescue StandardError
+  ""
+end
+
+def process_matches?(pid, token)
+  return false unless process_alive?(pid)
+  return true if token.to_s.strip.empty?
+
+  command_line(pid).include?(token)
+end
+
+def send_signal_to_service(service, signal)
+  pid = service.pid.to_i
+  return false unless process_alive?(pid)
+
+  pgid = service.pgid.to_i
+  if pgid.positive?
+    Process.kill(signal, -pgid)
   else
-    puts "⚠️  Some AI services may not be running. Run './bin/local_ai_services status' to check."
+    Process.kill(signal, pid)
+  end
+  true
+rescue Errno::ESRCH
+  false
+end
+
+def send_signal(signal, pid:, pgid: nil)
+  return false unless process_alive?(pid)
+
+  target = pgid.to_i.positive? ? -pgid.to_i : pid.to_i
+  Process.kill(signal, target)
+  true
+rescue Errno::ESRCH
+  false
+end
+
+def wait_until(timeout_seconds:)
+  deadline = Time.now + timeout_seconds.to_f
+  until Time.now >= deadline
+    return true if yield
+
+    sleep(0.2)
+  end
+  yield
+end
+
+def wait_for_services_exit(services, timeout_seconds:)
+  wait_until(timeout_seconds: timeout_seconds) do
+    services.none? { |service| process_alive?(service.pid) }
   end
 end
 
-pids = []
+def reap_children(services)
+  services.each do |service|
+    pid = service.pid.to_i
+    next if pid <= 0
+
+    begin
+      Process.waitpid(pid, Process::WNOHANG)
+    rescue Errno::ECHILD, Errno::ESRCH
+      next
+    end
+  end
+end
+
+def wait_for_port_release(port, timeout_seconds:)
+  return true if port.to_i <= 0
+
+  wait_until(timeout_seconds: timeout_seconds) { !port_open?(port) }
+end
+
+def terminate_pid_with_escalation(pid:, label:, quiet_first: false, pgid: nil, timeout_seconds: STOP_TIMEOUT_SECONDS)
+  return true unless process_alive?(pid)
+
+  if quiet_first
+    log("Sending TSTP to #{label} PID #{pid}")
+    send_signal("TSTP", pid: pid, pgid: pgid)
+    sleep(SIDEKIQ_QUIET_SECONDS)
+  end
+
+  log("Sending TERM to #{label} PID #{pid}")
+  send_signal("TERM", pid: pid, pgid: pgid)
+  stopped = wait_until(timeout_seconds: timeout_seconds) { !process_alive?(pid) }
+  return true if stopped
+
+  warn_log("Escalating to KILL for #{label} PID #{pid}")
+  send_signal("KILL", pid: pid, pgid: pgid)
+  wait_until(timeout_seconds: 5) { !process_alive?(pid) }
+end
+
+def process_rows_for_current_user
+  user = ENV.fetch("USER", "")
+  rows = `ps -u #{user} -o pid=,ppid=,command=`.to_s.lines
+  rows.filter_map do |line|
+    stripped = line.to_s.strip
+    next if stripped.empty?
+
+    parts = stripped.split(/\s+/, 3)
+    next if parts.length < 3
+
+    { pid: parts[0].to_i, ppid: parts[1].to_i, command: parts[2].to_s }
+  end
+rescue StandardError
+  []
+end
+
+def sidekiq_pids_for_app
+  process_rows_for_current_user
+    .select do |row|
+      cmd = row[:command].to_s.downcase
+      row[:pid].positive? &&
+        cmd.include?("sidekiq") &&
+        (cmd.include?(APP_TOKEN) || cmd.include?("config/sidekiq.yml"))
+    end
+    .map { |row| row[:pid] }
+    .uniq
+end
+
+def asset_watcher_pids_for_app
+  process_rows_for_current_user
+    .select do |row|
+      cmd = row[:command].to_s
+      down = cmd.downcase
+      row[:pid].positive? &&
+        cmd.include?(ROOT) &&
+        (
+          down.include?("webpack serve --config webpack.config.js") ||
+          down.include?("node_modules/.bin/sass") ||
+          down.include?("yarn dev:server") ||
+          down.include?("yarn build:css --watch")
+        )
+    end
+    .map { |row| row[:pid] }
+    .uniq
+end
+
+def rails_server_process_for_app?(pid)
+  cmd = command_line(pid).to_s.downcase
+  return false if cmd.empty?
+
+  (cmd.include?("puma") || cmd.include?("bin/rails server")) && cmd.include?(APP_TOKEN)
+end
+
+def stop_rails_from_pidfile(pidfile:, timeout_seconds: STOP_TIMEOUT_SECONDS)
+  return false unless File.exist?(pidfile)
+
+  raw = File.read(pidfile).to_s.strip
+  pid = Integer(raw)
+  unless process_alive?(pid)
+    warn_log("Removing stale Rails pid file at #{pidfile}")
+    File.delete(pidfile)
+    return false
+  end
+
+  unless rails_server_process_for_app?(pid)
+    warn_log("PID #{pid} from #{pidfile} is not this app's Rails server. Removing stale pid file.")
+    File.delete(pidfile)
+    return false
+  end
+
+  stopped = terminate_pid_with_escalation(
+    pid: pid,
+    label: "rails",
+    quiet_first: false,
+    timeout_seconds: timeout_seconds
+  )
+  if stopped
+    File.delete(pidfile) if File.exist?(pidfile)
+    wait_for_port_release(3000, timeout_seconds: PORT_RELEASE_TIMEOUT_SECONDS)
+  end
+  stopped
+rescue ArgumentError
+  warn_log("Removing invalid Rails pid file at #{pidfile}")
+  File.delete(pidfile) if File.exist?(pidfile)
+  false
+end
+
+def stop_untracked_local_services
+  stopped_any = false
+
+  pidfile = File.join(ROOT, "tmp", "pids", "server.pid")
+  stopped_any ||= stop_rails_from_pidfile(pidfile: pidfile, timeout_seconds: 15)
+
+  sidekiq_pids_for_app.each do |pid|
+    stopped = terminate_pid_with_escalation(
+      pid: pid,
+      label: "sidekiq",
+      quiet_first: true,
+      timeout_seconds: 20
+    )
+    stopped_any ||= stopped
+  end
+
+  asset_watcher_pids_for_app.each do |pid|
+    stopped = terminate_pid_with_escalation(
+      pid: pid,
+      label: "asset_watcher",
+      quiet_first: false,
+      timeout_seconds: 10
+    )
+    stopped_any ||= stopped
+  end
+
+  stopped_any
+end
+
+def port_open?(port)
+  Socket.tcp("127.0.0.1", Integer(port), connect_timeout: 0.25) { true }
+rescue StandardError
+  false
+end
+
+def build_services(rails_args)
+  env_path = ENV.fetch("PATH", "")
+  ffmpeg_bin = ENV.fetch("FFMPEG_BIN", "$HOME/.local/bin/ffmpeg")
+
+  [
+    Service.new(
+      name: "web",
+      cmd: ["env", "PATH=#{env_path}", "WEBPACK_DEV_SERVER=true", "RUBY_DEBUG_OPEN=true", "FFMPEG_BIN=#{ffmpeg_bin}", "bin/rails", "server", *rails_args],
+      match_token: "bin/rails server"
+    ),
+    Service.new(
+      name: "worker",
+      cmd: ["env", "PATH=#{env_path}", "FFMPEG_BIN=#{ffmpeg_bin}", "bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"],
+      match_token: "sidekiq"
+    ),
+    Service.new(
+      name: "js",
+      cmd: ["env", "PATH=#{env_path}", "yarn", "dev:server"],
+      match_token: "yarn dev:server"
+    ),
+    Service.new(
+      name: "css",
+      cmd: ["env", "PATH=#{env_path}", "yarn", "build:css", "--watch"],
+      match_token: "yarn build:css --watch"
+    )
+  ]
+end
+
+def write_state(supervisor_pid:, services:, local_ai_started: false)
+  FileUtils.mkdir_p(PID_DIR)
+  payload = {
+    "supervisor_pid" => supervisor_pid,
+    "local_ai_started" => local_ai_started,
+    "started_at" => Time.now.utc.iso8601,
+    "services" => services.to_h do |service|
+      [
+        service.name,
+        {
+          "pid" => service.pid,
+          "pgid" => service.pgid,
+          "match_token" => service.match_token,
+          "cmd" => service.cmd
+        }
+      ]
+    end
+  }
+  File.write(STATE_FILE, JSON.pretty_generate(payload))
+end
+
+def remove_state
+  File.delete(STATE_FILE) if File.exist?(STATE_FILE)
+rescue StandardError
+  nil
+end
+
+def read_state
+  return nil unless File.exist?(STATE_FILE)
+
+  JSON.parse(File.read(STATE_FILE))
+rescue StandardError => e
+  warn_log("Failed to read state file: #{e.class}: #{e.message}")
+  nil
+end
+
+def services_from_state(state)
+  raw = state.is_a?(Hash) ? state["services"] : nil
+  return [] unless raw.is_a?(Hash)
+
+  raw.map do |name, attrs|
+    attrs ||= {}
+    Service.new(
+      name: name.to_s,
+      cmd: Array(attrs["cmd"]),
+      match_token: attrs["match_token"].to_s,
+      pid: attrs["pid"].to_i,
+      pgid: attrs["pgid"].to_i
+    )
+  end
+end
+
+def stop_local_ai_if_started(state)
+  return unless state.is_a?(Hash)
+  return unless state["local_ai_started"]
+
+  log("Stopping local AI services")
+  system("bin/local_ai_services", "stop", chdir: ROOT)
+end
+
+def start_local_ai_if_enabled
+  enabled = ENV.fetch("START_LOCAL_AI", "false") == "true"
+  return false unless enabled
+
+  log("Starting local AI services")
+  ok = system("bin/local_ai_services", "start", chdir: ROOT)
+  warn_log("Local AI services failed to start") unless ok
+  ok
+end
+
+def signalable_service?(service, strict_match:)
+  return false unless process_alive?(service.pid)
+  return true unless strict_match
+
+  process_matches?(service.pid, service.match_token)
+end
+
+def graceful_stop_services(services, reason:, strict_match: false)
+  return if services.empty?
+
+  log("Stopping services (#{reason})")
+
+  worker = services.find { |service| service.name == "worker" }
+  if worker && signalable_service?(worker, strict_match: strict_match)
+    log("Quieting Sidekiq worker PID #{worker.pid} before shutdown")
+    send_signal_to_service(worker, "TSTP")
+    sleep(SIDEKIQ_QUIET_SECONDS)
+  end
+
+  services.each do |service|
+    next unless signalable_service?(service, strict_match: strict_match)
+
+    log("Sending TERM to #{service.name} PID #{service.pid}")
+    send_signal_to_service(service, "TERM")
+  end
+
+  exited = wait_for_services_exit(services, timeout_seconds: STOP_TIMEOUT_SECONDS)
+  unless exited
+    services.each do |service|
+      next unless process_alive?(service.pid)
+
+      warn_log("Escalating to KILL for #{service.name} PID #{service.pid}")
+      send_signal_to_service(service, "KILL")
+    end
+    wait_for_services_exit(services, timeout_seconds: 5)
+  end
+
+  reap_children(services)
+  wait_for_port_release(3000, timeout_seconds: PORT_RELEASE_TIMEOUT_SECONDS)
+end
+
+def stop_from_state
+  state = read_state
+  unless state
+    stopped_any = stop_untracked_local_services
+    if stopped_any
+      log("Stopped untracked local Rails/Sidekiq services for this app.")
+    else
+      log("No dev state file found. Nothing to stop.")
+    end
+    return
+  end
+
+  supervisor_pid = state["supervisor_pid"].to_i
+  if supervisor_pid.positive? && process_alive?(supervisor_pid)
+    log("Requesting supervisor shutdown (PID #{supervisor_pid})")
+    Process.kill("INT", supervisor_pid)
+    stopped = wait_until(timeout_seconds: STOP_TIMEOUT_SECONDS) do
+      !process_alive?(supervisor_pid) || !File.exist?(STATE_FILE)
+    end
+    if stopped
+      log("Supervisor stopped cleanly")
+      return
+    end
+    warn_log("Supervisor did not stop in time. Forcing direct service shutdown.")
+  end
+
+  services = services_from_state(state)
+  strict_match = !process_alive?(supervisor_pid)
+  graceful_stop_services(services, reason: "external stop", strict_match: strict_match)
+  stop_local_ai_if_started(state)
+  remove_state
+end
+
+def status_from_state
+  state = read_state
+  unless state
+    log("No running dev supervisor found")
+    return
+  end
+
+  supervisor_pid = state["supervisor_pid"].to_i
+  supervisor_status = process_alive?(supervisor_pid) ? "running" : "not-running"
+  log("Supervisor PID #{supervisor_pid}: #{supervisor_status}")
+
+  services = services_from_state(state)
+  services.each do |service|
+    alive = process_alive?(service.pid)
+    matches = alive && process_matches?(service.pid, service.match_token)
+    status = alive ? (matches ? "running" : "pid-reused") : "stopped"
+    log("#{service.name.ljust(8)} pid=#{service.pid} status=#{status}")
+  end
+end
+
+def start_stack(rails_args)
+  stop_from_state if File.exist?(STATE_FILE)
+  ensure_rails_pidfile_consistency!
+
+  local_ai_started = start_local_ai_if_enabled
+
+  log("Building assets")
+  system("yarn", "build", chdir: ROOT) || warn_log("JavaScript build failed")
+  system("yarn", "build:css", chdir: ROOT) || warn_log("CSS build failed")
+
+  services = build_services(rails_args)
+  services.each do |service|
+    pid = Process.spawn(*service.cmd, chdir: ROOT, pgroup: true)
+    service.pid = pid
+    service.pgid = pid
+    log("Started #{service.name} PID #{pid}")
+  end
+
+  write_state(supervisor_pid: Process.pid, services: services, local_ai_started: local_ai_started)
+
+  shutdown_signal = nil
+  Signal.trap("INT") { shutdown_signal ||= "INT" }
+  Signal.trap("TERM") { shutdown_signal ||= "TERM" }
+
+  loop do
+    if shutdown_signal
+      graceful_stop_services(services, reason: "signal #{shutdown_signal}")
+      stop_local_ai_if_started({ "local_ai_started" => local_ai_started })
+      remove_state
+      exit(0)
+    end
+
+    begin
+      pid, status = Process.waitpid2(-1, Process::WNOHANG)
+      if pid
+        service = services.find { |entry| entry.pid.to_i == pid.to_i }
+        service_name = service ? service.name : "unknown"
+        warn_log("#{service_name} exited (pid=#{pid}, status=#{status.inspect}). Shutting down remaining services.")
+
+        graceful_stop_services(services.reject { |entry| entry.pid.to_i == pid.to_i }, reason: "#{service_name} exited")
+        stop_local_ai_if_started({ "local_ai_started" => local_ai_started })
+        remove_state
+
+        exit_code = status.exitstatus
+        exit_code = 128 + status.termsig.to_i if exit_code.nil? && status.signaled?
+        exit(exit_code || 1)
+      end
+    rescue Errno::ECHILD
+      warn_log("No child processes left. Exiting supervisor.")
+      stop_local_ai_if_started({ "local_ai_started" => local_ai_started })
+      remove_state
+      exit(0)
+    end
+
+    sleep(0.4)
+  end
+end
+
+def ensure_rails_pidfile_consistency!
+  pidfile = File.join(ROOT, "tmp", "pids", "server.pid")
+  return unless File.exist?(pidfile)
+
+  stopped = stop_rails_from_pidfile(pidfile: pidfile, timeout_seconds: 15)
+  if stopped
+    log("Stopped existing Rails server from pidfile before startup.")
+  elsif File.exist?(pidfile)
+    # Keep guard strict when pidfile still points to a live process we could not stop.
+    raw = File.read(pidfile).to_s.strip
+    pid = Integer(raw) rescue 0
+    if pid.positive? && process_alive?(pid)
+      raise "Rails server appears to already be running (pid=#{pid}). Run `bin/dev stop` or stop that process first."
+    end
+    File.delete(pidfile)
+  end
+end
+
+COMMANDS = %w[start stop restart status].freeze
+
+command = if COMMANDS.include?(ARGV.first.to_s)
+  ARGV.shift
+else
+  "start"
+end
 
 begin
-  puts "🚀 Starting Rails server, background jobs, and asset builders..."
-  puts "🎨 Building assets..."
-  
-  # Build assets first
-  system("yarn build") || puts("⚠️  JavaScript build failed")
-  system("yarn build:css") || puts("⚠️  CSS build failed")
-  
-  pids << Process.spawn(env, *web)
-  pids << Process.spawn(env, *jobs)
-  pids << Process.spawn(env, *css)
-  pids << Process.spawn(env, *js)
-  pids.concat(ai_services_pids)
-
-  # Set up signal handlers for graceful shutdown
-  shutdown_services = lambda do |signal_name|
-    puts "\n🛑 Shutting down services (#{signal_name})..."
-    
-    # Stop Rails and jobs first
-    pids[0..3].each { |pid| Process.kill("TERM", pid) rescue nil }
-    
-    # Give Rails time to shutdown gracefully
-    sleep 3
-    
-    # Stop AI services
-    if start_ai_services
-      puts "🤖 Stopping Local AI Services..."
-      
-      # Stop microservice
-      if File.exist?("tmp/ai_microservice.pid")
-        microservice_pid = File.read("tmp/ai_microservice.pid").to_i
-        Process.kill("TERM", microservice_pid) rescue nil
-        sleep 2
-        Process.kill("KILL", microservice_pid) rescue nil
-        File.delete("tmp/ai_microservice.pid") rescue nil
-      end
-      
-      # Stop Ollama (if we started it)
-      ai_services_pids.each { |pid| Process.kill("TERM", pid) rescue nil }
-    end
-    
-    # Wait for all processes to exit
-    pids.each { |pid| Process.wait(pid) rescue nil }
-    
-    puts "👋 All services stopped. Goodbye!"
-    exit(0)
+  case command
+  when "start"
+    start_stack(ARGV)
+  when "stop"
+    stop_from_state
+  when "restart"
+    stop_from_state
+    start_stack(ARGV)
+  when "status"
+    status_from_state
   end
-
-  Signal.trap("INT") { shutdown_services.call("SIGINT") }
-  Signal.trap("TERM") { shutdown_services.call("SIGTERM") }
-
-  puts "✅ All services started successfully!"
-  puts "📊 Service URLs:"
-  puts "   • Rails app:        http://localhost:3000"
-  puts "   • AI Microservice:  http://localhost:8000" if start_ai_services
-  puts "   • Ollama API:      http://localhost:11434" if start_ai_services
-  puts ""
-  puts "🎨 Asset builders are running in watch mode"
-  puts "💡 Press Ctrl+C to stop all services gracefully"
-  puts ""
-
-  # Wait for any process to exit
-  _, status = Process.wait2
-  puts "\n🔄 Process exited with status: #{status.exitstatus}"
-  exit(status.exitstatus || 0)
-  
-rescue Interrupt
-  puts "\n🛑 Interrupted by user"
-  shutdown_services.call("USER_INTERRUPT")
 rescue StandardError => e
-  puts "\n❌ Error: #{e.message}"
-  puts e.backtrace.first(5)
-  shutdown_services.call("ERROR")
-ensure
-  # Final cleanup
-  if start_ai_services
-    puts "� Final cleanup..."
-    
-    # Clean up microservice PID file
-    if File.exist?("tmp/ai_microservice.pid")
-      File.delete("tmp/ai_microservice.pid") rescue nil
-    end
-  end
+  error_log("#{e.class}: #{e.message}")
+  error_log(e.backtrace.first(8).join("\n")) if e.backtrace
+  remove_state
+  exit(1)
 end

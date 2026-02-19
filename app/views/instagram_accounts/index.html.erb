@@ -229,7 +229,8 @@
       if (!form || !submitBtn || !modalElement || form.dataset.bound === "1") return
       form.dataset.bound = "1"
 
-      const modal = bootstrap.Modal.getOrCreateInstance(modalElement)
+      const modal = window.bootstrap?.Modal?.getOrCreateInstance(modalElement)
+      if (!modal) return
 
       form.addEventListener("submit", function(event) {
         event.preventDefault()

@@ -4,7 +4,8 @@ import "./controllers"
 import "./modal_manager"
 
 // Import Bootstrap
-import "bootstrap"
+import * as bootstrap from "bootstrap"
+window.bootstrap = bootstrap
 
 // Import Bootstrap CSS is handled by the Sass build
 
