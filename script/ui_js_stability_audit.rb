@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 ENV["UI_AUDIT_REQUIRE_SERVER"] ||= "1"
+ENV["UI_AUDIT_REQUIRE_STORY_ACCOUNT_PATH"] ||= "1"
+ENV["UI_AUDIT_REQUIRE_PROFILE_PATH"] ||= "1"
 
 args = [
   "bundle", "exec", "rspec",
