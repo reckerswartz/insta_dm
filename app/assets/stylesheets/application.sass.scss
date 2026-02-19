@@ -929,6 +929,15 @@ dialog.modal {
   overflow: auto;
 }
 
+/* Native dialog elements share `.modal` with Bootstrap; force visibility when open. */
+dialog.modal[open] {
+  display: block !important;
+}
+
+dialog.modal:not([open]) {
+  display: none !important;
+}
+
 dialog.modal::backdrop {
   background: rgba(6, 11, 20, 0.72);
 }
