@@ -76,40 +76,46 @@
           </table>
         </div>
       </div>
-      <dialog data-audit-media-modal-target="dialog" class="modal">
-        <div class="modal-header">
-          <h3 data-audit-media-modal-target="title">Audit Media</h3>
-          <button class="btn small secondary" data-action="audit-media-modal#close" type="button">Close</button>
-        </div>
-        <div class="modal-grid">
-          <div>
-            <img data-audit-media-modal-target="image" alt="Audit media preview" class="modal-media-image" />
-            <div data-audit-media-modal-target="videoShell" class="story-video-player-shell audit-video-player-shell media-shell-hidden">
-              <video
-                data-audit-media-modal-target="video"
-                data-controller="video-player"
-                data-video-player-autoplay-value="false"
-                data-video-player-load-on-play-value="true"
-                controls
-                playsinline
-                preload="none"
-              ></video>
+      <div class="modal fade app-media-modal" tabindex="-1" aria-hidden="true" data-audit-media-modal-target="modal">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" data-audit-media-modal-target="title">Audit Media</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <div class="row g-3">
+                <div class="col-lg-7">
+                  <img data-audit-media-modal-target="image" alt="Audit media preview" class="modal-media-image img-fluid rounded border border-secondary-subtle" />
+                  <div data-audit-media-modal-target="videoShell" class="story-video-player-shell audit-video-player-shell d-none">
+                    <video
+                      data-audit-media-modal-target="video"
+                      data-controller="video-player"
+                      data-video-player-autoplay-value="false"
+                      data-video-player-load-on-play-value="true"
+                      controls
+                      playsinline
+                      preload="none"
+                    ></video>
+                  </div>
+                </div>
+                <div class="col-lg-5 d-grid gap-2 align-content-start">
+                  <p class="meta mb-0">
+                    Profile:
+                    <a data-audit-media-modal-target="appProfileLink" href="#">-</a>
+                    <span class="meta">|</span>
+                    <a data-audit-media-modal-target="instagramProfileLink" href="#" target="_blank" rel="noopener noreferrer">IG</a>
+                  </p>
+                  <p class="meta mb-0" data-audit-media-modal-target="meta"></p>
+                  <div class="d-flex flex-wrap gap-2">
+                    <a data-audit-media-modal-target="download" class="btn btn-sm btn-outline-light" href="#" target="_blank" rel="noreferrer">Download media</a>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <div>
-            <p class="meta">
-              Profile:
-              <a data-audit-media-modal-target="appProfileLink" href="#">-</a>
-              <span class="meta">|</span>
-              <a data-audit-media-modal-target="instagramProfileLink" href="#" target="_blank" rel="noopener noreferrer">IG</a>
-            </p>
-            <p class="meta" data-audit-media-modal-target="meta"></p>
-            <div class="actions-row">
-              <a data-audit-media-modal-target="download" class="btn secondary" href="#" target="_blank" rel="noreferrer">Download media</a>
-            </div>
-          </div>
         </div>
-      </dialog>
+      </div>
     </div>
   <% else %>
     <p class="meta">No audit activity recorded yet.</p>

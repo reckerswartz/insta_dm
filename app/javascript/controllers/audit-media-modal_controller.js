@@ -1,7 +1,24 @@
 import { Controller } from "@hotwired/stimulus"
 
 export default class extends Controller {
-  static targets = ["dialog", "title", "image", "video", "videoShell", "meta", "download", "appProfileLink", "instagramProfileLink"]
+  static targets = ["modal", "title", "image", "video", "videoShell", "meta", "download", "appProfileLink", "instagramProfileLink"]
+
+  connect() {
+    this.hiddenHandler = () => this.clearVideoPlayer()
+    if (!this.hasModalTarget) return
+
+    this.bootstrapModal = window.bootstrap?.Modal?.getOrCreateInstance(this.modalTarget)
+    this.modalTarget.addEventListener("hidden.bs.modal", this.hiddenHandler)
+  }
+
+  disconnect() {
+    if (this.hasModalTarget) {
+      this.modalTarget.removeEventListener("hidden.bs.modal", this.hiddenHandler)
+    }
+    this.clearVideoPlayer()
+    this.bootstrapModal?.dispose?.()
+    this.bootstrapModal = null
+  }
 
   open(event) {
     event.preventDefault()
@@ -55,33 +72,27 @@ export default class extends Controller {
       )
 
       if (this.hasVideoShellTarget) {
-        this.videoShellTarget.classList.remove("media-shell-hidden")
+        this.videoShellTarget.classList.remove("d-none")
       } else {
-        this.videoTarget.classList.remove("media-shell-hidden")
+        this.videoTarget.classList.remove("d-none")
       }
       this.imageTarget.removeAttribute("src")
-      this.imageTarget.classList.add("media-shell-hidden")
+      this.imageTarget.classList.add("d-none")
     } else {
       this.clearVideoPlayer()
       this.imageTarget.src = mediaUrl
-      this.imageTarget.classList.remove("media-shell-hidden")
+      this.imageTarget.classList.remove("d-none")
     }
 
-    if (this.dialogTarget.open) this.dialogTarget.close()
-    this.dialogTarget.showModal()
-  }
-
-  close() {
-    this.clearVideoPlayer()
-    if (this.dialogTarget.open) this.dialogTarget.close()
+    this.bootstrapModal?.show()
   }
 
   clearVideoPlayer() {
-    this.videoTarget.dispatchEvent(new CustomEvent("video-player:clear"))
+    if (this.hasVideoTarget) this.videoTarget.dispatchEvent(new CustomEvent("video-player:clear"))
     if (this.hasVideoShellTarget) {
-      this.videoShellTarget.classList.add("media-shell-hidden")
+      this.videoShellTarget.classList.add("d-none")
     } else {
-      this.videoTarget.classList.add("media-shell-hidden")
+      this.videoTarget.classList.add("d-none")
     }
   }
 

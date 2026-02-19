@@ -151,6 +151,9 @@ export default class extends Controller {
     this.closeMedia()
 
     if (this.mediaModalEl) {
+      this.mediaModalEl.removeEventListener("hidden.bs.modal", this.mediaHiddenHandler)
+      this.mediaModalInstance?.dispose?.()
+      this.mediaModalInstance = null
       this.mediaModalEl.remove()
       this.mediaModalEl = null
     }
@@ -194,8 +197,8 @@ export default class extends Controller {
 
     if (isVideo) {
       this.mediaImageEl.removeAttribute("src")
-      this.mediaImageEl.classList.add("media-shell-hidden")
-      this.mediaVideoShellEl.classList.remove("media-shell-hidden")
+      this.mediaImageEl.classList.add("d-none")
+      this.mediaVideoShellEl.classList.remove("d-none")
       this.mediaVideoEl.dataset.videoSource = mediaUrl
       this.mediaVideoEl.dataset.videoContentType = contentType
       this.mediaVideoEl.dataset.videoPosterUrl = previewImageUrl
@@ -208,72 +211,79 @@ export default class extends Controller {
     } else {
       this.clearMediaVideo()
       this.mediaImageEl.src = mediaUrl
-      this.mediaImageEl.classList.remove("media-shell-hidden")
+      this.mediaImageEl.classList.remove("d-none")
     }
 
-    if (this.mediaModalEl.open) this.mediaModalEl.close()
-    this.mediaModalEl.showModal()
+    this.mediaModalInstance?.show()
   }
 
   closeMedia() {
     this.clearMediaVideo()
-    if (this.mediaModalEl?.open) this.mediaModalEl.close()
+    this.mediaModalInstance?.hide()
   }
 
   clearMediaVideo() {
     if (!this.mediaVideoEl || !this.mediaVideoShellEl) return
     this.mediaVideoEl.dispatchEvent(new CustomEvent("video-player:clear"))
-    this.mediaVideoShellEl.classList.add("media-shell-hidden")
+    this.mediaVideoShellEl.classList.add("d-none")
   }
 
   ensureMediaModal() {
     if (this.mediaModalEl) return
 
-    const dialog = document.createElement("dialog")
-    dialog.className = "modal profile-media-modal"
-    dialog.innerHTML = `
-      <div class="modal-header">
-        <h3 data-profile-media-title>Event Media</h3>
-        <button type="button" class="btn small secondary" data-action="click->profile-events-table#closeMedia">Close</button>
-      </div>
-      <div class="modal-grid">
-        <div>
-          <img data-profile-media-image alt="Profile event media" class="modal-media-image" />
-          <div data-profile-media-video-shell class="story-video-player-shell audit-video-player-shell media-shell-hidden">
-            <video data-profile-media-video data-controller="video-player" data-video-player-autoplay-value="false" data-video-player-load-on-play-value="true" controls playsinline preload="none"></video>
+    const modalLabelId = `profileMediaModalLabel_${this.profileIdValue || "profile"}`
+    const modal = document.createElement("div")
+    modal.className = "modal fade app-media-modal profile-media-modal"
+    modal.tabIndex = -1
+    modal.setAttribute("aria-hidden", "true")
+    modal.setAttribute("aria-labelledby", modalLabelId)
+    modal.innerHTML = `
+      <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 id="${modalLabelId}" class="modal-title" data-profile-media-title>Event Media</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
-        </div>
-        <div>
-          <p class="meta">
-            Profile:
-            <a data-profile-media-app-profile href="#">-</a>
-            <span class="meta">|</span>
-            <a data-profile-media-ig-profile href="#" target="_blank" rel="noopener noreferrer">IG</a>
-          </p>
-          <p class="meta" data-profile-media-meta></p>
-          <div class="actions-row">
-            <a data-profile-media-download class="btn secondary" href="#" target="_blank" rel="noreferrer">Download media</a>
+          <div class="modal-body">
+            <div class="row g-3">
+              <div class="col-lg-7">
+                <img data-profile-media-image alt="Profile event media" class="modal-media-image img-fluid rounded border border-secondary-subtle" />
+                <div data-profile-media-video-shell class="story-video-player-shell audit-video-player-shell d-none">
+                  <video data-profile-media-video data-controller="video-player" data-video-player-autoplay-value="false" data-video-player-load-on-play-value="true" controls playsinline preload="none"></video>
+                </div>
+              </div>
+              <div class="col-lg-5 d-grid gap-2 align-content-start">
+                <p class="meta mb-0">
+                  Profile:
+                  <a data-profile-media-app-profile href="#">-</a>
+                  <span class="meta">|</span>
+                  <a data-profile-media-ig-profile href="#" target="_blank" rel="noopener noreferrer">IG</a>
+                </p>
+                <p class="meta mb-0" data-profile-media-meta></p>
+                <div class="d-flex flex-wrap gap-2">
+                  <a data-profile-media-download class="btn btn-sm btn-outline-light" href="#" target="_blank" rel="noreferrer">Download media</a>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     `
 
-    this.element.appendChild(dialog)
+    this.element.appendChild(modal)
 
-    this.mediaModalEl = dialog
-    this.mediaTitleEl = dialog.querySelector("[data-profile-media-title]")
-    this.mediaImageEl = dialog.querySelector("[data-profile-media-image]")
-    this.mediaVideoEl = dialog.querySelector("[data-profile-media-video]")
-    this.mediaVideoShellEl = dialog.querySelector("[data-profile-media-video-shell]")
-    this.mediaMetaEl = dialog.querySelector("[data-profile-media-meta]")
-    this.mediaDownloadEl = dialog.querySelector("[data-profile-media-download]")
-    this.mediaAppProfileEl = dialog.querySelector("[data-profile-media-app-profile]")
-    this.mediaInstagramProfileEl = dialog.querySelector("[data-profile-media-ig-profile]")
-
-    dialog.addEventListener("click", (event) => {
-      if (event.target === dialog) this.closeMedia()
-    })
-    dialog.addEventListener("close", () => this.clearMediaVideo())
+    this.mediaModalEl = modal
+    this.mediaTitleEl = modal.querySelector("[data-profile-media-title]")
+    this.mediaImageEl = modal.querySelector("[data-profile-media-image]")
+    this.mediaVideoEl = modal.querySelector("[data-profile-media-video]")
+    this.mediaVideoShellEl = modal.querySelector("[data-profile-media-video-shell]")
+    this.mediaMetaEl = modal.querySelector("[data-profile-media-meta]")
+    this.mediaDownloadEl = modal.querySelector("[data-profile-media-download]")
+    this.mediaAppProfileEl = modal.querySelector("[data-profile-media-app-profile]")
+    this.mediaInstagramProfileEl = modal.querySelector("[data-profile-media-ig-profile]")
+    this.mediaModalInstance = window.bootstrap?.Modal?.getOrCreateInstance(modal)
+    this.mediaHiddenHandler = () => this.clearMediaVideo()
+    modal.addEventListener("hidden.bs.modal", this.mediaHiddenHandler)
   }
 
   _tableHeight() {

@@ -151,6 +151,10 @@
                 data-image-url="<%= image_url %>"
                 data-download-url="<%= download_url %>"
                 data-permalink="<%= ig_url %>"
+                data-media-content-type="<%= content_type %>"
+                data-media-preview-image-url="<%= poster_url %>"
+                data-video-static-frame-only="<%= metadata["video_static_frame_only"] %>"
+                data-is-video="<%= is_video %>"
                 data-ai-status="<%= pp.ai_status %>"
                 data-ai-provider="<%= pp.ai_provider %>"
                 data-ai-model="<%= pp.ai_model %>"
@@ -246,10 +250,10 @@
                 <% if download_url.present? %>
                   <a class="btn small secondary" href="<%= download_url %>" target="_blank" rel="noreferrer">Download</a>
                 <% end %>
-                <% if image_url.present? && !is_video %>
+                <% if image_url.present? %>
                   <button
                     type="button"
-                    class="btn small"
+                    class="btn btn-sm btn-primary"
                     data-action="profile-post-modal#open"
                     data-shortcode="<%= pp.shortcode %>"
                     data-caption="<%= h(pp.caption.to_s) %>"
@@ -259,6 +263,10 @@
                     data-image-url="<%= image_url %>"
                     data-download-url="<%= download_url %>"
                     data-permalink="<%= ig_url %>"
+                    data-media-content-type="<%= content_type %>"
+                    data-media-preview-image-url="<%= poster_url %>"
+                    data-video-static-frame-only="<%= metadata["video_static_frame_only"] %>"
+                    data-is-video="<%= is_video %>"
                     data-ai-status="<%= pp.ai_status %>"
                     data-ai-provider="<%= pp.ai_provider %>"
                     data-ai-model="<%= pp.ai_model %>"
@@ -273,8 +281,6 @@
                   >
                     View
                   </button>
-                <% elsif image_url.present? %>
-                  <a class="btn small" href="<%= image_url %>" target="_blank" rel="noreferrer">Open Media</a>
                 <% end %>
                 <% if pp.ai_status != "analyzed" %>
                   <%= button_to "Analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small" %>
@@ -288,35 +294,62 @@
         </div>
       </div>
 
-      <dialog data-profile-post-modal-target="dialog" class="modal">
-        <div class="modal-header">
-          <h3 data-profile-post-modal-target="title">Post</h3>
-          <button class="btn small secondary" data-action="profile-post-modal#close" type="button">Close</button>
-        </div>
-        <div class="modal-grid">
-          <div>
-            <img data-profile-post-modal-target="image" alt="Post image" class="modal-media-image" />
-            <p class="meta" data-profile-post-modal-target="stats"></p>
-            <p class="meta" data-profile-post-modal-target="meta"></p>
-            <p class="meta" data-profile-post-modal-target="generation"></p>
-            <div class="actions-row">
-              <a data-profile-post-modal-target="download" class="btn secondary" href="#" target="_blank" rel="noreferrer">Download image</a>
-              <a data-profile-post-modal-target="permalink" class="btn secondary" href="#" target="_blank" rel="noreferrer">Open on Instagram</a>
+      <div class="modal fade app-media-modal" tabindex="-1" aria-hidden="true" data-profile-post-modal-target="modal">
+        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" data-profile-post-modal-target="title">Post</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" data-profile-post-modal-initial-focus aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <div class="row g-3">
+                <div class="col-lg-6">
+                  <img data-profile-post-modal-target="image" alt="Post media" class="modal-media-image img-fluid rounded border border-secondary-subtle" />
+                  <div data-profile-post-modal-target="videoShell" class="story-video-player-shell audit-video-player-shell d-none">
+                    <video
+                      data-profile-post-modal-target="video"
+                      data-controller="video-player"
+                      data-video-player-autoplay-value="false"
+                      data-video-player-load-on-play-value="true"
+                      controls
+                      playsinline
+                      preload="none"
+                    ></video>
+                  </div>
+                  <div class="d-grid gap-1 mt-2">
+                    <p class="meta mb-0" data-profile-post-modal-target="stats"></p>
+                    <p class="meta mb-0" data-profile-post-modal-target="meta"></p>
+                    <p class="meta mb-0" data-profile-post-modal-target="generation"></p>
+                  </div>
+                  <div class="d-flex flex-wrap gap-2 mt-2">
+                    <a data-profile-post-modal-target="download" class="btn btn-sm btn-outline-light" href="#" target="_blank" rel="noreferrer">Download media</a>
+                    <a data-profile-post-modal-target="permalink" class="btn btn-sm btn-outline-light" href="#" target="_blank" rel="noreferrer">Open on Instagram</a>
+                  </div>
+                </div>
+                <div class="col-lg-6 d-grid gap-2 align-content-start">
+                  <div>
+                    <h6 class="text-uppercase text-secondary-emphasis small mb-1">Caption</h6>
+                    <p class="meta mb-0" data-profile-post-modal-target="caption"></p>
+                  </div>
+                  <div>
+                    <h6 class="text-uppercase text-secondary-emphasis small mb-1">Comments</h6>
+                    <div data-profile-post-modal-target="comments"></div>
+                  </div>
+                  <div>
+                    <h6 class="text-uppercase text-secondary-emphasis small mb-1">Suggested comments</h6>
+                    <p class="meta mb-1">Click <strong>Forward Comment</strong> to queue posting on this exact Instagram post.</p>
+                    <div data-profile-post-modal-target="suggestions"></div>
+                  </div>
+                  <div>
+                    <h6 class="text-uppercase text-secondary-emphasis small mb-1">Detected faces</h6>
+                    <div data-profile-post-modal-target="faces"></div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <div>
-            <h4>Caption</h4>
-            <p class="meta" data-profile-post-modal-target="caption"></p>
-            <h4>Comments</h4>
-            <div data-profile-post-modal-target="comments"></div>
-            <h4>Suggested comments</h4>
-            <p class="meta">Click <strong>Forward Comment</strong> to queue posting on this exact Instagram post.</p>
-            <div data-profile-post-modal-target="suggestions"></div>
-            <h4>Detected faces</h4>
-            <div data-profile-post-modal-target="faces"></div>
-          </div>
         </div>
-      </dialog>
+      </div>
     </div>
   <% else %>
     <p class="meta">No captured profile posts yet. Use <strong>Capture Profile Posts</strong> to fetch posts and preserve historical state (including deleted-source flags).</p>

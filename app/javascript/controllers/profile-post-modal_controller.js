@@ -4,21 +4,36 @@ const MAX_JSON_PAYLOAD_BYTES = 120000
 const MAX_RENDERED_ITEMS = 24
 
 export default class extends Controller {
-  static targets = ["dialog", "title", "image", "caption", "stats", "comments", "meta", "generation", "download", "permalink", "suggestions", "faces"]
+  static targets = [
+    "modal",
+    "title",
+    "image",
+    "video",
+    "videoShell",
+    "caption",
+    "stats",
+    "comments",
+    "meta",
+    "generation",
+    "download",
+    "permalink",
+    "suggestions",
+    "faces",
+  ]
 
   connect() {
     this.forwardUrl = ""
     this.renderToken = 0
     this.pendingRenderId = null
     this.forwardClickHandler = (event) => this.forwardSuggestion(event)
-    this.dialogCloseHandler = () => this._syncGlobalLocks()
-    this.dialogCancelHandler = () => this._syncGlobalLocks()
+    this.hiddenHandler = () => this.handleModalHidden()
+    this.shownHandler = () => this.handleModalShown()
+
     if (this.hasSuggestionsTarget) this.suggestionsTarget.addEventListener("click", this.forwardClickHandler)
-    if (this.hasDialogTarget) {
-      this.dialogTarget.addEventListener("close", this.dialogCloseHandler)
-      this.dialogTarget.addEventListener("cancel", this.dialogCancelHandler)
-      // Defensive reset for stale inline states from interrupted renders/navigation.
-      this.dialogTarget.style.removeProperty("display")
+    if (this.hasModalTarget) {
+      this.bootstrapModal = window.bootstrap?.Modal?.getOrCreateInstance(this.modalTarget)
+      this.modalTarget.addEventListener("hidden.bs.modal", this.hiddenHandler)
+      this.modalTarget.addEventListener("shown.bs.modal", this.shownHandler)
     }
   }
 
@@ -26,12 +41,13 @@ export default class extends Controller {
     if (this.pendingRenderId) window.cancelAnimationFrame(this.pendingRenderId)
     this.pendingRenderId = null
     if (this.hasSuggestionsTarget) this.suggestionsTarget.removeEventListener("click", this.forwardClickHandler)
-    if (this.hasDialogTarget) {
-      this.dialogTarget.removeEventListener("close", this.dialogCloseHandler)
-      this.dialogTarget.removeEventListener("cancel", this.dialogCancelHandler)
+    if (this.hasModalTarget) {
+      this.modalTarget.removeEventListener("hidden.bs.modal", this.hiddenHandler)
+      this.modalTarget.removeEventListener("shown.bs.modal", this.shownHandler)
     }
-    this._forceCloseDialog()
-    this._syncGlobalLocks()
+    this.hideModalImmediately()
+    this.bootstrapModal?.dispose?.()
+    this.bootstrapModal = null
   }
 
   open(event) {
@@ -47,7 +63,6 @@ export default class extends Controller {
 
       this.renderLoadingState(data)
       if (!this.safeShowModal()) {
-        this._syncGlobalLocks()
         return
       }
 
@@ -59,18 +74,8 @@ export default class extends Controller {
       })
     } catch (error) {
       window.__profilePostModalLastError = error?.message || "Unable to initialize post modal"
-      this._forceCloseDialog()
-      this._syncGlobalLocks()
+      this.hideModalImmediately()
     }
-  }
-
-  close(event) {
-    event?.preventDefault?.()
-    this.renderToken += 1
-    if (this.pendingRenderId) window.cancelAnimationFrame(this.pendingRenderId)
-    this.pendingRenderId = null
-    this._forceCloseDialog()
-    this._syncGlobalLocks()
   }
 
   renderLoadingState(data) {
@@ -84,16 +89,21 @@ export default class extends Controller {
     this.suggestionsTarget.innerHTML = "<p class='meta'>Loading suggested comments...</p>"
     if (this.hasFacesTarget) this.facesTarget.innerHTML = "<p class='meta'>Loading face summary...</p>"
 
-    this.downloadTarget.href = data.downloadUrl || "#"
+    this.downloadTarget.href = data.downloadUrl || data.imageUrl || "#"
     this.permalinkTarget.href = data.permalink || "#"
+    this._renderMedia(data)
+  }
 
-    if (data.imageUrl) {
-      this.imageTarget.src = data.imageUrl
-      this.imageTarget.classList.remove("media-shell-hidden")
-    } else {
-      this.imageTarget.removeAttribute("src")
-      this.imageTarget.classList.add("media-shell-hidden")
-    }
+  handleModalHidden() {
+    this.renderToken += 1
+    if (this.pendingRenderId) window.cancelAnimationFrame(this.pendingRenderId)
+    this.pendingRenderId = null
+    this.clearMediaVideo()
+  }
+
+  handleModalShown() {
+    const focusTarget = this.modalTarget.querySelector("[data-profile-post-modal-initial-focus]")
+    focusTarget?.focus?.()
   }
 
   renderPayload(data) {
@@ -110,8 +120,8 @@ export default class extends Controller {
         ? `Comment generation: fallback (${status})${err ? ` | Error: ${err}` : ""}`
         : `Comment generation: ${source} (${status})`
 
-      const comments = this._safeJson(data.commentsJson).slice(0, MAX_RENDERED_ITEMS)
-      const suggestions = this._safeJson(data.suggestionsJson).slice(0, MAX_RENDERED_ITEMS)
+      const comments = this._safeJson(data.commentsJson, data.comments).slice(0, MAX_RENDERED_ITEMS)
+      const suggestions = this._safeJson(data.suggestionsJson, data.suggestions).slice(0, MAX_RENDERED_ITEMS)
       const faceSummary = this._safeObject(data.faceSummaryJson)
 
       this.commentsTarget.innerHTML = this._listHtml(comments, "No comments captured")
@@ -128,64 +138,33 @@ export default class extends Controller {
   }
 
   safeShowModal() {
-    if (!this.hasDialogTarget) return false
-    const dialog = this.dialogTarget
+    if (!this.hasModalTarget || !this.bootstrapModal) return false
 
     try {
-      if (!dialog.open) dialog.showModal()
-      this._ensureDialogVisible(dialog)
-      if (!this._isDialogVisible(dialog)) {
-        throw new Error("Dialog opened but remained hidden")
-      }
+      this.bootstrapModal.show()
       return true
     } catch (error) {
       window.__profilePostModalLastError = error?.message || "Unable to open post modal"
-      this._forceCloseDialog()
+      this.hideModalImmediately()
       return false
     }
   }
 
-  _ensureDialogVisible(dialog) {
-    if (!dialog) return
-
-    // Bootstrap's `.modal` class defaults to `display:none`; force native dialog visibility.
-    if (window.getComputedStyle(dialog).display === "none") {
-      dialog.style.display = "block"
-    }
-  }
-
-  _isDialogVisible(dialog) {
-    if (!dialog || !dialog.open) return false
-    const style = window.getComputedStyle(dialog)
-    if (style.display === "none" || style.visibility === "hidden") return false
-    const rect = dialog.getBoundingClientRect()
-    return rect.width > 0 && rect.height > 0
-  }
-
-  _forceCloseDialog() {
-    if (!this.hasDialogTarget) return
-    const dialog = this.dialogTarget
-
+  hideModalImmediately() {
+    if (!this.hasModalTarget) return
     try {
-      if (dialog.open && typeof dialog.close === "function") {
-        dialog.close()
-      }
+      this.bootstrapModal?.hide?.()
     } catch (_) {
-      // Ignore and continue with attribute cleanup.
-    } finally {
-      dialog.removeAttribute("open")
-      dialog.style.removeProperty("display")
+      this.modalTarget.classList.remove("show")
+      this.modalTarget.style.display = "none"
+      this.modalTarget.setAttribute("aria-hidden", "true")
     }
+    this.clearMediaVideo()
   }
 
-  _syncGlobalLocks() {
-    const hasStoryOverlay = document.querySelector(".story-modal-overlay")
-    const hasTechnicalOverlay = document.querySelector(".technical-details-modal:not(.hidden)")
-    document.body.style.overflow = hasStoryOverlay || hasTechnicalOverlay ? "hidden" : ""
-  }
-
-  _safeJson(raw) {
-    const payload = String(raw || "[]")
+  _safeJson(raw, fallback = []) {
+    const payload = String(raw || "")
+    if (!payload.length) return Array.isArray(fallback) ? fallback : []
     if (payload.length > MAX_JSON_PAYLOAD_BYTES) return []
 
     try {
@@ -218,7 +197,7 @@ export default class extends Controller {
 
     return `<ul class='issue-list'>${items.map((v, i) => {
       const txt = this._escape(String(v))
-      return `<li><div>${txt}</div><div class="suggestion-action-row"><button type="button" class="btn small" data-forward-comment="${txt}" data-forward-idx="${i}">Forward Comment</button></div></li>`
+      return `<li><div>${txt}</div><div class="suggestion-action-row"><button type="button" class="btn btn-sm btn-primary" data-forward-comment="${txt}" data-forward-idx="${i}">Forward Comment</button></div></li>`
     }).join("")}</ul>`
   }
 
@@ -299,11 +278,64 @@ export default class extends Controller {
     }
   }
 
+  _renderMedia(data) {
+    const mediaUrl = String(data.imageUrl || data.mediaUrl || "")
+    const contentType = String(data.mediaContentType || "").toLowerCase()
+    const previewImageUrl = String(data.mediaPreviewImageUrl || "")
+    const staticVideo = this.toBoolean(data.videoStaticFrameOnly)
+    const mediaPath = mediaUrl.split("?")[0].toLowerCase()
+    const isVideo = this.toBoolean(data.isVideo) ||
+      contentType.startsWith("video/") ||
+      mediaPath.endsWith(".mp4") ||
+      mediaPath.endsWith(".mov") ||
+      mediaPath.endsWith(".webm") ||
+      mediaPath.endsWith(".m3u8")
+
+    if (!mediaUrl) {
+      this.clearMediaVideo()
+      this.imageTarget.removeAttribute("src")
+      this.imageTarget.classList.add("d-none")
+      return
+    }
+
+    if (isVideo && this.hasVideoTarget && this.hasVideoShellTarget) {
+      this.imageTarget.removeAttribute("src")
+      this.imageTarget.classList.add("d-none")
+      this.videoShellTarget.classList.remove("d-none")
+      this.videoTarget.dataset.videoSource = mediaUrl
+      this.videoTarget.dataset.videoContentType = contentType
+      this.videoTarget.dataset.videoPosterUrl = previewImageUrl
+      this.videoTarget.dataset.videoStatic = staticVideo ? "true" : "false"
+      this.videoTarget.dispatchEvent(
+        new CustomEvent("video-player:load", {
+          detail: { src: mediaUrl, contentType, posterUrl: previewImageUrl, staticVideo, autoplay: false, immediate: false, preload: "none" },
+        }),
+      )
+      return
+    }
+
+    this.clearMediaVideo()
+    this.imageTarget.src = mediaUrl
+    this.imageTarget.classList.remove("d-none")
+  }
+
+  clearMediaVideo() {
+    if (this.hasVideoTarget) this.videoTarget.dispatchEvent(new CustomEvent("video-player:clear"))
+    if (this.hasVideoShellTarget) this.videoShellTarget.classList.add("d-none")
+  }
+
+  toBoolean(raw) {
+    if (typeof raw === "boolean") return raw
+    const value = String(raw || "").trim().toLowerCase()
+    return ["1", "true", "yes", "on"].includes(value)
+  }
+
   _escape(s) {
     return String(s)
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;")
   }
 }
