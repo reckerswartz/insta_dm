@@ -15,7 +15,6 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       ].freeze
     end
 
-  PROFILE_RETRY_WAIT_HOURS = ENV.fetch("WORKSPACE_ACTIONS_PROFILE_RETRY_WAIT_HOURS", 4).to_i.clamp(1, 24)
   PROFILE_RETRY_MAX_ATTEMPTS = ENV.fetch("WORKSPACE_ACTIONS_PROFILE_RETRY_MAX_ATTEMPTS", 4).to_i.clamp(1, 12)
   POST_RETRY_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_POST_RETRY_WAIT_MINUTES", 20).to_i.clamp(5, 180)
   MEDIA_RETRY_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_MEDIA_RETRY_WAIT_MINUTES", 10).to_i.clamp(2, 90)
@@ -201,7 +200,7 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     end
 
     if retryable_profile_incomplete_block?(post: post, comment_result: comment_result)
-      retry_result = schedule_profile_analysis_retry!(
+      retry_result = schedule_build_history_retry!(
         account: account,
         profile: profile,
         post: post,
@@ -211,10 +210,10 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
 
       persist_workspace_state!(
         post: post,
-        status: "waiting_profile_analysis",
+        status: "waiting_build_history",
         requested_by: requested_by,
-        next_run_at: retry_result[:next_run_at],
-        last_error: retry_result[:queued] ? nil : retry_result[:reason]
+        next_run_at: parse_time(retry_result[:next_run_at]),
+        last_error: retry_result[:queued] ? nil : retry_result[:reason].to_s
       )
       return
     end
@@ -391,107 +390,64 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     { queued: false, reason: "post_analysis_enqueue_failed", error_class: e.class.name, error_message: e.message.to_s }
   end
 
-  def schedule_profile_analysis_retry!(account:, profile:, post:, requested_by:, history_reason_code:)
-    retry_result =
-      post.with_lock do
-        metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
-        state = metadata["workspace_actions"].is_a?(Hash) ? metadata["workspace_actions"].deep_dup : {}
-        attempts = state["profile_retry_attempts"].to_i
-        if attempts >= PROFILE_RETRY_MAX_ATTEMPTS
-          next {
-            queued: false,
-            reason: "retry_attempts_exhausted",
-            next_run_at: nil
-          }
-        end
-
-        next_run_at = parse_time(state["next_run_at"])
-        if next_run_at.present? && next_run_at > Time.current
-          next {
-            queued: false,
-            reason: "retry_already_scheduled",
-            next_run_at: next_run_at
-          }
-        end
-
-        run_at = Time.current + PROFILE_RETRY_WAIT_HOURS.hours
-        job = self.class.set(wait_until: run_at).perform_later(
-          instagram_account_id: account.id,
-          instagram_profile_id: profile.id,
-          instagram_profile_post_id: post.id,
-          requested_by: "workspace_profile_retry:#{requested_by}"
-        )
-
-        state["profile_retry_attempts"] = attempts + 1
-        state["profile_retry_reason_code"] = history_reason_code.to_s
-        state["profile_retry_job_id"] = job.job_id
-        state["next_run_at"] = run_at.iso8601(3)
-        state["updated_at"] = Time.current.iso8601(3)
-        metadata["workspace_actions"] = state
-        post.update!(metadata: metadata)
-
-        {
-          queued: true,
-          reason: "profile_analysis_incomplete_retry_queued",
-          next_run_at: run_at,
-          job_id: job.job_id
+  def schedule_build_history_retry!(account:, profile:, post:, requested_by:, history_reason_code:)
+    post.with_lock do
+      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+      state = metadata["workspace_actions"].is_a?(Hash) ? metadata["workspace_actions"].deep_dup : {}
+      attempts = state["profile_retry_attempts"].to_i
+      if attempts >= PROFILE_RETRY_MAX_ATTEMPTS
+        next {
+          queued: false,
+          reason: "retry_attempts_exhausted",
+          next_run_at: nil
         }
       end
 
-    analysis_result = queue_profile_analysis_if_needed!(account: account, profile: profile)
-    retry_result.merge(profile_analysis: analysis_result)
+      resume_result = BuildInstagramProfileHistoryJob.enqueue_with_resume_if_needed!(
+        account: account,
+        profile: profile,
+        trigger_source: "workspace_actions_queue",
+        requested_by: self.class.name,
+        resume_job: {
+          job_class: self.class,
+          job_kwargs: {
+            instagram_account_id: account.id,
+            instagram_profile_id: profile.id,
+            instagram_profile_post_id: post.id,
+            requested_by: "workspace_history_retry:#{requested_by}"
+          }
+        }
+      )
+      unless ActiveModel::Type::Boolean.new.cast(resume_result[:accepted])
+        next {
+          queued: false,
+          reason: resume_result[:reason].to_s.presence || "build_history_enqueue_failed",
+          next_run_at: nil
+        }
+      end
+
+      state["profile_retry_attempts"] = attempts + 1
+      state["profile_retry_reason_code"] = history_reason_code.to_s
+      state["build_history_action_log_id"] = resume_result[:action_log_id].to_i if resume_result[:action_log_id].present?
+      state["build_history_job_id"] = resume_result[:job_id].to_s.presence
+      state["next_run_at"] = resume_result[:next_run_at].to_s.presence
+      state["updated_at"] = Time.current.iso8601(3)
+      metadata["workspace_actions"] = state
+      post.update!(metadata: metadata)
+
+      {
+        queued: true,
+        reason: "build_history_fallback_registered",
+        next_run_at: resume_result[:next_run_at],
+        action_log_id: resume_result[:action_log_id],
+        job_id: resume_result[:job_id].to_s
+      }
+    end
   rescue StandardError => e
     {
       queued: false,
       reason: "retry_enqueue_failed",
       next_run_at: nil,
-      error_class: e.class.name,
-      error_message: e.message.to_s
-    }
-  end
-
-  def queue_profile_analysis_if_needed!(account:, profile:)
-    running_log = profile.instagram_profile_action_logs
-      .where(action: "analyze_profile", status: %w[queued running])
-      .where("created_at >= ?", 6.hours.ago)
-      .order(created_at: :desc)
-      .first
-
-    if running_log
-      return {
-        queued: false,
-        reason: "profile_analysis_already_running",
-        action_log_id: running_log.id,
-        job_id: running_log.active_job_id
-      }
-    end
-
-    log = profile.instagram_profile_action_logs.create!(
-      instagram_account: account,
-      action: "analyze_profile",
-      status: "queued",
-      trigger_source: "workspace_actions_queue",
-      occurred_at: Time.current,
-      metadata: { requested_by: self.class.name }
-    )
-
-    job = AnalyzeInstagramProfileJob.perform_later(
-      instagram_account_id: account.id,
-      instagram_profile_id: profile.id,
-      profile_action_log_id: log.id
-    )
-    log.update!(active_job_id: job.job_id, queue_name: job.queue_name)
-
-    {
-      queued: true,
-      reason: "profile_analysis_queued",
-      action_log_id: log.id,
-      job_id: job.job_id
-    }
-  rescue StandardError => e
-    {
-      queued: false,
-      reason: "profile_analysis_enqueue_failed",
       error_class: e.class.name,
       error_message: e.message.to_s
     }

@@ -75,6 +75,7 @@ Rails.application.routes.draw do
       post :fetch_details, to: "instagram_profile_actions#fetch_details"
       post :verify_messageability, to: "instagram_profile_actions#verify_messageability"
       post :download_avatar, to: "instagram_profile_actions#download_avatar"
+      post :build_history, to: "instagram_profile_actions#build_history"
       post :sync_stories, to: "instagram_profile_actions#sync_stories"
       post :sync_stories_force, to: "instagram_profile_actions#sync_stories_force"
       post :sync_stories_debug, to: "instagram_profile_actions#sync_stories_debug"

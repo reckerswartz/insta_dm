@@ -1,5 +1,6 @@
 require "rails_helper"
 require "securerandom"
+require "stringio"
 
 RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
   it "builds queue items only for eligible user-created posts" do
@@ -11,7 +12,7 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
       shortcode: "ready_#{SecureRandom.hex(2)}",
       taken_at: 2.hours.ago,
       ai_status: "analyzed",
-      analysis: { "comment_suggestions" => ["Nice shot", "Great frame"] },
+      analysis: { "comment_suggestions" => [ "Nice shot", "Great frame" ] },
       metadata: { "post_kind" => "post" }
     )
     post_pending = person.instagram_profile_posts.create!(
@@ -31,7 +32,7 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
       shortcode: "page_#{SecureRandom.hex(2)}",
       taken_at: 30.minutes.ago,
       ai_status: "analyzed",
-      analysis: { "comment_suggestions" => ["should be skipped"] },
+      analysis: { "comment_suggestions" => [ "should be skipped" ] },
       metadata: { "post_kind" => "post" }
     )
 
@@ -40,7 +41,7 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
       shortcode: "story_#{SecureRandom.hex(2)}",
       taken_at: 20.minutes.ago,
       ai_status: "analyzed",
-      analysis: { "comment_suggestions" => ["story post"] },
+      analysis: { "comment_suggestions" => [ "story post" ] },
       metadata: { "post_kind" => "story" }
     )
 
@@ -69,7 +70,7 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
       shortcode: "posted_#{SecureRandom.hex(2)}",
       taken_at: Time.current,
       ai_status: "analyzed",
-      analysis: { "comment_suggestions" => ["Looks good"] },
+      analysis: { "comment_suggestions" => [ "Looks good" ] },
       metadata: { "post_kind" => "post" }
     )
 
@@ -84,5 +85,36 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
 
     assert_equal 0, Array(result[:items]).length
     assert_equal 0, result[:stats][:total_items].to_i
+  end
+
+  it "marks blocked rows as waiting build history when evidence is incomplete" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(3)}")
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "blocked_#{SecureRandom.hex(2)}",
+      taken_at: Time.current,
+      ai_status: "analyzed",
+      analysis: {},
+      metadata: {
+        "post_kind" => "post",
+        "comment_generation_policy" => {
+          "status" => "blocked",
+          "history_reason_code" => "latest_posts_not_analyzed",
+          "blocked_reason_code" => "missing_required_evidence"
+        }
+      }
+    )
+    post.media.attach(
+      io: StringIO.new("fake-jpeg"),
+      filename: "post.jpg",
+      content_type: "image/jpeg"
+    )
+
+    result = Workspace::ActionsTodoQueueService.new(account: account, limit: 10, enqueue_processing: false).fetch!
+    row = Array(result[:items]).find { |item| item[:post].id == post.id }
+
+    assert_equal "waiting_build_history", row[:processing_status]
+    assert_includes row[:processing_message], "Build History"
   end
 end

@@ -61,7 +61,7 @@ RSpec.describe "GenerateLlmCommentJobTest" do
     assert_equal "profile_comment_preparation", event.llm_comment_metadata.dig("last_failure", "source")
   end
 
-  it "requeues generation after a delay when profile preparation is incomplete" do
+  it "uses build history fallback when profile preparation is incomplete" do
     _account, _profile, event = build_story_event
     summary = {
       "ready_for_comment_generation" => false,
@@ -74,7 +74,7 @@ RSpec.describe "GenerateLlmCommentJobTest" do
       summary
     end
 
-    assert_enqueued_with(job: GenerateLlmCommentJob) do
+    assert_enqueued_with(job: BuildInstagramProfileHistoryJob) do
       job.perform(
         instagram_profile_event_id: event.id,
         provider: "local",
@@ -87,5 +87,6 @@ RSpec.describe "GenerateLlmCommentJobTest" do
     assert_not_nil event.llm_comment_job_id
     assert_equal 1, event.llm_comment_metadata.dig("profile_preparation_retry", "attempts").to_i
     assert_equal "latest_posts_not_analyzed", event.llm_comment_metadata.dig("profile_preparation_retry", "last_reason_code")
+    assert_equal "build_history_fallback", event.llm_comment_metadata.dig("profile_preparation_retry", "mode")
   end
 end

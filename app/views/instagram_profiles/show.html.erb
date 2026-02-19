@@ -1,4 +1,34 @@
 <% content_for :title, @profile.username %>
+<% history_state = @history_build_state.is_a?(Hash) ? @history_build_state : {} %>
+<% history_checks = history_state["checks"].is_a?(Hash) ? history_state["checks"] : {} %>
+<% history_queue = history_state["queue"].is_a?(Hash) ? history_state["queue"] : {} %>
+<% history_face = history_state["face_verification"].is_a?(Hash) ? history_state["face_verification"] : {} %>
+<% history_conversation = history_state["conversation"].is_a?(Hash) ? history_state["conversation"] : {} %>
+<% history_status_label =
+  if ActiveModel::Type::Boolean.new.cast(history_state["ready"])
+    "History Ready"
+  elsif history_state["status"].to_s == "blocked"
+    "Blocked"
+  elsif history_state["status"].to_s == "pending" || history_state["status"].to_s == "running"
+    "Building"
+  else
+    "Not started"
+  end %>
+<% profile_instagram_url = "#{Instagram::Client::INSTAGRAM_BASE_URL}/#{@profile.username}/" %>
+<% profile_avatar_url =
+  if @profile.avatar.attached?
+    url_for(@profile.avatar)
+  elsif @profile.profile_pic_url.present?
+    @profile.profile_pic_url
+  else
+    asset_path("default_avatar.svg")
+  end %>
+<% profile_avatar_download_url =
+  if @profile.avatar.attached?
+    rails_blob_path(@profile.avatar, disposition: "attachment")
+  elsif @profile.profile_pic_url.present?
+    @profile.profile_pic_url
+  end %>
 
 <div
   class="page profile-page"
@@ -33,6 +63,10 @@
           Last active
           <strong><%= relative_time_with_tooltip(@profile.last_active_at) %></strong>
         </li>
+        <li class="profile-status-chip">
+          History
+          <strong><%= history_status_label %></strong>
+        </li>
       </ul>
     </div>
     <div class="page-toolbar-actions">
@@ -44,6 +78,8 @@
   <nav class="profile-quick-links" aria-label="Profile sections">
     <a class="profile-quick-link" href="#profile_overview">Overview</a>
     <a class="profile-quick-link" href="#profile_details">Details</a>
+    <a class="profile-quick-link" href="#profile_history_build">Build History</a>
+    <a class="profile-quick-link" href="#profile_mutual">Mutual</a>
     <a class="profile-quick-link" href="#profile_ai_analysis">AI</a>
     <a class="profile-quick-link" href="#profile_captured_posts_<%= @profile.id %>">Posts</a>
     <a class="profile-quick-link" href="#profile_downloaded_stories_<%= @profile.id %>">Stories</a>
@@ -111,6 +147,7 @@
 
         <div class="actions-row">
           <%= button_to "Capture Posts", capture_posts_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          <%= button_to "Build History", build_history_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Fetch Details", fetch_details_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Verify Messageability", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Sync Avatar", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
@@ -138,6 +175,117 @@
   </section>
 
   <%= render "profile_tags_section", profile: @profile, available_tags: @available_tags %>
+
+  <section id="profile_history_build" class="card">
+    <h2>Build History</h2>
+    <p class="meta">
+      Verifies capture completeness, ensures latest posts are analyzed, re-checks face identity mapping, and sets <strong>History Ready</strong> only when all checks pass.
+    </p>
+
+    <div class="actions-row">
+      <%= button_to "Build History", build_history_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+    </div>
+
+    <div class="stat-grid profile-overview-grid">
+      <div class="stat">
+        <div class="stat-label">History Checks</div>
+        <div class="stat-kv"><span class="muted">Status</span><strong><%= history_status_label %></strong></div>
+        <div class="stat-kv"><span class="muted">All posts captured</span><strong><%= ActiveModel::Type::Boolean.new.cast(history_checks.dig("all_posts_captured", "ready")) ? "Yes" : "No" %></strong></div>
+        <div class="stat-kv"><span class="muted">Latest 50 captured</span><strong><%= ActiveModel::Type::Boolean.new.cast(history_checks.dig("latest_50_captured", "ready")) ? "Yes" : "No" %></strong></div>
+        <div class="stat-kv"><span class="muted">Recent 20 analyzed</span><strong><%= ActiveModel::Type::Boolean.new.cast(history_checks.dig("latest_20_analyzed", "ready")) ? "Yes" : "No" %></strong></div>
+        <div class="stat-kv"><span class="muted">Updated</span><strong><%= relative_time_with_tooltip(history_state["updated_at"]) %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Identity & Conversation</div>
+        <div class="stat-kv"><span class="muted">Face identity confirmed</span><strong><%= ActiveModel::Type::Boolean.new.cast(history_face["confirmed"]) ? "Yes" : "No" %></strong></div>
+        <div class="stat-kv"><span class="muted">Detected faces</span><strong><%= history_face["total_faces"].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Reference matches</span><strong><%= history_face["reference_face_count"].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Can start conversation</span><strong><%= ActiveModel::Type::Boolean.new.cast(history_conversation["can_generate_initial_message"]) ? "Yes" : "No" %></strong></div>
+        <div class="stat-kv"><span class="muted">Can reply to messages</span><strong><%= ActiveModel::Type::Boolean.new.cast(history_conversation["can_respond_to_existing_messages"]) ? "Yes" : "No" %></strong></div>
+      </div>
+    </div>
+
+    <% if history_state["reason"].to_s.present? %>
+      <p class="meta profile-history-reason"><strong>Reason:</strong> <%= history_state["reason"] %></p>
+    <% end %>
+
+    <% if history_queue.present? %>
+      <p class="meta profile-history-reason">
+        Queue: downloads queued <strong><%= history_queue["downloads_queued"].to_i %></strong>,
+        downloads pending <strong><%= history_queue["downloads_pending"].to_i %></strong>,
+        analyses queued <strong><%= history_queue["analyses_queued"].to_i %></strong>,
+        analyses pending <strong><%= history_queue["analyses_pending"].to_i %></strong>.
+      </p>
+    <% end %>
+
+    <% if Array(history_conversation["suggested_openers"]).any? %>
+      <p class="meta profile-history-reason">
+        Suggested initial messages:
+        <strong><%= Array(history_conversation["suggested_openers"]).first(3).join(" | ") %></strong>
+      </p>
+    <% end %>
+  </section>
+
+  <section id="profile_mutual" class="card">
+    <h2>Mutual</h2>
+    <div class="mutual-primary-profile">
+      <button
+        type="button"
+        class="mutual-avatar-button"
+        data-bs-toggle="modal"
+        data-bs-target="#profileMutualAvatarModal"
+        aria-label="Open avatar preview"
+      >
+        <img class="avatar large" src="<%= profile_avatar_url %>" alt="<%= @profile.username %> avatar">
+      </button>
+      <div class="mutual-primary-meta">
+        <%= link_to "@#{@profile.username}", profile_instagram_url, target: "_blank", rel: "noopener noreferrer", class: "mutual-username-link" %>
+        <p class="meta">Click name to open Instagram profile. Click avatar to preview and download.</p>
+      </div>
+    </div>
+
+    <h3 class="mutual-row-title">Mutual Friends</h3>
+    <% if @mutual_profiles.any? %>
+      <div class="mutual-friends-row">
+        <% @mutual_profiles.each do |mutual_profile| %>
+          <% mutual_instagram_url = "#{Instagram::Client::INSTAGRAM_BASE_URL}/#{mutual_profile.username}/" %>
+          <article class="mutual-friend-card">
+            <% if mutual_profile.avatar.attached? %>
+              <%= image_tag mutual_profile.avatar, class: "avatar", alt: mutual_profile.username %>
+            <% elsif mutual_profile.profile_pic_url.present? %>
+              <img class="avatar" src="<%= mutual_profile.profile_pic_url %>" alt="<%= mutual_profile.username %>">
+            <% else %>
+              <%= image_tag "default_avatar.svg", class: "avatar", alt: mutual_profile.username %>
+            <% end %>
+            <%= link_to "@#{mutual_profile.username}", mutual_instagram_url, target: "_blank", rel: "noopener noreferrer", class: "mutual-friend-name" %>
+          </article>
+        <% end %>
+      </div>
+    <% else %>
+      <p class="meta">No additional mutual profiles found.</p>
+    <% end %>
+  </section>
+
+  <div class="modal fade app-media-modal" id="profileMutualAvatarModal" tabindex="-1" aria-labelledby="profileMutualAvatarModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="profileMutualAvatarModalLabel">Avatar Preview</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body text-center">
+          <img class="modal-media-image img-fluid rounded" src="<%= profile_avatar_url %>" alt="<%= @profile.username %> avatar">
+          <p class="meta mt-2 mb-0"><%= @profile.username %></p>
+        </div>
+        <div class="modal-footer">
+          <% if profile_avatar_download_url.present? %>
+            <%= link_to "Download", profile_avatar_download_url, class: "btn secondary", target: "_blank", rel: "noreferrer" %>
+          <% end %>
+          <button type="button" class="btn secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <section id="profile_message_form" class="card">
     <h2>Send Message</h2>

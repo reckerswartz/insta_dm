@@ -3002,6 +3002,73 @@ input[type="submit"]:active {
   margin-top: 10px;
 }
 
+.profile-history-reason {
+  margin-top: 10px;
+}
+
+.mutual-primary-profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.mutual-avatar-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  border-radius: 999px;
+}
+
+.mutual-avatar-button .avatar.large {
+  box-shadow: 0 0 0 2px rgba(142, 176, 245, 0.28);
+}
+
+.mutual-primary-meta {
+  min-width: 0;
+}
+
+.mutual-username-link {
+  font-weight: 700;
+}
+
+.mutual-row-title {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+}
+
+.mutual-friends-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 2px 2px 4px;
+  scrollbar-width: thin;
+}
+
+.mutual-friend-card {
+  min-width: 106px;
+  max-width: 128px;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(119, 156, 223, 0.28);
+  background: rgba(40, 63, 101, 0.24);
+}
+
+.mutual-friend-card .avatar {
+  width: 52px;
+  height: 52px;
+}
+
+.mutual-friend-name {
+  text-align: center;
+  font-size: 0.79rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 #profile_message_form .form-control,
 #profile_message_form textarea,
 #profile_message_form input[type="text"] {
@@ -3049,6 +3116,10 @@ input[type="submit"]:active {
 
   .profile-page .profile-header {
     flex-direction: column;
+  }
+
+  .mutual-primary-profile {
+    align-items: flex-start;
   }
 
   .profile-quick-links {

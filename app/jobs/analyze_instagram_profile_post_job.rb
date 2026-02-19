@@ -1,6 +1,21 @@
 class AnalyzeInstagramProfilePostJob < ApplicationJob
   queue_as :ai_visual_queue
 
+  PROFILE_INCOMPLETE_REASON_CODES =
+    if defined?(ProcessPostMetadataTaggingJob::PROFILE_INCOMPLETE_REASON_CODES)
+      ProcessPostMetadataTaggingJob::PROFILE_INCOMPLETE_REASON_CODES
+    else
+      %w[
+        latest_posts_not_analyzed
+        insufficient_analyzed_posts
+        no_recent_posts_available
+        missing_structured_post_signals
+        profile_preparation_failed
+        profile_preparation_error
+      ].freeze
+    end
+  COMMENT_RETRY_MAX_ATTEMPTS = ENV.fetch("POST_COMMENT_RETRY_MAX_ATTEMPTS", 3).to_i.clamp(1, 10)
+
   DEFAULT_TASK_FLAGS = {
     analyze_visual: true,
     analyze_faces: true,
@@ -231,23 +246,38 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: analysis_hash)
     end
 
+    comment_result = nil
     if task_flags[:generate_comments]
-      Ai::PostCommentGenerationService.new(
+      comment_result = Ai::PostCommentGenerationService.new(
         account: account,
         profile: profile,
         post: post,
         enforce_required_evidence: ActiveModel::Type::Boolean.new.cast(task_flags[:enforce_comment_evidence_policy])
       ).run!
       post.reload
+
+      if ActiveModel::Type::Boolean.new.cast(task_flags[:retry_on_incomplete_profile]) &&
+          retryable_profile_incomplete_block?(post: post, comment_result: comment_result)
+        enqueue_build_history_retry_if_needed!(account: account, profile: profile, post: post)
+      end
     end
 
     post.update!(ai_status: "analyzed", analyzed_at: Time.current) unless post.ai_status.to_s == "analyzed"
+    notification_message =
+      if comment_result&.dig(:reason_code).to_s == "missing_required_evidence"
+        "Profile post analyzed: #{post.shortcode}. Waiting for Build History to finish comment generation."
+      else
+        "Profile post analyzed: #{post.shortcode}."
+      end
 
     Turbo::StreamsChannel.broadcast_append_to(
       account,
       target: "notifications",
       partial: "shared/notification",
-      locals: { kind: "notice", message: "Profile post analyzed: #{post.shortcode}." }
+      locals: {
+        kind: "notice",
+        message: notification_message
+      }
     )
   end
 
@@ -297,6 +327,87 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       include_ocr: ActiveModel::Type::Boolean.new.cast(task_flags[:run_ocr]),
       include_comment_generation: false,
       include_video_analysis: ActiveModel::Type::Boolean.new.cast(task_flags[:run_video])
+    }
+  end
+
+  def retryable_profile_incomplete_block?(post:, comment_result:)
+    return false unless ActiveModel::Type::Boolean.new.cast(comment_result[:blocked])
+    return false unless comment_result[:reason_code].to_s == "missing_required_evidence"
+
+    policy = post.metadata.is_a?(Hash) ? post.metadata["comment_generation_policy"] : nil
+    return false unless policy.is_a?(Hash)
+    return false if ActiveModel::Type::Boolean.new.cast(policy["history_ready"])
+
+    PROFILE_INCOMPLETE_REASON_CODES.include?(policy["history_reason_code"].to_s)
+  rescue StandardError
+    false
+  end
+
+  def enqueue_build_history_retry_if_needed!(account:, profile:, post:)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    policy = metadata["comment_generation_policy"].is_a?(Hash) ? metadata["comment_generation_policy"].deep_dup : {}
+    retry_state = policy["retry_state"].is_a?(Hash) ? policy["retry_state"].deep_dup : {}
+    attempts = retry_state["attempts"].to_i
+    return { queued: false, reason: "retry_attempts_exhausted" } if attempts >= COMMENT_RETRY_MAX_ATTEMPTS
+
+    history_reason_code = policy["history_reason_code"].to_s
+    return { queued: false, reason: "history_reason_not_retryable" } unless PROFILE_INCOMPLETE_REASON_CODES.include?(history_reason_code)
+
+    history_result = BuildInstagramProfileHistoryJob.enqueue_with_resume_if_needed!(
+      account: account,
+      profile: profile,
+      trigger_source: "post_inline_comment_fallback",
+      requested_by: self.class.name,
+      resume_job: {
+        job_class: self.class,
+        job_kwargs: {
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          instagram_profile_post_id: post.id,
+          pipeline_mode: "inline",
+          task_flags: {
+            analyze_visual: false,
+            analyze_faces: false,
+            run_ocr: false,
+            run_video: false,
+            run_metadata: true,
+            generate_comments: true,
+            enforce_comment_evidence_policy: true,
+            retry_on_incomplete_profile: true
+          }
+        }
+      }
+    )
+    return { queued: false, reason: history_result[:reason] } unless ActiveModel::Type::Boolean.new.cast(history_result[:accepted])
+
+    retry_state["attempts"] = attempts + 1
+    retry_state["last_reason_code"] = history_reason_code
+    retry_state["last_blocked_at"] = Time.current.iso8601(3)
+    retry_state["last_enqueued_at"] = Time.current.iso8601(3)
+    retry_state["next_run_at"] = history_result[:next_run_at].to_s.presence
+    retry_state["job_id"] = history_result[:job_id].to_s.presence
+    retry_state["build_history_action_log_id"] = history_result[:action_log_id].to_i if history_result[:action_log_id].present?
+    retry_state["source"] = self.class.name
+    retry_state["mode"] = "build_history_fallback"
+
+    policy["retry_state"] = retry_state
+    policy["updated_at"] = Time.current.iso8601(3)
+    metadata["comment_generation_policy"] = policy
+    post.update!(metadata: metadata)
+
+    {
+      queued: true,
+      reason: "build_history_fallback_registered",
+      job_id: history_result[:job_id].to_s,
+      action_log_id: history_result[:action_log_id],
+      next_run_at: history_result[:next_run_at].to_s
+    }
+  rescue StandardError => e
+    {
+      queued: false,
+      reason: "retry_enqueue_failed",
+      error_class: e.class.name,
+      error_message: e.message.to_s
     }
   end
 end

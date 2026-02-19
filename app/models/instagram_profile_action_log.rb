@@ -5,8 +5,10 @@ class InstagramProfileActionLog < ApplicationRecord
     analyze_profile
     analyze_profile_posts
     capture_profile_posts
+    build_history
     sync_avatar
     sync_stories
+    sync_stories_debug
     auto_story_reply
     post_comment
   ].freeze

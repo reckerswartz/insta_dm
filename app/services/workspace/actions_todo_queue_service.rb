@@ -124,7 +124,7 @@ module Workspace
 
       reason_code = policy["history_reason_code"].to_s
       if policy["status"].to_s == "blocked" && reason_code.in?(WorkspaceProcessActionsTodoPostJob::PROFILE_INCOMPLETE_REASON_CODES)
-        return "waiting_profile_analysis"
+        return "waiting_build_history"
       end
 
       "queued_for_processing"
@@ -138,8 +138,8 @@ module Workspace
         "Preview media download is queued."
       when "waiting_post_analysis"
         "Post analysis is running in background."
-      when "waiting_profile_analysis"
-        "Profile analysis is pending; comment generation will retry automatically."
+      when "waiting_build_history", "waiting_profile_analysis"
+        "Build History is running; comment generation will resume automatically."
       when "running"
         "Preparing suggestions in background."
       when "queued"
@@ -166,6 +166,7 @@ module Workspace
         "failed" => 6,
         "running" => 5,
         "queued" => 4,
+        "waiting_build_history" => 4,
         "waiting_profile_analysis" => 4,
         "waiting_post_analysis" => 3,
         "waiting_media_download" => 3,

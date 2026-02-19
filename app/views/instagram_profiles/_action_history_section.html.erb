@@ -54,6 +54,23 @@
                   skipped: <strong><%= state["skipped_count"].to_i %></strong>,
                   failed: <strong><%= state["failed_count"].to_i %></strong><br>
                   <a class="btn small secondary" href="#captured_profile_posts_section">Posts</a>
+                <% elsif log.action == "build_history" %>
+                  <% history = metadata["history_build"].is_a?(Hash) ? metadata["history_build"] : {} %>
+                  <% checks = history["checks"].is_a?(Hash) ? history["checks"] : {} %>
+                  <% queue = history["queue"].is_a?(Hash) ? history["queue"] : {} %>
+                  status: <strong><%= history["status"].to_s.presence || metadata["status"].to_s.presence || "-" %></strong><br>
+                  all posts captured: <strong><%= ActiveModel::Type::Boolean.new.cast(checks.dig("all_posts_captured", "ready")) ? "yes" : "no" %></strong>,
+                  latest 50 captured: <strong><%= ActiveModel::Type::Boolean.new.cast(checks.dig("latest_50_captured", "ready")) ? "yes" : "no" %></strong>,
+                  latest 20 analyzed: <strong><%= ActiveModel::Type::Boolean.new.cast(checks.dig("latest_20_analyzed", "ready")) ? "yes" : "no" %></strong><br>
+                  queue downloads: <strong><%= queue["downloads_queued"].to_i %></strong>,
+                  queue analyses: <strong><%= queue["analyses_queued"].to_i %></strong>
+                  <% retry_meta = metadata["retry"].is_a?(Hash) ? metadata["retry"] : {} %>
+                  <% if retry_meta["next_run_at"].to_s.present? %>
+                    <br>next retry: <strong><%= relative_time_with_tooltip(retry_meta["next_run_at"]) %></strong>
+                  <% end %>
+                  <br>
+                  <a class="btn small secondary" href="#profile_history_build">Build History</a>
+                  <a class="btn small secondary" href="#profile_mutual">Mutual</a>
                 <% elsif metadata["post_shortcode"].to_s.present? %>
                   Post: <code><%= metadata["post_shortcode"] %></code><br>
                   <a class="btn small secondary" href="#captured_profile_posts_section">View post</a>

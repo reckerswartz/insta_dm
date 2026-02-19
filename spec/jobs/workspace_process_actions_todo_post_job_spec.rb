@@ -10,7 +10,7 @@ RSpec.describe "WorkspaceProcessActionsTodoPostJobTest" do
     clear_performed_jobs
   end
 
-  it "queues profile analysis and retry when profile context is incomplete" do
+  it "queues build history fallback when profile context is incomplete" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
     post = profile.instagram_profile_posts.create!(
@@ -62,12 +62,11 @@ RSpec.describe "WorkspaceProcessActionsTodoPostJobTest" do
     post.reload
     workspace_state = post.metadata.dig("workspace_actions")
 
-    assert_equal "waiting_profile_analysis", workspace_state["status"]
-    assert workspace_state["next_run_at"].present?
+    assert_equal "waiting_build_history", workspace_state["status"]
     assert_equal "latest_posts_not_analyzed", workspace_state["profile_retry_reason_code"]
+    assert workspace_state["build_history_action_log_id"].to_i.positive?
 
     enqueued = enqueued_jobs.map { |row| row[:job] }
-    assert_includes enqueued, AnalyzeInstagramProfileJob
-    assert_includes enqueued, WorkspaceProcessActionsTodoPostJob
+    assert_includes enqueued, BuildInstagramProfileHistoryJob
   end
 end

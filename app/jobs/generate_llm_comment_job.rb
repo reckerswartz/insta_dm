@@ -9,7 +9,6 @@ class GenerateLlmCommentJob < ApplicationJob
     profile_preparation_failed
     profile_preparation_error
   ].freeze
-  PROFILE_PREPARATION_RETRY_WAIT_HOURS = ENV.fetch("STORY_COMMENT_PROFILE_PREPARATION_RETRY_HOURS", 4).to_i.clamp(1, 24)
   PROFILE_PREPARATION_RETRY_MAX_ATTEMPTS = ENV.fetch("STORY_COMMENT_PROFILE_PREPARATION_RETRY_MAX_ATTEMPTS", 3).to_i.clamp(1, 10)
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3
@@ -72,7 +71,7 @@ class GenerateLlmCommentJob < ApplicationJob
     )
   rescue InstagramProfileEvent::LocalStoryIntelligenceUnavailableError => e
     event&.mark_llm_comment_skipped!(message: e.message, reason: e.reason, source: e.source)
-    retry_result = schedule_profile_preparation_retry_if_needed(
+    retry_result = schedule_build_history_retry_if_needed(
       event: event,
       reason_code: e.reason,
       requested_provider: requested_provider,
@@ -145,7 +144,7 @@ class GenerateLlmCommentJob < ApplicationJob
     nil
   end
 
-  def schedule_profile_preparation_retry_if_needed(event:, reason_code:, requested_provider:, model:, requested_by:)
+  def schedule_build_history_retry_if_needed(event:, reason_code:, requested_provider:, model:, requested_by:)
     return { queued: false, reason: "event_missing" } unless event
     return { queued: false, reason: "reason_not_retryable" } unless PROFILE_PREPARATION_RETRY_REASON_CODES.include?(reason_code.to_s)
 
@@ -154,34 +153,45 @@ class GenerateLlmCommentJob < ApplicationJob
     attempts = retry_state["attempts"].to_i
     return { queued: false, reason: "retry_attempts_exhausted" } if attempts >= PROFILE_PREPARATION_RETRY_MAX_ATTEMPTS
 
-    next_run_at = parse_time(retry_state["next_run_at"])
-    if next_run_at.present? && next_run_at > Time.current
-      return { queued: false, reason: "retry_already_scheduled", next_run_at: next_run_at.iso8601 }
-    end
+    profile = event.instagram_profile
+    account = profile&.instagram_account
+    return { queued: false, reason: "profile_missing" } unless profile && account
 
-    run_at = Time.current + PROFILE_PREPARATION_RETRY_WAIT_HOURS.hours
-    job = self.class.set(wait_until: run_at).perform_later(
-      instagram_profile_event_id: event.id,
-      provider: requested_provider,
-      model: model,
-      requested_by: "profile_preparation_retry:#{requested_by}"
+    history_result = BuildInstagramProfileHistoryJob.enqueue_with_resume_if_needed!(
+      account: account,
+      profile: profile,
+      trigger_source: "story_comment_preparation_fallback",
+      requested_by: self.class.name,
+      resume_job: {
+        job_class: self.class,
+        job_kwargs: {
+          instagram_profile_event_id: event.id,
+          provider: requested_provider,
+          model: model,
+          requested_by: "profile_preparation_retry:#{requested_by}"
+        }
+      }
     )
+    return { queued: false, reason: history_result[:reason] } unless ActiveModel::Type::Boolean.new.cast(history_result[:accepted])
 
     retry_state["attempts"] = attempts + 1
     retry_state["last_reason_code"] = reason_code.to_s
     retry_state["last_skipped_at"] = Time.current.iso8601(3)
     retry_state["last_enqueued_at"] = Time.current.iso8601(3)
-    retry_state["next_run_at"] = run_at.iso8601(3)
-    retry_state["job_id"] = job.job_id
+    retry_state["next_run_at"] = history_result[:next_run_at].to_s.presence
+    retry_state["job_id"] = history_result[:job_id].to_s.presence
+    retry_state["build_history_action_log_id"] = history_result[:action_log_id].to_i if history_result[:action_log_id].present?
     retry_state["source"] = self.class.name
+    retry_state["mode"] = "build_history_fallback"
     metadata["profile_preparation_retry"] = retry_state
     event.update_columns(llm_comment_metadata: metadata, updated_at: Time.current)
 
     {
       queued: true,
-      reason: "profile_analysis_incomplete_retry_queued",
-      job_id: job.job_id,
-      next_run_at: run_at.iso8601(3)
+      reason: "build_history_fallback_registered",
+      job_id: history_result[:job_id].to_s,
+      action_log_id: history_result[:action_log_id],
+      next_run_at: history_result[:next_run_at].to_s
     }
   rescue StandardError => e
     {
@@ -190,13 +200,5 @@ class GenerateLlmCommentJob < ApplicationJob
       error_class: e.class.name,
       error_message: e.message.to_s
     }
-  end
-
-  def parse_time(value)
-    return nil if value.to_s.blank?
-
-    Time.zone.parse(value.to_s)
-  rescue StandardError
-    nil
   end
 end

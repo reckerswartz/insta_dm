@@ -89,6 +89,20 @@ class InstagramProfilesController < ApplicationController
           story_intelligence_available_for_snapshot?(metadata: metadata)
         end
     @available_tags = %w[personal_user friend female_friend male_friend relative page excluded automatic_reply]
+
+    behavior_profile = @profile.instagram_profile_behavior_profile
+    behavior_metadata = behavior_profile&.metadata
+    behavior_metadata = {} unless behavior_metadata.is_a?(Hash)
+    @history_build_state = behavior_metadata["history_build"].is_a?(Hash) ? behavior_metadata["history_build"] : {}
+    @history_ready = ActiveModel::Type::Boolean.new.cast(@history_build_state["ready"])
+
+    @mutual_profiles =
+      @account.instagram_profiles
+        .where(following: true, follows_you: true)
+        .where.not(id: @profile.id)
+        .with_attached_avatar
+        .order(Arel.sql("COALESCE(last_active_at, last_synced_at, updated_at) DESC"))
+        .limit(36)
   end
 
   def captured_posts_section

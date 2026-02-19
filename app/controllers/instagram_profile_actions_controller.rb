@@ -118,6 +118,35 @@ class InstagramProfileActionsController < ApplicationController
     end
   end
 
+  def build_history
+    profile = current_account.instagram_profiles.find(params[:id])
+    enqueue_profile_job(
+      profile: profile,
+      action: "build_history",
+      job_class: BuildInstagramProfileHistoryJob
+    )
+
+    respond_to do |format|
+      format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: "History build queued." }
+      format.turbo_stream do
+        render turbo_stream: queued_action_streams(profile: profile, message: "History build queued for #{profile.username}.")
+      end
+      format.json { head :accepted }
+    end
+  rescue StandardError => e
+    respond_to do |format|
+      format.html { redirect_back fallback_location: instagram_profile_path(params[:id]), alert: "Unable to queue history build: #{e.message}" }
+      format.turbo_stream do
+        render turbo_stream: turbo_stream.append(
+          "notifications",
+          partial: "shared/notification",
+          locals: { kind: "alert", message: "Unable to queue history build: #{e.message}" }
+        )
+      end
+      format.json { render json: { error: e.message }, status: :unprocessable_entity }
+    end
+  end
+
   def verify_messageability
     profile = current_account.instagram_profiles.find(params[:id])
     enqueue_profile_job(
@@ -246,10 +275,10 @@ class InstagramProfileActionsController < ApplicationController
 
   def sync_stories_debug
     profile = current_account.instagram_profiles.find(params[:id])
-    
+
     # Clean up existing debug files for this profile
     cleanup_profile_debug_files(profile.username)
-    
+
     enqueue_profile_job(
       profile: profile,
       action: "sync_stories_debug",
@@ -358,13 +387,13 @@ class InstagramProfileActionsController < ApplicationController
 
   def cleanup_profile_debug_files(username)
     debug_dirs = [
-      Rails.root.join('tmp', 'story_debug_snapshots'),
-      Rails.root.join('tmp', 'story_reel_debug')
+      Rails.root.join("tmp", "story_debug_snapshots"),
+      Rails.root.join("tmp", "story_reel_debug")
     ]
-    
+
     debug_dirs.each do |dir|
       next unless Dir.exist?(dir)
-      
+
       # Remove files matching the username pattern
       Dir.glob(File.join(dir, "#{username}_*")).each do |file|
         File.delete(file) if File.exist?(file)
