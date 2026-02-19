@@ -4,8 +4,6 @@ const baseConfig = require("./base")
 
 const DEV_SERVER_HOST = process.env.WEBPACK_DEV_SERVER_HOST || "127.0.0.1"
 const DEV_SERVER_PORT = Number(process.env.WEBPACK_DEV_SERVER_PORT || 3035)
-const DEV_SERVER_PROTOCOL = process.env.WEBPACK_DEV_SERVER_PROTOCOL || "http"
-const DEV_SERVER_ORIGIN = process.env.WEBPACK_DEV_SERVER_ORIGIN || `${DEV_SERVER_PROTOCOL}://${DEV_SERVER_HOST}:${DEV_SERVER_PORT}`
 
 const configuredPublicPath = process.env.WEBPACK_PUBLIC_PATH || "/assets/"
 const normalizedPublicPath = (() => {
@@ -15,17 +13,12 @@ const normalizedPublicPath = (() => {
   return value
 })()
 
-const runningDevServer =
-  process.env.WEBPACK_SERVE === "true" ||
-  process.argv.includes("serve") ||
-  process.argv.some((arg) => /webpack-dev-server/i.test(arg))
-const runtimePublicPath = runningDevServer ? `${DEV_SERVER_ORIGIN}${normalizedPublicPath}` : normalizedPublicPath
-
 module.exports = merge(baseConfig, {
   mode: "development",
   devtool: "eval-cheap-module-source-map",
   output: {
-    publicPath: runtimePublicPath,
+    // Resolve lazy chunks relative to the currently loaded script URL.
+    publicPath: "auto",
   },
   optimization: {
     minimize: false,
