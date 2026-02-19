@@ -132,10 +132,10 @@ class PersonIdentityFeedbackService
         appearance_count: recompute_appearance_count(target_person),
         first_seen_at: [ target_person.first_seen_at, source_person.first_seen_at ].compact.min,
         last_seen_at: [ target_person.last_seen_at, source_person.last_seen_at ].compact.max,
-        canonical_embedding: merged_embedding(target_person: target_person, source_person: source_person),
+        canonical_embedding: merged_embedding(target_person: target_person, source_person: source_person).presence,
         metadata: target_metadata
       )
-      target_person.update_column(:canonical_embedding_vector, target_person.canonical_embedding) if target_person.respond_to?(:canonical_embedding_vector=)
+      target_person.update_column(:canonical_embedding_vector, target_person.canonical_embedding.presence) if target_person.respond_to?(:canonical_embedding_vector=)
       target_person.sync_identity_confidence!(timestamp: now)
 
       source_metadata = normalize_metadata(source_person.metadata)
