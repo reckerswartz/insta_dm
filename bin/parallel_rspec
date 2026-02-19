@@ -23,12 +23,17 @@ if [[ "${SKIP_DB_PREPARE:-0}" != "1" ]]; then
   bundle exec rake parallel:create parallel:load_schema
 fi
 
+TARGETS=("$@")
+if [[ "${#TARGETS[@]}" -eq 0 ]]; then
+  TARGETS=("spec")
+fi
+
 if [[ "${RSPEC_WORKERS}" -le 1 ]]; then
-  bundle exec rspec "$@"
+  bundle exec rspec "${TARGETS[@]}"
 else
   if [[ "${PARALLEL_RSPEC_TEST_OPTIONS:-}" == "" ]]; then
-    bundle exec parallel_rspec spec -n "${RSPEC_WORKERS}" --serialize-stdout "$@"
+    bundle exec parallel_rspec "${TARGETS[@]}" -n "${RSPEC_WORKERS}" --serialize-stdout
   else
-    bundle exec parallel_rspec spec -n "${RSPEC_WORKERS}" --serialize-stdout --test-options "${PARALLEL_RSPEC_TEST_OPTIONS}" "$@"
+    bundle exec parallel_rspec "${TARGETS[@]}" -n "${RSPEC_WORKERS}" --serialize-stdout --test-options "${PARALLEL_RSPEC_TEST_OPTIONS}"
   fi
 fi
