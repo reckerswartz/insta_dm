@@ -140,8 +140,8 @@
           <% content_type = pp.media.attached? ? pp.media.blob.content_type.to_s : "" %>
           <% is_video = content_type.start_with?("video/") || metadata["media_type"].to_i == 2 %>
           <% poster_url =
-            if pp.preview_image.attached?
-              rails_blob_path(pp.preview_image, only_path: true)
+            if is_video
+              preferred_profile_post_preview_image_url(post: pp, metadata: metadata)
             else
               metadata["preview_image_url"].to_s.presence ||
                 metadata["poster_url"].to_s.presence ||

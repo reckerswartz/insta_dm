@@ -1,4 +1,6 @@
 class InstagramProfilesController < ApplicationController
+  include ProfilePostPreviewSupport
+
   before_action :require_current_account!
   before_action :set_account_and_profile!, only: %i[
     show

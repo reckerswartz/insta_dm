@@ -189,4 +189,51 @@ RSpec.describe "DownloadInstagramProfilePostMediaJobTest" do
     assert_equal "attached", post.metadata["preview_image_status"]
     assert_equal "remote_image_url", post.metadata["preview_image_source"]
   end
+
+  it "enqueues background preview generation when direct preview extraction fails" do
+    account = InstagramAccount.create!(username: "video_preview_bg_acct_#{SecureRandom.hex(3)}")
+    profile = account.instagram_profiles.create!(username: "video_preview_bg_profile_#{SecureRandom.hex(3)}", followers_count: 1200)
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "video_preview_bg_shortcode_1",
+      source_media_url: "https://cdn.example.com/sample_no_poster.mp4",
+      metadata: {
+        "media_id" => "video_preview_bg_media_1",
+        "media_type" => 2
+      },
+      ai_status: "failed"
+    )
+
+    video_io = StringIO.new("....ftypisom....video".b)
+    video_io.set_encoding(Encoding::BINARY)
+    thumb_service = instance_double(VideoThumbnailService)
+
+    job = DownloadInstagramProfilePostMediaJob.new
+    allow(job).to receive(:download_media).and_return([video_io, "video/mp4", "sample_no_poster.mp4"])
+    allow(job).to receive(:download_preview_image).and_return(nil)
+    allow(VideoThumbnailService).to receive(:new).and_return(thumb_service)
+    allow(thumb_service).to receive(:extract_first_frame).and_return(
+      {
+        ok: false,
+        image_bytes: nil,
+        content_type: nil,
+        filename: nil,
+        metadata: { source: "ffmpeg", reason: "ffmpeg_extract_failed" }
+      }
+    )
+
+    assert_enqueued_with(job: GenerateProfilePostPreviewImageJob, args: [ { instagram_profile_post_id: post.id } ]) do
+      job.perform(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        trigger_analysis: false
+      )
+    end
+
+    post.reload
+    assert post.media.attached?
+    assert_equal "video/mp4", post.media.blob.content_type
+    refute post.preview_image.attached?
+  end
 end

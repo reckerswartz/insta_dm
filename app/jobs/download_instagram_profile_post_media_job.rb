@@ -8,6 +8,7 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
   MAX_IMAGE_BYTES = 6 * 1024 * 1024
   MAX_VIDEO_BYTES = 80 * 1024 * 1024
   MAX_PREVIEW_IMAGE_BYTES = 3 * 1024 * 1024
+  PROFILE_POST_PREVIEW_ENQUEUE_TTL_SECONDS = 30.minutes
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 4
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 4
@@ -409,14 +410,20 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     if bytes.blank? && post.media.attached? && post.media.blob.byte_size.to_i <= MAX_VIDEO_BYTES
       bytes = post.media.blob.download.to_s.b
     end
-    return false if bytes.blank?
+    if bytes.blank?
+      enqueue_background_preview_generation!(post: post, reason: "video_bytes_missing")
+      return false
+    end
 
     extracted = VideoThumbnailService.new.extract_first_frame(
       video_bytes: bytes,
       reference_id: "profile_post_#{post.id}",
       content_type: content_type || post.media.blob.content_type
     )
-    return false unless extracted[:ok]
+    unless extracted[:ok]
+      enqueue_background_preview_generation!(post: post, reason: extracted.dig(:metadata, :reason).to_s.presence || "ffmpeg_extract_failed")
+      return false
+    end
 
     attach_preview_image_bytes!(
       post: post,
@@ -428,6 +435,7 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     true
   rescue StandardError => e
     Rails.logger.warn("[DownloadInstagramProfilePostMediaJob] preview attach failed post_id=#{post.id}: #{e.class}: #{e.message}")
+    enqueue_background_preview_generation!(post: post, reason: "#{e.class}: #{e.message}")
     false
   end
 
@@ -520,6 +528,24 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
       )
     )
   rescue StandardError
+    nil
+  end
+
+  def enqueue_background_preview_generation!(post:, reason:)
+    return if post.preview_image.attached?
+    return unless post.media.attached?
+    return unless post.media.blob&.content_type.to_s.start_with?("video/")
+
+    cache_key = "profile_post:preview_enqueue:#{post.id}"
+    Rails.cache.fetch(cache_key, expires_in: PROFILE_POST_PREVIEW_ENQUEUE_TTL_SECONDS) do
+      GenerateProfilePostPreviewImageJob.perform_later(instagram_profile_post_id: post.id)
+      true
+    end
+  rescue StandardError => e
+    Rails.logger.warn(
+      "[DownloadInstagramProfilePostMediaJob] preview enqueue failed post_id=#{post.id} " \
+      "reason=#{reason}: #{e.class}: #{e.message}"
+    )
     nil
   end
 

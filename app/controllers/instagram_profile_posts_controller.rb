@@ -1,4 +1,6 @@
 class InstagramProfilePostsController < ApplicationController
+  include ProfilePostPreviewSupport
+
   before_action :require_current_account!
 
   def analyze
