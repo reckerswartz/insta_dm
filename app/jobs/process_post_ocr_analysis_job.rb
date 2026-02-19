@@ -10,6 +10,7 @@ class ProcessPostOcrAnalysisJob < PostAnalysisPipelineJob
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, defer_attempt: 0)
+    enqueue_finalizer = true
     context = load_pipeline_context!(
       instagram_account_id: instagram_account_id,
       instagram_profile_id: instagram_profile_id,
@@ -21,6 +22,20 @@ class ProcessPostOcrAnalysisJob < PostAnalysisPipelineJob
     account = context[:account]
     post = context[:post]
     pipeline_state = context[:pipeline_state]
+    if pipeline_state.pipeline_terminal?(run_id: pipeline_run_id) || pipeline_state.step_terminal?(run_id: pipeline_run_id, step: "ocr")
+      enqueue_finalizer = false
+      Ops::StructuredLogger.info(
+        event: "ai.ocr_analysis.skipped_terminal",
+        payload: {
+          active_job_id: job_id,
+          instagram_account_id: account.id,
+          instagram_profile_id: context[:profile].id,
+          instagram_profile_post_id: post.id,
+          pipeline_run_id: pipeline_run_id
+        }
+      )
+      return
+    end
 
     unless resource_available?(defer_attempt: defer_attempt, context: context, pipeline_run_id: pipeline_run_id)
       return
@@ -90,7 +105,7 @@ class ProcessPostOcrAnalysisJob < PostAnalysisPipelineJob
     )
     raise
   ensure
-    if context
+    if context && enqueue_finalizer
       enqueue_pipeline_finalizer(
         account: context[:account],
         profile: context[:profile],

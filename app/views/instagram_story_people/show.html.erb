@@ -1,0 +1,229 @@
+<% content_for :title, "#{@person.display_label} · #{@profile.username}" %>
+
+<% real_status = @person.real_person_status %>
+<% confidence_pct = (@person.identity_confidence * 100).round %>
+<% merged_into_id = @person.merged_into_person_id %>
+<% single_person_posts = @post_groups.count { |row| row[:scope] == "single_person" } %>
+<% multi_person_posts = @post_groups.count { |row| row[:scope] == "multiple_people" } %>
+<% cluster_state =
+  if merged_into_id.present?
+    "merged_into_#{merged_into_id}"
+  elsif confidence_pct >= 80 && real_status == "confirmed_real_person"
+    "stable_identity"
+  elsif confidence_pct >= 55
+    "likely_same_individual"
+  else
+    "needs_review"
+  end %>
+
+<div class="page person-profile-page">
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1><%= @person.display_label %></h1>
+      <p class="meta">
+        Person ID: <strong>#<%= @person.id %></strong>
+        | Role: <strong><%= @person.role %></strong>
+        | Real-person status: <strong><%= real_status.to_s.tr("_", " ") %></strong>
+        | Identity confidence: <strong><%= confidence_pct %>%</strong>
+        | Cluster state: <strong><%= cluster_state.to_s.tr("_", " ") %></strong>
+      </p>
+    </div>
+    <div class="page-toolbar-actions">
+      <%= link_to "Back to Profile", instagram_profile_path(@profile), class: "btn secondary" %>
+      <%= link_to "Captured Posts", instagram_profile_path(@profile, anchor: "captured_profile_posts_section"), class: "btn secondary" %>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2>Identity Controls</h2>
+    <div class="stat-grid profile-overview-grid">
+      <div class="stat">
+        <div class="stat-label">Identity</div>
+        <div class="stat-kv"><span class="muted">Appearances (all)</span><strong><%= @total_appearances %></strong></div>
+        <div class="stat-kv"><span class="muted">Post detections</span><strong><%= @post_face_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Story detections</span><strong><%= @story_face_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Single-person posts</span><strong><%= single_person_posts %></strong></div>
+        <div class="stat-kv"><span class="muted">Multiple-people posts</span><strong><%= multi_person_posts %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Lifecycle</div>
+        <div class="stat-kv"><span class="muted">First seen</span><strong><%= relative_time_with_tooltip(@person.first_seen_at) %></strong></div>
+        <div class="stat-kv"><span class="muted">Last seen</span><strong><%= relative_time_with_tooltip(@person.last_seen_at) %></strong></div>
+        <div class="stat-kv"><span class="muted">Merged into</span><strong><%= merged_into_id.present? ? "##{merged_into_id}" : "-" %></strong></div>
+        <div class="stat-kv"><span class="muted">Linked usernames</span><strong><%= Array(@person.metadata_hash["linked_usernames"]).first(4).join(", ").presence || "-" %></strong></div>
+      </div>
+    </div>
+
+    <div class="actions-row person-feedback-actions">
+      <%= button_to "Confirm Person", confirm_instagram_profile_instagram_story_person_path(@profile, @person), method: :post, params: { real_person_status: "confirmed_real_person" }, class: "btn small" %>
+      <%= button_to "Mark Likely", confirm_instagram_profile_instagram_story_person_path(@profile, @person), method: :post, params: { real_person_status: "likely_real_person" }, class: "btn small secondary" %>
+      <%= button_to "Set as Profile Owner", link_profile_owner_instagram_profile_instagram_story_person_path(@profile, @person), method: :post, class: "btn small secondary" %>
+      <%= button_to "Mark Incorrect", mark_incorrect_instagram_profile_instagram_story_person_path(@profile, @person), method: :post, params: { reason: "manual_review" }, class: "btn small secondary", form: { data: { turbo_confirm: "Mark this identity as incorrect and disable matching?" } } %>
+    </div>
+
+    <%= form_with url: confirm_instagram_profile_instagram_story_person_path(@profile, @person), method: :post, local: true, class: "person-label-form" do |form| %>
+      <%= form.label :label, "Custom display label", class: "meta" %>
+      <div class="person-inline-controls">
+        <%= form.text_field :label, value: @person.label, placeholder: "e.g. friend_jane", class: "person-input" %>
+        <%= form.hidden_field :real_person_status, value: "confirmed_real_person" %>
+        <%= form.submit "Save Label", class: "btn small secondary" %>
+      </div>
+    <% end %>
+
+    <% if @merge_candidates.any? %>
+      <%= form_with url: merge_instagram_profile_instagram_story_person_path(@profile, @person), method: :post, local: true, class: "person-merge-form" do %>
+        <label for="target_person_id" class="meta">Merge this identity into:</label>
+        <% options = @merge_candidates.map do |candidate|
+          [
+            "##{candidate.id} · #{candidate.display_label} · conf #{(candidate.identity_confidence * 100).round}% · #{candidate.appearance_count}x",
+            candidate.id
+          ]
+        end %>
+        <div class="person-inline-controls">
+          <%= select_tag :target_person_id, options_for_select(options), class: "person-compact-select" %>
+          <%= submit_tag "Merge Identity", class: "btn small secondary", data: { turbo_confirm: "Merge selected identity into target person?" } %>
+        </div>
+      <% end %>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Captured Posts Featuring This Person</h2>
+    <p class="meta">Each card shows post scope (single person vs group) and lets you split incorrect detections into a new person ID.</p>
+    <% if @post_groups.any? %>
+      <div class="story-media-grid profile-story-grid person-media-grid">
+        <% @post_groups.each do |group| %>
+          <% post = group[:owner] %>
+          <% metadata = post.metadata.is_a?(Hash) ? post.metadata : {} %>
+          <% image_url = post.media.attached? ? rails_blob_path(post.media, only_path: true) : nil %>
+          <% content_type = post.media.attached? ? post.media.blob.content_type.to_s : "" %>
+          <% is_video = content_type.start_with?("video/") || metadata["media_type"].to_i == 2 %>
+          <% poster_url =
+            if post.preview_image.attached?
+              rails_blob_path(post.preview_image, only_path: true)
+            else
+              metadata["preview_image_url"].to_s.presence || metadata["poster_url"].to_s.presence
+            end %>
+
+          <article class="story-media-card person-media-card">
+            <% if image_url.present? && !is_video %>
+              <a class="story-media-preview story-preview-button" href="<%= post.permalink_url %>" target="_blank" rel="noreferrer">
+                <img loading="lazy" src="<%= image_url %>" alt="Post <%= post.shortcode %>" />
+              </a>
+            <% elsif image_url.present? && is_video %>
+              <div class="story-media-preview story-video-player-shell">
+                <video
+                  controls
+                  preload="none"
+                  playsinline
+                  data-controller="video-player"
+                  data-video-source="<%= image_url %>"
+                  data-video-content-type="<%= content_type %>"
+                  data-video-player-autoplay-value="false"
+                  data-video-player-load-on-play-value="true"
+                  <% if poster_url.present? %>
+                    poster="<%= poster_url %>"
+                    data-video-player-poster-url-value="<%= poster_url %>"
+                    data-video-poster-url="<%= poster_url %>"
+                  <% end %>
+                ></video>
+              </div>
+            <% else %>
+              <div class="story-media-preview">
+                <p class="meta">No media captured</p>
+              </div>
+            <% end %>
+
+            <div class="story-media-meta">
+              <p class="meta"><code><%= post.shortcode %></code> | <%= relative_time_with_tooltip(post.taken_at) %></p>
+              <p class="meta">
+                Scope: <strong><%= group[:scope] == "multiple_people" ? "multiple people" : "single person" %></strong>
+                | Linked detections here: <strong><%= group[:face_count_for_person] %></strong>
+                | Total people in post: <strong><%= group[:total_people] %></strong>
+              </p>
+              <p class="meta"><%= post.caption.to_s.truncate(100) %></p>
+              <div class="actions-row">
+                <a class="btn small secondary" href="<%= post.permalink_url %>" target="_blank" rel="noreferrer">Open on Instagram</a>
+              </div>
+              <div class="person-separate-actions">
+                <% group[:faces].first(3).each do |face| %>
+                  <%= button_to "Separate detection ##{face.id}",
+                    separate_face_instagram_profile_instagram_story_person_path(@profile, @person),
+                    method: :post,
+                    params: { face_type: "post", face_id: face.id },
+                    class: "btn small secondary" %>
+                <% end %>
+              </div>
+            </div>
+          </article>
+        <% end %>
+      </div>
+    <% else %>
+      <p class="meta">No captured posts currently linked to this person.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Story Media Featuring This Person</h2>
+    <% if @story_groups.any? %>
+      <div class="story-media-grid profile-story-grid person-media-grid">
+        <% @story_groups.each do |group| %>
+          <% story = group[:owner] %>
+          <% story_url = story.media.attached? ? rails_blob_path(story.media, only_path: true) : nil %>
+          <% content_type = story.media.attached? ? story.media.blob.content_type.to_s : "" %>
+          <% is_video = content_type.start_with?("video/") || story.video? %>
+          <% story_permalink = story.metadata.is_a?(Hash) ? story.metadata["story_url"].to_s.presence : nil %>
+          <% story_permalink = "#{Instagram::Client::INSTAGRAM_BASE_URL}/stories/#{@profile.username}/" if story_permalink.blank? %>
+
+          <article class="story-media-card person-media-card">
+            <% if story_url.present? && !is_video %>
+              <a class="story-media-preview story-preview-button" href="<%= story_permalink %>" target="_blank" rel="noreferrer">
+                <img loading="lazy" src="<%= story_url %>" alt="Story <%= story.story_id %>" />
+              </a>
+            <% elsif story_url.present? && is_video %>
+              <div class="story-media-preview story-video-player-shell">
+                <video
+                  controls
+                  preload="none"
+                  playsinline
+                  data-controller="video-player"
+                  data-video-source="<%= story_url %>"
+                  data-video-content-type="<%= content_type %>"
+                  data-video-player-autoplay-value="false"
+                  data-video-player-load-on-play-value="true"
+                ></video>
+              </div>
+            <% else %>
+              <div class="story-media-preview">
+                <p class="meta">No media captured</p>
+              </div>
+            <% end %>
+
+            <div class="story-media-meta">
+              <p class="meta"><code><%= story.story_id %></code> | <%= relative_time_with_tooltip(story.taken_at) %></p>
+              <p class="meta">
+                Scope: <strong><%= group[:scope] == "multiple_people" ? "multiple people" : "single person" %></strong>
+                | Linked detections here: <strong><%= group[:face_count_for_person] %></strong>
+                | Total people in story: <strong><%= group[:total_people] %></strong>
+              </p>
+              <div class="actions-row">
+                <a class="btn small secondary" href="<%= story_permalink %>" target="_blank" rel="noreferrer">Open Story</a>
+              </div>
+              <div class="person-separate-actions">
+                <% group[:faces].first(3).each do |face| %>
+                  <%= button_to "Separate detection ##{face.id}",
+                    separate_face_instagram_profile_instagram_story_person_path(@profile, @person),
+                    method: :post,
+                    params: { face_type: "story", face_id: face.id },
+                    class: "btn small secondary" %>
+                <% end %>
+              </div>
+            </div>
+          </article>
+        <% end %>
+      </div>
+    <% else %>
+      <p class="meta">No story media is linked to this person.</p>
+    <% end %>
+  </section>
+</div>

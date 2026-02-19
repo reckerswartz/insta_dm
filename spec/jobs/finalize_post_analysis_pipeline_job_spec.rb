@@ -10,6 +10,84 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
   end
 
   it "marks post analyzed when required pipeline steps are completed" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "succeeded")
+
+    FinalizePostAnalysisPipelineJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id,
+      attempts: 0
+    )
+
+    post.reload
+    assert_equal "analyzed", post.ai_status
+    assert post.analyzed_at.present?
+    assert_equal "completed", post.metadata.dig("ai_pipeline", "status")
+    assert_equal "succeeded", post.metadata.dig("ai_pipeline", "steps", "visual", "status")
+  end
+
+  it "skips duplicate finalizer runs while another finalize lock is active" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "running")
+    metadata = post.metadata.deep_dup
+    metadata["ai_pipeline"]["finalizer"] = {
+      "lock_until" => (Time.current + 30.seconds).iso8601(3)
+    }
+    post.update!(metadata: metadata)
+
+    assert_no_enqueued_jobs only: FinalizePostAnalysisPipelineJob do
+      FinalizePostAnalysisPipelineJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        pipeline_run_id: run_id,
+        attempts: 4
+      )
+    end
+  end
+
+  it "reschedules with bounded backoff when required steps are still running" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "running")
+    started_at = Time.current
+
+    FinalizePostAnalysisPipelineJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id,
+      attempts: 9
+    )
+
+    enqueued = enqueued_jobs.select { |row| row[:job] == FinalizePostAnalysisPipelineJob }
+    assert_operator enqueued.length, :>=, 1
+    scheduled_job = enqueued.last
+    assert scheduled_job[:at].present?
+
+    delay_seconds = scheduled_job[:at].to_f - started_at.to_f
+    assert_operator delay_seconds, :>=, 14
+    assert_operator delay_seconds, :<=, 18
+  end
+
+  it "ignores stale finalizer jobs after pipeline is already terminal" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "failed", pipeline_status: "failed")
+    before_metadata = post.metadata.deep_dup
+
+    assert_no_enqueued_jobs only: FinalizePostAnalysisPipelineJob do
+      FinalizePostAnalysisPipelineJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        pipeline_run_id: run_id,
+        attempts: 12
+      )
+    end
+
+    post.reload
+    assert_equal before_metadata["ai_pipeline"]["status"], post.metadata.dig("ai_pipeline", "status")
+    assert_equal before_metadata["ai_pipeline"]["steps"]["visual"]["status"], post.metadata.dig("ai_pipeline", "steps", "visual", "status")
+  end
+
+  def build_pipeline_with_visual_status(status:, pipeline_status: "running")
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(
       username: "profile_#{SecureRandom.hex(4)}",
@@ -28,11 +106,11 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
       metadata: {
         "ai_pipeline" => {
           "run_id" => run_id,
-          "status" => "running",
+          "status" => pipeline_status.to_s,
           "required_steps" => [ "visual" ],
           "steps" => {
             "visual" => {
-              "status" => "succeeded",
+              "status" => status.to_s,
               "attempts" => 1,
               "result" => { "provider" => "local" }
             },
@@ -45,18 +123,6 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
       }
     )
 
-    FinalizePostAnalysisPipelineJob.perform_now(
-      instagram_account_id: account.id,
-      instagram_profile_id: profile.id,
-      instagram_profile_post_id: post.id,
-      pipeline_run_id: run_id,
-      attempts: 0
-    )
-
-    post.reload
-    assert_equal "analyzed", post.ai_status
-    assert post.analyzed_at.present?
-    assert_equal "completed", post.metadata.dig("ai_pipeline", "status")
-    assert_equal "succeeded", post.metadata.dig("ai_pipeline", "steps", "visual", "status")
+    [ account, profile, post, run_id ]
   end
 end

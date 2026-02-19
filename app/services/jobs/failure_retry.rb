@@ -6,6 +6,14 @@ module Jobs
     DEFAULT_AUTO_LIMIT = 20
     DEFAULT_AUTO_MAX_ATTEMPTS = 3
     DEFAULT_AUTO_COOLDOWN = 10.minutes
+    PIPELINE_STEP_BY_JOB_CLASS = {
+      "ProcessPostVisualAnalysisJob" => "visual",
+      "ProcessPostFaceAnalysisJob" => "face",
+      "ProcessPostOcrAnalysisJob" => "ocr",
+      "ProcessPostVideoAnalysisJob" => "video",
+      "ProcessPostMetadataTaggingJob" => "metadata",
+      "FinalizePostAnalysisPipelineJob" => nil
+    }.freeze
 
     class << self
       def enqueue!(failure, source: "manual")
@@ -17,6 +25,8 @@ module Jobs
         raise RetryError, "Unknown job class: #{failure.job_class}" unless job_class
 
         payload = parse_arguments(failure.arguments_json)
+        raise RetryError, "Failure is no longer actionable for retry" unless retry_actionable?(failure: failure, payload: payload)
+
         job = perform_later(job_class: job_class, payload: payload)
         mark_retry_enqueued!(failure: failure, source: source, job: job)
 
@@ -97,6 +107,7 @@ module Jobs
         state = retry_state_for(failure)
         attempts = state["attempts"].to_i
         return false if attempts >= max_attempts
+        return false unless retry_actionable?(failure: failure)
 
         last_retry_at = parse_time(state["last_retry_at"])
         return true if last_retry_at.blank?
@@ -153,6 +164,51 @@ module Jobs
         value.to_i.seconds
       rescue StandardError
         DEFAULT_AUTO_COOLDOWN
+      end
+
+      def retry_actionable?(failure:, payload: nil)
+        return true unless PIPELINE_STEP_BY_JOB_CLASS.key?(failure.job_class.to_s)
+
+        args = pipeline_args(payload || parse_arguments(failure.arguments_json))
+        return true unless args.present?
+
+        pipeline_run_id = args["pipeline_run_id"].to_s
+        return true if pipeline_run_id.blank?
+
+        post = pipeline_post_from_args(args)
+        return false unless post
+
+        pipeline_state = Ai::PostAnalysisPipelineState.new(post: post)
+        return false if pipeline_state.pipeline_terminal?(run_id: pipeline_run_id)
+
+        step = PIPELINE_STEP_BY_JOB_CLASS[failure.job_class.to_s]
+        return true if step.blank?
+
+        !pipeline_state.step_terminal?(run_id: pipeline_run_id, step: step)
+      rescue StandardError
+        true
+      end
+
+      def pipeline_args(payload)
+        return {} unless payload.is_a?(Array)
+
+        first = payload.first
+        return {} unless first.is_a?(Hash)
+
+        first.stringify_keys
+      end
+
+      def pipeline_post_from_args(args)
+        post_id = args["instagram_profile_post_id"].to_i
+        return nil if post_id <= 0
+
+        profile_id = args["instagram_profile_id"].to_i
+        account_id = args["instagram_account_id"].to_i
+
+        scope = InstagramProfilePost.where(id: post_id)
+        scope = scope.where(instagram_profile_id: profile_id) if profile_id.positive?
+        scope = scope.where(instagram_account_id: account_id) if account_id.positive?
+        scope.first
       end
     end
   end

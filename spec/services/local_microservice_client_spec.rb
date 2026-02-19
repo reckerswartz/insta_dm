@@ -20,7 +20,7 @@ RSpec.describe "LocalMicroserviceClientTest" do
       }
     }
 
-    payload = client.detect_faces_and_ocr!(image_bytes: "fake-image-bytes", usage_context: { workflow: "test" })
+    payload = client.detect_faces_and_ocr!(image_bytes: ("fake-image-bytes" * 20), usage_context: { workflow: "test" })
 
     assert_equal "Deal now @Creator #Promo", payload["ocr_text"]
     assert_equal [ "Person", "Clock" ], payload["content_labels"]
@@ -39,7 +39,7 @@ RSpec.describe "LocalMicroserviceClientTest" do
     }
 
     response = client.analyze_image_bytes!(
-      "fake-image-bytes",
+      ("fake-image-bytes" * 20),
       features: [ { type: "LABEL_DETECTION" }, { type: "TEXT_DETECTION" }, { type: "FACE_DETECTION" } ]
     )
 
@@ -57,11 +57,25 @@ RSpec.describe "LocalMicroserviceClientTest" do
 
     error = assert_raises(RuntimeError) do
       client.analyze_image_bytes!(
-        "fake-image-bytes",
+        ("fake-image-bytes" * 20),
         features: [ { type: "LABEL_DETECTION" } ]
       )
     end
 
     assert_includes error.message, "decoder unavailable"
+  end
+
+  it "rejects invalid tiny image payloads before remote upload" do
+    client = StubClient.new(service_url: "http://example.test")
+    client.stub_response = { "results" => {} }
+
+    error = assert_raises(ArgumentError) do
+      client.analyze_image_bytes!(
+        "tiny",
+        features: [ { type: "LABEL_DETECTION" } ]
+      )
+    end
+
+    assert_includes error.message, "image_bytes_too_small"
   end
 end

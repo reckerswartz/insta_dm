@@ -4,6 +4,7 @@ module Ai
   class PostAnalysisPipelineState
     STEP_KEYS = %w[visual face ocr video metadata].freeze
     TERMINAL_STATUSES = %w[succeeded failed skipped].freeze
+    PIPELINE_TERMINAL_STATUSES = %w[completed failed].freeze
 
     DEFAULT_TASK_FLAGS = {
       "analyze_visual" => true,
@@ -80,6 +81,14 @@ module Ai
       return nil unless pipeline.is_a?(Hash)
 
       pipeline.dig("steps", step.to_s)
+    end
+
+    def step_terminal?(run_id:, step:)
+      TERMINAL_STATUSES.include?(step_state(run_id: run_id, step: step).to_h["status"].to_s)
+    end
+
+    def pipeline_terminal?(run_id:)
+      PIPELINE_TERMINAL_STATUSES.include?(pipeline_for(run_id: run_id).to_h["status"].to_s)
     end
 
     def mark_step_running!(run_id:, step:, queue_name:, active_job_id:)

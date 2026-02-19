@@ -63,6 +63,33 @@
             <% face_participants = Array(face_recognition.dig("identity", "participants")).select { |row| row.is_a?(Hash) } %>
           <% end %>
           <% post_faces = pp.instagram_post_faces.to_a %>
+          <% if face_participants.empty? && post_faces.any? %>
+            <% face_participants = post_faces.first(12).map do |face|
+              person = face.instagram_story_person
+              {
+                "person_id" => person&.id,
+                "role" => face.role,
+                "label" => person&.label,
+                "appearances" => person&.appearance_count,
+                "recurring_face" => person.present? && person.appearance_count.to_i > 1,
+                "relationship" => person&.metadata_hash&.dig("relationship"),
+                "co_appearances_with_primary" => person&.metadata_hash&.dig("co_appearances_with_primary"),
+                "real_person_status" => person&.real_person_status,
+                "identity_confidence" => person&.identity_confidence
+              }.compact
+            end %>
+          <% end %>
+          <% post_people_by_id = post_faces.map(&:instagram_story_person).compact.index_by(&:id) %>
+          <% unique_people_count = post_faces.map(&:instagram_story_person_id).compact.uniq.count %>
+          <% if unique_people_count <= 0 %>
+            <% unique_people_count = face_participants.map { |row| row["person_id"].to_i }.reject(&:zero?).uniq.count %>
+          <% end %>
+          <% post_people_scope =
+            if unique_people_count > 1
+              "multiple_people"
+            elsif unique_people_count == 1
+              "single_person"
+            end %>
           <% detected_face_count = face_recognition["face_count"].to_i %>
           <% detected_face_count = post_faces.length if detected_face_count <= 0 && post_faces.any? %>
           <% owner_faces_count = post_faces.count { |face| face.role.to_s == "primary_user" } %>
@@ -74,15 +101,26 @@
             recurring_faces_count: recurring_faces_count,
             detection_source: face_recognition["detection_source"].to_s.presence,
             participant_summary: face_recognition["participant_summary"].to_s.presence,
+            post_people_scope: post_people_scope,
+            unique_people_count: unique_people_count,
             participants: face_participants.first(12).map do |row|
+              person_id = row["person_id"].to_i.positive? ? row["person_id"].to_i : nil
+              person = person_id.present? ? post_people_by_id[person_id] : nil
+              status = row["real_person_status"].to_s.presence || person&.real_person_status
+              confidence = row["identity_confidence"]
+              confidence = person&.identity_confidence if confidence.blank?
+              confidence = confidence.to_f if confidence.present?
               {
-                person_id: row["person_id"],
+                person_id: person_id,
                 role: row["role"],
                 label: row["label"],
                 appearances: row["appearances"],
                 recurring_face: row["recurring_face"],
                 relationship: row["relationship"],
-                co_appearances_with_primary: row["co_appearances_with_primary"]
+                co_appearances_with_primary: row["co_appearances_with_primary"],
+                real_person_status: status,
+                identity_confidence: confidence,
+                person_path: person_id.present? ? instagram_profile_instagram_story_person_path(profile, person_id) : nil
               }.compact
             end
           } %>
@@ -224,17 +262,38 @@
                     <% if face_recognition["detection_source"].to_s.present? %>
                       | Source: <%= face_recognition["detection_source"] %>
                     <% end %>
+                    <% if post_people_scope.present? %>
+                      | Scope: <strong><%= post_people_scope == "multiple_people" ? "multiple people" : "single person" %></strong>
+                    <% end %>
                   </p>
                   <% if face_participants.any? %>
                     <div class="post-face-chip-row">
                       <% face_participants.first(6).each do |participant| %>
                         <% role = participant["role"].to_s.presence || "unknown" %>
-                        <% person_id = participant["person_id"] %>
+                        <% person_id = participant["person_id"].to_i.positive? ? participant["person_id"].to_i : nil %>
                         <% recurring = ActiveModel::Type::Boolean.new.cast(participant["recurring_face"]) || participant["appearances"].to_i > 1 %>
-                        <span class="pill face-pill <%= role == "primary_user" ? "owner" : "person" %>">
-                          <%= participant["label"].to_s.presence || "person_#{person_id}" %>
-                          <% if recurring %>
-                            · recurring
+                        <% person = person_id.present? ? post_people_by_id[person_id] : nil %>
+                        <% real_person_status = participant["real_person_status"].to_s.presence || person&.real_person_status %>
+                        <% confidence = participant["identity_confidence"] %>
+                        <% confidence = person&.identity_confidence if confidence.blank? %>
+                        <% confidence_percent = confidence.present? ? (confidence.to_f * 100).round : nil %>
+                        <% person_label = participant["label"].to_s.presence || (person_id.present? ? "person_#{person_id}" : "person") %>
+                        <% person_path = person_id.present? ? instagram_profile_instagram_story_person_path(profile, person_id) : nil %>
+                        <% chip_classes = "pill face-pill #{role == "primary_user" ? "owner" : "person"}" %>
+                        <span class="face-chip-item">
+                          <% if person_path.present? %>
+                            <%= link_to person_label, person_path, class: "#{chip_classes} face-pill-link" %>
+                          <% else %>
+                            <span class="<%= chip_classes %>"><%= person_label %></span>
+                          <% end %>
+                          <% if recurring || real_person_status.present? || confidence_percent.present? %>
+                            <small class="face-chip-meta">
+                              <% meta_parts = [] %>
+                              <% meta_parts << "recurring" if recurring %>
+                              <% meta_parts << real_person_status.to_s.tr("_", " ") if real_person_status.present? %>
+                              <% meta_parts << "confidence #{confidence_percent}%" if confidence_percent.present? %>
+                              <%= meta_parts.join(" | ") %>
+                            </small>
                           <% end %>
                         </span>
                       <% end %>

@@ -48,6 +48,7 @@ class VectorMatchingService
     }
     attrs[:canonical_embedding_vector] = vector if pgvector_column_available?
     person = InstagramStoryPerson.create!(attrs)
+    person.sync_identity_confidence!
 
     {
       person: person,
@@ -75,6 +76,7 @@ class VectorMatchingService
     person.canonical_embedding_vector = vector if person.respond_to?(:canonical_embedding_vector=)
     person.metadata = (person.metadata.is_a?(Hash) ? person.metadata : {}).merge("source" => "primary_seed")
     person.save!
+    person.sync_identity_confidence!
     person
   end
 
@@ -89,14 +91,15 @@ class VectorMatchingService
       person = query
         .select(Arel.sql("instagram_story_people.*, (1 - (canonical_embedding_vector <=> '#{vector_sql}'::vector)) AS similarity_score"))
         .order(Arel.sql("canonical_embedding_vector <=> '#{vector_sql}'::vector"))
-        .limit(1)
-        .first
+        .limit(25)
+        .to_a
+        .find(&:active_for_matching?)
       return nil unless person
 
       return { person: person, similarity: person.attributes["similarity_score"].to_f }
     end
 
-    candidates = profile.instagram_story_people.where.not(canonical_embedding: nil).to_a
+    candidates = profile.instagram_story_people.where.not(canonical_embedding: nil).to_a.select(&:active_for_matching?)
     return nil if candidates.empty?
 
     candidates.map do |person|
@@ -151,6 +154,7 @@ class VectorMatchingService
 
     attrs[:canonical_embedding_vector] = updated_vector if person.respond_to?(:canonical_embedding_vector=)
     person.update!(attrs)
+    person.sync_identity_confidence!
     { recorded: true, duplicate: false }
   end
 

@@ -200,7 +200,10 @@ class FaceIdentityResolutionService
         label: person.label.to_s.presence,
         match_similarity: face.match_similarity.to_f,
         detector_confidence: face.detector_confidence.to_f,
-        linked_usernames: linked_usernames(person)
+        linked_usernames: linked_usernames(person),
+        real_person_status: person.real_person_status,
+        identity_confidence: person.identity_confidence,
+        merged_into_person_id: person.merged_into_person_id
       }
     end.compact
 
@@ -311,6 +314,7 @@ class FaceIdentityResolutionService
         label: top_person.label.to_s.presence || profile.username.to_s,
         metadata: metadata
       )
+      top_person.sync_identity_confidence!
       primary_person = top_person
     end
 
@@ -431,7 +435,10 @@ class FaceIdentityResolutionService
         appearances: counts[person.id].to_i,
         relationship: collaborator[:relationship] || person.metadata&.dig("relationship"),
         co_appearances_with_primary: collaborator[:co_appearances_with_primary].to_i,
-        linked_usernames: linked_usernames(person)
+        linked_usernames: linked_usernames(person),
+        real_person_status: person.real_person_status,
+        identity_confidence: person.identity_confidence,
+        merged_into_person_id: person.merged_into_person_id
       )
     end.uniq { |row| [ row[:person_id], row[:match_similarity].round(4), row[:detector_confidence].round(4) ] }
   end
@@ -449,7 +456,10 @@ class FaceIdentityResolutionService
         person: latest,
         role: latest.role.to_s,
         label: latest.label.to_s.presence,
-        linked_usernames: linked_usernames(latest)
+        linked_usernames: linked_usernames(latest),
+        real_person_status: latest.real_person_status,
+        identity_confidence: latest.identity_confidence,
+        merged_into_person_id: latest.merged_into_person_id
       )
     end
   end

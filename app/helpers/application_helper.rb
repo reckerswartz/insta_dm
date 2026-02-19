@@ -59,7 +59,7 @@ module ApplicationHelper
     case controller_path
     when "instagram_accounts"
       :accounts
-    when "instagram_profiles", "instagram_profile_actions", "instagram_profile_posts", "instagram_profile_messages"
+    when "instagram_profiles", "instagram_profile_actions", "instagram_profile_posts", "instagram_profile_messages", "instagram_story_people"
       :profiles
     when "instagram_posts"
       :posts
@@ -92,6 +92,7 @@ module ApplicationHelper
         instagram_profile_actions
         instagram_profile_posts
         instagram_profile_messages
+        instagram_story_people
       ].include?(controller_path)
     when :posts
       controller_path == "instagram_posts"

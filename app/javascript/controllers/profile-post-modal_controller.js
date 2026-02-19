@@ -208,6 +208,8 @@ export default class extends Controller {
     const recurringFaces = Number(payload.recurring_faces_count || 0)
     const source = String(payload.detection_source || "")
     const participantSummary = String(payload.participant_summary || "")
+    const postPeopleScope = String(payload.post_people_scope || "")
+    const uniquePeopleCount = Number(payload.unique_people_count || 0)
 
     if (totalFaces <= 0 && participants.length === 0) {
       return "<p class='meta'>No detected faces for this post yet.</p>"
@@ -217,6 +219,8 @@ export default class extends Controller {
       `Faces: <strong>${this._escape(String(totalFaces))}</strong>`,
       ownerFaces > 0 ? `Owner matches: <strong>${this._escape(String(ownerFaces))}</strong>` : "",
       recurringFaces > 0 ? `Recurring: <strong>${this._escape(String(recurringFaces))}</strong>` : "",
+      uniquePeopleCount > 0 ? `People in post: <strong>${this._escape(String(uniquePeopleCount))}</strong>` : "",
+      postPeopleScope ? `Scope: <strong>${this._escape(postPeopleScope.replaceAll("_", " "))}</strong>` : "",
       source ? `Source: ${this._escape(source)}` : ""
     ].filter(Boolean)
 
@@ -226,13 +230,21 @@ export default class extends Controller {
       const label = row.label || (row.person_id ? `person_${row.person_id}` : "unknown")
       const recurring = row.recurring_face === true || Number(row.appearances || 0) > 1
       const relationship = String(row.relationship || "")
+      const personPath = String(row.person_path || "")
+      const realPersonStatus = String(row.real_person_status || "")
+      const confidence = Number(row.identity_confidence)
       const details = [
         recurring ? "recurring" : "",
         Number(row.appearances || 0) > 0 ? `seen ${this._escape(String(row.appearances))}x` : "",
-        relationship ? this._escape(relationship) : ""
+        relationship ? this._escape(relationship) : "",
+        realPersonStatus ? this._escape(realPersonStatus.replaceAll("_", " ")) : "",
+        Number.isFinite(confidence) ? `confidence ${this._escape(String(Math.round(confidence * 100)))}%` : ""
       ].filter(Boolean).join(" | ")
-
-      return `<span class="pill face-pill ${roleClass}">${this._escape(String(label))}${details ? ` <small>${details}</small>` : ""}</span>`
+      const body = `${this._escape(String(label))}${details ? ` <small>${details}</small>` : ""}`
+      if (personPath) {
+        return `<a class="pill face-pill ${roleClass} face-pill-link" href="${this._escape(personPath)}">${body}</a>`
+      }
+      return `<span class="pill face-pill ${roleClass}">${body}</span>`
     }).join("")
 
     const summaryLine = participantSummary ? `<p class="meta">${this._escape(participantSummary)}</p>` : ""

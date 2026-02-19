@@ -66,6 +66,30 @@ RSpec.describe "ProcessPostVisualAnalysisJobTest" do
     assert_equal "visual_analysis_failed", post.metadata.dig("ai_pipeline", "steps", "visual", "result", "reason")
   end
 
+  it "skips stale visual jobs when pipeline is already terminal" do
+    account, profile, post, run_id = build_pipeline_context
+    metadata = post.metadata.deep_dup
+    metadata["ai_pipeline"]["status"] = "failed"
+    metadata["ai_pipeline"]["steps"]["visual"]["status"] = "failed"
+    metadata["ai_pipeline"]["steps"]["visual"]["attempts"] = 6
+    post.update!(metadata: metadata, ai_status: "failed")
+
+    expect(Ai::Runner).not_to receive(:new)
+
+    assert_no_enqueued_jobs only: FinalizePostAnalysisPipelineJob do
+      ProcessPostVisualAnalysisJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        pipeline_run_id: run_id
+      )
+    end
+
+    post.reload
+    assert_equal "failed", post.metadata.dig("ai_pipeline", "status")
+    assert_equal 6, post.metadata.dig("ai_pipeline", "steps", "visual", "attempts")
+  end
+
   def build_pipeline_context
     account = InstagramAccount.create!(username: "acct_visual_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "profile_visual_#{SecureRandom.hex(4)}", followers_count: 1800)

@@ -1260,6 +1260,12 @@ pre {
   gap: 6px;
 }
 
+.face-chip-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .face-pill.owner {
   border-color: rgba(61, 210, 152, 0.45);
   background: rgba(46, 204, 143, 0.17);
@@ -1271,10 +1277,72 @@ pre {
   background: rgba(50, 83, 139, 0.2);
 }
 
+.face-pill-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .face-pill small {
   color: #b8ceef;
   font-size: 0.68rem;
   margin-left: 3px;
+}
+
+.face-chip-meta {
+  display: inline-block;
+  margin-right: 6px;
+  color: #b8ceef;
+  font-size: 0.68rem;
+}
+
+.person-profile-page .person-feedback-actions {
+  margin-top: 10px;
+}
+
+.person-profile-page .person-label-form,
+.person-profile-page .person-merge-form {
+  margin-top: 12px;
+}
+
+.person-profile-page .person-inline-controls {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.person-profile-page .person-input {
+  min-width: 220px;
+  max-width: 360px;
+  border-radius: 8px;
+  border: 1px solid rgba(96, 137, 206, 0.4);
+  background: rgba(23, 43, 83, 0.55);
+  color: #dce9ff;
+  padding: 6px 10px;
+}
+
+.person-profile-page .person-compact-select {
+  min-width: 260px;
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(96, 137, 206, 0.4);
+  background: rgba(23, 43, 83, 0.55);
+  color: #dce9ff;
+  padding: 6px 10px;
+}
+
+.person-media-grid .person-media-card {
+  grid-template-rows: auto 1fr;
+}
+
+.person-separate-actions {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .story-media-profile {

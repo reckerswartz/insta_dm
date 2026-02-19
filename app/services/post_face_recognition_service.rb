@@ -121,7 +121,9 @@ class PostFaceRecognitionService
         similarity: match[:similarity],
         owner_match: match[:role].to_s == "primary_user",
         recurring_face: person.appearance_count.to_i > 1,
-        appearances: person.appearance_count.to_i
+        appearances: person.appearance_count.to_i,
+        real_person_status: person.real_person_status,
+        identity_confidence: person.identity_confidence
       }.compact
     end
 

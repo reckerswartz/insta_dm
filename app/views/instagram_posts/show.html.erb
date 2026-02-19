@@ -69,9 +69,14 @@
       <% face_recognition = @post.metadata["face_recognition"].is_a?(Hash) ? @post.metadata["face_recognition"] : {} %>
       <% identity = face_recognition["identity"].is_a?(Hash) ? face_recognition["identity"] : {} %>
       <% participants = Array(identity["participants"]).select { |row| row.is_a?(Hash) } %>
+      <% people_by_id = @post.instagram_post_faces.includes(:instagram_story_person).map(&:instagram_story_person).compact.index_by(&:id) %>
+      <% unique_people_count = @post.instagram_post_faces.map(&:instagram_story_person_id).compact.uniq.count %>
       <div class="post-face-summary mt-section">
         <p class="meta">
           Faces: <strong><%= face_recognition["face_count"].to_i %></strong>
+          <% if unique_people_count.positive? %>
+            | People in post: <strong><%= unique_people_count %></strong>
+          <% end %>
           <% if face_recognition["detection_source"].to_s.present? %>
             | Source: <%= face_recognition["detection_source"] %>
           <% end %>
@@ -80,12 +85,27 @@
           <div class="post-face-chip-row">
             <% participants.first(10).each do |participant| %>
               <% role = participant["role"].to_s.presence || "unknown" %>
-              <% person_id = participant["person_id"] %>
-              <% label = participant["label"].to_s.presence || "person_#{person_id}" %>
-              <span class="pill face-pill <%= role == "primary_user" ? "owner" : "person" %>">
-                <%= label %>
-                <% if participant["appearances"].to_i > 1 %>
-                  · recurring
+              <% person_id = participant["person_id"].to_i.positive? ? participant["person_id"].to_i : nil %>
+              <% person = person_id.present? ? people_by_id[person_id] : nil %>
+              <% label = participant["label"].to_s.presence || (person_id.present? ? "person_#{person_id}" : "person") %>
+              <% person_path = if person_id.present? && @post.instagram_profile.present?
+                instagram_profile_instagram_story_person_path(@post.instagram_profile, person_id)
+              end %>
+              <% pill_class = "pill face-pill #{role == "primary_user" ? "owner" : "person"}" %>
+              <span class="face-chip-item">
+                <% if person_path.present? %>
+                  <%= link_to label, person_path, class: "#{pill_class} face-pill-link" %>
+                <% else %>
+                  <span class="<%= pill_class %>"><%= label %></span>
+                <% end %>
+                <% details = [] %>
+                <% details << "recurring" if participant["appearances"].to_i > 1 %>
+                <% details << participant["real_person_status"].to_s.tr("_", " ") if participant["real_person_status"].to_s.present? %>
+                <% confidence = participant["identity_confidence"] %>
+                <% confidence = person&.identity_confidence if confidence.blank? %>
+                <% details << "confidence #{(confidence.to_f * 100).round}%" if confidence.present? %>
+                <% if details.any? %>
+                  <small class="face-chip-meta"><%= details.join(" | ") %></small>
                 <% end %>
               </span>
             <% end %>

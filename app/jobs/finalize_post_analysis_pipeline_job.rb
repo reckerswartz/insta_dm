@@ -17,6 +17,20 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     profile = context[:profile]
     post = context[:post]
     pipeline_state = context[:pipeline_state]
+    if pipeline_state.pipeline_terminal?(run_id: pipeline_run_id)
+      Ops::StructuredLogger.info(
+        event: "ai.pipeline.finalizer.skipped_terminal",
+        payload: {
+          active_job_id: job_id,
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          instagram_profile_post_id: post.id,
+          pipeline_run_id: pipeline_run_id
+        }
+      )
+      return
+    end
+
     return unless acquire_finalizer_slot?(post: post, pipeline_run_id: pipeline_run_id, attempts: attempts)
 
     maybe_enqueue_metadata_step!(context: context, pipeline_run_id: pipeline_run_id)

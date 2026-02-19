@@ -43,6 +43,15 @@ Rails.application.routes.draw do
 
   resources :instagram_profiles, only: %i[index show] do
     resources :instagram_profile_messages, only: :create
+    resources :instagram_story_people, path: :people, only: :show do
+      member do
+        post :confirm
+        post :mark_incorrect
+        post :link_profile_owner
+        post :merge
+        post :separate_face
+      end
+    end
     resources :instagram_profile_posts, only: [] do
       post :analyze, on: :member
       post :analyze_next_batch, on: :collection
