@@ -2,10 +2,17 @@ require "net/http"
 require "json"
 require "base64"
 require "tempfile"
+require "securerandom"
 
 module Ai
   class LocalMicroserviceClient
     BASE_URL = ENV.fetch("LOCAL_AI_SERVICE_URL", "http://localhost:8000").freeze
+    HTTP_OPEN_TIMEOUT_SECONDS = ENV.fetch("LOCAL_AI_HTTP_OPEN_TIMEOUT_SECONDS", 20).to_i.clamp(3, 120)
+    HTTP_READ_TIMEOUT_SECONDS = ENV.fetch("LOCAL_AI_HTTP_READ_TIMEOUT_SECONDS", 120).to_i.clamp(10, 600)
+    MAX_IMAGE_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MAX_IMAGE_UPLOAD_BYTES", 20 * 1024 * 1024).to_i
+    MAX_VIDEO_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MAX_VIDEO_UPLOAD_BYTES", 80 * 1024 * 1024).to_i
+    MIN_IMAGE_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MIN_IMAGE_UPLOAD_BYTES", 128).to_i
+    MIN_VIDEO_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MIN_VIDEO_UPLOAD_BYTES", 1024).to_i
     
     def initialize(service_url: nil)
       @base_url = service_url || BASE_URL
@@ -25,6 +32,9 @@ module Ai
     end
     
     def analyze_image_bytes!(bytes, features:, usage_category: "image_analysis", usage_context: nil)
+      bytes_data = bytes.to_s.b
+      validate_image_bytes!(bytes_data)
+
       # Convert feature names to match microservice expectations
       service_features = convert_features(features)
       
@@ -32,7 +42,7 @@ module Ai
       temp_file = Tempfile.new(["image_analysis", ".jpg"])
       begin
         temp_file.binmode
-        temp_file.write(bytes)
+        temp_file.write(bytes_data)
         temp_file.flush
         
         # Upload to microservice
@@ -51,8 +61,8 @@ module Ai
       uri = URI.parse(url)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = uri.scheme == "https"
-      http.open_timeout = 10
-      http.read_timeout = 30
+      http.open_timeout = HTTP_OPEN_TIMEOUT_SECONDS
+      http.read_timeout = [HTTP_READ_TIMEOUT_SECONDS, 90].min
       
       response = http.get(uri.request_uri)
       raise "Failed to download image: #{response.code}" unless response.is_a?(Net::HTTPSuccess)
@@ -61,12 +71,14 @@ module Ai
     end
     
     def analyze_video_bytes!(bytes, features:, usage_context: nil)
+      bytes_data = bytes.to_s.b
+      validate_video_bytes!(bytes_data)
       service_features = convert_video_features(features)
       
       temp_file = Tempfile.new(["video_analysis", ".mp4"])
       begin
         temp_file.binmode
-        temp_file.write(bytes)
+        temp_file.write(bytes_data)
         temp_file.flush
         
         response = upload_file("/analyze/video", temp_file.path, { 
@@ -126,10 +138,13 @@ module Ai
     # - mentions: ["@user"]
     # - hashtags: ["#tag"]
     def detect_faces_and_ocr!(image_bytes:, usage_context: nil)
+      bytes_data = image_bytes.to_s.b
+      validate_image_bytes!(bytes_data)
+
       temp_file = Tempfile.new(["story_intel", ".jpg"])
       begin
         temp_file.binmode
-        temp_file.write(image_bytes)
+        temp_file.write(bytes_data)
         temp_file.flush
 
         ocr_warning = nil
@@ -252,10 +267,13 @@ module Ai
     # - faces: [{ first_seen:, last_seen:, detection_count: }]
     # - mentions / hashtags
     def analyze_video_story_intelligence!(video_bytes:, sample_rate: 2, usage_context: nil)
+      bytes_data = video_bytes.to_s.b
+      validate_video_bytes!(bytes_data)
+
       temp_file = Tempfile.new(["story_video_intel", ".mp4"])
       begin
         temp_file.binmode
-        temp_file.write(video_bytes)
+        temp_file.write(bytes_data)
         temp_file.flush
 
         response = upload_file("/analyze/video", temp_file.path, {
@@ -566,8 +584,8 @@ module Ai
     def get_json(endpoint)
       uri = URI.parse("#{@base_url}#{endpoint}")
       http = Net::HTTP.new(uri.host, uri.port)
-      http.open_timeout = 10
-      http.read_timeout = 30
+      http.open_timeout = HTTP_OPEN_TIMEOUT_SECONDS
+      http.read_timeout = HTTP_READ_TIMEOUT_SECONDS
       
       request = Net::HTTP::Get.new(uri.request_uri)
       request["Accept"] = "application/json"
@@ -577,7 +595,7 @@ module Ai
       
       return body if response.is_a?(Net::HTTPSuccess)
       
-      error = body.dig("error", "message").presence || response.body.to_s.byteslice(0, 500)
+      error = extract_http_error_message(body: body, raw_body: response.body)
       raise "Local AI service error: HTTP #{response.code} #{response.message} - #{error}"
     rescue JSON::ParserError
       raise "Local AI service error: HTTP #{response.code} #{response.message} - #{response.body.to_s.byteslice(0, 500)}"
@@ -611,8 +629,8 @@ module Ai
       post_body << "--#{boundary}--\r\n"
       
       http = Net::HTTP.new(uri.host, uri.port)
-      http.open_timeout = 30
-      http.read_timeout = 120
+      http.open_timeout = HTTP_OPEN_TIMEOUT_SECONDS
+      http.read_timeout = HTTP_READ_TIMEOUT_SECONDS
       
       request = Net::HTTP::Post.new(uri.request_uri)
       request["Content-Type"] = "multipart/form-data; boundary=#{boundary}"
@@ -624,7 +642,7 @@ module Ai
       
       return body if response.is_a?(Net::HTTPSuccess)
       
-      error = body.dig("error", "message").presence || response.body.to_s.byteslice(0, 500)
+      error = extract_http_error_message(body: body, raw_body: response.body)
       raise "Local AI service error: HTTP #{response.code} #{response.message} - #{error}"
     rescue JSON::ParserError
       raise "Local AI service error: HTTP #{response.code} #{response.message} - #{response.body.to_s.byteslice(0, 500)}"
@@ -660,6 +678,37 @@ module Ai
         payload["message"].to_s.presence ||
         payload["detail"].to_s.presence ||
         "unknown error"
+    end
+
+    def validate_image_bytes!(bytes)
+      raise ArgumentError, "image_bytes_missing" if bytes.blank?
+      raise ArgumentError, "image_bytes_too_small" if bytes.bytesize < MIN_IMAGE_UPLOAD_BYTES
+      raise ArgumentError, "image_bytes_too_large" if bytes.bytesize > MAX_IMAGE_UPLOAD_BYTES
+    end
+
+    def validate_video_bytes!(bytes)
+      raise ArgumentError, "video_bytes_missing" if bytes.blank?
+      raise ArgumentError, "video_bytes_too_small" if bytes.bytesize < MIN_VIDEO_UPLOAD_BYTES
+      raise ArgumentError, "video_bytes_too_large" if bytes.bytesize > MAX_VIDEO_UPLOAD_BYTES
+    end
+
+    def extract_http_error_message(body:, raw_body:)
+      payload = body.is_a?(Hash) ? body : {}
+      error_value = payload["error"]
+      nested_error = error_value.is_a?(Hash) ? error_value["message"].to_s.presence : nil
+      detail =
+        case payload["detail"]
+        when Hash
+          payload["detail"]["message"].to_s.presence
+        else
+          payload["detail"].to_s.presence
+        end
+
+      nested_error ||
+        error_value.to_s.presence ||
+        payload["message"].to_s.presence ||
+        detail ||
+        raw_body.to_s.byteslice(0, 500)
     end
 
     def deep_stringify_hash(value)

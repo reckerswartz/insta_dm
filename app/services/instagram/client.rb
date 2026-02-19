@@ -5259,6 +5259,8 @@ module Instagram
     end
 
     def profile_auto_reply_enabled?(profile)
+      return profile.auto_reply_enabled? if profile.respond_to?(:auto_reply_enabled?)
+
       profile.profile_tags.where(name: [ "automatic_reply", "automatic reply", "auto_reply", "auto reply" ]).exists?
     end
 

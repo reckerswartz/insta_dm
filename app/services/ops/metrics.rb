@@ -20,12 +20,16 @@ module Ops
           posts: InstagramPost.count,
           sync_runs: SyncRun.count,
           failures_24h: BackgroundJobFailure.where("occurred_at >= ?", 24.hours.ago).count,
+          visual_analysis_failures_24h: BackgroundJobFailure.where(job_class: "ProcessPostVisualAnalysisJob")
+            .where("occurred_at >= ?", 24.hours.ago).count,
           auth_failures_24h: BackgroundJobFailure.where(failure_kind: "authentication").where("occurred_at >= ?", 24.hours.ago).count,
           active_issues: AppIssue.where.not(status: "resolved").count,
           storage_ingestions_24h: ActiveStorageIngestion.where("created_at >= ?", 24.hours.ago).count,
           continuous_processing_runs_24h: SyncRun.where(kind: "continuous_processing").where("created_at >= ?", 24.hours.ago).count
         },
-        api_usage_24h: api_usage_summary(scope: usage_scope)
+        api_usage_24h: api_usage_summary(scope: usage_scope),
+        visual_failures_24h: visual_failure_summary(scope: BackgroundJobFailure.where(job_class: "ProcessPostVisualAnalysisJob")
+          .where("occurred_at >= ?", 24.hours.ago))
       }
     end
 
@@ -46,6 +50,8 @@ module Ops
           sync_runs: account.sync_runs.count,
           failures_24h: BackgroundJobFailure.where(instagram_account_id: account.id)
             .where("occurred_at >= ?", 24.hours.ago).count,
+          visual_analysis_failures_24h: BackgroundJobFailure.where(instagram_account_id: account.id, job_class: "ProcessPostVisualAnalysisJob")
+            .where("occurred_at >= ?", 24.hours.ago).count,
           auth_failures_24h: BackgroundJobFailure.where(instagram_account_id: account.id, failure_kind: "authentication")
             .where("occurred_at >= ?", 24.hours.ago).count,
           active_issues: account.app_issues.where.not(status: "resolved").count,
@@ -58,6 +64,8 @@ module Ops
         sync_runs_by_status: account.sync_runs.group(:status).count,
         analyses_by_status: account.ai_analyses.group(:status).count,
         api_usage_24h: api_usage_summary(scope: usage_scope),
+        visual_failures_24h: visual_failure_summary(scope: BackgroundJobFailure.where(instagram_account_id: account.id, job_class: "ProcessPostVisualAnalysisJob")
+          .where("occurred_at >= ?", 24.hours.ago)),
         queue: queue_counts
       }
     end
@@ -131,6 +139,7 @@ module Ops
         total_calls: scope.count,
         failed_calls: by_status["failed"].to_i,
         image_analysis_calls: by_category["image_analysis"].to_i,
+        image_analysis_failures: scope.where(category: "image_analysis", status: "failed").count,
         report_generation_calls: by_category["report_generation"].to_i,
         text_generation_calls: by_category["text_generation"].to_i,
         total_tokens: scope.sum(:total_tokens).to_i,
@@ -139,6 +148,31 @@ module Ops
         by_provider: by_provider,
         by_status: by_status,
         top_operations: by_operation
+      }
+    end
+
+    def self.visual_failure_summary(scope:)
+      top_errors =
+        scope.group(:error_class, :error_message)
+          .count
+          .sort_by { |_row, count| -count.to_i }
+          .first(5)
+          .map do |(error_class, error_message), count|
+            {
+              error_class: error_class.to_s,
+              error_message: error_message.to_s.byteslice(0, 180),
+              count: count.to_i
+            }
+          end
+
+      {
+        total_failures: scope.count,
+        by_error: top_errors
+      }
+    rescue StandardError
+      {
+        total_failures: 0,
+        by_error: []
       }
     end
   end

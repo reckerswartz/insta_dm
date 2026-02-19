@@ -6,7 +6,8 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
     analyze_faces: true,
     run_ocr: true,
     run_video: true,
-    run_metadata: true
+    run_metadata: true,
+    generate_comments: true
   }.freeze
 
   def perform(
@@ -186,6 +187,15 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: analysis_hash)
     end
 
+    if task_flags[:generate_comments]
+      Ai::PostCommentGenerationService.new(
+        account: account,
+        profile: profile,
+        post: post
+      ).run!
+      post.reload
+    end
+
     post.update!(ai_status: "analyzed", analyzed_at: Time.current) unless post.ai_status.to_s == "analyzed"
 
     Turbo::StreamsChannel.broadcast_append_to(
@@ -240,7 +250,7 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       visual_only: false,
       include_faces: ActiveModel::Type::Boolean.new.cast(task_flags[:analyze_faces]),
       include_ocr: ActiveModel::Type::Boolean.new.cast(task_flags[:run_ocr]),
-      include_comment_generation: true,
+      include_comment_generation: false,
       include_video_analysis: ActiveModel::Type::Boolean.new.cast(task_flags[:run_video])
     }
   end

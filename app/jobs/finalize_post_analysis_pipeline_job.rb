@@ -2,6 +2,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
   queue_as :ai_visual_queue
 
   MAX_FINALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_FINALIZE_ATTEMPTS", 30).to_i.clamp(5, 120)
+  FINALIZER_LOCK_SECONDS = ENV.fetch("AI_PIPELINE_FINALIZER_LOCK_SECONDS", 4).to_i.clamp(2, 30)
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, attempts: 0)
     context = load_pipeline_context!(
@@ -16,6 +17,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     profile = context[:profile]
     post = context[:post]
     pipeline_state = context[:pipeline_state]
+    return unless acquire_finalizer_slot?(post: post, pipeline_run_id: pipeline_run_id, attempts: attempts)
 
     maybe_enqueue_metadata_step!(context: context, pipeline_run_id: pipeline_run_id)
 
@@ -30,7 +32,8 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
         return
       end
 
-      self.class.set(wait: 5.seconds).perform_later(
+      wait_seconds = finalize_poll_delay_seconds(attempts: attempts)
+      self.class.set(wait: wait_seconds.seconds).perform_later(
         instagram_account_id: account.id,
         instagram_profile_id: profile.id,
         instagram_profile_post_id: post.id,
@@ -91,6 +94,58 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
   end
 
   private
+
+  def acquire_finalizer_slot?(post:, pipeline_run_id:, attempts:)
+    now = Time.current
+    acquired = false
+
+    post.with_lock do
+      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+      pipeline = metadata["ai_pipeline"]
+      unless pipeline.is_a?(Hash) && pipeline["run_id"].to_s == pipeline_run_id.to_s
+        acquired = false
+        next
+      end
+
+      finalizer = pipeline["finalizer"].is_a?(Hash) ? pipeline["finalizer"] : {}
+      lock_until = parse_time(finalizer["lock_until"])
+      if lock_until.present? && lock_until > now
+        acquired = false
+        next
+      end
+
+      finalizer["lock_until"] = (now + FINALIZER_LOCK_SECONDS.seconds).iso8601(3)
+      finalizer["last_started_at"] = now.iso8601(3)
+      finalizer["last_job_id"] = job_id
+      finalizer["last_attempt"] = attempts.to_i
+      pipeline["finalizer"] = finalizer
+      metadata["ai_pipeline"] = pipeline
+      post.update!(metadata: metadata)
+      acquired = true
+    end
+
+    acquired
+  rescue StandardError
+    true
+  end
+
+  def finalize_poll_delay_seconds(attempts:)
+    value = attempts.to_i
+    return 5 if value < 3
+    return 10 if value < 8
+    return 15 if value < 14
+    return 20 if value < 20
+
+    30
+  end
+
+  def parse_time(value)
+    return nil if value.to_s.blank?
+
+    Time.zone.parse(value.to_s)
+  rescue StandardError
+    nil
+  end
 
   def maybe_enqueue_metadata_step!(context:, pipeline_run_id:)
     pipeline_state = context[:pipeline_state]

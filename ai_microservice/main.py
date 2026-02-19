@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 import base64
 import io
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import json
 import logging
 from typing import List, Dict, Any, Optional
@@ -42,6 +42,50 @@ ocr_service = OCRService()
 video_service = VideoService()
 whisper_service = WhisperService()
 
+MAX_IMAGE_UPLOAD_BYTES = int(os.getenv("LOCAL_AI_MAX_IMAGE_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+MIN_IMAGE_UPLOAD_BYTES = int(os.getenv("LOCAL_AI_MIN_IMAGE_UPLOAD_BYTES", "128"))
+MAX_IMAGE_DIMENSION = int(os.getenv("LOCAL_AI_MAX_IMAGE_DIMENSION", "2048"))
+MAX_VIDEO_UPLOAD_BYTES = int(os.getenv("LOCAL_AI_MAX_VIDEO_UPLOAD_BYTES", str(80 * 1024 * 1024)))
+
+
+def normalize_feature_list(raw_features: Optional[str], allowed_features: List[str], default_features: List[str]) -> List[str]:
+    if not raw_features:
+        return list(default_features)
+
+    requested = [item.strip().lower() for item in str(raw_features).split(",") if item and item.strip()]
+    valid = [item for item in requested if item in allowed_features]
+    return valid or list(default_features)
+
+
+def decode_uploaded_image(image_bytes: bytes) -> Image.Image:
+    if not image_bytes:
+        raise HTTPException(status_code=422, detail="empty_image_payload")
+    if len(image_bytes) < MIN_IMAGE_UPLOAD_BYTES:
+        raise HTTPException(status_code=422, detail="image_payload_too_small")
+    if len(image_bytes) > MAX_IMAGE_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="image_payload_too_large")
+
+    try:
+        # Validate bytes first, then reopen for actual decoding.
+        probe = Image.open(io.BytesIO(image_bytes))
+        probe.verify()
+        decoded = Image.open(io.BytesIO(image_bytes))
+    except UnidentifiedImageError:
+        raise HTTPException(status_code=422, detail="unsupported_or_corrupted_image")
+    except OSError:
+        raise HTTPException(status_code=422, detail="image_decode_failed")
+
+    if decoded.mode != "RGB":
+        decoded = decoded.convert("RGB")
+
+    resized = False
+    if max(decoded.size) > MAX_IMAGE_DIMENSION:
+        resample_filter = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+        decoded.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), resample_filter)
+        resized = True
+    decoded.info["resized"] = resized
+    return decoded
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -71,16 +115,18 @@ async def analyze_image(
     try:
         # Read and decode image
         image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes))
-        if image.mode != "RGB":
-            image = image.convert("RGB")
+        image = decode_uploaded_image(image_bytes)
 
         # Convert to OpenCV format
         opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
         results = {}
         warnings = []
-        feature_list = features.split(",")
+        feature_list = normalize_feature_list(
+            raw_features=features,
+            allowed_features=["labels", "text", "faces"],
+            default_features=["labels", "text", "faces"]
+        )
 
         # Object/Label Detection
         if "labels" in feature_list:
@@ -124,13 +170,17 @@ async def analyze_image(
             "metadata": {
                 "image_size": image.size,
                 "features_used": feature_list,
+                "bytes_received": len(image_bytes),
+                "resized": bool(image.info.get("resized")),
                 "warnings": warnings
             }
         }
-        
+    except HTTPException as e:
+        logger.warning(f"Image analysis rejected: {e.detail}")
+        raise e
     except Exception as e:
-        logger.error(f"Image analysis error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Image analysis error")
+        raise HTTPException(status_code=500, detail="image_analysis_failed")
 
 @app.post("/analyze/video")
 async def analyze_video(
@@ -146,6 +196,11 @@ async def analyze_video(
     """
     try:
         video_bytes = await file.read()
+        if not video_bytes:
+            raise HTTPException(status_code=422, detail="empty_video_payload")
+        if len(video_bytes) > MAX_VIDEO_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="video_payload_too_large")
+
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         temp_path = temp_file.name
         try:
@@ -153,7 +208,12 @@ async def analyze_video(
             temp_file.flush()
             temp_file.close()
 
-            results = video_service.analyze_video(temp_path, features.split(","), sample_rate)
+            feature_list = normalize_feature_list(
+                raw_features=features,
+                allowed_features=["labels", "faces", "scenes", "text"],
+                default_features=["labels", "faces", "scenes"]
+            )
+            results = video_service.analyze_video(temp_path, feature_list, sample_rate)
         finally:
             try:
                 os.remove(temp_path)
@@ -164,14 +224,17 @@ async def analyze_video(
             "success": True,
             "results": results,
             "metadata": {
-                "features_used": features.split(","),
-                "sample_rate": sample_rate
+                "features_used": feature_list,
+                "sample_rate": sample_rate,
+                "bytes_received": len(video_bytes)
             }
         }
-        
+    except HTTPException as e:
+        logger.warning(f"Video analysis rejected: {e.detail}")
+        raise e
     except Exception as e:
-        logger.error(f"Video analysis error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Video analysis error")
+        raise HTTPException(status_code=500, detail="video_analysis_failed")
 
 @app.post("/transcribe/audio")
 async def transcribe_audio(

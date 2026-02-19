@@ -13,14 +13,22 @@ class FaceEmbeddingService
   end
 
   def embed(media_payload:, face:)
-    vector = if @service_url.present?
-      fetch_external_embedding(media_payload: media_payload, face: face)
+    vector = nil
+    version = nil
+
+    if @service_url.present?
+      vector = fetch_external_embedding(media_payload: media_payload, face: face)
+      version = "external_service_v1" if vector.present?
     end
-    vector ||= deterministic_embedding(media_payload: media_payload, face: face)
+
+    if vector.blank?
+      vector = deterministic_embedding(media_payload: media_payload, face: face)
+      version = "deterministic_v1"
+    end
 
     {
       vector: normalize(vector),
-      version: @service_url.present? ? "external_service_v1" : "deterministic_v1"
+      version: version
     }
   end
 

@@ -12,6 +12,7 @@ module Ai
       profile:,
       posts_limit: DEFAULT_POSTS_LIMIT,
       comments_limit: DEFAULT_COMMENTS_LIMIT,
+      analyze_missing_posts: true,
       collector: nil,
       post_analyzer: nil,
       user_profile_builder_service: UserProfileBuilderService.new,
@@ -21,6 +22,7 @@ module Ai
       @profile = profile
       @posts_limit = posts_limit.to_i.clamp(1, MAX_POSTS_LIMIT)
       @comments_limit = comments_limit.to_i.clamp(1, 20)
+      @analyze_missing_posts = ActiveModel::Type::Boolean.new.cast(analyze_missing_posts)
       @collector = collector
       @post_analyzer = post_analyzer
       @user_profile_builder_service = user_profile_builder_service
@@ -105,8 +107,13 @@ module Ai
       recent_posts.each do |post|
         begin
           if !post_analyzed?(post)
-            analyzer.call(post)
-            post.reload
+            if @analyze_missing_posts
+              analyzer.call(post)
+              post.reload
+            else
+              pending += 1
+              next
+            end
           end
 
           if post_analyzed?(post)
@@ -140,7 +147,10 @@ module Ai
         instagram_account_id: @account.id,
         instagram_profile_id: @profile.id,
         instagram_profile_post_id: post.id,
-        pipeline_mode: "inline"
+        pipeline_mode: "inline",
+        task_flags: {
+          generate_comments: false
+        }
       )
     end
 

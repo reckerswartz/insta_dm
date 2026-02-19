@@ -10,7 +10,8 @@ module Ai
       "analyze_faces" => true,
       "run_ocr" => true,
       "run_video" => true,
-      "run_metadata" => true
+      "run_metadata" => true,
+      "generate_comments" => true
     }.freeze
 
     TASK_TO_STEP = {

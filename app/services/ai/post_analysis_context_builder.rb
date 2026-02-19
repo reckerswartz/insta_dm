@@ -6,6 +6,11 @@ module Ai
   class PostAnalysisContextBuilder
     MAX_INLINE_IMAGE_BYTES = ENV.fetch("AI_MAX_INLINE_IMAGE_BYTES", 2 * 1024 * 1024).to_i
     MAX_INLINE_VIDEO_BYTES = ENV.fetch("AI_MAX_INLINE_VIDEO_BYTES", 12 * 1024 * 1024).to_i
+    MAX_DIRECT_IMAGE_ANALYSIS_BYTES = ENV.fetch("AI_MAX_DIRECT_IMAGE_ANALYSIS_BYTES", 10 * 1024 * 1024).to_i
+    MAX_DIRECT_VIDEO_ANALYSIS_BYTES = ENV.fetch("AI_MAX_DIRECT_VIDEO_ANALYSIS_BYTES", 40 * 1024 * 1024).to_i
+    MAX_ABSOLUTE_MEDIA_BYTES = ENV.fetch("AI_MAX_ABSOLUTE_MEDIA_BYTES", 120 * 1024 * 1024).to_i
+    MIN_MEDIA_BYTES = ENV.fetch("AI_MIN_MEDIA_BYTES", 512).to_i
+    IMAGE_RESIZE_MAX_DIMENSION = ENV.fetch("AI_IMAGE_RESIZE_MAX_DIMENSION", 1920).to_i
     MAX_VIDEO_FRAME_ANALYSIS_BYTES = ENV.fetch("AI_VIDEO_FRAME_MAX_BYTES", 35 * 1024 * 1024).to_i
 
     def initialize(profile:, post:)
@@ -47,37 +52,67 @@ module Ai
     end
 
     def media_payload
-      return { type: "none" } unless post.media.attached?
+      return none_media_payload(reason: "media_missing") unless post.media.attached?
 
       blob = post.media.blob
-      return { type: "none" } unless blob
+      return none_media_payload(reason: "media_blob_missing") unless blob
 
       content_type = blob.content_type.to_s
+      byte_size = blob.byte_size.to_i
       is_image = content_type.start_with?("image/")
       is_video = content_type.start_with?("video/")
-      return { type: "none" } unless is_image || is_video
+      return none_media_payload(reason: "unsupported_content_type", content_type: content_type) unless is_image || is_video
+      return none_media_payload(reason: "zero_byte_blob", content_type: content_type, byte_size: byte_size) if byte_size <= 0
+      return none_media_payload(reason: "media_too_large", content_type: content_type, byte_size: byte_size, max_bytes: MAX_ABSOLUTE_MEDIA_BYTES) if byte_size > MAX_ABSOLUTE_MEDIA_BYTES
 
-      if is_image && blob.byte_size.to_i > MAX_INLINE_IMAGE_BYTES
-        media_url = post.source_media_url.to_s
-        return { type: "image", content_type: content_type, url: media_url } if media_url.present?
-      elsif is_video && blob.byte_size.to_i > MAX_INLINE_VIDEO_BYTES
-        media_url = post.source_media_url.to_s
-        return { type: "video", content_type: content_type, url: media_url } if media_url.present?
+      media_type = is_video ? "video" : "image"
+      media_url = normalize_url(post.source_media_url)
+      if is_image && byte_size > MAX_INLINE_IMAGE_BYTES && media_url.present?
+        return url_media_payload(type: media_type, content_type: content_type, url: media_url, byte_size: byte_size)
+      end
+      if is_video && byte_size > MAX_INLINE_VIDEO_BYTES && media_url.present?
+        return url_media_payload(type: media_type, content_type: content_type, url: media_url, byte_size: byte_size)
+      end
+      if is_video && byte_size > MAX_DIRECT_VIDEO_ANALYSIS_BYTES
+        return none_media_payload(
+          reason: "video_too_large_for_direct_analysis",
+          content_type: content_type,
+          byte_size: byte_size,
+          max_bytes: MAX_DIRECT_VIDEO_ANALYSIS_BYTES
+        )
       end
 
-      data = blob.download
+      data =
+        if is_image && byte_size > MAX_DIRECT_IMAGE_ANALYSIS_BYTES
+          resize_image_blob(blob: blob)
+        else
+          blob.download
+        end
+
+      data = data.to_s.b
+      return none_media_payload(reason: "media_bytes_missing", content_type: content_type, byte_size: byte_size) if data.blank?
+      return none_media_payload(reason: "media_bytes_too_small", content_type: content_type, byte_size: data.bytesize, min_bytes: MIN_MEDIA_BYTES) if data.bytesize < MIN_MEDIA_BYTES
+      return none_media_payload(reason: "media_signature_invalid", content_type: content_type, byte_size: data.bytesize) unless valid_signature?(content_type: content_type, bytes: data)
+
       payload = {
-        type: is_video ? "video" : "image",
+        type: media_type,
         content_type: content_type,
-        bytes: data
+        bytes: data,
+        source: (is_image && byte_size > MAX_DIRECT_IMAGE_ANALYSIS_BYTES) ? "resized_blob" : "blob",
+        byte_size: data.bytesize
       }
-      if is_image
+      if is_image && data.bytesize <= MAX_INLINE_IMAGE_BYTES
         encoded = Base64.strict_encode64(data)
         payload[:image_data_url] = "data:#{content_type};base64,#{encoded}"
       end
       payload
-    rescue StandardError
-      { type: "none" }
+    rescue StandardError => e
+      none_media_payload(
+        reason: "media_payload_error",
+        content_type: blob&.content_type.to_s,
+        byte_size: blob&.byte_size.to_i,
+        error: "#{e.class}: #{e.message}"
+      )
     end
 
     def media_fingerprint(media: nil)
@@ -186,6 +221,62 @@ module Ai
     end
 
     private
+
+    def url_media_payload(type:, content_type:, url:, byte_size:)
+      {
+        type: type.to_s,
+        content_type: content_type.to_s,
+        url: url.to_s,
+        source: "source_media_url",
+        byte_size: byte_size.to_i
+      }
+    end
+
+    def none_media_payload(reason:, content_type: nil, byte_size: nil, max_bytes: nil, min_bytes: nil, error: nil)
+      {
+        type: "none",
+        reason: reason.to_s,
+        content_type: content_type.to_s.presence,
+        byte_size: byte_size,
+        max_bytes: max_bytes,
+        min_bytes: min_bytes,
+        error: error.to_s.presence
+      }.compact
+    end
+
+    def resize_image_blob(blob:)
+      variant = post.media.variant(resize_to_limit: [ IMAGE_RESIZE_MAX_DIMENSION, IMAGE_RESIZE_MAX_DIMENSION ])
+      variant.processed.download
+    rescue StandardError
+      blob.download
+    end
+
+    def valid_signature?(content_type:, bytes:)
+      type = content_type.to_s.downcase
+      return false if bytes.blank?
+
+      if type.include?("jpeg")
+        return bytes.start_with?("\xFF\xD8".b)
+      end
+      if type.include?("png")
+        return bytes.start_with?("\x89PNG\r\n\x1A\n".b)
+      end
+      if type.include?("gif")
+        return bytes.start_with?("GIF87a".b) || bytes.start_with?("GIF89a".b)
+      end
+      if type.include?("webp")
+        return bytes.bytesize >= 12 && bytes.byteslice(0, 4) == "RIFF" && bytes.byteslice(8, 4) == "WEBP"
+      end
+      if type.include?("heic") || type.include?("heif")
+        return bytes.bytesize >= 12 && bytes.byteslice(4, 4) == "ftyp"
+      end
+      if type.start_with?("video/")
+        return bytes.bytesize >= 12 && bytes.byteslice(4, 4) == "ftyp" if type.include?("mp4") || type.include?("quicktime")
+        return bytes.bytesize >= 4 && bytes.byteslice(0, 4) == "\x1A\x45\xDF\xA3".b if type.include?("webm")
+      end
+
+      true
+    end
 
     def normalize_url(raw)
       value = raw.to_s.strip

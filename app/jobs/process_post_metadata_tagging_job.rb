@@ -10,6 +10,7 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
     )
     return unless context
 
+    account = context[:account]
     post = context[:post]
     profile = context[:profile]
     pipeline_state = context[:pipeline_state]
@@ -40,13 +41,35 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
 
     Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: analysis)
 
+    comment_result =
+      if comment_generation_enabled?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id)
+        Ai::PostCommentGenerationService.new(
+          account: account,
+          profile: profile,
+          post: post
+        ).run!
+      else
+        {
+          blocked: true,
+          status: "disabled_by_task_flags",
+          source: "policy",
+          suggestions_count: 0,
+          reason_code: "comments_disabled"
+        }
+      end
+
     pipeline_state.mark_step_completed!(
       run_id: pipeline_run_id,
       step: "metadata",
       status: "succeeded",
       result: {
         face_count: face_meta["face_count"].to_i,
-        participant_summary_present: face_meta["participant_summary"].to_s.present?
+        participant_summary_present: face_meta["participant_summary"].to_s.present?,
+        comment_generation_status: comment_result[:status].to_s,
+        comment_generation_blocked: ActiveModel::Type::Boolean.new.cast(comment_result[:blocked]),
+        comment_generation_source: comment_result[:source].to_s,
+        comment_suggestions_count: comment_result[:suggestions_count].to_i,
+        comment_reason_code: comment_result[:reason_code].to_s.presence
       }
     )
   rescue StandardError => e
@@ -69,5 +92,21 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
         pipeline_run_id: pipeline_run_id
       )
     end
+  end
+
+  private
+
+  def comment_generation_enabled?(pipeline_state:, pipeline_run_id:)
+    pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
+    flags = pipeline.is_a?(Hash) ? pipeline["task_flags"] : {}
+    flags = {} unless flags.is_a?(Hash)
+
+    if flags.key?("generate_comments")
+      ActiveModel::Type::Boolean.new.cast(flags["generate_comments"])
+    else
+      true
+    end
+  rescue StandardError
+    true
   end
 end

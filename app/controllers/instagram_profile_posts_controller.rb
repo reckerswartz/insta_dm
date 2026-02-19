@@ -12,7 +12,8 @@ class InstagramProfilePostsController < ApplicationController
       analyze_faces: boolean_param(params[:analyze_faces], default: true),
       run_ocr: boolean_param(params[:run_ocr], default: true),
       run_video: boolean_param(params[:run_video], default: true),
-      run_metadata: boolean_param(params[:run_metadata], default: true)
+      run_metadata: boolean_param(params[:run_metadata], default: true),
+      generate_comments: boolean_param(params[:generate_comments], default: true)
     }
 
     AnalyzeInstagramProfilePostJob.perform_later(

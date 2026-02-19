@@ -57,6 +57,10 @@ class InstagramProfile < ApplicationRecord
       dm_interaction_retry_after_at > Time.current
   end
 
+  def auto_reply_enabled?
+    profile_tags.where(name: %w[automatic_reply automatic\ reply auto_reply auto\ reply]).exists?
+  end
+
   def record_event!(kind:, external_id:, occurred_at: nil, metadata: {})
     eid = external_id.to_s.strip
     raise ArgumentError, "external_id is required for profile events" if eid.blank?
