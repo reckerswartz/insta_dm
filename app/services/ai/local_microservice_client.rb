@@ -132,10 +132,31 @@ module Ai
         temp_file.write(image_bytes)
         temp_file.flush
 
-        response = upload_file("/analyze/image", temp_file.path, { features: "labels,text,faces" })
-        results = response["results"].is_a?(Hash) ? response["results"] : {}
+        ocr_warning = nil
+        begin
+          response = upload_file("/analyze/image", temp_file.path, { features: "labels,text,faces" })
+          payload, results = unpack_response_payload!(
+            response: response,
+            operation: "detect_faces_and_ocr",
+            expected_keys: %w[labels text faces]
+          )
+        rescue StandardError => e
+          ocr_warning = {
+            "feature" => "text",
+            "error_class" => e.class.name.to_s,
+            "error_message" => e.message.to_s.byteslice(0, 260),
+            "fallback" => "labels_faces_only"
+          }
+          fallback_response = upload_file("/analyze/image", temp_file.path, { features: "labels,faces" })
+          payload, results = unpack_response_payload!(
+            response: fallback_response,
+            operation: "detect_faces_without_text",
+            expected_keys: %w[labels faces]
+          )
+        end
 
-        text_rows = Array(results["text"]).map do |row|
+        text_rows = Array(results["text"])
+        text_rows = text_rows.map do |row|
           if row.is_a?(Hash)
             source_name = row["source"].to_s.presence || "ocr"
             variant_name = row["variant"].to_s.presence
@@ -210,7 +231,11 @@ module Ai
           "profile_handles" => profile_handles,
           "metadata" => {
             "source" => "local_microservice",
-            "usage_context" => usage_context.to_h
+            "usage_context" => usage_context.to_h,
+            "warnings" => (
+              Array(payload.dig("metadata", "warnings")) +
+              Array(ocr_warning)
+            ).first(20)
           }
         }
       ensure
@@ -237,7 +262,11 @@ module Ai
           features: "labels,faces,scenes,text",
           sample_rate: sample_rate.to_i.clamp(1, 5)
         })
-        results = response["results"].is_a?(Hash) ? response["results"] : {}
+        payload, results = unpack_response_payload!(
+          response: response,
+          operation: "analyze_video_story_intelligence",
+          expected_keys: %w[labels faces scenes text]
+        )
 
         scenes = Array(results["scenes"]).map do |row|
           next unless row.is_a?(Hash)
@@ -299,7 +328,8 @@ module Ai
           "hashtags" => hashtags,
           "metadata" => {
             "source" => "local_microservice_video",
-            "usage_context" => usage_context.to_h
+            "usage_context" => usage_context.to_h,
+            "warnings" => Array(payload.dig("metadata", "warnings")).first(20)
           }
         }
       ensure
@@ -337,46 +367,50 @@ module Ai
     end
     
     def convert_vision_response(response)
-      return {} unless response["success"]
-      
-      results = response["results"] || {}
+      _payload, results = unpack_response_payload!(
+        response: response,
+        operation: "analyze_image",
+        expected_keys: %w[labels text faces]
+      )
       
       # Convert to Google Vision format
       vision_response = {}
       
       # Labels
-      if results["labels"]
-        vision_response["labelAnnotations"] = results["labels"].map do |label|
+      if results.key?("labels")
+        vision_response["labelAnnotations"] = Array(results["labels"]).map do |label|
           {
-            "description" => label["label"],
-            "score" => label["confidence"],
-            "topicality" => label["confidence"]
+            "description" => (label.is_a?(Hash) ? (label["label"] || label["description"]) : label).to_s,
+            "score" => (label.is_a?(Hash) ? (label["confidence"] || label["score"]) : nil),
+            "topicality" => (label.is_a?(Hash) ? (label["confidence"] || label["score"]) : nil)
           }
         end
       end
       
       # Text
-      if results["text"]
-        vision_response["textAnnotations"] = results["text"].map.with_index do |text, i|
+      if results.key?("text")
+        vision_response["textAnnotations"] = Array(results["text"]).map.with_index do |text, i|
+          entry = text.is_a?(Hash) ? text : { "text" => text.to_s, "confidence" => nil, "bbox" => nil }
           {
-            "description" => text["text"],
-            "confidence" => text["confidence"],
+            "description" => entry["text"].to_s,
+            "confidence" => entry["confidence"],
             "boundingPoly" => {
-              "vertices" => convert_bbox_to_vertices(text["bbox"])
+              "vertices" => convert_bbox_to_vertices(entry["bbox"])
             }
           }
         end
       end
       
       # Faces
-      if results["faces"]
-        vision_response["faceAnnotations"] = results["faces"].map do |face|
+      if results.key?("faces")
+        vision_response["faceAnnotations"] = Array(results["faces"]).map do |face|
+          entry = face.is_a?(Hash) ? face : {}
           {
             "boundingPoly" => {
-              "vertices" => convert_bbox_to_vertices(face["bbox"])
+              "vertices" => convert_bbox_to_vertices(entry["bbox"] || entry["bounding_box"])
             },
-            "confidence" => face["confidence"],
-            "landmarks" => convert_landmarks(face["landmarks"])
+            "confidence" => entry["confidence"],
+            "landmarks" => convert_landmarks(entry["landmarks"])
           }
         end
       end
@@ -385,23 +419,26 @@ module Ai
     end
     
     def convert_video_response(response)
-      return {} unless response["success"]
-      
-      results = response["results"] || {}
+      _payload, results = unpack_response_payload!(
+        response: response,
+        operation: "analyze_video",
+        expected_keys: %w[labels scenes faces]
+      )
       
       video_response = {
         "annotationResults" => [{}]
       }
       
       # Labels
-      if results["labels"]
-        video_response["annotationResults"][0]["segmentLabelAnnotations"] = results["labels"].map do |label|
+      if results.key?("labels")
+        video_response["annotationResults"][0]["segmentLabelAnnotations"] = Array(results["labels"]).map do |label|
+          row = label.is_a?(Hash) ? label : { "label" => label.to_s, "max_confidence" => 0.0, "timestamps" => [] }
           {
             "entity" => {
-              "description" => label["label"],
-              "confidence" => label["max_confidence"]
+              "description" => (row["label"] || row["description"]).to_s,
+              "confidence" => (row["max_confidence"] || row["confidence"]).to_f
             },
-            "segments" => label["timestamps"].map.with_index do |timestamp, i|
+            "segments" => Array(row["timestamps"]).map.with_index do |timestamp, i|
               {
                 "segment" => {
                   "startTimeOffset" => "#{timestamp.to_i}s"
@@ -413,10 +450,11 @@ module Ai
       end
       
       # Shot changes
-      if results["scenes"]
-        video_response["annotationResults"][0]["shotAnnotations"] = results["scenes"].map do |scene|
+      if results.key?("scenes")
+        video_response["annotationResults"][0]["shotAnnotations"] = Array(results["scenes"]).map do |scene|
+          row = scene.is_a?(Hash) ? scene : {}
           {
-            "startTimeOffset" => "#{scene["timestamp"].to_i}s"
+            "startTimeOffset" => "#{row["timestamp"].to_i}s"
           }
         end
       end
@@ -437,6 +475,17 @@ module Ai
           { "x" => bbox[2].to_i, "y" => bbox[1].to_i },
           { "x" => bbox[2].to_i, "y" => bbox[3].to_i },
           { "x" => bbox[0].to_i, "y" => bbox[3].to_i }
+        ]
+      elsif bbox.is_a?(Hash)
+        x1 = (bbox["x1"] || bbox[:x1] || bbox["left"] || bbox[:left]).to_f
+        y1 = (bbox["y1"] || bbox[:y1] || bbox["top"] || bbox[:top]).to_f
+        x2 = (bbox["x2"] || bbox[:x2] || bbox["right"] || bbox[:right]).to_f
+        y2 = (bbox["y2"] || bbox[:y2] || bbox["bottom"] || bbox[:bottom]).to_f
+        [
+          { "x" => x1.to_i, "y" => y1.to_i },
+          { "x" => x2.to_i, "y" => y1.to_i },
+          { "x" => x2.to_i, "y" => y2.to_i },
+          { "x" => x1.to_i, "y" => y2.to_i }
         ]
       else
         []
@@ -489,14 +538,28 @@ module Ai
       return [] unless landmarks
       
       landmarks.map do |landmark|
-        {
-          "type" => "UNKNOWN_LANDMARK",  # Would need proper mapping
-          "position" => {
-            "x" => landmark[0].to_i,
-            "y" => landmark[1].to_i,
-            "z" => (landmark[2].to_i rescue 0)
+        if landmark.is_a?(Hash)
+          x = landmark["x"] || landmark[:x] || landmark.dig("position", "x")
+          y = landmark["y"] || landmark[:y] || landmark.dig("position", "y")
+          z = landmark["z"] || landmark[:z] || landmark.dig("position", "z")
+          {
+            "type" => (landmark["type"] || landmark[:type] || "UNKNOWN_LANDMARK").to_s,
+            "position" => {
+              "x" => x.to_f.to_i,
+              "y" => y.to_f.to_i,
+              "z" => z.to_f.to_i
+            }
           }
-        }
+        else
+          {
+            "type" => "UNKNOWN_LANDMARK",  # Would need proper mapping
+            "position" => {
+              "x" => landmark[0].to_i,
+              "y" => landmark[1].to_i,
+              "z" => (landmark[2].to_i rescue 0)
+            }
+          }
+        end
       end
     end
     
@@ -565,6 +628,51 @@ module Ai
       raise "Local AI service error: HTTP #{response.code} #{response.message} - #{error}"
     rescue JSON::ParserError
       raise "Local AI service error: HTTP #{response.code} #{response.message} - #{response.body.to_s.byteslice(0, 500)}"
+    end
+
+    def unpack_response_payload!(response:, operation:, expected_keys:)
+      payload = response.is_a?(Hash) ? deep_stringify_hash(response) : {}
+      results = payload["results"].is_a?(Hash) ? payload["results"] : payload
+      explicit_failure = payload.key?("success") && !ActiveModel::Type::Boolean.new.cast(payload["success"])
+      has_expected_keys = Array(expected_keys).map(&:to_s).any? { |key| results.key?(key) }
+
+      if explicit_failure && !has_expected_keys
+        raise "Local AI #{operation} failed: #{response_error_message(payload)}"
+      end
+
+      if results.empty? && !has_expected_keys
+        if explicit_failure
+          raise "Local AI #{operation} failed: #{response_error_message(payload)}"
+        end
+      end
+
+      [ payload, results ]
+    end
+
+    def response_error_message(payload)
+      return "unknown error" unless payload.is_a?(Hash)
+
+      error_value = payload["error"]
+      nested_error = error_value.is_a?(Hash) ? error_value["message"].to_s.presence : nil
+
+      nested_error ||
+        error_value.to_s.presence ||
+        payload["message"].to_s.presence ||
+        payload["detail"].to_s.presence ||
+        "unknown error"
+    end
+
+    def deep_stringify_hash(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(key, child), out|
+          out[key.to_s] = deep_stringify_hash(child)
+        end
+      when Array
+        value.map { |child| deep_stringify_hash(child) }
+      else
+        value
+      end
     end
   end
 end

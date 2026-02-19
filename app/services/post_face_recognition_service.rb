@@ -16,7 +16,20 @@ class PostFaceRecognitionService
     return { skipped: true, reason: "media_missing" } unless post.media.attached?
 
     source_payload = load_face_detection_payload(post: post)
-    return source_payload if source_payload[:skipped]
+    if source_payload[:skipped]
+      persist_face_recognition_metadata!(
+        post: post,
+        attributes: {
+          "face_count" => post.instagram_post_faces.count,
+          "matched_people" => [],
+          "detection_source" => source_payload[:detection_source].to_s.presence || source_payload[:content_type].to_s.presence || "unknown",
+          "detection_reason" => source_payload[:reason].to_s.presence || "face_detection_skipped",
+          "detection_error" => source_payload[:error].to_s.presence,
+          "updated_at" => Time.current.iso8601
+        }.compact
+      )
+      return source_payload
+    end
 
     image_bytes = source_payload[:image_bytes]
     detection = @face_detection_service.detect(
@@ -25,6 +38,30 @@ class PostFaceRecognitionService
         image_bytes: image_bytes
       }
     )
+    detection_metadata = detection[:metadata].is_a?(Hash) ? detection[:metadata] : {}
+    detection_reason = detection_metadata[:reason].to_s.presence || detection_metadata["reason"].to_s.presence
+    detection_error = detection_metadata[:error_message].to_s.presence || detection_metadata["error_message"].to_s.presence
+
+    if detection_reason.present?
+      persist_face_recognition_metadata!(
+        post: post,
+        attributes: {
+          "face_count" => post.instagram_post_faces.count,
+          "matched_people" => [],
+          "detection_source" => source_payload[:detection_source],
+          "detection_reason" => detection_reason,
+          "detection_error" => detection_error,
+          "detection_warnings" => Array(detection_metadata[:warnings] || detection_metadata["warnings"]).first(20),
+          "updated_at" => Time.current.iso8601
+        }.compact
+      )
+      return {
+        skipped: true,
+        reason: "face_detection_failed",
+        detection_reason: detection_reason,
+        detection_error: detection_error
+      }
+    end
 
     post.instagram_post_faces.delete_all
     matches = []
@@ -98,8 +135,9 @@ class PostFaceRecognitionService
       "hashtags" => Array(detection[:hashtags]),
       "mentions" => Array(detection[:mentions]),
       "profile_handles" => Array(detection[:profile_handles]),
+      "detection_warnings" => Array(detection_metadata[:warnings] || detection_metadata["warnings"]).first(20),
       "updated_at" => Time.current.iso8601
-    }
+    }.compact
     post.update!(metadata: metadata)
 
     identity_resolution = @face_identity_resolution_service.resolve_for_post!(
@@ -128,6 +166,20 @@ class PostFaceRecognitionService
       identity_resolution: identity_resolution
     }
   rescue StandardError => e
+    if post&.persisted?
+      persist_face_recognition_metadata!(
+        post: post,
+        attributes: {
+          "face_count" => post.instagram_post_faces.count,
+          "matched_people" => [],
+          "detection_source" => "post_face_recognition",
+          "detection_reason" => "recognition_error",
+          "detection_error" => e.message.to_s,
+          "updated_at" => Time.current.iso8601
+        }
+      )
+    end
+
     {
       skipped: true,
       reason: "recognition_error",
@@ -136,6 +188,15 @@ class PostFaceRecognitionService
   end
 
   private
+
+  def persist_face_recognition_metadata!(post:, attributes:)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    current = metadata["face_recognition"].is_a?(Hash) ? metadata["face_recognition"].deep_dup : {}
+    metadata["face_recognition"] = current.merge(attributes.to_h.compact)
+    post.update!(metadata: metadata)
+  rescue StandardError
+    nil
+  end
 
   def load_face_detection_payload(post:)
     content_type = post.media.blob&.content_type.to_s

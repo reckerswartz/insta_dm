@@ -6,6 +6,7 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
   queue_as :ai
 
   MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
+  MAX_INLINE_VIDEO_BYTES = 12 * 1024 * 1024
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:)
     account = InstagramAccount.find(instagram_account_id)
@@ -40,7 +41,8 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       ai_model: run.dig(:result, :model),
       analysis: run.dig(:result, :analysis)
     )
-    PostFaceRecognitionService.new.process!(post: post)
+    face_recognition_result = PostFaceRecognitionService.new.process!(post: post)
+    merge_face_summary!(post: post, face_recognition_result: face_recognition_result)
     Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: run.dig(:result, :analysis))
 
     Turbo::StreamsChannel.broadcast_append_to(
@@ -100,23 +102,53 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
 
     blob = post.media.blob
     return { type: "none" } unless blob
-    return { type: "none" } unless blob.content_type.to_s.start_with?("image/")
+    content_type = blob.content_type.to_s
+    is_image = content_type.start_with?("image/")
+    is_video = content_type.start_with?("video/")
+    return { type: "none" } unless is_image || is_video
 
-    if blob.byte_size.to_i > MAX_INLINE_IMAGE_BYTES
-      return { type: "image", content_type: blob.content_type, url: post.source_media_url.to_s }
+    if is_image && blob.byte_size.to_i > MAX_INLINE_IMAGE_BYTES
+      media_url = post.source_media_url.to_s
+      return { type: "image", content_type: content_type, url: media_url } if media_url.present?
+    elsif is_video && blob.byte_size.to_i > MAX_INLINE_VIDEO_BYTES
+      media_url = post.source_media_url.to_s
+      return { type: "video", content_type: content_type, url: media_url } if media_url.present?
     end
 
     data = blob.download
-    encoded = Base64.strict_encode64(data)
-
-    {
-      type: "image",
-      content_type: blob.content_type,
-      bytes: data,
-      image_data_url: "data:#{blob.content_type};base64,#{encoded}"
+    payload = {
+      type: is_video ? "video" : "image",
+      content_type: content_type,
+      bytes: data
     }
+    if is_image
+      encoded = Base64.strict_encode64(data)
+      payload[:image_data_url] = "data:#{content_type};base64,#{encoded}"
+    end
+    payload
   rescue StandardError
     { type: "none" }
+  end
+
+  def merge_face_summary!(post:, face_recognition_result:)
+    analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
+    face_meta = post.metadata.is_a?(Hash) ? post.metadata.dig("face_recognition") : nil
+    face_meta = {} unless face_meta.is_a?(Hash)
+    matched_people = Array(face_meta["matched_people"])
+
+    analysis["face_summary"] = {
+      "face_count" => face_meta["face_count"].to_i,
+      "owner_faces_count" => matched_people.count { |row| ActiveModel::Type::Boolean.new.cast(row["owner_match"] || row[:owner_match]) },
+      "recurring_faces_count" => matched_people.count { |row| ActiveModel::Type::Boolean.new.cast(row["recurring_face"] || row[:recurring_face]) },
+      "detection_source" => face_meta["detection_source"].to_s.presence || face_recognition_result[:reason].to_s.presence,
+      "participant_summary" => face_meta["participant_summary"].to_s.presence,
+      "detection_reason" => face_meta["detection_reason"].to_s.presence,
+      "detection_error" => face_meta["detection_error"].to_s.presence
+    }.compact
+
+    post.update!(analysis: analysis)
+  rescue StandardError
+    nil
   end
 
   def media_fingerprint_for(post:, media:)

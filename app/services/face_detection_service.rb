@@ -1,6 +1,14 @@
 class FaceDetectionService
-  def initialize(client: nil)
+  DEFAULT_MIN_FACE_CONFIDENCE = ENV.fetch("FACE_DETECTION_MIN_CONFIDENCE", "0.25").to_f
+
+  def initialize(client: nil, min_face_confidence: nil)
     @client = client || build_local_client
+    @min_face_confidence = begin
+      value = min_face_confidence.nil? ? DEFAULT_MIN_FACE_CONFIDENCE : min_face_confidence.to_f
+      value.negative? ? 0.0 : value
+    rescue StandardError
+      DEFAULT_MIN_FACE_CONFIDENCE
+    end
   end
 
   def detect(media_payload:)
@@ -29,21 +37,24 @@ class FaceDetectionService
   end
 
   def parse_response(response)
-    payload = response.is_a?(Hash) ? response : {}
+    payload = deep_stringify(response.is_a?(Hash) ? response : {})
     nested = payload["results"].is_a?(Hash) ? payload["results"] : {}
 
     text_from_payload = payload.dig("ocr_text").to_s
+    text_from_payload_blocks = Array(payload["text"]).map { |row| row.is_a?(Hash) ? row["text"].to_s : row.to_s }.map(&:strip).reject(&:blank?).uniq.join("\n")
     text_from_nested = Array(nested["text"]).map { |row| row.is_a?(Hash) ? row["text"].to_s : row.to_s }.map(&:strip).reject(&:blank?).uniq.join("\n")
-    text = [text_from_payload, text_from_nested].map(&:strip).reject(&:blank?).join("\n").presence
+    text = [text_from_payload, text_from_payload_blocks, text_from_nested].map(&:strip).reject(&:blank?).join("\n").presence
     ocr_blocks = normalize_ocr_blocks(payload: payload, nested: nested)
 
-    location_tags = Array(payload.dig("location_tags") || []).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+    location_tags = (Array(payload.dig("location_tags")) + Array(nested.dig("location_tags"))).map(&:to_s).map(&:strip).reject(&:blank?).uniq
     content_labels = (
       Array(payload.dig("content_labels")) +
+      Array(nested.dig("content_labels")) +
+      Array(payload["labels"]).map { |row| row.is_a?(Hash) ? (row["label"] || row["description"]) : row } +
       Array(nested["labels"]).map { |row| row.is_a?(Hash) ? (row["label"] || row["description"]) : row }
     ).map { |value| value.to_s.downcase.strip }.reject(&:blank?).uniq
     object_detections = normalize_object_detections(payload: payload, nested: nested)
-    scenes = Array(payload.dig("scenes") || nested["scenes"]).map do |row|
+    scenes = (Array(payload.dig("scenes")) + Array(nested["scenes"])).map do |row|
       next unless row.is_a?(Hash)
       {
         timestamp: row["timestamp"] || row[:timestamp],
@@ -54,10 +65,12 @@ class FaceDetectionService
 
     mentions = (
       Array(payload.dig("mentions")) +
+      Array(nested.dig("mentions")) +
       text.to_s.scan(/@[a-zA-Z0-9._]+/)
     ).map(&:to_s).map(&:downcase).uniq
     profile_handles = (
       Array(payload.dig("profile_handles")) +
+      Array(nested.dig("profile_handles")) +
       text.to_s.scan(/\b[a-zA-Z0-9._]{3,30}\b/)
     ).map(&:to_s)
       .map(&:downcase)
@@ -67,15 +80,23 @@ class FaceDetectionService
 
     hashtags = (
       Array(payload.dig("hashtags")) +
+      Array(nested.dig("hashtags")) +
       text.to_s.scan(/#[a-zA-Z0-9_]+/)
     ).map(&:to_s).map(&:downcase).uniq
 
+    raw_faces = (
+      Array(payload.dig("faces")) +
+      Array(nested["faces"]) +
+      Array(payload.dig("faceAnnotations")) +
+      Array(nested.dig("faceAnnotations"))
+    )
+    normalized_faces = raw_faces.map { |face| normalize_face(face) }
+    faces = normalized_faces.select { |face| keep_face?(face) }
+    warnings = Array(payload.dig("metadata", "warnings")) + Array(nested.dig("metadata", "warnings"))
+    metadata_reason = payload.dig("metadata", "reason").to_s.presence || nested.dig("metadata", "reason").to_s.presence
+
     {
-      faces: (
-        Array(payload.dig("faces")) +
-        Array(nested["faces"]) +
-        Array(payload.dig("faceAnnotations"))
-      ).uniq.map { |face| normalize_face(face) },
+      faces: faces,
       ocr_text: text.presence,
       ocr_blocks: ocr_blocks,
       location_tags: location_tags.first(20),
@@ -86,39 +107,41 @@ class FaceDetectionService
       hashtags: hashtags.first(30),
       profile_handles: profile_handles.first(30),
       metadata: {
-        source: "local_ai",
-        face_count: (
-          Array(payload.dig("faces")) +
-          Array(nested["faces"]) +
-          Array(payload.dig("faceAnnotations"))
-        ).length
-      }
+        source: payload.dig("metadata", "source").to_s.presence || nested.dig("metadata", "source").to_s.presence || "local_ai",
+        face_count: faces.length,
+        detected_face_count: raw_faces.length,
+        min_face_confidence: @min_face_confidence,
+        reason: metadata_reason,
+        warnings: warnings.first(20)
+      }.compact
     }
   end
 
   def normalize_face(face)
-    raw = face.is_a?(Hash) ? face : {}
+    raw = deep_stringify(face.is_a?(Hash) ? face : {})
     bbox = raw.dig("bounding_box") || raw.dig("bbox") || raw.dig("boundingPoly", "vertices")
-    age_value = (raw["age"] || raw[:age]).to_f
-    gender_value = (raw["gender"] || raw[:gender]).to_s.strip.downcase
+    age_value = raw["age"].to_f
+    gender_value = raw["gender"].to_s.strip.downcase
     gender_value = nil if gender_value.blank?
 
     {
-      confidence: (raw.dig("confidence") || 0).to_f,
+      confidence: (raw["confidence"] || raw["score"] || 0).to_f,
       bounding_box: normalize_bounding_box(bbox),
-      landmarks: Array(raw.dig("landmarks") || []).first(12).map do |item|
+      landmarks: Array(raw.dig("landmarks") || []).first(12).filter_map do |item|
+        row = deep_stringify(item)
+        next unless row.is_a?(Hash)
         {
-          type: (item.dig("type") || item.dig("name") || "UNKNOWN").to_s,
-          x: item.dig("x") || item.dig("position", "x"),
-          y: item.dig("y") || item.dig("position", "y"),
-          z: item.dig("z") || item.dig("position", "z")
+          type: (row.dig("type") || row.dig("name") || "UNKNOWN").to_s,
+          x: row.dig("x") || row.dig("position", "x"),
+          y: row.dig("y") || row.dig("position", "y"),
+          z: row.dig("z") || row.dig("position", "z")
         }
       end,
       likelihoods: raw.dig("likelihoods") || {},
       age: age_value.positive? ? age_value.round(1) : nil,
       age_range: age_value.positive? ? age_range_for(age_value) : nil,
       gender: gender_value,
-      gender_score: (raw["gender_score"] || raw[:gender_score]).to_f
+      gender_score: raw["gender_score"].to_f
     }
   end
 
@@ -135,7 +158,18 @@ class FaceDetectionService
 
   def normalize_bounding_box(value)
     if value.is_a?(Hash)
-      value
+      row = deep_stringify(value)
+      if row.key?("x1") && row.key?("y1") && row.key?("x2") && row.key?("y2")
+        { "x1" => row["x1"].to_f, "y1" => row["y1"].to_f, "x2" => row["x2"].to_f, "y2" => row["y2"].to_f }
+      elsif row.key?("x") && row.key?("y") && row.key?("width") && row.key?("height")
+        x = row["x"].to_f
+        y = row["y"].to_f
+        width = row["width"].to_f
+        height = row["height"].to_f
+        { "x1" => x, "y1" => y, "x2" => x + width, "y2" => y + height }
+      else
+        {}
+      end
     elsif value.is_a?(Array) && value.length == 4 && value.first.is_a?(Numeric)
       { "x1" => value[0], "y1" => value[1], "x2" => value[2], "y2" => value[3] }
     elsif value.is_a?(Array) && value.length == 4 && value.first.is_a?(Hash)
@@ -189,18 +223,29 @@ class FaceDetectionService
     end
 
     if blocks.empty?
-      Array(nested["text"]).each do |row|
-        next unless row.is_a?(Hash)
-        text = row["text"].to_s.strip
-        next if text.blank?
+      (Array(payload["text"]) + Array(nested["text"])).each do |row|
+        if row.is_a?(Hash)
+          text = row["text"].to_s.strip
+          next if text.blank?
 
-        blocks << {
-          text: text,
-          confidence: row["confidence"].to_f,
-          bbox: normalize_bounding_box(row["bbox"]),
-          timestamp: row["timestamp"],
-          source: row["source"].to_s.presence || "ocr"
-        }.compact
+          blocks << {
+            text: text,
+            confidence: row["confidence"].to_f,
+            bbox: normalize_bounding_box(row["bbox"]),
+            timestamp: row["timestamp"],
+            source: row["source"].to_s.presence || "ocr"
+          }.compact
+        else
+          text = row.to_s.strip
+          next if text.blank?
+
+          blocks << {
+            text: text,
+            confidence: 0.0,
+            bbox: {},
+            source: "ocr"
+          }
+        end
       end
     end
 
@@ -209,20 +254,47 @@ class FaceDetectionService
 
   def normalize_object_detections(payload:, nested:)
     rows = Array(payload.dig("object_detections"))
+    rows = Array(payload["labels"]) if rows.empty?
     rows = Array(nested["labels"]) if rows.empty?
 
     rows.filter_map do |row|
-      next unless row.is_a?(Hash)
-      label = (row["label"] || row["description"]).to_s.strip
+      entry = deep_stringify(row)
+      label = if entry.is_a?(Hash)
+        (entry["label"] || entry["description"]).to_s.strip
+      else
+        entry.to_s.strip
+      end
       next if label.blank?
 
       {
         label: label.downcase,
-        confidence: (row["confidence"] || row["score"] || row["max_confidence"]).to_f,
-        bbox: normalize_bounding_box(row["bbox"]),
-        timestamps: Array(row["timestamps"]).map(&:to_f).first(80)
+        confidence: entry.is_a?(Hash) ? (entry["confidence"] || entry["score"] || entry["max_confidence"]).to_f : 0.0,
+        bbox: entry.is_a?(Hash) ? normalize_bounding_box(entry["bbox"]) : {},
+        timestamps: entry.is_a?(Hash) ? Array(entry["timestamps"]).map(&:to_f).first(80) : []
       }.compact
     end.first(80)
   end
 
+  def keep_face?(face)
+    return false unless face.is_a?(Hash)
+    return false if face[:bounding_box].is_a?(Hash) && face[:bounding_box].empty?
+
+    confidence = face[:confidence].to_f
+    return true if confidence <= 0.0
+
+    confidence >= @min_face_confidence
+  end
+
+  def deep_stringify(value)
+    case value
+    when Hash
+      value.each_with_object({}) do |(key, child), out|
+        out[key.to_s] = deep_stringify(child)
+      end
+    when Array
+      value.map { |child| deep_stringify(child) }
+    else
+      value
+    end
+  end
 end

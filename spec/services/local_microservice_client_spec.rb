@@ -29,4 +29,39 @@ RSpec.describe "LocalMicroserviceClientTest" do
     assert_equal 1, payload["faces"].length
     assert_equal({ "x1" => 1, "y1" => 2, "x2" => 11, "y2" => 22 }, payload.dig("faces", 0, "bounding_box"))
   end
+
+  it "analyze_image_bytes accepts top-level payloads without success flag" do
+    client = StubClient.new(service_url: "http://example.test")
+    client.stub_response = {
+      "labels" => [ { "label" => "Person", "confidence" => 0.91 } ],
+      "text" => [ { "text" => "hello world", "confidence" => 0.87 } ],
+      "faces" => [ { "bbox" => [ 3, 4, 13, 24 ], "confidence" => 0.82 } ]
+    }
+
+    response = client.analyze_image_bytes!(
+      "fake-image-bytes",
+      features: [ { type: "LABEL_DETECTION" }, { type: "TEXT_DETECTION" }, { type: "FACE_DETECTION" } ]
+    )
+
+    assert_equal [ "Person" ], Array(response["labelAnnotations"]).map { |row| row["description"] }
+    assert_equal [ "hello world" ], Array(response["textAnnotations"]).map { |row| row["description"] }
+    assert_equal 1, Array(response["faceAnnotations"]).length
+  end
+
+  it "analyze_image_bytes raises when microservice explicitly reports failure" do
+    client = StubClient.new(service_url: "http://example.test")
+    client.stub_response = {
+      "success" => false,
+      "error" => "decoder unavailable"
+    }
+
+    error = assert_raises(RuntimeError) do
+      client.analyze_image_bytes!(
+        "fake-image-bytes",
+        features: [ { type: "LABEL_DETECTION" } ]
+      )
+    end
+
+    assert_includes error.message, "decoder unavailable"
+  end
 end

@@ -63,7 +63,7 @@ RSpec.describe Ai::Providers::LocalProvider do
     end
   end
 
-  it "image analysis errors fall back instead of failing the full post analysis" do
+  it "image analysis errors skip comment generation when no visual signals are available" do
     provider = StubLocalProvider.new
     provider.image_error = Net::ReadTimeout.new("timed out")
 
@@ -73,17 +73,18 @@ RSpec.describe Ai::Providers::LocalProvider do
     )
 
     analysis = result[:analysis]
-    assert_equal "ok", analysis["comment_generation_status"]
-    assert_includes analysis["topics"], "image_analysis_error:Net::ReadTimeout"
+    assert_equal "skipped_no_visual_signals", analysis["comment_generation_status"]
+    assert_equal [], analysis["comment_suggestions"]
+    assert_equal [], analysis["topics"]
   end
 
-  it "comment generation errors degrade to fallback suggestions" do
+  it "comment generation errors degrade to fallback suggestions when visual signals exist" do
     provider = StubLocalProvider.new
     provider.comment_error = Net::ReadTimeout.new("timed out")
 
     result = provider.analyze_post!(
       post_payload: post_payload,
-      media: { type: "none" }
+      media: { type: "image", bytes: "image-bytes", content_type: "image/jpeg" }
     )
 
     analysis = result[:analysis]

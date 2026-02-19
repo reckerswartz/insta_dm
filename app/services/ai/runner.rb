@@ -112,8 +112,11 @@ module Ai
       return false unless analysis_hash.is_a?(Hash)
       return false unless analysis_hash.key?("comment_suggestions")
       return true if analysis_hash["comment_generation_status"].to_s == "error_fallback"
+      return true if analysis_hash["comment_generation_status"].to_s.blank?
+      return true if analysis_hash["evidence"].to_s.include?("No labels detected; used tag rules only")
+      return true unless analysis_hash.key?("visual_signal_count")
 
-      analysis_hash["comment_generation_status"].to_s.blank?
+      false
     end
 
     def build_cached_run(cached:, analyzable:, purpose:, payload:, media_fingerprint:)

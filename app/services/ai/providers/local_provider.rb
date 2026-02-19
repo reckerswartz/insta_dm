@@ -162,7 +162,7 @@ module Ai
             if labels.any?
               build_image_description_from_vision(vision, labels: labels)
             else
-              "Image analysis unavailable due to a local AI timeout or connection issue."
+              "Image analysis unavailable."
             end
         when "video"
           mode = classify_video_processing(media_hash)
@@ -191,7 +191,7 @@ module Ai
               if labels.any?
                 "Static video detected; analyzed representative frame. #{build_image_description_from_vision(vision, labels: labels)}".strip
               else
-                "Static video detected, but frame analysis was unavailable due to a local AI timeout or connection issue."
+                "Static video detected, but frame analysis was unavailable."
               end
           else
             video, video_warning = safe_media_analysis(stage: "video_analysis", media_type: "video") do
@@ -208,13 +208,21 @@ module Ai
               if labels.any?
                 build_image_description_from_video(video, labels: labels)
               else
-                "Video analysis unavailable due to a local AI timeout or connection issue."
+                "Video analysis unavailable."
               end
           end
         else
           labels = []
           image_description = "No image or video content available for visual description."
         end
+
+        visual_labels = meaningful_visual_labels(labels)
+        detected_face_count = extract_face_count_from_raw(raw)
+        if detected_face_count.positive? && !visual_labels.include?("person")
+          visual_labels << "person"
+        end
+        visual_labels = visual_labels.uniq
+        image_description = unavailable_visual_description(raw: raw, media_type: media_hash[:type]) if visual_labels.empty?
 
         author_tags = Array(post_payload.dig(:author_profile, :tags)).map(&:to_s)
         ignore_tags = Array(post_payload.dig(:rules, :ignore_if_tagged)).map(&:to_s)
@@ -229,7 +237,7 @@ module Ai
         elsif preferred
           true
         else
-          labels.any?
+          visual_labels.any?
         end
 
         actions = if ignored
@@ -240,12 +248,17 @@ module Ai
           [ "review" ]
         end
 
-        comment_generation = generate_engagement_comments_with_fallback(
-          post_payload: post_payload,
-          image_description: image_description,
-          labels: labels,
-          author_type: author_type
-        )
+        comment_generation =
+          if visual_labels.any?
+            generate_engagement_comments_with_fallback(
+              post_payload: post_payload,
+              image_description: image_description,
+              labels: visual_labels,
+              author_type: author_type
+            )
+          else
+            skipped_comment_generation_for_missing_visuals(raw: raw, media_type: media_hash[:type])
+          end
 
         {
           model: [ "local-ai-vision-video+rules", comment_generation[:model] ].compact.join("+"),
@@ -269,22 +282,24 @@ module Ai
             "image_description" => image_description,
             "relevant" => relevant,
             "author_type" => author_type,
-            "topics" => labels.first(12),
+            "topics" => visual_labels.first(12),
+            "detected_face_count" => detected_face_count,
+            "visual_signal_count" => visual_labels.length,
             "sentiment" => "unknown",
             "suggested_actions" => actions,
             "recommended_next_action" => actions.first || "review",
-            "engagement_score" => labels.any? ? 0.6 : 0.4,
+            "engagement_score" => visual_labels.any? ? 0.6 : 0.2,
             "comment_suggestions" => comment_generation[:comment_suggestions] || 
               (JSON.parse(comment_generation[:raw][:response])&.dig("comment_suggestions") rescue []),
             "comment_generation_status" => comment_generation[:status],
             "comment_generation_source" => comment_generation[:source],
             "comment_generation_fallback_used" => ActiveModel::Type::Boolean.new.cast(comment_generation[:fallback_used]),
             "comment_generation_error" => comment_generation[:error_message].to_s.presence,
-            "personalization_tokens" => labels.first(5),
+            "personalization_tokens" => visual_labels.first(5),
             "video_processing_mode" => mode_for(media_hash: media_hash, raw: raw),
             "video_static_detected" => static_video_detected?(media_hash: media_hash, raw: raw),
-            "confidence" => labels.any? ? 0.65 : 0.45,
-            "evidence" => labels.any? ? "Local AI labels: #{labels.first(5).join(', ')}" : "No labels detected; used tag rules only"
+            "confidence" => visual_labels.any? ? 0.65 : 0.2,
+            "evidence" => visual_labels.any? ? "Local AI visual signals: #{visual_labels.first(6).join(', ')}" : "No verified visual signals detected; comment generation skipped"
           }
         }
       end
@@ -302,7 +317,8 @@ module Ai
       def image_features
         [
           { type: "LABEL_DETECTION", maxResults: 15 },
-          { type: "TEXT_DETECTION", maxResults: 10 }
+          { type: "TEXT_DETECTION", maxResults: 10 },
+          { type: "FACE_DETECTION", maxResults: 8 }
         ]
       end
 
@@ -368,6 +384,8 @@ module Ai
       def extract_image_labels(vision_response)
         labels = Array(vision_response["labelAnnotations"]).map { |v| v["description"].to_s.downcase.strip }.reject(&:blank?)
         texts = Array(vision_response["textAnnotations"]).map { |v| v["description"].to_s.downcase.strip }.reject(&:blank?)
+        faces = Array(vision_response["faceAnnotations"]).length
+        labels << "person" if faces.positive?
         (labels + texts.first(2)).uniq
       end
 
@@ -389,16 +407,10 @@ module Ai
       def build_comment_suggestions(labels:, description:)
         desc = description.to_s.strip
         topic = labels.first.to_s.strip
-        anchor = topic.presence || "shot"
+        anchor = topic.presence
 
         if desc.blank? && anchor.blank?
-          return [
-            "This is such a vibe ✨",
-            "Okay this ate fr 🔥",
-            "Main feed energy right here 👏",
-            "Low-key obsessed with this one 😮‍💨",
-            "This goes hard, no notes 🙌"
-          ]
+          return []
         end
 
         [
@@ -466,6 +478,48 @@ module Ai
           fallback_used: true,
           error_message: warning[:error_message],
           comment_suggestions: build_comment_suggestions(labels: labels, description: image_description)
+        }
+      end
+
+      def meaningful_visual_labels(labels)
+        Array(labels).map(&:to_s).map(&:downcase).map(&:strip).reject(&:blank?).reject do |label|
+          label.start_with?("image_analysis_error:", "video_analysis_error:")
+        end.uniq
+      end
+
+      def extract_face_count_from_raw(raw)
+        vision_faces = Array(raw.dig(:vision, "faceAnnotations")).length
+        vision_faces.positive? ? vision_faces : Array(raw.dig(:vision, :faceAnnotations)).length
+      rescue StandardError
+        0
+      end
+
+      def unavailable_visual_description(raw:, media_type:)
+        warning = raw[:vision_warning] || raw[:video_warning]
+        if warning.is_a?(Hash)
+          detail = warning[:error_message].to_s.presence || warning["error_message"].to_s.presence || "analysis_error"
+          return "Visual analysis unavailable (#{detail.byteslice(0, 120)})."
+        end
+
+        case media_type.to_s
+        when "image"
+          "Image analysis unavailable or returned no verifiable visual signals."
+        when "video"
+          "Video analysis unavailable or returned no verifiable visual signals."
+        else
+          "No image or video content available for visual description."
+        end
+      end
+
+      def skipped_comment_generation_for_missing_visuals(raw:, media_type:)
+        {
+          model: ollama_model,
+          raw: {},
+          source: "policy",
+          status: "skipped_no_visual_signals",
+          fallback_used: false,
+          error_message: unavailable_visual_description(raw: raw, media_type: media_type),
+          comment_suggestions: []
         }
       end
 

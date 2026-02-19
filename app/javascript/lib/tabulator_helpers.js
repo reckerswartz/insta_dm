@@ -3,11 +3,95 @@ import { getCableConsumer } from "./cable_consumer"
 const DEFAULT_PAGE_SIZES = [25, 50, 100, 200]
 const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,.btn,[role='button']"
 const TABLE_REFRESH_WARN_MS = 1600
+const NEVER_SETTLED_PROMISE = new Promise(() => {})
 let operationsConsumer
 let tableAddonSequence = 0
 
 function tabulatorDebugWarningsEnabled() {
   return Boolean(window.__TABULATOR_DEBUG_WARNINGS === true)
+}
+
+function isAbortLikeError(error) {
+  if (!error) return false
+  if (String(error.name || "") === "AbortError") return true
+
+  const message = String(error.message || "").toLowerCase()
+  return message.includes("abort")
+}
+
+function createCancelableAjaxRequest() {
+  const controllers = new Set()
+  let disposed = false
+
+  const request = (url, config, params) => {
+    if (disposed) return NEVER_SETTLED_PROMISE
+
+    const controller = new AbortController()
+    controllers.add(controller)
+
+    const nextConfig = {
+      ...(config || {}),
+      signal: controller.signal,
+      headers: {
+        ...((config && config.headers) || {}),
+      },
+    }
+
+    if (!nextConfig.headers.Accept) nextConfig.headers.Accept = "application/json"
+    if (!nextConfig.headers["X-Requested-With"]) nextConfig.headers["X-Requested-With"] = "XMLHttpRequest"
+
+    if (typeof nextConfig.mode === "undefined") nextConfig.mode = "cors"
+    if (nextConfig.mode === "cors") {
+      if (typeof nextConfig.headers.Origin === "undefined") nextConfig.headers.Origin = window.location.origin
+      if (typeof nextConfig.credentials === "undefined") nextConfig.credentials = "same-origin"
+    } else if (typeof nextConfig.credentials === "undefined") {
+      nextConfig.credentials = "include"
+    }
+
+    const method = String(nextConfig.method || "GET").toUpperCase()
+    const requestUrl = (method === "GET" || method === "HEAD")
+      ? buildAjaxUrl(url, params)
+      : url
+
+    return fetch(requestUrl, nextConfig)
+      .then((response) => {
+        if (!response.ok) {
+          const error = new Error(`HTTP ${response.status}`)
+          error.status = response.status
+          error.statusText = response.statusText
+          throw error
+        }
+        return response.json()
+      })
+      .catch((error) => {
+        if (disposed || isAbortLikeError(error)) {
+          controllers.delete(controller)
+          return NEVER_SETTLED_PROMISE
+        }
+        throw error
+      })
+      .finally(() => {
+        controllers.delete(controller)
+      })
+  }
+
+  request.abortPending = () => {
+    controllers.forEach((controller) => {
+      try {
+        controller.abort()
+      } catch (_) {
+        // Ignore cancellation errors.
+      }
+    })
+    controllers.clear()
+  }
+
+  request.dispose = () => {
+    disposed = true
+    request.abortPending()
+  }
+
+  return request
 }
 
 function controllerOwnsTable(controller, table) {
@@ -196,6 +280,7 @@ export function tabulatorBaseOptions({
 }) {
   const pageSizeSelector = Array.isArray(paginationSizeSelector) ? [...paginationSizeSelector] : [...DEFAULT_PAGE_SIZES]
   const selectedPageSize = readPreferredPageSize(storageKey, paginationSize, pageSizeSelector)
+  const ajaxRequestFunc = createCancelableAjaxRequest()
 
   return {
     layout: "fitDataStretch",
@@ -206,6 +291,7 @@ export function tabulatorBaseOptions({
     ajaxURL: url,
     ajaxConfig: "GET",
     ajaxContentType: "json",
+    ajaxRequestFunc,
     ajaxResponse: (ajaxUrl, params, response) => response,
     ajaxURLGenerator: (ajaxUrl, config, params) => buildAjaxUrl(ajaxUrl, params),
 
@@ -276,6 +362,11 @@ export function attachTabulatorBehaviors(
   })
 
   registerCleanup(controller, () => window.cancelAnimationFrame(rafId))
+
+  const ajaxRequest = table?.options?.ajaxRequestFunc
+  if (ajaxRequest && typeof ajaxRequest.dispose === "function") {
+    registerCleanup(controller, () => ajaxRequest.dispose())
+  }
 
   const onTableBuilt = () => installPaginationControls(controller, table, { addonId, force: true })
   const onDataLoaded = () => installPaginationControls(controller, table, { addonId, force: true })
