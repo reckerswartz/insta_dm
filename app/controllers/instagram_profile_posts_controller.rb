@@ -5,7 +5,34 @@ class InstagramProfilePostsController < ApplicationController
     profile = current_account.instagram_profiles.find(params[:instagram_profile_id])
     post = profile.instagram_profile_posts.find(params[:id])
 
-    post.update!(ai_status: "pending") if post.ai_status == "failed"
+    if analysis_in_progress?(post)
+      message = "Post analysis already running for #{post.shortcode}."
+      respond_to do |format|
+        format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: message }
+        format.turbo_stream do
+          profile_posts = profile.instagram_profile_posts.includes(:instagram_profile_post_comments, :ai_analyses, { instagram_post_faces: :instagram_story_person }, media_attachment: :blob, preview_image_attachment: :blob).recent_first.limit(100)
+          render turbo_stream: [
+            turbo_stream.append(
+              "notifications",
+              partial: "shared/notification",
+              locals: { kind: "notice", message: message }
+            ),
+            turbo_stream.replace(
+              "captured_profile_posts_section",
+              partial: "instagram_profiles/captured_posts_section",
+              locals: {
+                profile: profile,
+                profile_posts: profile_posts
+              }
+            )
+          ]
+        end
+        format.json { render json: { message: message }, status: :accepted }
+      end
+      return
+    end
+
+    post.update!(ai_status: "pending", analyzed_at: nil)
 
     task_flags = {
       analyze_visual: boolean_param(params[:analyze_visual], default: true),
@@ -224,5 +251,24 @@ class InstagramProfilePostsController < ApplicationController
     return default if value.nil?
 
     ActiveModel::Type::Boolean.new.cast(value)
+  end
+
+  def analysis_in_progress?(post)
+    metadata = post.metadata
+    return false unless metadata.is_a?(Hash)
+
+    pipeline = metadata["ai_pipeline"]
+    return false unless pipeline.is_a?(Hash)
+    return false unless pipeline["status"].to_s == "running"
+
+    required_steps = Array(pipeline["required_steps"]).map(&:to_s)
+    return false if required_steps.empty?
+
+    terminal_statuses = Ai::PostAnalysisPipelineState::TERMINAL_STATUSES
+    required_steps.any? do |step|
+      !terminal_statuses.include?(pipeline.dig("steps", step, "status").to_s)
+    end
+  rescue StandardError
+    false
   end
 end

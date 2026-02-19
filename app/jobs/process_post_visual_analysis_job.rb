@@ -119,7 +119,7 @@ class ProcessPostVisualAnalysisJob < PostAnalysisPipelineJob
       ai_provider: run[:provider].key,
       ai_model: run.dig(:result, :model),
       analysis: run.dig(:result, :analysis),
-      ai_status: "pending"
+      ai_status: "running"
     )
 
     pipeline_state.mark_step_completed!(

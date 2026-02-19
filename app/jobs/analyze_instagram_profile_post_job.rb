@@ -70,6 +70,20 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       task_flags: task_flags,
       source_job: self.class.name
     )
+    required_steps = pipeline_state.required_steps(run_id: run_id)
+
+    Ops::StructuredLogger.info(
+      event: "ai.pipeline.started",
+      payload: {
+        active_job_id: job_id,
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        pipeline_run_id: run_id,
+        required_steps: required_steps,
+        task_flags: task_flags
+      }
+    )
 
     enqueue_step_job!(
       step: "visual",
@@ -140,6 +154,20 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
         enqueued_at: Time.current.iso8601(3)
       }
     )
+
+    Ops::StructuredLogger.info(
+      event: "ai.pipeline.step_enqueued",
+      payload: {
+        active_job_id: job_id,
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        pipeline_run_id: run_id,
+        step: step,
+        queue_name: job.queue_name,
+        enqueued_job_id: job.job_id
+      }
+    )
   rescue StandardError => e
     pipeline_state.mark_step_completed!(
       run_id: run_id,
@@ -148,6 +176,20 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       error: "enqueue_failed: #{e.class}: #{e.message}",
       result: {
         reason: "enqueue_failed"
+      }
+    )
+
+    Ops::StructuredLogger.warn(
+      event: "ai.pipeline.step_enqueue_failed",
+      payload: {
+        active_job_id: job_id,
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        pipeline_run_id: run_id,
+        step: step,
+        error_class: e.class.name,
+        error_message: e.message.to_s.byteslice(0, 280)
       }
     )
   end

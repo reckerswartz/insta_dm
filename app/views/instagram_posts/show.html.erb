@@ -74,6 +74,9 @@
       <div class="post-face-summary mt-section">
         <p class="meta">
           Faces: <strong><%= face_recognition["face_count"].to_i %></strong>
+          <% if face_recognition["linked_face_count"].to_i.positive? %>
+            | Linked: <strong><%= face_recognition["linked_face_count"].to_i %></strong>
+          <% end %>
           <% if unique_people_count.positive? %>
             | People in post: <strong><%= unique_people_count %></strong>
           <% end %>
@@ -94,12 +97,14 @@
               <% pill_class = "pill face-pill #{role == "primary_user" ? "owner" : "person"}" %>
               <span class="face-chip-item">
                 <% if person_path.present? %>
-                  <%= link_to label, person_path, class: "#{pill_class} face-pill-link" %>
+                  <%= link_to label, person_path, class: "#{pill_class} face-pill-link", data: { turbo_frame: "_top" } %>
                 <% else %>
                   <span class="<%= pill_class %>"><%= label %></span>
                 <% end %>
                 <% details = [] %>
                 <% details << "recurring" if participant["appearances"].to_i > 1 %>
+                <% detector_confidence = participant["detector_confidence"] %>
+                <% details << "detector #{(detector_confidence.to_f * 100).round}%" if detector_confidence.present? %>
                 <% details << participant["real_person_status"].to_s.tr("_", " ") if participant["real_person_status"].to_s.present? %>
                 <% confidence = participant["identity_confidence"] %>
                 <% confidence = person&.identity_confidence if confidence.blank? %>
@@ -110,6 +115,13 @@
               </span>
             <% end %>
           </div>
+        <% elsif face_recognition["face_count"].to_i.positive? %>
+          <p class="meta">
+            No confident person matches available
+            <% if face_recognition["min_match_confidence"].to_f.positive? %>
+              (requires >= <%= (face_recognition["min_match_confidence"].to_f * 100).round %>% confidence)
+            <% end %>.
+          </p>
           <% if identity["participant_summary_text"].to_s.present? %>
             <p class="meta"><%= identity["participant_summary_text"] %></p>
           <% end %>

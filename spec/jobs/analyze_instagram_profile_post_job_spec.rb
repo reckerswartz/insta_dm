@@ -18,7 +18,14 @@ RSpec.describe "AnalyzeInstagramProfilePostJobTest" do
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,
       shortcode: "post_#{SecureRandom.hex(3)}",
-      ai_status: "pending"
+      ai_status: "pending",
+      metadata: {
+        "ai_pipeline_failure" => {
+          "reason" => "pipeline_timeout",
+          "failed_at" => 1.hour.ago.iso8601,
+          "source" => "FinalizePostAnalysisPipelineJob"
+        }
+      }
     )
 
     AnalyzeInstagramProfilePostJob.perform_now(
@@ -69,6 +76,8 @@ RSpec.describe "AnalyzeInstagramProfilePostJobTest" do
     refute_includes enqueued, ProcessPostVideoAnalysisJob
 
     pipeline = post.reload.metadata["ai_pipeline"]
+    assert_equal "running", post.ai_status
+    assert_nil post.metadata["ai_pipeline_failure"]
     assert_equal "running", pipeline["status"]
     assert_includes Array(pipeline["required_steps"]), "visual"
     assert_includes Array(pipeline["required_steps"]), "face"

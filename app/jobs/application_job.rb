@@ -17,7 +17,14 @@ class ApplicationJob < ActiveJob::Base
     Ops::LiveUpdateBroadcaster.broadcast!(
       topic: "jobs_changed",
       account_id: context[:instagram_account_id],
-      payload: { status: "discarded", reason: "authentication_required", job_class: job.class.name },
+      payload: {
+        status: "discarded",
+        reason: "authentication_required",
+        job_class: job.class.name,
+        instagram_account_id: context[:instagram_account_id],
+        instagram_profile_id: context[:instagram_profile_id],
+        instagram_profile_post_id: context[:instagram_profile_post_id]
+      },
       throttle_key: "jobs_changed"
     )
   end
@@ -57,7 +64,14 @@ class ApplicationJob < ActiveJob::Base
         Ops::LiveUpdateBroadcaster.broadcast!(
           topic: "jobs_changed",
           account_id: context[:instagram_account_id],
-          payload: { status: "started", job_class: job.class.name, active_job_id: job.job_id },
+          payload: {
+            status: "started",
+            job_class: job.class.name,
+            active_job_id: job.job_id,
+            instagram_account_id: context[:instagram_account_id],
+            instagram_profile_id: context[:instagram_profile_id],
+            instagram_profile_post_id: context[:instagram_profile_post_id]
+          },
           throttle_key: "jobs_changed"
         )
 
@@ -83,7 +97,14 @@ class ApplicationJob < ActiveJob::Base
         Ops::LiveUpdateBroadcaster.broadcast!(
           topic: "jobs_changed",
           account_id: context[:instagram_account_id],
-          payload: { status: "completed", job_class: job.class.name, active_job_id: job.job_id },
+          payload: {
+            status: "completed",
+            job_class: job.class.name,
+            active_job_id: job.job_id,
+            instagram_account_id: context[:instagram_account_id],
+            instagram_profile_id: context[:instagram_profile_id],
+            instagram_profile_post_id: context[:instagram_profile_post_id]
+          },
           throttle_key: "jobs_changed"
         )
       end
@@ -160,7 +181,10 @@ class ApplicationJob < ActiveJob::Base
           status: "failed",
           job_class: job.class.name,
           active_job_id: job.job_id,
-          failure_kind: failure.failure_kind
+          failure_kind: failure.failure_kind,
+          instagram_account_id: context[:instagram_account_id],
+          instagram_profile_id: context[:instagram_profile_id],
+          instagram_profile_post_id: context[:instagram_profile_post_id]
         },
         throttle_key: "jobs_changed"
       )

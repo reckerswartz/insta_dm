@@ -68,6 +68,43 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
     assert_operator delay_seconds, :<=, 18
   end
 
+  it "marks stalled queued steps as failed so pipeline can keep progressing" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "succeeded")
+
+    metadata = post.metadata.deep_dup
+    metadata["ai_pipeline"]["required_steps"] = ["visual", "ocr", "metadata"]
+    metadata["ai_pipeline"]["steps"]["ocr"] = {
+      "status" => "queued",
+      "attempts" => 0,
+      "queue_name" => "ai_ocr_queue",
+      "active_job_id" => "stalled-ocr-job",
+      "created_at" => 10.minutes.ago.iso8601(3),
+      "result" => {
+        "enqueued_at" => 10.minutes.ago.iso8601(3)
+      }
+    }
+    metadata["ai_pipeline"]["steps"]["metadata"] = {
+      "status" => "pending",
+      "attempts" => 0,
+      "result" => {},
+      "created_at" => Time.current.iso8601(3)
+    }
+    post.update!(metadata: metadata, ai_status: "running")
+
+    FinalizePostAnalysisPipelineJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id,
+      attempts: 6
+    )
+
+    post.reload
+    assert_equal "failed", post.metadata.dig("ai_pipeline", "steps", "ocr", "status")
+    assert_includes post.metadata.dig("ai_pipeline", "steps", "ocr", "error").to_s, "step_stalled_timeout"
+    assert_enqueued_jobs 1, only: FinalizePostAnalysisPipelineJob
+  end
+
   it "ignores stale finalizer jobs after pipeline is already terminal" do
     account, profile, post, run_id = build_pipeline_with_visual_status(status: "failed", pipeline_status: "failed")
     before_metadata = post.metadata.deep_dup

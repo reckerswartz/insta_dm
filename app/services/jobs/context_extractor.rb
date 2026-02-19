@@ -6,6 +6,7 @@ module Jobs
 
         account_id = extract_int(payload, :instagram_account_id)
         profile_id = extract_int(payload, :instagram_profile_id)
+        profile_post_id = extract_int(payload, :instagram_profile_post_id)
 
         scope = if profile_id.present?
           "profile"
@@ -18,6 +19,7 @@ module Jobs
         {
           instagram_account_id: account_id,
           instagram_profile_id: profile_id,
+          instagram_profile_post_id: profile_post_id,
           job_scope: scope,
           context_label: context_label(scope: scope, account_id: account_id, profile_id: profile_id)
         }
@@ -25,6 +27,7 @@ module Jobs
         {
           instagram_account_id: nil,
           instagram_profile_id: nil,
+          instagram_profile_post_id: nil,
           job_scope: "system",
           context_label: "System"
         }

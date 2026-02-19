@@ -1,14 +1,23 @@
 class PostFaceRecognitionService
+  DEFAULT_MATCH_MIN_CONFIDENCE = ENV.fetch("POST_FACE_MATCH_MIN_CONFIDENCE", "0.78").to_f
+
   def initialize(
     face_detection_service: FaceDetectionService.new,
     face_embedding_service: FaceEmbeddingService.new,
     vector_matching_service: VectorMatchingService.new,
-    face_identity_resolution_service: FaceIdentityResolutionService.new
+    face_identity_resolution_service: FaceIdentityResolutionService.new,
+    match_min_confidence: nil
   )
     @face_detection_service = face_detection_service
     @face_embedding_service = face_embedding_service
     @vector_matching_service = vector_matching_service
     @face_identity_resolution_service = face_identity_resolution_service
+    @match_min_confidence = begin
+      value = match_min_confidence.nil? ? DEFAULT_MATCH_MIN_CONFIDENCE : match_min_confidence.to_f
+      value.negative? ? DEFAULT_MATCH_MIN_CONFIDENCE : value
+    rescue StandardError
+      DEFAULT_MATCH_MIN_CONFIDENCE
+    end
   end
 
   def process!(post:)
@@ -65,6 +74,8 @@ class PostFaceRecognitionService
 
     post.instagram_post_faces.delete_all
     matches = []
+    linked_face_count = 0
+    low_confidence_filtered_count = 0
 
     Array(detection[:faces]).each_with_index do |face, index|
       observation_signature = face_observation_signature(
@@ -73,6 +84,20 @@ class PostFaceRecognitionService
         index: index,
         detection_source: source_payload[:detection_source]
       )
+      confidence = face[:confidence].to_f
+
+      unless linkable_face_confidence?(confidence)
+        low_confidence_filtered_count += 1
+        persist_unlinked_face!(
+          post: post,
+          face: face,
+          observation_signature: observation_signature,
+          source: source_payload[:detection_source],
+          reason: "low_confidence"
+        )
+        next
+      end
+
       embedding_payload = @face_embedding_service.embed(
         media_payload: {
           story_id: "post:#{post.id}",
@@ -82,7 +107,16 @@ class PostFaceRecognitionService
         face: face
       )
       vector = Array(embedding_payload[:vector]).map(&:to_f)
-      next if vector.empty?
+      if vector.empty?
+        persist_unlinked_face!(
+          post: post,
+          face: face,
+          observation_signature: observation_signature,
+          source: source_payload[:detection_source],
+          reason: "embedding_unavailable"
+        )
+        next
+      end
 
       match = @vector_matching_service.match_or_create!(
         account: post.instagram_account,
@@ -97,22 +131,19 @@ class PostFaceRecognitionService
       post.instagram_post_faces.create!(
         instagram_story_person: person,
         role: match[:role].to_s.presence || "unknown",
-        detector_confidence: face[:confidence].to_f,
+        detector_confidence: confidence,
         match_similarity: match[:similarity],
         embedding_version: embedding_payload[:version].to_s,
         embedding: vector,
         bounding_box: face[:bounding_box],
-        metadata: {
+        metadata: face_record_metadata(
           source: source_payload[:detection_source],
-          landmarks: face[:landmarks],
-          likelihoods: face[:likelihoods],
-          age: face[:age],
-          age_range: face[:age_range],
-          gender: face[:gender],
-          gender_score: face[:gender_score].to_f,
-          observation_signature: observation_signature
-        }
+          face: face,
+          observation_signature: observation_signature,
+          link_status: "matched"
+        )
       )
+      linked_face_count += 1
 
       matches << {
         person_id: person.id,
@@ -128,8 +159,13 @@ class PostFaceRecognitionService
     end
 
     metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    total_detected_faces = Array(detection[:faces]).length
     metadata["face_recognition"] = {
-      "face_count" => Array(detection[:faces]).length,
+      "face_count" => total_detected_faces,
+      "linked_face_count" => linked_face_count,
+      "unlinked_face_count" => [ total_detected_faces - linked_face_count, 0 ].max,
+      "low_confidence_filtered_count" => low_confidence_filtered_count,
+      "min_match_confidence" => @match_min_confidence.round(3),
       "matched_people" => matches,
       "detection_source" => source_payload[:detection_source],
       "ocr_text" => detection[:ocr_text].to_s,
@@ -163,7 +199,9 @@ class PostFaceRecognitionService
 
     {
       skipped: false,
-      face_count: Array(detection[:faces]).length,
+      face_count: total_detected_faces,
+      linked_face_count: linked_face_count,
+      low_confidence_filtered_count: low_confidence_filtered_count,
       matched_people: matches,
       identity_resolution: identity_resolution
     }
@@ -265,6 +303,46 @@ class PostFaceRecognitionService
       bbox["x2"],
       bbox["y2"]
     ].map(&:to_s).join(":")
+  end
+
+  def linkable_face_confidence?(confidence)
+    confidence.to_f >= @match_min_confidence
+  end
+
+  def persist_unlinked_face!(post:, face:, observation_signature:, source:, reason:)
+    post.instagram_post_faces.create!(
+      instagram_story_person: nil,
+      role: "unknown",
+      detector_confidence: face[:confidence].to_f,
+      match_similarity: nil,
+      embedding_version: nil,
+      embedding: nil,
+      bounding_box: face[:bounding_box],
+      metadata: face_record_metadata(
+        source: source,
+        face: face,
+        observation_signature: observation_signature,
+        link_status: "unlinked",
+        link_skip_reason: reason
+      )
+    )
+  rescue StandardError
+    nil
+  end
+
+  def face_record_metadata(source:, face:, observation_signature:, link_status:, link_skip_reason: nil)
+    {
+      source: source,
+      landmarks: face[:landmarks],
+      likelihoods: face[:likelihoods],
+      age: face[:age],
+      age_range: face[:age_range],
+      gender: face[:gender],
+      gender_score: face[:gender_score].to_f,
+      observation_signature: observation_signature,
+      link_status: link_status,
+      link_skip_reason: link_skip_reason
+    }.compact
   end
 
   def update_person_face_attributes!(person:, face:)

@@ -3,6 +3,8 @@ require "net/http"
 require "uri"
 
 class StoryProcessingService
+  DEFAULT_MATCH_MIN_CONFIDENCE = ENV.fetch("STORY_FACE_MATCH_MIN_CONFIDENCE", "0.78").to_f
+
   def initialize(
     story:,
     force: false,
@@ -17,7 +19,8 @@ class StoryProcessingService
     video_frame_change_detector_service: VideoFrameChangeDetectorService.new,
     content_understanding_service: StoryContentUnderstandingService.new,
     response_generation_service: ResponseGenerationService.new,
-    face_identity_resolution_service: FaceIdentityResolutionService.new
+    face_identity_resolution_service: FaceIdentityResolutionService.new,
+    match_min_confidence: nil
   )
     @story = story
     @force = ActiveModel::Type::Boolean.new.cast(force)
@@ -33,6 +36,12 @@ class StoryProcessingService
     @content_understanding_service = content_understanding_service
     @response_generation_service = response_generation_service
     @face_identity_resolution_service = face_identity_resolution_service
+    @match_min_confidence = begin
+      value = match_min_confidence.nil? ? DEFAULT_MATCH_MIN_CONFIDENCE : match_min_confidence.to_f
+      value.negative? ? DEFAULT_MATCH_MIN_CONFIDENCE : value
+    rescue StandardError
+      DEFAULT_MATCH_MIN_CONFIDENCE
+    end
   end
 
   def process!
@@ -50,6 +59,8 @@ class StoryProcessingService
       end
 
     persist_faces!(detected_faces: result[:faces], story_id: media_payload[:story_id], fallback_image_bytes: media_payload[:image_bytes])
+    linked_face_count = @story.instagram_story_faces.where.not(instagram_story_person_id: nil).count
+    unlinked_face_count = @story.instagram_story_faces.where(instagram_story_person_id: nil).count
     content_understanding = @content_understanding_service.build(
       media_type: media_payload[:media_type],
       detections: result[:detections],
@@ -68,6 +79,9 @@ class StoryProcessingService
       "hashtags" => Array(content_understanding[:hashtags]).uniq,
       "transcript" => content_understanding[:transcript].to_s.presence,
       "face_count" => result[:faces].length,
+      "linked_face_count" => linked_face_count,
+      "unlinked_face_count" => unlinked_face_count,
+      "min_match_confidence" => @match_min_confidence.round(3),
       "processing_path" => media_payload[:media_type],
       "generated_response_suggestions" => suggestions,
       "content_understanding" => content_understanding,
@@ -218,9 +232,26 @@ class StoryProcessingService
 
   def persist_faces!(detected_faces:, story_id:, fallback_image_bytes:)
     Array(detected_faces).each do |face|
-      face_image_bytes = face[:image_bytes].presence || fallback_image_bytes
-      next if face_image_bytes.blank?
       observation_signature = face_observation_signature(story_id: story_id, face: face)
+      confidence = face[:confidence].to_f
+      unless linkable_face_confidence?(confidence)
+        persist_unlinked_story_face!(
+          face: face,
+          observation_signature: observation_signature,
+          reason: "low_confidence"
+        )
+        next
+      end
+
+      face_image_bytes = face[:image_bytes].presence || fallback_image_bytes
+      if face_image_bytes.blank?
+        persist_unlinked_story_face!(
+          face: face,
+          observation_signature: observation_signature,
+          reason: "face_image_missing"
+        )
+        next
+      end
 
       embedding_payload = @face_embedding_service.embed(
         media_payload: {
@@ -230,10 +261,20 @@ class StoryProcessingService
         },
         face: face
       )
+      vector = Array(embedding_payload[:vector]).map(&:to_f)
+      if vector.empty?
+        persist_unlinked_story_face!(
+          face: face,
+          observation_signature: observation_signature,
+          reason: "embedding_unavailable"
+        )
+        next
+      end
+
       match = @vector_matching_service.match_or_create!(
         account: @story.instagram_account,
         profile: @story.instagram_profile,
-        embedding: embedding_payload[:vector],
+        embedding: vector,
         occurred_at: @story.taken_at || Time.current,
         observation_signature: observation_signature
       )
@@ -245,21 +286,15 @@ class StoryProcessingService
         detector_confidence: face[:confidence].to_f,
         match_similarity: match[:similarity],
         embedding_version: embedding_payload[:version].to_s,
-        embedding: embedding_payload[:vector],
+        embedding: vector,
         bounding_box: face[:bounding_box],
-        metadata: {
-          frame_index: face[:frame_index],
-          timestamp_seconds: face[:timestamp_seconds],
-          landmarks: face[:landmarks],
-          likelihoods: face[:likelihoods],
-          age: face[:age],
-          age_range: face[:age_range],
-          gender: face[:gender],
-          gender_score: face[:gender_score].to_f,
-          observation_signature: observation_signature
-        }
+        metadata: story_face_metadata(
+          face: face,
+          observation_signature: observation_signature,
+          link_status: "matched"
+        )
       }
-      attrs[:embedding_vector] = embedding_payload[:vector] if InstagramStoryFace.column_names.include?("embedding_vector")
+      attrs[:embedding_vector] = vector if InstagramStoryFace.column_names.include?("embedding_vector")
       @story.instagram_story_faces.create!(attrs)
     end
   end
@@ -276,6 +311,46 @@ class StoryProcessingService
       bbox["x2"],
       bbox["y2"]
     ].map(&:to_s).join(":")
+  end
+
+  def linkable_face_confidence?(confidence)
+    confidence.to_f >= @match_min_confidence
+  end
+
+  def persist_unlinked_story_face!(face:, observation_signature:, reason:)
+    @story.instagram_story_faces.create!(
+      instagram_story_person: nil,
+      role: "unknown",
+      detector_confidence: face[:confidence].to_f,
+      match_similarity: nil,
+      embedding_version: nil,
+      embedding: nil,
+      bounding_box: face[:bounding_box],
+      metadata: story_face_metadata(
+        face: face,
+        observation_signature: observation_signature,
+        link_status: "unlinked",
+        link_skip_reason: reason
+      )
+    )
+  rescue StandardError
+    nil
+  end
+
+  def story_face_metadata(face:, observation_signature:, link_status:, link_skip_reason: nil)
+    {
+      frame_index: face[:frame_index],
+      timestamp_seconds: face[:timestamp_seconds],
+      landmarks: face[:landmarks],
+      likelihoods: face[:likelihoods],
+      age: face[:age],
+      age_range: face[:age_range],
+      gender: face[:gender],
+      gender_score: face[:gender_score].to_f,
+      observation_signature: observation_signature,
+      link_status: link_status,
+      link_skip_reason: link_skip_reason
+    }.compact
   end
 
   def load_media_payload

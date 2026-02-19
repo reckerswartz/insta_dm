@@ -36,6 +36,7 @@ module Ai
 
       post.with_lock do
         metadata = metadata_for(post)
+        metadata.delete("ai_pipeline_failure")
         metadata["ai_pipeline"] = {
           "run_id" => run_id,
           "status" => "running",
@@ -48,7 +49,7 @@ module Ai
         }.compact
 
         post.update!(
-          ai_status: "pending",
+          ai_status: "running",
           analyzed_at: nil,
           metadata: metadata
         )

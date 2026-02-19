@@ -64,7 +64,8 @@
           <% end %>
           <% post_faces = pp.instagram_post_faces.to_a %>
           <% if face_participants.empty? && post_faces.any? %>
-            <% face_participants = post_faces.first(12).map do |face|
+            <% linked_faces = post_faces.select { |face| face.instagram_story_person_id.present? } %>
+            <% face_participants = linked_faces.first(12).map do |face|
               person = face.instagram_story_person
               {
                 "person_id" => person&.id,
@@ -75,7 +76,8 @@
                 "relationship" => person&.metadata_hash&.dig("relationship"),
                 "co_appearances_with_primary" => person&.metadata_hash&.dig("co_appearances_with_primary"),
                 "real_person_status" => person&.real_person_status,
-                "identity_confidence" => person&.identity_confidence
+                "identity_confidence" => person&.identity_confidence,
+                "detector_confidence" => face.detector_confidence
               }.compact
             end %>
           <% end %>
@@ -101,6 +103,9 @@
             recurring_faces_count: recurring_faces_count,
             detection_source: face_recognition["detection_source"].to_s.presence,
             participant_summary: face_recognition["participant_summary"].to_s.presence,
+            linked_face_count: face_recognition["linked_face_count"],
+            unlinked_face_count: face_recognition["unlinked_face_count"],
+            min_match_confidence: face_recognition["min_match_confidence"],
             post_people_scope: post_people_scope,
             unique_people_count: unique_people_count,
             participants: face_participants.first(12).map do |row|
@@ -118,6 +123,7 @@
                 recurring_face: row["recurring_face"],
                 relationship: row["relationship"],
                 co_appearances_with_primary: row["co_appearances_with_primary"],
+                detector_confidence: row["detector_confidence"],
                 real_person_status: status,
                 identity_confidence: confidence,
                 person_path: person_id.present? ? instagram_profile_instagram_story_person_path(profile, person_id) : nil
@@ -242,7 +248,7 @@
               </p>
               <p class="meta">
                 AI:
-                <span class="pill <%= pp.ai_status == "failed" ? "failed" : (pp.ai_status == "analyzed" ? "sent" : "queued") %>"><%= pp.ai_status %></span>
+                <span class="pill <%= pp.ai_status == "failed" ? "failed" : (pp.ai_status == "analyzed" ? "sent" : (pp.ai_status == "running" ? "running" : "queued")) %>"><%= pp.ai_status %></span>
                 <% if comment_gen_fallback %>
                   | comments fallback (<%= comment_gen_status %>)
                 <% elsif pp.ai_status == "analyzed" %>
@@ -253,6 +259,9 @@
                 <div class="post-face-summary">
                   <p class="meta">
                     Faces: <strong><%= detected_face_count %></strong>
+                    <% if face_recognition["linked_face_count"].to_i.positive? %>
+                      | Linked: <strong><%= face_recognition["linked_face_count"].to_i %></strong>
+                    <% end %>
                     <% if owner_faces_count.positive? %>
                       | Owner matches: <strong><%= owner_faces_count %></strong>
                     <% end %>
@@ -266,6 +275,14 @@
                       | Scope: <strong><%= post_people_scope == "multiple_people" ? "multiple people" : "single person" %></strong>
                     <% end %>
                   </p>
+                  <% if detected_face_count.positive? && face_participants.empty? %>
+                    <p class="meta">
+                      No confident person matches yet
+                      <% if face_recognition["min_match_confidence"].to_f.positive? %>
+                        (requires >= <%= (face_recognition["min_match_confidence"].to_f * 100).round %>% confidence)
+                      <% end %>.
+                    </p>
+                  <% end %>
                   <% if face_participants.any? %>
                     <div class="post-face-chip-row">
                       <% face_participants.first(6).each do |participant| %>
@@ -274,6 +291,9 @@
                         <% recurring = ActiveModel::Type::Boolean.new.cast(participant["recurring_face"]) || participant["appearances"].to_i > 1 %>
                         <% person = person_id.present? ? post_people_by_id[person_id] : nil %>
                         <% real_person_status = participant["real_person_status"].to_s.presence || person&.real_person_status %>
+                        <% detector_confidence = participant["detector_confidence"] %>
+                        <% detector_confidence = detector_confidence.to_f if detector_confidence.present? %>
+                        <% detector_confidence_percent = detector_confidence.present? ? (detector_confidence * 100).round : nil %>
                         <% confidence = participant["identity_confidence"] %>
                         <% confidence = person&.identity_confidence if confidence.blank? %>
                         <% confidence_percent = confidence.present? ? (confidence.to_f * 100).round : nil %>
@@ -282,7 +302,7 @@
                         <% chip_classes = "pill face-pill #{role == "primary_user" ? "owner" : "person"}" %>
                         <span class="face-chip-item">
                           <% if person_path.present? %>
-                            <%= link_to person_label, person_path, class: "#{chip_classes} face-pill-link" %>
+                            <%= link_to person_label, person_path, class: "#{chip_classes} face-pill-link", data: { turbo_frame: "_top" } %>
                           <% else %>
                             <span class="<%= chip_classes %>"><%= person_label %></span>
                           <% end %>
@@ -290,6 +310,7 @@
                             <small class="face-chip-meta">
                               <% meta_parts = [] %>
                               <% meta_parts << "recurring" if recurring %>
+                              <% meta_parts << "detector #{detector_confidence_percent}%" if detector_confidence_percent.present? %>
                               <% meta_parts << real_person_status.to_s.tr("_", " ") if real_person_status.present? %>
                               <% meta_parts << "confidence #{confidence_percent}%" if confidence_percent.present? %>
                               <%= meta_parts.join(" | ") %>
@@ -341,7 +362,9 @@
                     View
                   </button>
                 <% end %>
-                <% if pp.ai_status != "analyzed" %>
+                <% if pp.ai_status == "running" %>
+                  <button type="button" class="btn small" disabled>Analyzing...</button>
+                <% elsif pp.ai_status != "analyzed" %>
                   <%= button_to "Analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small" %>
                 <% else %>
                   <%= button_to "Re-analyze", analyze_instagram_profile_instagram_profile_post_path(profile, pp), method: :post, class: "btn small secondary" %>

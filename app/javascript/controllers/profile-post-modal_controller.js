@@ -210,6 +210,8 @@ export default class extends Controller {
     const participantSummary = String(payload.participant_summary || "")
     const postPeopleScope = String(payload.post_people_scope || "")
     const uniquePeopleCount = Number(payload.unique_people_count || 0)
+    const linkedFaceCount = Number(payload.linked_face_count || 0)
+    const minMatchConfidence = Number(payload.min_match_confidence || 0)
 
     if (totalFaces <= 0 && participants.length === 0) {
       return "<p class='meta'>No detected faces for this post yet.</p>"
@@ -217,6 +219,7 @@ export default class extends Controller {
 
     const lines = [
       `Faces: <strong>${this._escape(String(totalFaces))}</strong>`,
+      linkedFaceCount > 0 ? `Linked: <strong>${this._escape(String(linkedFaceCount))}</strong>` : "",
       ownerFaces > 0 ? `Owner matches: <strong>${this._escape(String(ownerFaces))}</strong>` : "",
       recurringFaces > 0 ? `Recurring: <strong>${this._escape(String(recurringFaces))}</strong>` : "",
       uniquePeopleCount > 0 ? `People in post: <strong>${this._escape(String(uniquePeopleCount))}</strong>` : "",
@@ -233,8 +236,10 @@ export default class extends Controller {
       const personPath = String(row.person_path || "")
       const realPersonStatus = String(row.real_person_status || "")
       const confidence = Number(row.identity_confidence)
+      const detectorConfidence = Number(row.detector_confidence)
       const details = [
         recurring ? "recurring" : "",
+        Number.isFinite(detectorConfidence) ? `detector ${this._escape(String(Math.round(detectorConfidence * 100)))}%` : "",
         Number(row.appearances || 0) > 0 ? `seen ${this._escape(String(row.appearances))}x` : "",
         relationship ? this._escape(relationship) : "",
         realPersonStatus ? this._escape(realPersonStatus.replaceAll("_", " ")) : "",
@@ -242,14 +247,17 @@ export default class extends Controller {
       ].filter(Boolean).join(" | ")
       const body = `${this._escape(String(label))}${details ? ` <small>${details}</small>` : ""}`
       if (personPath) {
-        return `<a class="pill face-pill ${roleClass} face-pill-link" href="${this._escape(personPath)}">${body}</a>`
+        return `<a class="pill face-pill ${roleClass} face-pill-link" href="${this._escape(personPath)}" data-turbo-frame="_top">${body}</a>`
       }
       return `<span class="pill face-pill ${roleClass}">${body}</span>`
     }).join("")
 
     const summaryLine = participantSummary ? `<p class="meta">${this._escape(participantSummary)}</p>` : ""
+    const noConfidentMatchLine = (totalFaces > 0 && participants.length === 0)
+      ? `<p class="meta">No confident person matches yet${Number.isFinite(minMatchConfidence) && minMatchConfidence > 0 ? ` (requires >= ${this._escape(String(Math.round(minMatchConfidence * 100)))}% confidence)` : ""}.</p>`
+      : ""
     const chipsLine = chips ? `<div class="post-face-chip-row">${chips}</div>` : ""
-    return `<p class="meta">${lines.join(" | ")}</p>${summaryLine}${chipsLine}`
+    return `<p class="meta">${lines.join(" | ")}</p>${noConfidentMatchLine}${summaryLine}${chipsLine}`
   }
 
   async forwardSuggestion(event) {

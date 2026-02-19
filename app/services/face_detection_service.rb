@@ -1,5 +1,6 @@
 class FaceDetectionService
   DEFAULT_MIN_FACE_CONFIDENCE = ENV.fetch("FACE_DETECTION_MIN_CONFIDENCE", "0.25").to_f
+  FACE_DUPLICATE_IOU_THRESHOLD = ENV.fetch("FACE_DETECTION_DUPLICATE_IOU_THRESHOLD", "0.85").to_f
 
   def initialize(client: nil, min_face_confidence: nil)
     @client = client || build_local_client
@@ -91,7 +92,8 @@ class FaceDetectionService
       Array(nested.dig("faceAnnotations"))
     )
     normalized_faces = raw_faces.map { |face| normalize_face(face) }
-    faces = normalized_faces.select { |face| keep_face?(face) }
+    filtered_faces = normalized_faces.select { |face| keep_face?(face) }
+    faces = deduplicate_faces(filtered_faces)
     warnings = Array(payload.dig("metadata", "warnings")) + Array(nested.dig("metadata", "warnings"))
     metadata_reason = payload.dig("metadata", "reason").to_s.presence || nested.dig("metadata", "reason").to_s.presence
 
@@ -110,6 +112,8 @@ class FaceDetectionService
         source: payload.dig("metadata", "source").to_s.presence || nested.dig("metadata", "source").to_s.presence || "local_ai",
         face_count: faces.length,
         detected_face_count: raw_faces.length,
+        filtered_face_count: filtered_faces.length,
+        dropped_face_count: [ raw_faces.length - faces.length, 0 ].max,
         min_face_confidence: @min_face_confidence,
         reason: metadata_reason,
         warnings: warnings.first(20)
@@ -277,12 +281,76 @@ class FaceDetectionService
 
   def keep_face?(face)
     return false unless face.is_a?(Hash)
-    return false if face[:bounding_box].is_a?(Hash) && face[:bounding_box].empty?
+    return false unless valid_bounding_box?(face[:bounding_box])
 
     confidence = face[:confidence].to_f
-    return true if confidence <= 0.0
+    return false if confidence <= 0.0
 
     confidence >= @min_face_confidence
+  end
+
+  def valid_bounding_box?(bbox)
+    row = bbox.is_a?(Hash) ? bbox : {}
+    return false if row.empty?
+
+    x1 = row["x1"].to_f
+    y1 = row["y1"].to_f
+    x2 = row["x2"].to_f
+    y2 = row["y2"].to_f
+    return false unless x2 > x1 && y2 > y1
+
+    width = x2 - x1
+    height = y2 - y1
+    width.positive? && height.positive?
+  end
+
+  def deduplicate_faces(faces)
+    accepted = []
+
+    Array(faces)
+      .sort_by { |face| [ -face[:confidence].to_f, -bounding_box_area(face[:bounding_box]) ] }
+      .each do |face|
+        duplicate = accepted.any? do |existing|
+          bounding_box_iou(existing[:bounding_box], face[:bounding_box]) >= FACE_DUPLICATE_IOU_THRESHOLD
+        end
+        next if duplicate
+
+        accepted << face
+      end
+
+    accepted
+  end
+
+  def bounding_box_area(bbox)
+    row = bbox.is_a?(Hash) ? bbox : {}
+    return 0.0 if row.empty?
+
+    width = row["x2"].to_f - row["x1"].to_f
+    height = row["y2"].to_f - row["y1"].to_f
+    return 0.0 unless width.positive? && height.positive?
+
+    width * height
+  end
+
+  def bounding_box_iou(left_bbox, right_bbox)
+    left = left_bbox.is_a?(Hash) ? left_bbox : {}
+    right = right_bbox.is_a?(Hash) ? right_bbox : {}
+    return 0.0 if left.empty? || right.empty?
+
+    x_left = [ left["x1"].to_f, right["x1"].to_f ].max
+    y_top = [ left["y1"].to_f, right["y1"].to_f ].max
+    x_right = [ left["x2"].to_f, right["x2"].to_f ].min
+    y_bottom = [ left["y2"].to_f, right["y2"].to_f ].min
+
+    inter_width = x_right - x_left
+    inter_height = y_bottom - y_top
+    return 0.0 unless inter_width.positive? && inter_height.positive?
+
+    intersection = inter_width * inter_height
+    union = bounding_box_area(left) + bounding_box_area(right) - intersection
+    return 0.0 unless union.positive?
+
+    intersection / union
   end
 
   def deep_stringify(value)

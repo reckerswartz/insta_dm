@@ -236,4 +236,91 @@ RSpec.describe "PostFaceRecognitionServiceTest" do
     assert_equal "vision_error", post.metadata.dig("face_recognition", "detection_reason")
     assert_equal "upstream timeout", post.metadata.dig("face_recognition", "detection_error")
   end
+
+  it "keeps low confidence faces unlinked and does not call matcher" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
+
+    post = InstagramProfilePost.create!(
+      instagram_account: account,
+      instagram_profile: profile,
+      shortcode: "post_#{SecureRandom.hex(3)}",
+      taken_at: Time.current
+    )
+    post.media.attach(
+      io: StringIO.new(Base64.decode64(PNG_1PX_BASE64)),
+      filename: "tiny.png",
+      content_type: "image/png"
+    )
+
+    fake_detection = Class.new do
+      def detect(media_payload:)
+        {
+          faces: [
+            { confidence: 0.0, bounding_box: { "x1" => 1, "y1" => 2, "x2" => 10, "y2" => 12 }, landmarks: [], likelihoods: {} },
+            { confidence: 0.44, bounding_box: { "x1" => 3, "y1" => 4, "x2" => 12, "y2" => 14 }, landmarks: [], likelihoods: {} }
+          ],
+          ocr_text: "",
+          content_signals: [],
+          hashtags: [],
+          mentions: []
+        }
+      end
+    end.new
+
+    fake_embedding = Class.new do
+      def embed(media_payload:, face:)
+        raise "embedding should not be called for low confidence faces"
+      end
+    end.new
+
+    fake_matcher = Class.new do
+      def match_or_create!(account:, profile:, embedding:, occurred_at:, observation_signature: nil)
+        raise "matcher should not be called for low confidence faces"
+      end
+    end.new
+
+    fake_identity_resolver = Class.new do
+      attr_reader :calls
+
+      def initialize
+        @calls = []
+      end
+
+      def resolve_for_post!(post:, extracted_usernames:, content_summary:)
+        @calls << post.id
+        {
+          skipped: false,
+          summary: {
+            participants: [],
+            unknown_face_count: post.instagram_post_faces.where(instagram_story_person_id: nil).count,
+            participant_summary_text: "No identifiable participants found."
+          }
+        }
+      end
+    end.new
+
+    service = PostFaceRecognitionService.new(
+      face_detection_service: fake_detection,
+      face_embedding_service: fake_embedding,
+      vector_matching_service: fake_matcher,
+      face_identity_resolution_service: fake_identity_resolver,
+      match_min_confidence: 0.8
+    )
+
+    result = service.process!(post: post)
+    post.reload
+
+    assert_equal false, result[:skipped]
+    assert_equal 2, result[:face_count]
+    assert_equal 0, result[:linked_face_count]
+    assert_equal 2, result[:low_confidence_filtered_count]
+    assert_equal 2, post.instagram_post_faces.count
+    assert_equal 2, post.instagram_post_faces.where(instagram_story_person_id: nil).count
+    assert_equal 0, post.metadata.dig("face_recognition", "linked_face_count")
+    assert_equal 2, post.metadata.dig("face_recognition", "unlinked_face_count")
+    assert_equal 2, post.metadata.dig("face_recognition", "low_confidence_filtered_count")
+    assert_equal 0.8, post.metadata.dig("face_recognition", "min_match_confidence")
+    assert_equal 1, fake_identity_resolver.calls.length
+  end
 end

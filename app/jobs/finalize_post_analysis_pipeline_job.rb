@@ -3,6 +3,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
 
   MAX_FINALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_FINALIZE_ATTEMPTS", 30).to_i.clamp(5, 120)
   FINALIZER_LOCK_SECONDS = ENV.fetch("AI_PIPELINE_FINALIZER_LOCK_SECONDS", 4).to_i.clamp(2, 30)
+  STEP_STALL_TIMEOUT_SECONDS = ENV.fetch("AI_PIPELINE_STEP_STALL_TIMEOUT_SECONDS", 180).to_i.clamp(45, 1800)
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, attempts: 0)
     context = load_pipeline_context!(
@@ -34,6 +35,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     return unless acquire_finalizer_slot?(post: post, pipeline_run_id: pipeline_run_id, attempts: attempts)
 
     maybe_enqueue_metadata_step!(context: context, pipeline_run_id: pipeline_run_id)
+    mark_stalled_steps_failed!(context: context, pipeline_run_id: pipeline_run_id)
 
     unless pipeline_state.all_required_steps_terminal?(run_id: pipeline_run_id)
       if attempts.to_i >= MAX_FINALIZE_ATTEMPTS
@@ -215,6 +217,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     metadata["ai_pipeline"] = pipeline
 
     if overall_status == "completed"
+      metadata.delete("ai_pipeline_failure")
       post.update!(
         analysis: analysis,
         metadata: metadata,
@@ -229,6 +232,72 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
         analyzed_at: nil
       )
     end
+  end
+
+  def mark_stalled_steps_failed!(context:, pipeline_run_id:)
+    pipeline_state = context[:pipeline_state]
+    pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
+    return unless pipeline.is_a?(Hash)
+
+    required_steps = Array(pipeline["required_steps"]).map(&:to_s)
+    return if required_steps.empty?
+
+    now = Time.current
+    required_steps.each do |step|
+      row = pipeline.dig("steps", step)
+      next unless row.is_a?(Hash)
+
+      status = row["status"].to_s
+      next unless status.in?(%w[queued running])
+
+      age_seconds = step_age_seconds(step_row: row, pipeline: pipeline, now: now)
+      next unless age_seconds
+      next if age_seconds < STEP_STALL_TIMEOUT_SECONDS
+
+      pipeline_state.mark_step_completed!(
+        run_id: pipeline_run_id,
+        step: step,
+        status: "failed",
+        error: "step_stalled_timeout: status=#{status} age_seconds=#{age_seconds.to_i}",
+        result: {
+          reason: "step_stalled_timeout",
+          previous_status: status,
+          age_seconds: age_seconds.to_i,
+          timeout_seconds: STEP_STALL_TIMEOUT_SECONDS
+        }
+      )
+
+      Ops::StructuredLogger.warn(
+        event: "ai.pipeline.step_stalled",
+        payload: {
+          active_job_id: job_id,
+          instagram_account_id: context[:account].id,
+          instagram_profile_id: context[:profile].id,
+          instagram_profile_post_id: context[:post].id,
+          pipeline_run_id: pipeline_run_id,
+          step: step,
+          previous_status: status,
+          age_seconds: age_seconds.to_i,
+          timeout_seconds: STEP_STALL_TIMEOUT_SECONDS
+        }
+      )
+    end
+  rescue StandardError
+    nil
+  end
+
+  def step_age_seconds(step_row:, pipeline:, now:)
+    reference =
+      parse_time(step_row["started_at"]) ||
+      parse_time(step_row.dig("result", "enqueued_at")) ||
+      parse_time(step_row["created_at"]) ||
+      parse_time(pipeline["updated_at"]) ||
+      parse_time(pipeline["created_at"])
+    return nil unless reference
+
+    (now - reference).to_f
+  rescue StandardError
+    nil
   end
 
   def finalize_as_failed!(post:, pipeline_state:, pipeline_run_id:, reason:)
