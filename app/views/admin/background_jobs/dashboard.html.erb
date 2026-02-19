@@ -94,7 +94,7 @@
                 <td class="meta"><%= j[:context_label] %></td>
                 <td><%= j[:status] %></td>
                 <td><code><%= j[:active_job_id].presence || "-" %></code></td>
-                <td style="min-width: 420px;">
+                <td class="job-details-cell">
                   <details>
                     <summary>inspect</summary>
                     <%= render "job_details", details: j[:details], job: j %>

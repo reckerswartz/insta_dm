@@ -149,7 +149,7 @@
       <details class="details-box">
         <summary>Show Full Analysis JSON</summary>
         <div class="table-scroll">
-          <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(@latest_analysis.analysis || {}) rescue (@latest_analysis.analysis || {}).to_json %></pre>
+          <pre class="meta json-pre"><%= JSON.pretty_generate(@latest_analysis.analysis || {}) rescue (@latest_analysis.analysis || {}).to_json %></pre>
         </div>
       </details>
     <% elsif @latest_analysis.present? && @latest_analysis.status == "failed" %>
@@ -179,7 +179,7 @@
       <details class="details-box">
         <summary>Show Latest Story Intelligence Snapshot</summary>
         <div class="table-scroll">
-          <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(snapshot) rescue snapshot.to_json %></pre>
+          <pre class="meta json-pre"><%= JSON.pretty_generate(snapshot) rescue snapshot.to_json %></pre>
         </div>
       </details>
     <% end %>

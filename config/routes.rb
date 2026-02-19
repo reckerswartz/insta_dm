@@ -45,6 +45,7 @@ Rails.application.routes.draw do
     resources :instagram_profile_messages, only: :create
     resources :instagram_profile_posts, only: [] do
       post :analyze, on: :member
+      post :analyze_next_batch, on: :collection
       post :forward_comment, on: :member
     end
 

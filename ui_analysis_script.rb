@@ -5,31 +5,41 @@ require "fileutils"
 require "json"
 require "net/http"
 require "selenium-webdriver"
+require "set"
 require "time"
 require "timeout"
 require "uri"
 
-class UIAnalyzer
-  INTERACTIVE_SELECTOR = "button, input[type='button'], input[type='submit'], a.btn, [role='button']"
-  MAX_ELEMENTS_PER_PAGE = 36
-  SKIP_PATTERNS = [
-    /delete/i,
-    /clear queue/i,
-    /stop all jobs/i,
-    /danger zone/i,
-    /remove/i,
-    /manual browser login/i,
-    /download/i,
-    /export/i,
-    /open on instagram/i,
-    /mission control/i,
-    /run all tests/i
-  ]
+class UIClickAudit
+  CLICKABLE_SELECTOR = "button, input[type='button'], input[type='submit']"
+  INTERNAL_LINK_SELECTOR = "a[href]"
+
+  DEFAULT_BASE_URL = "http://127.0.0.1:3000"
+  DEFAULT_PAGE_LIMIT = 20
+  DEFAULT_MAX_ELEMENTS_PER_PAGE = 80
+  DEFAULT_VIEWPORT = "1600,1000"
+  DEFAULT_WAIT_MS = 450
+  SKIP_PATH_PATTERNS = [
+    %r{\A/admin/jobs},
+  ].freeze
+  DYNAMIC_PATH_LIMITS = {
+    %r{\A/instagram_accounts/\d+\z} => 2,
+    %r{\A/instagram_posts/\d+\z} => 3,
+    %r{\A/instagram_profiles/\d+\z} => 4,
+    %r{\A/admin/background_jobs/failures/\d+\z} => 3,
+  }.freeze
 
   def initialize
-    @base_url = ENV.fetch("UI_BASE_URL", "http://127.0.0.1:3000")
+    @base_url = ENV.fetch("UI_BASE_URL", DEFAULT_BASE_URL)
+    @page_limit = ENV.fetch("UI_PAGE_LIMIT", DEFAULT_PAGE_LIMIT).to_i
+    @max_elements_per_page = ENV.fetch("UI_MAX_ELEMENTS_PER_PAGE", DEFAULT_MAX_ELEMENTS_PER_PAGE).to_i
+    @wait_after_click = ENV.fetch("UI_WAIT_MS", DEFAULT_WAIT_MS).to_i / 1000.0
+    @viewport = ENV.fetch("UI_VIEWPORT", DEFAULT_VIEWPORT)
+    @parsed_base = URI.parse(@base_url)
+
     timestamp = Time.now.utc.strftime("%Y%m%d_%H%M%S")
-    @screenshots_dir = File.join(Dir.pwd, "tmp", "ui_screenshots", timestamp)
+    viewport_token = @viewport.tr(",", "x")
+    @screenshots_dir = File.join(Dir.pwd, "tmp", "ui_click_audit", "#{timestamp}_#{viewport_token}")
     FileUtils.mkdir_p(@screenshots_dir)
 
     @pages = []
@@ -37,27 +47,31 @@ class UIAnalyzer
 
     chrome_options = Selenium::WebDriver::Chrome::Options.new
     chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--window-size=1600,1000")
+    chrome_options.add_argument("--window-size=#{@viewport}")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-infobars")
 
     @driver = Selenium::WebDriver.for(:chrome, options: chrome_options)
-    @driver.manage.timeouts.page_load = 12
-    @driver.manage.timeouts.script_timeout = 8
+    @driver.manage.timeouts.page_load = 22
+    @driver.manage.timeouts.script_timeout = 10
   end
 
   def run
     abort_unless_server_online!
 
-    puts "UI analyzer started"
+    puts "UI click audit started"
     puts "Base URL: #{@base_url}"
+    puts "Viewport: #{@viewport}"
     puts "Screenshot directory: #{@screenshots_dir}"
 
-    build_page_list!
+    discover_pages!
+    puts "Pages queued (#{@pages.length}):"
+    @pages.each { |page| puts "  - #{page}" }
 
-    @pages.each do |page|
-      analyze_page(page)
+    @pages.each_with_index do |path, idx|
+      analyze_page(path, idx + 1)
     end
 
     write_report!
@@ -77,200 +91,290 @@ class UIAnalyzer
     raise "Cannot connect to #{@base_url}: #{e.message}"
   end
 
-  def build_page_list!
-    static_pages = [
-      { name: "dashboard", path: "/" },
-      { name: "profiles", path: "/instagram_profiles" },
-      { name: "posts", path: "/instagram_posts" },
-      { name: "ai_dashboard", path: "/ai_dashboard" },
-      { name: "jobs", path: "/admin/background_jobs" },
-      { name: "job_failures", path: "/admin/background_jobs/failures" }
-    ]
+  def discover_pages!
+    queue = ["/"]
+    seen = Set.new
+    ordered = []
+    planned_dynamic_counts = Hash.new(0)
 
-    @pages = static_pages.dup
+    while queue.any? && seen.length < @page_limit
+      path = queue.shift
+      next if seen.include?(path)
 
-    discover_dynamic_page!("dashboard", /\/instagram_accounts\/\d+$/)
-    discover_dynamic_page!("profiles", /\/instagram_profiles\/\d+$/)
-    discover_dynamic_page!("posts", /\/instagram_posts\/\d+$/)
-    discover_dynamic_page!("job_failures", /\/admin\/background_jobs\/failures\/\d+$/)
+      seen << path
+      ordered << path
 
-    @pages.uniq! { |p| p[:path] }
+      begin
+        visit(path)
+        collect_internal_links.each do |candidate|
+          next unless enqueue_allowed?(candidate, seen, queue, planned_dynamic_counts)
+          queue << candidate
+        end
+      rescue StandardError => e
+        puts "Discovery warning for #{path}: #{e.message}"
+      end
+    end
 
-    puts "Pages queued:"
-    @pages.each { |page| puts "  - #{page[:path]}" }
+    @pages = ordered
   end
 
-  def discover_dynamic_page!(source_name, path_pattern)
-    source_page = @pages.find { |p| p[:name] == source_name }
-    return unless source_page
+  def enqueue_allowed?(candidate, seen, queue, planned_dynamic_counts)
+    return false if seen.include?(candidate)
+    return false if queue.include?(candidate)
+    return false if queue.length + seen.length >= @page_limit
 
-    visit(source_page[:path])
-    sleep 1.2
+    limit_pair = dynamic_limit_pair(candidate)
+    return true unless limit_pair
 
-    hrefs = @driver.find_elements(tag_name: "a").map { |link| link.attribute("href") }.compact
-    match = hrefs.find { |href| URI(href).path.match?(path_pattern) rescue false }
-    return unless match
+    pattern, limit = limit_pair
+    return false if planned_dynamic_counts[pattern] >= limit
 
-    path = URI(match).path
-    @pages << { name: "dynamic_#{source_name}", path: path }
-  rescue StandardError => e
-    puts "Dynamic discovery skipped for #{source_name}: #{e.message}"
+    planned_dynamic_counts[pattern] += 1
+    true
   end
 
-  def analyze_page(page)
-    puts "\nAnalyzing #{page[:path]}"
-    visit(page[:path])
+  def dynamic_limit_pair(path)
+    DYNAMIC_PATH_LIMITS.find { |pattern, _limit| path.match?(pattern) }
+  end
 
-    baseline_path = screenshot("#{page[:name]}_baseline")
-    elements = collect_interactive_elements.first(MAX_ELEMENTS_PER_PAGE)
+  def collect_internal_links
+    hrefs = Array(@driver.find_elements(css: INTERNAL_LINK_SELECTOR)).map { |link| link.attribute("href") }.compact
+    hrefs.filter_map { |href| normalize_internal_path(href) }.uniq
+  rescue StandardError
+    []
+  end
 
-    puts "  Found #{elements.size} interactive elements (cap #{MAX_ELEMENTS_PER_PAGE})"
+  def normalize_internal_path(href)
+    uri = URI.parse(href)
+    return if uri.scheme && !%w[http https].include?(uri.scheme)
+    return if uri.host && uri.host != @parsed_base.host
+    return if uri.path.start_with?("/rails/active_storage")
+    return if uri.path.start_with?("/assets")
+    return if uri.path.start_with?("/packs")
+    return if uri.path.start_with?("/cable")
+    return if SKIP_PATH_PATTERNS.any? { |pattern| uri.path.match?(pattern) }
+
+    path = uri.path.to_s.strip
+    path = "/" if path.empty?
+
+    query = uri.query.to_s
+    return path if query.empty?
+
+    "#{path}?#{query}"
+  rescue URI::InvalidURIError
+    nil
+  end
+
+  def analyze_page(path, index)
+    puts "\n[#{index}/#{@pages.length}] Analyzing #{path}"
+    visit(path)
+
+    baseline = screenshot("#{safe_name(path)}_baseline")
+    elements = collect_clickable_elements
+
+    puts "  Found #{elements.length} clickable elements"
 
     page_result = {
-      page: page[:path],
+      page: path,
       title: @driver.title,
-      baseline_screenshot: baseline_path,
-      tested: []
+      baseline_screenshot: baseline,
+      tested: [],
     }
 
-    elements.each_with_index do |element, index|
-      page_result[:tested] << test_element(page, element, index)
+    elements.each_with_index do |probe, element_index|
+      page_result[:tested] << test_element(path, probe, element_index)
     end
 
     @results << page_result
   rescue StandardError => e
     @results << {
-      page: page[:path],
+      page: path,
       title: nil,
       baseline_screenshot: nil,
       error: e.message,
-      tested: []
+      tested: [],
     }
   end
 
-  def collect_interactive_elements
-    raw = @driver.execute_script(<<~JS, INTERACTIVE_SELECTOR)
-      return Array.from(document.querySelectorAll(arguments[0])).map((el) => {
+  def collect_clickable_elements
+    raw = @driver.execute_script(<<~JS, CLICKABLE_SELECTOR, @max_elements_per_page)
+      const selector = arguments[0];
+      const maxElements = arguments[1];
+      const rows = [];
+      const els = Array.from(document.querySelectorAll(selector));
+
+      for (const el of els) {
+        if (rows.length >= maxElements) break;
+
         const rect = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
         const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-        if (!visible) return null;
+        if (!visible || el.disabled) continue;
 
-        const text = (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().replace(/\s+/g, " ");
-        return {
+        const text = (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().replace(/\\s+/g, " ");
+        const href = el.getAttribute("href") || "";
+        const type = el.getAttribute("type") || "";
+        const dataAction = el.getAttribute("data-action") || "";
+        const cls = el.className || "";
+        const role = el.getAttribute("role") || "";
+        const semanticClass = cls.toString().split(/\\s+/).filter(Boolean).sort().join(".");
+
+        const fingerprint = [
+          el.tagName.toUpperCase(),
+          text,
+          el.id || "",
+          href,
+          el.getAttribute("name") || "",
+          dataAction,
+          type,
+          role,
+          cls
+        ].join("|");
+
+        const semanticKey = [
+          el.tagName.toUpperCase(),
+          text,
+          type,
+          role,
+          dataAction,
+          semanticClass
+        ].join("|");
+
+        rows.push({
           tag: el.tagName.toLowerCase(),
+          text,
           id: el.id || "",
-          className: el.className || "",
-          type: el.getAttribute("type") || "",
-          href: el.getAttribute("href") || "",
-          name: el.getAttribute("name") || "",
-          text: text,
-          disabled: !!el.disabled,
-          dataAction: el.getAttribute("data-action") || "",
-          fingerprint: [el.tagName, text, el.id, el.getAttribute("href") || "", el.getAttribute("name") || "", el.getAttribute("data-action") || ""].join("|")
-        }
-      }).filter(Boolean)
+          href,
+          type,
+          role,
+          className: cls,
+          dataAction,
+          fingerprint,
+          semanticKey
+        });
+      }
+
+      return rows;
     JS
 
     uniq = {}
-    raw.each do |item|
-      next if item["disabled"]
-      next if item["fingerprint"].to_s.strip.empty?
-      uniq[item["fingerprint"]] ||= item
+    raw.each do |row|
+      key = row["semanticKey"].to_s.strip
+      next if key.empty?
+      uniq[key] ||= row
     end
 
     uniq.values
   end
 
-  def test_element(page, element, index)
-    descriptor = "#{element['tag']} '#{element['text']}'"
-    puts "  -> Testing #{descriptor}"
+  def test_element(path, probe, index)
+    descriptor = "#{probe['tag']} '#{probe['text']}'".strip
+    puts "  -> [#{index + 1}] #{descriptor}"
 
-    if destructive?(element)
-      return {
-        descriptor: descriptor,
-        status: "skipped",
-        reason: "destructive_action"
-      }
-    end
-
-    Timeout.timeout(18) do
-      visit(page[:path])
-      target = find_element_again(element)
-
-      return {
-        descriptor: descriptor,
-        status: "missing",
-        reason: "element_not_found_on_reload"
-      } unless target
+    Timeout.timeout(24) do
+      visit(path)
+      target = find_element_again(probe)
+      return result_for_missing(probe, descriptor) unless target
 
       before_state = capture_state
-      before_path = screenshot("#{safe_name(page[:name])}_#{index}_before")
+      before_shot = screenshot("#{safe_name(path)}_#{index}_before")
 
       click_result = click_element(target)
-      sleep 1
+      sleep @wait_after_click
 
       handle_extra_windows!
-      dismiss_modal_if_needed
+      alert_text = accept_alert_if_present
+      dismiss_confirm_if_present
 
       after_state = capture_state
-      after_path = screenshot("#{safe_name(page[:name])}_#{index}_after")
+      after_shot = screenshot("#{safe_name(path)}_#{index}_after")
 
-      useful = state_changed?(before_state, after_state)
+      useful = useful_action?(before_state, after_state, click_result, alert_text)
+      worked = click_result[:status].start_with?("clicked")
 
       {
         descriptor: descriptor,
+        fingerprint: probe["fingerprint"],
         status: click_result[:status],
         detail: click_result[:detail],
+        worked: worked,
         useful: useful,
         before: before_state,
         after: after_state,
-        before_screenshot: before_path,
-        after_screenshot: after_path
+        before_screenshot: before_shot,
+        after_screenshot: after_shot,
       }
     end
   rescue Timeout::Error
     {
       descriptor: descriptor,
+      fingerprint: probe["fingerprint"],
       status: "timeout",
-      detail: "action_timed_out"
+      detail: "action_timed_out",
+      worked: false,
+      useful: false,
     }
   rescue StandardError => e
     {
       descriptor: descriptor,
+      fingerprint: probe["fingerprint"],
       status: "error",
-      detail: e.message
+      detail: e.message,
+      worked: false,
+      useful: false,
     }
   end
 
-  def click_element(element)
-    @driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-    sleep 0.2
+  def result_for_missing(probe, descriptor)
+    {
+      descriptor: descriptor,
+      fingerprint: probe["fingerprint"],
+      status: "missing",
+      detail: "element_not_found_on_reload",
+      worked: false,
+      useful: false,
+    }
+  end
+
+  def click_element(target)
+    @driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", target)
+    sleep 0.18
 
     begin
-      element.click
-      accept_alert_if_present
+      target.click
       { status: "clicked", detail: nil }
     rescue Selenium::WebDriver::Error::ElementClickInterceptedError
-      @driver.execute_script("arguments[0].click();", element)
-      accept_alert_if_present
+      @driver.execute_script("arguments[0].click();", target)
       { status: "clicked_js", detail: "click_intercepted" }
+    rescue Selenium::WebDriver::Error::ElementNotInteractableError
+      @driver.execute_script("arguments[0].click();", target)
+      { status: "clicked_js", detail: "not_interactable" }
     rescue Selenium::WebDriver::Error::UnexpectedAlertOpenError
-      accept_alert_if_present
-      { status: "clicked_alert", detail: "alert_accepted" }
+      { status: "clicked_alert", detail: "unexpected_alert_open" }
     end
   end
 
   def accept_alert_if_present
-    @driver.switch_to.alert.accept
+    alert = @driver.switch_to.alert
+    text = alert.text.to_s
+    alert.accept
+    text
   rescue Selenium::WebDriver::Error::NoSuchAlertError
     nil
   end
 
-  def find_element_again(probe)
-    candidates = @driver.find_elements(css: INTERACTIVE_SELECTOR)
+  def dismiss_confirm_if_present
+    cancel_btn = @driver.find_elements(css: ".modal.show [data-bs-dismiss='modal'], .modal.show .btn-close").first
+    cancel_btn&.click
+  rescue StandardError
+    nil
+  end
 
+  def find_element_again(probe)
+    candidates = Array(@driver.find_elements(css: CLICKABLE_SELECTOR))
     candidates.find do |el|
+      next false if !el.displayed? || !el.enabled?
+
       text = (el.text.strip.empty? ? (el.attribute("value") || el.attribute("aria-label") || "") : el.text).to_s.strip.gsub(/\s+/, " ")
       fingerprint = [
         el.tag_name.to_s.upcase,
@@ -278,47 +382,45 @@ class UIAnalyzer
         el.attribute("id").to_s,
         el.attribute("href").to_s,
         el.attribute("name").to_s,
-        el.attribute("data-action").to_s
+        el.attribute("data-action").to_s,
+        el.attribute("type").to_s,
+        el.attribute("role").to_s,
+        el.attribute("class").to_s,
       ].join("|")
 
       fingerprint == probe["fingerprint"]
+    rescue Selenium::WebDriver::Error::StaleElementReferenceError
+      false
     end
   end
 
-  def destructive?(element)
-    haystack = [element["text"], element["className"], element["href"], element["dataAction"]].join(" ")
-    SKIP_PATTERNS.any? { |pattern| haystack.match?(pattern) }
-  end
-
   def capture_state
-    text_sample = @driver.execute_script("return (document.body && document.body.innerText || '').slice(0, 3000);")
-    notifications = @driver.find_elements(css: ".alert, .notification, [role='alert']").map { |el| el.text.strip }.reject(&:empty?)
+    text_sample = @driver.execute_script("return (document.body && document.body.innerText || '').slice(0, 6000);")
+    notifications = Array(@driver.find_elements(css: ".alert, .notification, [role='alert']"))
+                           .map { |el| el.text.to_s.strip }
+                           .reject(&:empty?)
 
     {
       url: @driver.current_url,
       title: @driver.title,
-      modal_count: @driver.find_elements(css: ".modal.show, dialog[open]").size,
+      modal_count: Array(@driver.find_elements(css: ".modal.show, dialog[open]")).size,
       notifications: notifications.uniq,
-      body_hash: Digest::MD5.hexdigest(text_sample)
+      body_hash: Digest::MD5.hexdigest(text_sample),
     }
   end
 
-  def state_changed?(before_state, after_state)
+  def useful_action?(before_state, after_state, click_result, alert_text)
+    return true if alert_text.to_s.strip.length.positive?
+    return false unless click_result[:status].start_with?("clicked")
+
     before_state[:url] != after_state[:url] ||
       before_state[:modal_count] != after_state[:modal_count] ||
       before_state[:notifications] != after_state[:notifications] ||
       before_state[:body_hash] != after_state[:body_hash]
   end
 
-  def dismiss_modal_if_needed
-    close_buttons = @driver.find_elements(css: ".modal.show [data-bs-dismiss='modal'], .modal.show .btn-close")
-    close_buttons.first&.click if close_buttons.any?
-  rescue StandardError
-    nil
-  end
-
   def handle_extra_windows!
-    handles = @driver.window_handles
+    handles = Array(@driver.window_handles)
     return if handles.size <= 1
 
     handles[1..].each do |handle|
@@ -331,7 +433,7 @@ class UIAnalyzer
 
   def visit(path)
     @driver.navigate.to(URI.join(@base_url, path).to_s)
-    sleep 1.2
+    sleep 1.0
   end
 
   def screenshot(name)
@@ -345,35 +447,39 @@ class UIAnalyzer
   end
 
   def write_report!
-    flat = @results.flat_map { |row| row[:tested] || [] }
-    tested = flat.count { |item| item[:status]&.start_with?("clicked") }
-    useful = flat.count { |item| item[:useful] }
-    skipped = flat.count { |item| item[:status] == "skipped" }
-    failed = flat.count { |item| item[:status] == "error" }
+    flattened = @results.flat_map { |row| row[:tested] || [] }
+    worked_count = flattened.count { |item| item[:worked] }
+    useful_count = flattened.count { |item| item[:useful] }
+    errors_count = flattened.count { |item| %w[error timeout].include?(item[:status]) }
+    missing_count = flattened.count { |item| item[:status] == "missing" }
 
     report = {
       generated_at: Time.now.utc.iso8601,
       base_url: @base_url,
+      viewport: @viewport,
       screenshot_directory: @screenshots_dir,
+      page_limit: @page_limit,
+      max_elements_per_page: @max_elements_per_page,
       pages: @results,
       summary: {
-        total_elements: flat.length,
-        clicked_elements: tested,
-        useful_actions: useful,
-        skipped_destructive: skipped,
-        errors: failed
-      }
+        pages_tested: @results.length,
+        total_click_targets: flattened.length,
+        worked_actions: worked_count,
+        useful_actions: useful_count,
+        errors: errors_count,
+        missing_after_reload: missing_count,
+      },
     }
 
-    report_path = File.join(@screenshots_dir, "ui_analysis_report.json")
+    report_path = File.join(@screenshots_dir, "ui_click_audit_report.json")
     File.write(report_path, JSON.pretty_generate(report))
 
-    puts "\nUI analyzer complete"
+    puts "\nUI click audit complete"
     puts "Report: #{report_path}"
     puts "Summary: #{report[:summary]}"
   end
 end
 
 if __FILE__ == $PROGRAM_NAME
-  UIAnalyzer.new.run
+  UIClickAudit.new.run
 end

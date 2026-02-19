@@ -2794,6 +2794,10 @@ module Instagram
         ig_user_id = web_user.is_a?(Hash) ? web_user["id"].to_s.strip.presence : nil
         bio = web_user.is_a?(Hash) ? web_user["biography"].to_s.presence : nil
         full_name = web_user.is_a?(Hash) ? web_user["full_name"].to_s.strip.presence : nil
+        followers_count = web_user.is_a?(Hash) ? normalize_count(web_user["follower_count"]) : nil
+        followers_count ||= extract_profile_follow_counts(html)&.dig(:followers)
+        category_name = web_user.is_a?(Hash) ? web_user["category_name"].to_s.strip.presence : nil
+        is_business_account = web_user.is_a?(Hash) ? ActiveModel::Type::Boolean.new.cast(web_user["is_business_account"]) : nil
 
         display_name ||= full_name
 
@@ -2807,6 +2811,9 @@ module Instagram
           profile_pic_url: pic,
           ig_user_id: ig_user_id,
           bio: bio,
+          followers_count: followers_count,
+          category_name: category_name,
+          is_business_account: is_business_account,
           last_post_at: post[:taken_at],
           latest_post_shortcode: post[:shortcode]
         }
@@ -3021,6 +3028,9 @@ module Instagram
         profile_pic_url: CGI.unescapeHTML(user["profile_pic_url_hd"].to_s).strip.presence || CGI.unescapeHTML(user["profile_pic_url"].to_s).strip.presence,
         ig_user_id: user["id"].to_s.strip.presence,
         bio: user["biography"].to_s.presence,
+        followers_count: normalize_count(user["follower_count"]),
+        category_name: user["category_name"].to_s.strip.presence,
+        is_business_account: ActiveModel::Type::Boolean.new.cast(user["is_business_account"]),
         last_post_at: latest[:taken_at],
         latest_post_shortcode: latest[:shortcode]
       }
@@ -4825,6 +4835,15 @@ module Instagram
 
     def normalize_username(value)
       value.to_s.strip.downcase.gsub(/[^a-z0-9._]/, "")
+    end
+
+    def normalize_count(value)
+      text = value.to_s.strip
+      return nil unless text.match?(/\A\d+\z/)
+
+      text.to_i
+    rescue StandardError
+      nil
     end
 
     def extract_profile_follow_counts(html)

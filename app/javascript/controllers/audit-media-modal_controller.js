@@ -51,16 +51,16 @@ export default class extends Controller {
       )
 
       if (this.hasVideoShellTarget) {
-        this.videoShellTarget.style.display = "block"
+        this.videoShellTarget.classList.remove("media-shell-hidden")
       } else {
-        this.videoTarget.style.display = "block"
+        this.videoTarget.classList.remove("media-shell-hidden")
       }
       this.imageTarget.removeAttribute("src")
-      this.imageTarget.style.display = "none"
+      this.imageTarget.classList.add("media-shell-hidden")
     } else {
       this.clearVideoPlayer()
       this.imageTarget.src = mediaUrl
-      this.imageTarget.style.display = "block"
+      this.imageTarget.classList.remove("media-shell-hidden")
     }
 
     if (this.dialogTarget.open) this.dialogTarget.close()
@@ -75,9 +75,9 @@ export default class extends Controller {
   clearVideoPlayer() {
     this.videoTarget.dispatchEvent(new CustomEvent("video-player:clear"))
     if (this.hasVideoShellTarget) {
-      this.videoShellTarget.style.display = "none"
+      this.videoShellTarget.classList.add("media-shell-hidden")
     } else {
-      this.videoTarget.style.display = "none"
+      this.videoTarget.classList.add("media-shell-hidden")
     }
   }
 }

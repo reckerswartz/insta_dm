@@ -162,8 +162,8 @@ export default class extends Controller {
 
     if (isVideo) {
       this.mediaImageEl.removeAttribute("src")
-      this.mediaImageEl.style.display = "none"
-      this.mediaVideoShellEl.style.display = "block"
+      this.mediaImageEl.classList.add("media-shell-hidden")
+      this.mediaVideoShellEl.classList.remove("media-shell-hidden")
       this.mediaVideoEl.dataset.videoSource = mediaUrl
       this.mediaVideoEl.dataset.videoContentType = contentType
       this.mediaVideoEl.dispatchEvent(
@@ -174,7 +174,7 @@ export default class extends Controller {
     } else {
       this.clearMediaVideo()
       this.mediaImageEl.src = mediaUrl
-      this.mediaImageEl.style.display = "block"
+      this.mediaImageEl.classList.remove("media-shell-hidden")
     }
 
     if (this.mediaModalEl.open) this.mediaModalEl.close()
@@ -189,7 +189,7 @@ export default class extends Controller {
   clearMediaVideo() {
     if (!this.mediaVideoEl || !this.mediaVideoShellEl) return
     this.mediaVideoEl.dispatchEvent(new CustomEvent("video-player:clear"))
-    this.mediaVideoShellEl.style.display = "none"
+    this.mediaVideoShellEl.classList.add("media-shell-hidden")
   }
 
   ensureMediaModal() {
@@ -204,8 +204,8 @@ export default class extends Controller {
       </div>
       <div class="modal-grid">
         <div>
-          <img data-profile-media-image alt="Profile event media" style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line);" />
-          <div data-profile-media-video-shell class="story-video-player-shell audit-video-player-shell" style="display:none;">
+          <img data-profile-media-image alt="Profile event media" class="modal-media-image" />
+          <div data-profile-media-video-shell class="story-video-player-shell audit-video-player-shell media-shell-hidden">
             <video data-profile-media-video data-controller="video-player" data-video-player-autoplay-value="true" controls playsinline preload="none"></video>
           </div>
         </div>

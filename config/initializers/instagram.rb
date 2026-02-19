@@ -14,3 +14,12 @@ headless_setting =
   end
 Rails.application.config.x.instagram.headless =
   headless_setting.nil? ? true : boolean.cast(headless_setting)
+
+max_followers_setting =
+  if ENV.key?("INSTAGRAM_PROFILE_SCAN_MAX_FOLLOWERS")
+    ENV.fetch("INSTAGRAM_PROFILE_SCAN_MAX_FOLLOWERS")
+  else
+    credentials.dig(:instagram, :profile_scan_max_followers)
+  end
+max_followers_i = max_followers_setting.to_s.strip.match?(/\A\d+\z/) ? max_followers_setting.to_i : 20_000
+Rails.application.config.x.instagram.profile_scan_max_followers = max_followers_i.positive? ? max_followers_i : 20_000

@@ -68,6 +68,35 @@ class CaptureInstagramProfilePostsJobTest < ActiveSupport::TestCase
     assert_equal 1, analysis_log.metadata["queued_post_count"].to_i
   end
 
+  test "capture job skips scan when profile exceeds followers threshold" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "profile_#{SecureRandom.hex(4)}",
+      followers_count: 45_000
+    )
+
+    collector_stub = Object.new
+    collector_stub.define_singleton_method(:collect_and_persist!) do |**_kwargs|
+      raise "collector should not run for high-follower profiles"
+    end
+
+    with_profile_collector_stub(collector_stub) do
+      assert_no_enqueued_jobs only: AnalyzeCapturedInstagramProfilePostsJob do
+        CaptureInstagramProfilePostsJob.perform_now(
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          comments_limit: 12
+        )
+      end
+    end
+
+    capture_log = profile.instagram_profile_action_logs.where(action: "capture_profile_posts").order(id: :desc).first
+    assert_not_nil capture_log
+    assert_equal "succeeded", capture_log.status
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(capture_log.metadata["skipped"])
+    assert_equal "followers_threshold_exceeded", capture_log.metadata["skip_reason_code"]
+  end
+
   private
 
   def with_profile_collector_stub(stubbed_collector)

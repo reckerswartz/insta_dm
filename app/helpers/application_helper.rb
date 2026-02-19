@@ -23,10 +23,15 @@ module ApplicationHelper
       path = name
       name = capture(&block)
     end
-    
+
+    active = top_nav_active?(section)
     classes = [ "nav-link", options.delete(:class) ]
-    classes << "active" if top_nav_active?(section)
-    link_to name, path, **options.merge(class: classes.compact.join(" "))
+    classes << "active" if active
+
+    aria_options = (options.delete(:aria) || {}).dup
+    aria_options[:current] = "page" if active
+
+    link_to name, path, **options.merge(class: classes.compact.join(" "), aria: aria_options)
   end
 
   def get_default_test_for_service(service)

@@ -29,8 +29,27 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
       }
     )
 
+    policy_decision = Instagram::ProfileScanPolicy.new(profile: profile).decision
+    if policy_decision[:skip_scan]
+      if policy_decision[:reason_code].to_s == "non_personal_profile_page" || policy_decision[:reason_code].to_s == "scan_excluded_tag"
+        Instagram::ProfileScanPolicy.mark_scan_excluded!(profile: profile)
+      end
+
+      action_log.mark_succeeded!(
+        extra_metadata: {
+          skipped: true,
+          skip_reason_code: policy_decision[:reason_code],
+          skip_reason: policy_decision[:reason],
+          followers_count: policy_decision[:followers_count],
+          max_followers: policy_decision[:max_followers]
+        },
+        log_text: "Skipped profile post capture: #{policy_decision[:reason]}"
+      )
+      return
+    end
+
     collected = Instagram::ProfileAnalysisCollector.new(account: account, profile: profile).collect_and_persist!(
-      posts_limit: nil,
+      posts_limit: 100,
       comments_limit: comments_limit_i,
       track_missing_as_deleted: true,
       sync_source: "profile_posts_manual_capture"
@@ -74,6 +93,7 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
         unchanged_count: summary[:unchanged_count].to_i,
         deleted_count: summary[:deleted_count].to_i,
         analysis_candidates_count: analysis_enqueue[:candidate_count],
+        total_analysis_candidates: analysis_enqueue[:total_candidates_count],
         analysis_job_queued: analysis_enqueue[:queued],
         captured_events_count: event_counts[:captured],
         deleted_events_count: event_counts[:deleted],
@@ -106,6 +126,7 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
         deleted_shortcodes: deleted_shortcodes.first(40),
         analysis_candidate_shortcodes: analysis_candidate_shortcodes.first(120),
         analysis_candidates_count: analysis_enqueue[:candidate_count],
+        total_analysis_candidates: analysis_enqueue[:total_candidates_count],
         analysis_job_queued: analysis_enqueue[:queued],
         analysis_job_id: analysis_enqueue[:job_id],
         analysis_action_log_id: analysis_enqueue[:action_log_id],
@@ -211,6 +232,9 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
     )
     return { queued: false, candidate_count: 0, job_id: nil, action_log_id: nil } if candidates.empty?
 
+    # Limit to first 50 posts for initial analysis
+    limited_candidates = candidates.first(50)
+
     analysis_log = profile.instagram_profile_action_logs.create!(
       instagram_account: account,
       action: "analyze_profile_posts",
@@ -219,8 +243,10 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
       occurred_at: Time.current,
       metadata: {
         requested_by: self.class.name,
-        queued_post_ids: candidates.first(150),
-        queued_post_count: candidates.length
+        queued_post_ids: limited_candidates,
+        queued_post_count: limited_candidates.length,
+        total_candidates_count: candidates.length,
+        analysis_batch: "initial_50"
       }
     )
 
@@ -228,14 +254,15 @@ class CaptureInstagramProfilePostsJob < ApplicationJob
       instagram_account_id: account.id,
       instagram_profile_id: profile.id,
       profile_action_log_id: analysis_log.id,
-      post_ids: candidates,
+      post_ids: limited_candidates,
       refresh_profile_insights: true
     )
     analysis_log.update!(active_job_id: job.job_id, queue_name: job.queue_name)
 
     {
       queued: true,
-      candidate_count: candidates.length,
+      candidate_count: limited_candidates.length,
+      total_candidates_count: candidates.length,
       job_id: job.job_id,
       action_log_id: analysis_log.id
     }

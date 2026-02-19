@@ -22,10 +22,10 @@ export default class extends Controller {
 
     if (data.imageUrl) {
       this.imageTarget.src = data.imageUrl
-      this.imageTarget.style.display = "block"
+      this.imageTarget.classList.remove("media-shell-hidden")
     } else {
       this.imageTarget.removeAttribute("src")
-      this.imageTarget.style.display = "none"
+      this.imageTarget.classList.add("media-shell-hidden")
     }
 
     this.downloadTarget.href = data.downloadUrl || "#"
@@ -61,7 +61,7 @@ export default class extends Controller {
 
     return `<ul class='issue-list'>${items.map((v, i) => {
       const txt = this._escape(String(v))
-      return `<li><div>${txt}</div><div style="margin-top:6px;"><button type="button" class="btn small" data-forward-comment="${txt}" data-forward-idx="${i}">Forward Comment</button></div></li>`
+      return `<li><div>${txt}</div><div class="suggestion-action-row"><button type="button" class="btn small" data-forward-comment="${txt}" data-forward-idx="${i}">Forward Comment</button></div></li>`
     }).join("")}</ul>`
   }
 

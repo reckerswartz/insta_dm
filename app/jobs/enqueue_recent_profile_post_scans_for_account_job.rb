@@ -75,6 +75,7 @@ class EnqueueRecentProfilePostScansForAccountJob < ApplicationJob
       .where(id: candidate_ids)
       .includes(:profile_tags)
       .to_a
+      .reject { |profile| Instagram::ProfileScanPolicy.skip_from_cached_profile?(profile: profile) }
       .sort_by do |profile|
         tag_names = profile.profile_tags.map(&:name)
         visited_rank = tag_names.include?(VISITED_TAG) ? 1 : 0

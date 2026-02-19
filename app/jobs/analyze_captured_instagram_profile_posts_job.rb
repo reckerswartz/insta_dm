@@ -30,6 +30,24 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
       return
     end
 
+    policy_decision = Instagram::ProfileScanPolicy.new(profile: profile).decision
+    if policy_decision[:skip_post_analysis]
+      mark_posts_as_policy_skipped!(profile: profile, ids: ids, decision: policy_decision)
+      action_log.mark_succeeded!(
+        extra_metadata: {
+          skipped: true,
+          reason: "profile_scan_policy_blocked",
+          skip_reason_code: policy_decision[:reason_code],
+          skip_reason: policy_decision[:reason],
+          followers_count: policy_decision[:followers_count],
+          max_followers: policy_decision[:max_followers],
+          skipped_posts_count: ids.length
+        },
+        log_text: "Skipped post analysis: #{policy_decision[:reason]}"
+      )
+      return
+    end
+
     batch_size_i = batch_size.to_i.clamp(1, MAX_BATCH_SIZE)
     total_candidates_i = total_candidates.to_i.positive? ? total_candidates.to_i : ids.length
     current_batch_ids = ids.first(batch_size_i)
@@ -160,5 +178,13 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
       "failed_posts" => (previous_failed_rows + Array(failed_rows)).first(30),
       "updated_at" => Time.current.iso8601
     }
+  end
+
+  def mark_posts_as_policy_skipped!(profile:, ids:, decision:)
+    profile.instagram_profile_posts.where(id: Array(ids).map(&:to_i).select(&:positive?)).find_each do |post|
+      Instagram::ProfileScanPolicy.mark_post_analysis_skipped!(post: post, decision: decision)
+    rescue StandardError
+      next
+    end
   end
 end

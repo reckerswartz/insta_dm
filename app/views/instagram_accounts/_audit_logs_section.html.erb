@@ -44,7 +44,7 @@
                   <% if entry[:comment_text].present? %>
                     <details>
                       <summary>View Comment</summary>
-                      <pre class="meta" style="white-space: pre-wrap; margin-top: 0.4rem;"><%= entry[:comment_text] %></pre>
+                      <pre class="meta json-pre audit-comment-pre"><%= entry[:comment_text] %></pre>
                     </details>
                   <% end %>
                 </td>
@@ -81,8 +81,8 @@
         </div>
         <div class="modal-grid">
           <div>
-            <img data-audit-media-modal-target="image" alt="Audit media preview" style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line);" />
-            <div data-audit-media-modal-target="videoShell" class="story-video-player-shell audit-video-player-shell" style="display:none;">
+            <img data-audit-media-modal-target="image" alt="Audit media preview" class="modal-media-image" />
+            <div data-audit-media-modal-target="videoShell" class="story-video-player-shell audit-video-player-shell media-shell-hidden">
               <video
                 data-audit-media-modal-target="video"
                 data-controller="video-player"

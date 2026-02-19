@@ -49,6 +49,98 @@ class InstagramProfilePostsController < ApplicationController
     end
   end
 
+  def analyze_next_batch
+    profile = current_account.instagram_profiles.find(params[:instagram_profile_id])
+    offset = params[:offset].to_i || 50
+    batch_size = 10
+
+    # Find unanalyzed posts starting from the offset
+    unanalyzed_posts = profile.instagram_profile_posts
+      .where.not(ai_status: "analyzed")
+      .or(profile.instagram_profile_posts.where(ai_status: nil))
+      .order(:taken_at)
+      .offset(offset)
+      .limit(batch_size)
+
+    if unanalyzed_posts.empty?
+      message = "No more posts to analyze."
+      respond_to do |format|
+        format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: message }
+        format.turbo_stream do
+          render turbo_stream: turbo_stream.append(
+            "notifications",
+            partial: "shared/notification",
+            locals: { kind: "notice", message: message }
+          )
+        end
+        format.json { render json: { message: message }, status: :ok }
+      end
+      return
+    end
+
+    # Create action log for this batch
+    action_log = profile.instagram_profile_action_logs.create!(
+      instagram_account: current_account,
+      action: "analyze_profile_posts_batch",
+      status: "queued",
+      trigger_source: "ui",
+      occurred_at: Time.current,
+      metadata: {
+        requested_by: "InstagramProfilePostsController",
+        offset: offset,
+        batch_size: batch_size,
+        post_ids: unanalyzed_posts.pluck(:id),
+        analysis_batch: "next_#{batch_size}_from_#{offset}"
+      }
+    )
+
+    # Queue analysis job
+    job = AnalyzeCapturedInstagramProfilePostsJob.perform_later(
+      instagram_account_id: current_account.id,
+      instagram_profile_id: profile.id,
+      profile_action_log_id: action_log.id,
+      post_ids: unanalyzed_posts.pluck(:id),
+      refresh_profile_insights: false
+    )
+    action_log.update!(active_job_id: job.job_id, queue_name: job.queue_name)
+
+    message = "Queued analysis for next #{unanalyzed_posts.length} posts (posts #{offset + 1}-#{offset + unanalyzed_posts.length})."
+    respond_to do |format|
+      format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: message }
+      format.turbo_stream do
+        profile_posts = profile.instagram_profile_posts.includes(:instagram_profile_post_comments, :ai_analyses, media_attachment: :blob).recent_first.limit(100)
+        render turbo_stream: [
+          turbo_stream.append(
+            "notifications",
+            partial: "shared/notification",
+            locals: { kind: "notice", message: message }
+          ),
+          turbo_stream.replace(
+            "captured_profile_posts_section",
+            partial: "instagram_profiles/captured_posts_section",
+            locals: {
+              profile: profile,
+              profile_posts: profile_posts
+            }
+          )
+        ]
+      end
+      format.json { render json: { message: message, job_id: job.job_id }, status: :accepted }
+    end
+  rescue StandardError => e
+    respond_to do |format|
+      format.html { redirect_back fallback_location: instagram_profile_path(params[:instagram_profile_id]), alert: "Unable to queue batch analysis: #{e.message}" }
+      format.turbo_stream do
+        render turbo_stream: turbo_stream.append(
+          "notifications",
+          partial: "shared/notification",
+          locals: { kind: "alert", message: "Unable to queue batch analysis: #{e.message}" }
+        )
+      end
+      format.json { render json: { error: e.message }, status: :unprocessable_entity }
+    end
+  end
+
   def forward_comment
     profile = current_account.instagram_profiles.find(params[:instagram_profile_id])
     post = profile.instagram_profile_posts.find(params[:id])

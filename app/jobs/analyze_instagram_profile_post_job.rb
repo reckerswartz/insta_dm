@@ -11,6 +11,16 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
     account = InstagramAccount.find(instagram_account_id)
     profile = account.instagram_profiles.find(instagram_profile_id)
     post = profile.instagram_profile_posts.find(instagram_profile_post_id)
+    policy_decision = Instagram::ProfileScanPolicy.new(profile: profile).decision
+
+    if policy_decision[:skip_post_analysis]
+      if policy_decision[:reason_code].to_s == "non_personal_profile_page" || policy_decision[:reason_code].to_s == "scan_excluded_tag"
+        Instagram::ProfileScanPolicy.mark_scan_excluded!(profile: profile)
+      end
+
+      Instagram::ProfileScanPolicy.mark_post_analysis_skipped!(post: post, decision: policy_decision)
+      return
+    end
 
     payload = build_payload(profile: profile, post: post)
     media = build_media_payload(post)

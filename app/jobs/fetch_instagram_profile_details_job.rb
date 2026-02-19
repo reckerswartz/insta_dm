@@ -18,6 +18,7 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
 
     details = Instagram::Client.new(account: account).fetch_profile_details_and_verify_messageability!(username: profile.username)
     normalized_pic_url = Instagram::AvatarUrlNormalizer.normalize(details[:profile_pic_url])
+    followers_count = normalize_count(details[:followers_count])
 
     prev_last_post_at = profile.last_post_at
     profile.update!(
@@ -25,6 +26,7 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
       profile_pic_url: normalized_pic_url.presence || profile.profile_pic_url,
       ig_user_id: details[:ig_user_id].presence || profile.ig_user_id,
       bio: details[:bio].presence || profile.bio,
+      followers_count: followers_count || profile.followers_count,
       can_message: details[:can_message],
       restriction_reason: details[:restriction_reason],
       dm_interaction_state: details[:dm_state].to_s.presence || (details[:can_message] ? "messageable" : "unavailable"),
@@ -36,6 +38,8 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
 
     profile.recompute_last_active!
     profile.save!
+
+    apply_scan_exclusion_tag!(profile: profile, details: details)
 
     # Record post activity (best-effort from API profile payload).
     if profile.last_post_at.present? && (prev_last_post_at.nil? || profile.last_post_at > prev_last_post_at)
@@ -119,5 +123,26 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
     Digest::SHA256.hexdigest(base)
   rescue StandardError
     Digest::SHA256.hexdigest(url.to_s)
+  end
+
+  def normalize_count(value)
+    text = value.to_s.strip
+    return nil unless text.match?(/\A\d+\z/)
+
+    text.to_i
+  rescue StandardError
+    nil
+  end
+
+  def apply_scan_exclusion_tag!(profile:, details:)
+    decision = Instagram::ProfileScanPolicy.new(profile: profile, profile_details: details).decision
+    if decision[:reason_code].to_s == "non_personal_profile_page" || decision[:reason_code].to_s == "scan_excluded_tag"
+      Instagram::ProfileScanPolicy.mark_scan_excluded!(profile: profile)
+      return
+    end
+
+    Instagram::ProfileScanPolicy.clear_scan_excluded!(profile: profile) unless decision[:skip_scan]
+  rescue StandardError
+    nil
   end
 end

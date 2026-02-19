@@ -10,6 +10,47 @@
   <h2>Captured Profile Posts (AI Input)</h2>
   <p class="meta">Archive-style view of captured posts. New items are downloaded once, deleted source posts are flagged (not removed), and duplicates are skipped.</p>
 
+  <%# Analysis Pagination Controls %>
+  <% total_posts = profile.instagram_profile_posts.count %>
+  <% analyzed_posts = profile.instagram_profile_posts.where(ai_status: "analyzed").count %>
+  <% unanalyzed_posts = total_posts - analyzed_posts %>
+  
+  <% if total_posts > 0 %>
+    <div class="analysis-pagination-section" style="margin-bottom: 1.5rem; padding: 1rem; background: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;">
+      <p class="meta" style="margin-bottom: 1rem; font-weight: 500;">
+        <strong>Analysis Status:</strong> 
+        <%= analyzed_posts %> of <%= total_posts %> posts analyzed 
+        (<%= unanalyzed_posts %> remaining)
+      </p>
+      
+      <% if unanalyzed_posts > 0 %>
+        <div class="actions-row" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <%# Show next 10 posts button %>
+          <%= form_with url: analyze_next_batch_instagram_profile_instagram_profile_posts_path(profile), method: :post, local: true, class: "inline-form", style: "display: inline;" do |form| %>
+            <%= hidden_field_tag :offset, 50 %>
+            <%= form.submit "Analyze Next 10 Posts", class: "btn small", disabled: unanalyzed_posts == 0 %>
+          <% end %>
+          
+          <%# Show next 10 posts from offset 60 %>
+          <% if unanalyzed_posts > 10 %>
+            <%= form_with url: analyze_next_batch_instagram_profile_instagram_profile_posts_path(profile), method: :post, local: true, class: "inline-form", style: "display: inline;" do |form| %>
+              <%= hidden_field_tag :offset, 60 %>
+              <%= form.submit "Analyze Next 10 Posts (Posts 61-70)", class: "btn small secondary" %>
+            <% end %>
+          <% end %>
+          
+          <%# Show next 10 posts from offset 70 %>
+          <% if unanalyzed_posts > 20 %>
+            <%= form_with url: analyze_next_batch_instagram_profile_instagram_profile_posts_path(profile), method: :post, local: true, class: "inline-form", style: "display: inline;" do |form| %>
+              <%= hidden_field_tag :offset, 70 %>
+              <%= form.submit "Analyze Next 10 Posts (Posts 71-80)", class: "btn small secondary" %>
+            <% end %>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+
   <% if visible_posts.any? %>
     <div data-controller="profile-post-modal">
       <div class="story-media-grid profile-story-grid">
@@ -169,7 +210,7 @@
         </div>
         <div class="modal-grid">
           <div>
-            <img data-profile-post-modal-target="image" alt="Post image" style="max-width: 100%; border-radius: 10px; border: 1px solid var(--line);" />
+            <img data-profile-post-modal-target="image" alt="Post image" class="modal-media-image" />
             <p class="meta" data-profile-post-modal-target="stats"></p>
             <p class="meta" data-profile-post-modal-target="meta"></p>
             <p class="meta" data-profile-post-modal-target="generation"></p>

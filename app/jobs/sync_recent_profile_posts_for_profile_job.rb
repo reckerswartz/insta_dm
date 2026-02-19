@@ -30,6 +30,12 @@ class SyncRecentProfilePostsForProfileJob < ApplicationJob
       stories_limit: 3
     )
     update_story_activity!(profile: profile, story_dataset: story_dataset)
+    policy_decision = Instagram::ProfileScanPolicy.new(profile: profile, profile_details: story_dataset[:profile]).decision
+    if policy_decision[:skip_scan]
+      handle_policy_skip!(account: account, profile: profile, action_log: action_log, decision: policy_decision, story_dataset: story_dataset)
+      return
+    end
+    Instagram::ProfileScanPolicy.clear_scan_excluded!(profile: profile)
 
     existing_shortcodes = profile.instagram_profile_posts.pluck(:shortcode).to_set
     collected = Instagram::ProfileAnalysisCollector.new(account: account, profile: profile).collect_and_persist!(
@@ -92,6 +98,7 @@ class SyncRecentProfilePostsForProfileJob < ApplicationJob
     profile.profile_pic_url = details[:profile_pic_url].presence || profile.profile_pic_url
     profile.ig_user_id = details[:ig_user_id].presence || profile.ig_user_id
     profile.bio = details[:bio].presence || profile.bio
+    profile.followers_count = normalize_count(details[:followers_count]) || profile.followers_count
     profile.last_post_at = details[:last_post_at].presence || profile.last_post_at
 
     if stories.any?
@@ -110,6 +117,49 @@ class SyncRecentProfilePostsForProfileJob < ApplicationJob
 
     profile.recompute_last_active!
     profile.save!
+  end
+
+  def normalize_count(value)
+    text = value.to_s.strip
+    return nil unless text.match?(/\A\d+\z/)
+
+    text.to_i
+  rescue StandardError
+    nil
+  end
+
+  def handle_policy_skip!(account:, profile:, action_log:, decision:, story_dataset:)
+    reason_code = decision[:reason_code].to_s
+    if reason_code == "non_personal_profile_page" || reason_code == "scan_excluded_tag"
+      Instagram::ProfileScanPolicy.mark_scan_excluded!(profile: profile)
+    end
+
+    profile.update!(last_synced_at: Time.current)
+    profile.record_event!(
+      kind: "profile_recent_posts_scan_skipped",
+      external_id: "profile_recent_posts_scan_skipped:#{Time.current.utc.iso8601(6)}",
+      occurred_at: Time.current,
+      metadata: {
+        source: "recurring_profile_recent_posts_scan",
+        reason_code: reason_code,
+        reason: decision[:reason],
+        followers_count: decision[:followers_count],
+        max_followers: decision[:max_followers],
+        stories_detected: Array(story_dataset[:stories]).length
+      }
+    )
+
+    action_log.mark_succeeded!(
+      extra_metadata: {
+        skipped: true,
+        skip_reason_code: reason_code,
+        skip_reason: decision[:reason],
+        followers_count: decision[:followers_count],
+        max_followers: decision[:max_followers],
+        stories_detected: Array(story_dataset[:stories]).length
+      },
+      log_text: "Skipped profile scan: #{decision[:reason]}"
+    )
   end
 
   def apply_scan_tags!(profile:, has_new_posts:)

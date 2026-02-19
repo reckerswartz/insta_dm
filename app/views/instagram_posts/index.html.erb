@@ -2,8 +2,15 @@
 
 <div class="page">
   <header class="page-header">
-    <h1>Feed Posts</h1>
-    <p class="meta">Captured from your home feed during feed capture runs. Analyze results and decide manual interactions.</p>
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <div>
+        <h1>Feed Posts</h1>
+        <p class="meta">Captured from your home feed during feed capture runs. Analyze results and decide manual interactions.</p>
+      </div>
+      <% if current_account %>
+        <%= link_to "Account Dashboard", instagram_account_path(current_account), class: "btn secondary" %>
+      <% end %>
+    </div>
   </header>
 
   <section class="card">
@@ -12,7 +19,9 @@
 
     <div class="actions-row">
       <%= button_to "Capture Feed (Background)", feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20), method: :post %>
-      <%= link_to "Account Dashboard", instagram_account_path(current_account), class: "btn secondary" %>
+      <% if current_account %>
+        <%= link_to "Account Dashboard", instagram_account_path(current_account), class: "btn secondary" %>
+      <% end %>
     </div>
   </section>
 

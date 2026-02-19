@@ -28,9 +28,9 @@
       </div>
 
       <% if @post.media.blob&.content_type.to_s.start_with?("video/") %>
-        <%= video_tag rails_blob_path(@post.media), controls: true, style: "max-width: 100%; border-radius: 12px; border: 1px solid var(--line);" %>
+        <%= video_tag rails_blob_path(@post.media), controls: true, class: "modal-media-image" %>
       <% else %>
-        <%= image_tag @post.media, style: "max-width: 100%; border-radius: 12px; border: 1px solid var(--line);" %>
+        <%= image_tag @post.media, class: "modal-media-image" %>
       <% end %>
     <% else %>
       <p class="meta">No media attached yet.</p>
@@ -53,24 +53,24 @@
 
       <% if @latest_analysis.analysis.present? %>
         <div class="table-scroll">
-          <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(@latest_analysis.analysis) rescue @latest_analysis.analysis.to_json %></pre>
+          <pre class="meta json-pre"><%= JSON.pretty_generate(@latest_analysis.analysis) rescue @latest_analysis.analysis.to_json %></pre>
         </div>
       <% else %>
         <p class="meta">No parsed analysis payload for the latest run.</p>
       <% end %>
     <% elsif @post.analysis.present? %>
       <div class="table-scroll">
-        <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(@post.analysis) rescue @post.analysis.to_json %></pre>
+        <pre class="meta json-pre"><%= JSON.pretty_generate(@post.analysis) rescue @post.analysis.to_json %></pre>
       </div>
     <% else %>
       <p class="meta">Not analyzed yet.</p>
     <% end %>
 
     <% if @post.metadata.is_a?(Hash) && @post.metadata["face_recognition"].present? %>
-      <details class="details-box" style="margin-top: 12px;">
+      <details class="details-box mt-section">
         <summary>Show Face Recognition Metadata</summary>
         <div class="table-scroll">
-          <pre class="meta" style="white-space: pre-wrap; margin: 0;"><%= JSON.pretty_generate(@post.metadata["face_recognition"]) rescue @post.metadata["face_recognition"].to_json %></pre>
+          <pre class="meta json-pre"><%= JSON.pretty_generate(@post.metadata["face_recognition"]) rescue @post.metadata["face_recognition"].to_json %></pre>
         </div>
       </details>
     <% end %>

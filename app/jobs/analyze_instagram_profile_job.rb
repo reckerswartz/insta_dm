@@ -18,6 +18,26 @@ require "digest"
     )
     action_log.mark_running!(extra_metadata: { queue_name: queue_name, active_job_id: job_id })
 
+    policy_decision = Instagram::ProfileScanPolicy.new(profile: profile).decision
+    if policy_decision[:skip_post_analysis]
+      if policy_decision[:reason_code].to_s == "non_personal_profile_page" || policy_decision[:reason_code].to_s == "scan_excluded_tag"
+        Instagram::ProfileScanPolicy.mark_scan_excluded!(profile: profile)
+      end
+
+      action_log.mark_succeeded!(
+        extra_metadata: {
+          skipped: true,
+          reason: "profile_scan_policy_blocked",
+          skip_reason_code: policy_decision[:reason_code],
+          skip_reason: policy_decision[:reason],
+          followers_count: policy_decision[:followers_count],
+          max_followers: policy_decision[:max_followers]
+        },
+        log_text: "Skipped profile AI analysis: #{policy_decision[:reason]}"
+      )
+      return
+    end
+
     collected = Instagram::ProfileAnalysisCollector.new(account: account, profile: profile).collect_and_persist!(
       posts_limit: nil,
       comments_limit: 20

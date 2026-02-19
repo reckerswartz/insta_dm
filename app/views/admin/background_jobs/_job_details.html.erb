@@ -5,26 +5,26 @@
 <% technical_data = Array(details[:technical_data] || details["technical_data"]) %>
 <% blobs = Array(details[:blobs] || details["blobs"]) %>
 
-<div class="stack" style="margin-top: 8px;">
+<div class="stack job-details-stack">
   <div>
     <div class="meta"><strong>Processing Steps</strong></div>
     <% if processing_steps.any? %>
-      <ol class="meta" style="margin: 4px 0 0 18px;">
+      <ol class="meta compact-numbered-list">
         <% processing_steps.each do |step| %>
           <li><%= step %></li>
         <% end %>
       </ol>
     <% else %>
-      <p class="meta" style="margin: 4px 0 0 0;">No processing steps recorded.</p>
+      <p class="meta compact-meta-top">No processing steps recorded.</p>
     <% end %>
   </div>
 
   <div>
     <div class="meta"><strong>Final Output Result</strong></div>
     <% if final_output.present? %>
-      <pre class="meta" style="white-space: pre-wrap; margin: 4px 0 0 0;"><%= JSON.pretty_generate(final_output) rescue final_output.to_json %></pre>
+      <pre class="meta json-pre compact-meta-top"><%= JSON.pretty_generate(final_output) rescue final_output.to_json %></pre>
     <% else %>
-      <p class="meta" style="margin: 4px 0 0 0;">No final output captured yet.</p>
+      <p class="meta compact-meta-top">No final output captured yet.</p>
     <% end %>
   </div>
 
@@ -32,7 +32,7 @@
     <div class="meta"><strong>Related API Responses</strong></div>
     <% if api_responses.any? %>
       <% api_responses.each do |api| %>
-        <div class="meta" style="margin-top: 4px;">
+        <div class="meta compact-meta-block">
           <code><%= api[:provider] || api["provider"] %></code>
           · <code><%= api[:operation] || api["operation"] %></code>
           · status: <strong><%= api[:status] || api["status"] %></strong>
@@ -45,7 +45,7 @@
         </div>
       <% end %>
     <% else %>
-      <p class="meta" style="margin: 4px 0 0 0;">No related API responses found for this job.</p>
+      <p class="meta compact-meta-top">No related API responses found for this job.</p>
     <% end %>
   </div>
 
@@ -53,14 +53,14 @@
     <div class="meta"><strong>Generated Technical Data</strong></div>
     <% if technical_data.any? %>
       <% technical_data.each do |row| %>
-        <div class="meta" style="margin-top: 4px;">
+        <div class="meta compact-meta-block">
           <strong><%= row[:source] || row["source"] %></strong>
         </div>
         <% payload = row[:payload] || row["payload"] %>
-        <pre class="meta" style="white-space: pre-wrap; margin: 2px 0 0 0;"><%= JSON.pretty_generate(payload) rescue payload.to_json %></pre>
+        <pre class="meta json-pre"><%= JSON.pretty_generate(payload) rescue payload.to_json %></pre>
       <% end %>
     <% else %>
-      <p class="meta" style="margin: 4px 0 0 0;">No technical artifacts linked to this job.</p>
+      <p class="meta compact-meta-top">No technical artifacts linked to this job.</p>
     <% end %>
   </div>
 
@@ -68,7 +68,7 @@
     <div class="meta"><strong>Associated Blobs / Stored Files</strong></div>
     <% if blobs.any? %>
       <% blobs.each do |blob| %>
-        <div class="meta" style="margin-top: 4px;">
+        <div class="meta compact-meta-block">
           <code><%= blob[:blob_filename] || blob["blob_filename"] %></code>
           · <%= blob[:blob_content_type] || blob["blob_content_type"] || "unknown" %>
           · <%= number_to_human_size((blob[:blob_byte_size] || blob["blob_byte_size"]).to_i) %>
@@ -76,7 +76,7 @@
         </div>
       <% end %>
     <% else %>
-      <p class="meta" style="margin: 4px 0 0 0;">No blob/file writes recorded for this job.</p>
+      <p class="meta compact-meta-top">No blob/file writes recorded for this job.</p>
     <% end %>
   </div>
 </div>

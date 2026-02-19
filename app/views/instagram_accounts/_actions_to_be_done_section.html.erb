@@ -27,7 +27,7 @@
               </td>
               <td>
                 <% if post.media.attached? %>
-                  <%= image_tag rails_blob_path(post.media, only_path: true), alt: "Post preview", style: "width: 54px; height: 54px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line);" %>
+                  <%= image_tag rails_blob_path(post.media, only_path: true), alt: "Post preview", class: "table-preview-thumb" %>
                 <% else %>
                   <span class="meta">-</span>
                 <% end %>
@@ -39,7 +39,7 @@
               </td>
               <td><%= relative_time_with_tooltip(post.taken_at) %></td>
               <td>
-                <ol style="margin: 0; padding-left: 18px;">
+                <ol class="compact-numbered-list tight">
                   <% suggestions.each do |text| %>
                     <li class="meta"><%= text %></li>
                   <% end %>

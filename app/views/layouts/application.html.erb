@@ -18,6 +18,7 @@
   </head>
 
   <body class="app-body">
+    <a class="skip-link" href="#mainContent">Skip to main content</a>
     <div class="app-shell" id="appShell">
       <aside class="app-sidebar" id="appSidebar" aria-label="Primary navigation">
         <div class="sidebar-brand-row">
@@ -30,37 +31,37 @@
 
         <nav class="sidebar-nav" role="navigation" aria-label="Main">
           <%= top_nav_link_to instagram_accounts_path, section: :accounts, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon">D</span>
+            <span class="sidebar-link-icon" aria-hidden="true">DB</span>
             <span>Dashboard</span>
           <% end %>
 
           <%= top_nav_link_to instagram_profiles_path, section: :profiles, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon">P</span>
+            <span class="sidebar-link-icon" aria-hidden="true">PF</span>
             <span>Profiles</span>
           <% end %>
 
           <%= top_nav_link_to ai_dashboard_index_path, section: :ai_dashboard, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon">AI</span>
+            <span class="sidebar-link-icon" aria-hidden="true">AI</span>
             <span>AI Dashboard</span>
           <% end %>
 
           <%= top_nav_link_to admin_background_jobs_path, section: :jobs, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon">J</span>
+            <span class="sidebar-link-icon" aria-hidden="true">JB</span>
             <span>Jobs</span>
           <% end %>
 
           <%= top_nav_link_to admin_background_job_failures_path, section: :failures, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon">F</span>
+            <span class="sidebar-link-icon" aria-hidden="true">FL</span>
             <span>Failures</span>
           <% end %>
 
           <%= top_nav_link_to admin_issues_path, section: :issues, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon">I</span>
+            <span class="sidebar-link-icon" aria-hidden="true">IS</span>
             <span>Issues</span>
           <% end %>
 
           <%= top_nav_link_to admin_storage_ingestions_path, section: :storage, class: "sidebar-link" do %>
-            <span class="sidebar-link-icon">S</span>
+            <span class="sidebar-link-icon" aria-hidden="true">ST</span>
             <span>Storage</span>
           <% end %>
         </nav>
@@ -80,7 +81,7 @@
             aria-label="Toggle navigation"
             aria-expanded="false"
           >
-            Menu
+            Navigation
           </button>
 
           <div class="topbar-page-title"><%= page_title %></div>
@@ -88,7 +89,7 @@
           <div class="topbar-account" role="status" aria-live="polite">
             <% if current_account %>
               <span class="muted">Current account</span>
-              <%= link_to current_account.username, instagram_account_path(current_account), class: "topbar-account-link" %>
+              <%= link_to current_account.username, instagram_account_path(current_account), class: "topbar-account-link", title: "Open current account dashboard" %>
             <% else %>
               <span class="pill">No account selected</span>
             <% end %>
@@ -115,7 +116,7 @@
 
         <%= render "shared/modals" %>
 
-        <main class="app-content" role="main">
+        <main class="app-content" id="mainContent" role="main">
           <%= yield %>
         </main>
       </div>
@@ -127,6 +128,7 @@
       document.addEventListener("turbo:load", function() {
         const toggleBtn = document.getElementById("sidebarToggleBtn");
         const body = document.body;
+        const sidebar = document.getElementById("appSidebar");
 
         if (!toggleBtn || toggleBtn.dataset.bound === "1") return;
         toggleBtn.dataset.bound = "1";
@@ -136,9 +138,16 @@
           toggleBtn.setAttribute("aria-expanded", isOpen ? "true" : "false");
         });
 
+        sidebar?.querySelectorAll("a").forEach(function(link) {
+          link.addEventListener("click", function() {
+            if (window.innerWidth > 1024) return;
+            body.classList.remove("sidebar-open");
+            toggleBtn.setAttribute("aria-expanded", "false");
+          });
+        });
+
         document.addEventListener("click", function(event) {
           if (window.innerWidth > 1024) return;
-          const sidebar = document.getElementById("appSidebar");
           if (!sidebar) return;
 
           const clickedInsideSidebar = sidebar.contains(event.target);
@@ -150,11 +159,24 @@
           }
         });
 
+        document.addEventListener("keydown", function(event) {
+          if (event.key !== "Escape") return;
+          if (!body.classList.contains("sidebar-open")) return;
+          body.classList.remove("sidebar-open");
+          toggleBtn.setAttribute("aria-expanded", "false");
+        });
+
+        window.addEventListener("resize", function() {
+          if (window.innerWidth <= 1024) return;
+          body.classList.remove("sidebar-open");
+          toggleBtn.setAttribute("aria-expanded", "false");
+        });
+
         setTimeout(function() {
           const alerts = document.querySelectorAll(".alert");
           alerts.forEach(function(alert) {
-            const bsAlert = bootstrap.Alert.getOrCreateInstance(alert);
-            bsAlert.close();
+            if (!window.bootstrap || !bootstrap.Alert) return;
+            bootstrap.Alert.getOrCreateInstance(alert).close();
           });
         }, 5000);
       });

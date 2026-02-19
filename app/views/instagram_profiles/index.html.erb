@@ -4,11 +4,16 @@
 
 <div class="page">
   <header class="page-header">
-    <h1>Profiles</h1>
-    <p>
-      Browse profiles for <strong><%= @account.username %></strong>. Manage authentication and account-level tools on the
-      <%= link_to "account dashboard", instagram_account_path(@account) %>.
-    </p>
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <div>
+        <h1>Profiles</h1>
+        <p class="meta">
+          Browse profiles for <strong><%= @account.username %></strong>. Manage authentication and account-level tools on the
+          <%= link_to "account dashboard", instagram_account_path(@account), class: "link-inline" %>.
+        </p>
+      </div>
+      <%= link_to "Account Dashboard", instagram_account_path(@account), class: "btn secondary" %>
+    </div>
   </header>
 
   <section class="card">

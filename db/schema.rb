@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_18_103500) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_19_092000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -583,6 +583,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_18_103500) do
     t.string "dm_interaction_reason"
     t.datetime "dm_interaction_retry_after_at"
     t.string "dm_interaction_state"
+    t.integer "followers_count"
     t.boolean "following", default: false, null: false
     t.boolean "follows_you", default: false, null: false
     t.string "ig_user_id"
@@ -602,6 +603,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_18_103500) do
     t.string "username", null: false
     t.index ["dm_interaction_retry_after_at"], name: "index_instagram_profiles_on_dm_interaction_retry_after_at"
     t.index ["dm_interaction_state"], name: "index_instagram_profiles_on_dm_interaction_state"
+    t.index ["followers_count"], name: "index_instagram_profiles_on_followers_count"
     t.index ["ig_user_id"], name: "index_instagram_profiles_on_ig_user_id"
     t.index ["instagram_account_id", "ai_last_analyzed_at"], name: "idx_instagram_profiles_account_last_analyzed"
     t.index ["instagram_account_id", "following", "follows_you"], name: "idx_on_instagram_account_id_following_follows_you_34f570e7b6"

@@ -97,12 +97,22 @@ module Instagram
         profile_pic_url: details[:profile_pic_url].presence || @profile.profile_pic_url,
         ig_user_id: details[:ig_user_id].presence || @profile.ig_user_id,
         bio: details[:bio].presence || @profile.bio,
+        followers_count: normalize_count(details[:followers_count]) || @profile.followers_count,
         last_post_at: details[:last_post_at].presence || @profile.last_post_at
       }
 
       @profile.update!(attrs)
       @profile.recompute_last_active!
       @profile.save!
+    end
+
+    def normalize_count(value)
+      text = value.to_s.strip
+      return nil unless text.match?(/\A\d+\z/)
+
+      text.to_i
+    rescue StandardError
+      nil
     end
 
     def persist_profile_post!(post_data, synced_at:, sync_source:)

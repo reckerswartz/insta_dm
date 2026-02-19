@@ -99,7 +99,7 @@
       </div>
     </div>
 
-    <div class="stat-grid" style="margin-top: 12px;">
+    <div class="stat-grid mt-section">
       <div class="stat">
         <div class="stat-label">Sync Runs By Status</div>
         <% counts = (@metrics[:sync_runs_by_status] || {}).transform_keys(&:to_s) %>
@@ -134,7 +134,7 @@
     </div>
 
     <% usage = @metrics[:api_usage_24h] || {} %>
-    <div class="stat-grid" style="margin-top: 12px;">
+    <div class="stat-grid mt-section">
       <div class="stat">
         <div class="stat-label">AI API Usage (24h)</div>
         <div class="stat-kv"><span class="muted">Total calls</span><strong><%= usage[:total_calls].to_i %></strong></div>
