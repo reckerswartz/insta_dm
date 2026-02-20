@@ -215,14 +215,14 @@ RSpec.describe ProfileReevaluationService, type: :service do
         text = "She/her and loving every moment"
         result = service.send(:extract_demographics_from_text, text)
         expect(result[:gender]).to eq('female')
-        expect(result[:gender_confidence]).to eq(0.26)
+        expect(result[:gender_confidence]).to eq(0.4)
       end
 
       it 'extracts location from text' do
         text = "Based in San Francisco, loving the weather"
         result = service.send(:extract_demographics_from_text, text)
         expect(result[:location]).to eq('San Francisco')
-        expect(result[:location_confidence]).to eq(0.24)
+        expect(result[:location_confidence]).to eq(0.35)
       end
     end
   end

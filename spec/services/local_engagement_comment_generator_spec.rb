@@ -18,6 +18,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       image_description: "Detected visual signals: person",
       topics: %w[fitness morning],
       author_type: "personal",
+      channel: "story",
       historical_comments: [ "Love this vibe" ],
       historical_context: "Recent structured story intelligence...",
       historical_story_context: [ { objects: [ "person" ] } ],
@@ -62,6 +63,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     assert_includes prompt, "\"verified_story_facts\""
     assert_includes prompt, "\"ownership\""
     assert_includes prompt, "\"generation_policy\""
+    assert_includes prompt, "\"channel\": \"story\""
     assert_includes prompt, "\"comparison\""
     assert_includes prompt, "\"detected_usernames\""
     assert_includes prompt, "\"identity_verification\""

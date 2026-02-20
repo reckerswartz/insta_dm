@@ -133,6 +133,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
 
       existing_download_event = latest_story_download_event(profile: profile, story_id: story_id)
       reused_media = load_existing_story_media(event: existing_download_event)
+      reused_media ||= load_existing_story_media_from_ingested_story(profile: profile, story_id: story_id)
       reused_media ||= load_cached_story_media_for_profile(
         account: account,
         profile: profile,
@@ -143,13 +144,34 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         content_type = reused_media[:content_type]
         filename = reused_media[:filename]
         downloaded_event = reused_media[:event]
+        if downloaded_event.blank?
+          downloaded_at = Time.current
+          downloaded_event = profile.record_event!(
+            kind: "story_downloaded",
+            external_id: story_download_external_id(story_id),
+            occurred_at: downloaded_at,
+            metadata: base_story_metadata(profile: profile, story: story).merge(
+              downloaded_at: downloaded_at.iso8601,
+              media_filename: filename,
+              media_content_type: content_type,
+              media_bytes: bytes.bytesize,
+              reused_local_cache: true,
+              reused_local_cache_source: "instagram_story_same_profile"
+            )
+          )
+          if reused_media[:blob].present?
+            attach_blob_to_event(downloaded_event, blob: reused_media[:blob])
+          else
+            attach_media_to_event(downloaded_event, bytes: bytes, filename: filename, content_type: content_type)
+          end
+        end
         reused_download_count += 1
       else
         bytes, content_type, filename = download_story_media(url: media_url, user_agent: account.user_agent)
         downloaded_at = Time.current
         downloaded_event = profile.record_event!(
           kind: "story_downloaded",
-          external_id: "story_downloaded:#{story_id}:#{downloaded_at.utc.iso8601(6)}",
+          external_id: story_download_external_id(story_id),
           occurred_at: downloaded_at,
           metadata: base_story_metadata(profile: profile, story: story).merge(
             downloaded_at: downloaded_at.iso8601,
@@ -159,7 +181,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
           )
         )
 
-        downloaded_event.media.attach(io: StringIO.new(bytes), filename: filename, content_type: content_type)
+        attach_media_to_event(downloaded_event, bytes: bytes, filename: filename, content_type: content_type)
         InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
         downloaded_count += 1
       end
@@ -206,6 +228,8 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
           ai_model: analysis[:model],
           ai_image_description: analysis[:image_description],
           ai_comment_suggestions: analysis[:comment_suggestions],
+          story_generation_policy: analysis[:generation_policy],
+          story_ownership_classification: analysis[:ownership_classification],
           instagram_story_id: ingested_story&.id
         )
       )
@@ -437,6 +461,16 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     analysis = run.dig(:result, :analysis)
     return { ok: false } unless analysis.is_a?(Hash)
 
+    raw_metadata = analyzable.metadata.is_a?(Hash) ? analyzable.metadata : {}
+    local_story_intelligence = analyzable.respond_to?(:local_story_intelligence_payload) ? analyzable.local_story_intelligence_payload : {}
+    validated_story_insights = Ai::VerifiedStoryInsightBuilder.new(
+      profile: profile,
+      local_story_intelligence: local_story_intelligence,
+      metadata: raw_metadata
+    ).build
+    generation_policy = validated_story_insights[:generation_policy].is_a?(Hash) ? validated_story_insights[:generation_policy] : {}
+    ownership_classification = validated_story_insights[:ownership_classification].is_a?(Hash) ? validated_story_insights[:ownership_classification] : {}
+
     {
       ok: true,
       provider: run[:provider].key,
@@ -444,7 +478,9 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       relevant: analysis["relevant"],
       author_type: analysis["author_type"],
       image_description: analysis["image_description"].to_s.presence,
-      comment_suggestions: Array(analysis["comment_suggestions"]).first(8)
+      comment_suggestions: Array(analysis["comment_suggestions"]).first(8),
+      generation_policy: generation_policy,
+      ownership_classification: ownership_classification
     }
   rescue StandardError
     { ok: false }
@@ -655,8 +691,14 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     relevant = analysis[:relevant]
     author_type = analysis[:author_type].to_s
     suggestions = Array(analysis[:comment_suggestions]).map(&:to_s).reject(&:blank?)
+    generation_policy = analysis[:generation_policy].is_a?(Hash) ? analysis[:generation_policy] : {}
 
     return { queue: false, reason: "no_comment_suggestions" } if suggestions.empty?
+    allow_comment_present = generation_policy.key?(:allow_comment) || generation_policy.key?("allow_comment")
+    allow_comment_value = generation_policy[:allow_comment] || generation_policy["allow_comment"]
+    if allow_comment_present && !ActiveModel::Type::Boolean.new.cast(allow_comment_value)
+      return { queue: false, reason: generation_policy[:reason_code].to_s.presence || generation_policy["reason_code"].to_s.presence || "verified_policy_blocked" }
+    end
     return { queue: false, reason: "not_relevant" } unless relevant == true
 
     allowed_types = %w[personal_user friend relative unknown]
@@ -748,7 +790,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     downloaded_at = Time.current
     event = profile.record_event!(
       kind: "story_downloaded",
-      external_id: "story_downloaded:#{story_id}:#{downloaded_at.utc.iso8601(6)}",
+      external_id: story_download_external_id(story_id),
       occurred_at: downloaded_at,
       metadata: base_story_metadata(profile: profile, story: story).merge(
         skipped: true,
@@ -759,7 +801,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         media_bytes: bytes.bytesize
       )
     )
-    event.media.attach(io: StringIO.new(bytes), filename: filename, content_type: content_type)
+    attach_media_to_event(event, bytes: bytes, filename: filename, content_type: content_type)
     InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
     { downloaded: true, reused: false, event: event }
   rescue StandardError
@@ -932,11 +974,24 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   end
 
   def latest_story_download_event(profile:, story_id:)
+    normalized_story_id = story_id.to_s.strip
+    return nil if normalized_story_id.blank?
+
+    event = profile.instagram_profile_events
+      .joins(:media_attachment)
+      .with_attached_media
+      .where(kind: "story_downloaded")
+      .where("metadata ->> 'story_id' = ?", normalized_story_id)
+      .order(detected_at: :desc, id: :desc)
+      .first
+    return event if event
+
+    escaped_story_id = ActiveRecord::Base.sanitize_sql_like(normalized_story_id)
     profile.instagram_profile_events
       .joins(:media_attachment)
       .with_attached_media
       .where(kind: "story_downloaded")
-      .where("external_id LIKE ?", "story_downloaded:#{story_id}:%")
+      .where("external_id LIKE ?", "story_downloaded:#{escaped_story_id}:%")
       .order(detected_at: :desc, id: :desc)
       .first
   end
@@ -947,9 +1002,33 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     blob = event.media.blob
     {
       event: event,
+      blob: blob,
       bytes: blob.download,
       content_type: blob.content_type.to_s.presence || "application/octet-stream",
       filename: blob.filename.to_s.presence || "story_#{event.id}.bin"
+    }
+  rescue StandardError
+    nil
+  end
+
+  def load_existing_story_media_from_ingested_story(profile:, story_id:)
+    normalized_story_id = story_id.to_s.strip
+    return nil if normalized_story_id.blank?
+
+    record = InstagramStory
+      .joins(:media_attachment)
+      .where(instagram_profile_id: profile.id, story_id: normalized_story_id)
+      .order(taken_at: :desc, id: :desc)
+      .first
+    return nil unless record&.media&.attached?
+
+    blob = record.media.blob
+    {
+      event: latest_story_download_event(profile: profile, story_id: normalized_story_id),
+      blob: blob,
+      bytes: blob.download,
+      content_type: blob.content_type.to_s.presence || "application/octet-stream",
+      filename: blob.filename.to_s.presence || "story_#{record.id}.bin"
     }
   rescue StandardError
     nil
@@ -980,6 +1059,16 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     nil
   end
 
+  def attach_blob_to_event(event, blob:)
+    return unless event
+    return unless blob
+    return if event.media.attached?
+
+    event.media.attach(blob)
+  rescue StandardError
+    nil
+  end
+
   def find_cached_story_media(story_id:, excluding_profile_id:)
     cached_story = InstagramStory
       .joins(:media_attachment)
@@ -991,12 +1080,17 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       return { blob: cached_story.media.blob, source: "instagram_story", source_id: cached_story.id }
     end
 
+    escaped_story_id = ActiveRecord::Base.sanitize_sql_like(story_id.to_s)
     cached_event = InstagramProfileEvent
       .joins(:media_attachment)
       .with_attached_media
       .where(kind: "story_downloaded")
       .where.not(instagram_profile_id: excluding_profile_id)
-      .where("external_id LIKE ?", "story_downloaded:#{story_id}:%")
+      .where(
+        "(metadata ->> 'story_id' = :story_id) OR (external_id LIKE :legacy)",
+        story_id: story_id.to_s,
+        legacy: "story_downloaded:#{escaped_story_id}:%"
+      )
       .order(detected_at: :desc, id: :desc)
       .first
     return nil unless cached_event&.media&.attached?
@@ -1020,13 +1114,17 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
 
     event = profile.record_event!(
       kind: "story_downloaded",
-      external_id: "story_downloaded:#{story_id}:#{downloaded_at.utc.iso8601(6)}",
+      external_id: story_download_external_id(story_id),
       occurred_at: downloaded_at,
       metadata: metadata
     )
     event.media.attach(blob) unless event.media.attached?
     InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
     event
+  end
+
+  def story_download_external_id(story_id)
+    "story_downloaded:#{story_id.to_s.strip}"
   end
 
   def capture_story_html_snapshot(profile:, story:, story_index:)

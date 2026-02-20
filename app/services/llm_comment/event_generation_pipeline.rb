@@ -99,6 +99,7 @@ module LlmComment
         image_description: context[:image_description],
         topics: context[:topics],
         author_type: context[:author_type],
+        channel: "story",
         historical_comments: context[:historical_comments],
         historical_context: context[:historical_context],
         historical_story_context: context[:historical_story_context],

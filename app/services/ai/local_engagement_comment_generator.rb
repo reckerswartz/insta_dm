@@ -6,8 +6,6 @@ module Ai
     DEFAULT_MODEL = "mistral:7b".freeze
     MIN_SUGGESTIONS = 3
     MAX_SUGGESTIONS = 8
-
-    BLOCKED_TERMS = %w[].freeze
     TRANSIENT_ERRORS = [
       Net::OpenTimeout,
       Net::ReadTimeout,
@@ -15,12 +13,13 @@ module Ai
       Errno::ECONNREFUSED
     ].freeze
 
-    def initialize(ollama_client:, model: nil)
+    def initialize(ollama_client:, model: nil, policy_engine: nil)
       @ollama_client = ollama_client
       @model = model.to_s.presence || DEFAULT_MODEL
+      @policy_engine = policy_engine || Ai::CommentPolicyEngine.new
     end
 
-    def generate!(post_payload:, image_description:, topics:, author_type:, historical_comments: [], historical_context: nil, historical_story_context: [], local_story_intelligence: {}, historical_comparison: {}, cv_ocr_evidence: {}, verified_story_facts: {}, story_ownership_classification: {}, generation_policy: {}, profile_preparation: {}, verified_profile_history: [], conversational_voice: {}, **_extra)
+    def generate!(post_payload:, image_description:, topics:, author_type:, channel: "post", historical_comments: [], historical_context: nil, historical_story_context: [], local_story_intelligence: {}, historical_comparison: {}, cv_ocr_evidence: {}, verified_story_facts: {}, story_ownership_classification: {}, generation_policy: {}, profile_preparation: {}, verified_profile_history: [], conversational_voice: {}, **_extra)
       if generation_policy.is_a?(Hash) && generation_policy.key?(:allow_comment) && !ActiveModel::Type::Boolean.new.cast(generation_policy[:allow_comment] || generation_policy["allow_comment"])
         return {
           model: @model,
@@ -39,6 +38,7 @@ module Ai
         image_description: image_description,
         topics: topics,
         author_type: author_type,
+        channel: channel,
         historical_comments: historical_comments,
         historical_context: historical_context,
         historical_story_context: historical_story_context,
@@ -60,8 +60,10 @@ module Ai
         max_tokens: 300
       )
 
-      suggestions = parse_comment_suggestions(resp)
-      suggestions = filter_safe_comments(suggestions)
+      suggestions = evaluate_suggestions(
+        suggestions: parse_comment_suggestions(resp),
+        historical_comments: historical_comments
+      )
 
       if suggestions.size < MIN_SUGGESTIONS
         retry_resp = @ollama_client.generate(
@@ -70,12 +72,15 @@ module Ai
           temperature: 0.4,
           max_tokens: 220
         )
-        retry_suggestions = filter_safe_comments(parse_comment_suggestions(retry_resp))
+        retry_suggestions = evaluate_suggestions(
+          suggestions: parse_comment_suggestions(retry_resp),
+          historical_comments: historical_comments
+        )
         suggestions = retry_suggestions if retry_suggestions.size >= MIN_SUGGESTIONS
       end
 
       if suggestions.size < MIN_SUGGESTIONS
-        fallback = fallback_comments(image_description: image_description, topics: topics).first(MAX_SUGGESTIONS)
+        fallback = fallback_comments(image_description: image_description, topics: topics, channel: channel).first(MAX_SUGGESTIONS)
         return {
           model: @model,
           prompt: prompt,
@@ -109,13 +114,14 @@ module Ai
         status: "error_fallback",
         fallback_used: true,
         error_message: e.message.to_s,
-        comment_suggestions: fallback_comments(image_description: image_description, topics: topics).first(MAX_SUGGESTIONS)
+        comment_suggestions: fallback_comments(image_description: image_description, topics: topics, channel: channel).first(MAX_SUGGESTIONS)
       }
     end
 
     private
 
-    def build_prompt(post_payload:, image_description:, topics:, author_type:, historical_comments:, historical_context:, historical_story_context:, local_story_intelligence:, historical_comparison:, cv_ocr_evidence:, verified_story_facts:, story_ownership_classification:, generation_policy:, profile_preparation: {}, verified_profile_history: [], conversational_voice: {})
+    def build_prompt(post_payload:, image_description:, topics:, author_type:, channel:, historical_comments:, historical_context:, historical_story_context:, local_story_intelligence:, historical_comparison:, cv_ocr_evidence:, verified_story_facts:, story_ownership_classification:, generation_policy:, profile_preparation: {}, verified_profile_history: [], conversational_voice: {})
+      tone_profile = Ai::CommentToneProfile.for(channel)
       verified_story_facts = compact_verified_story_facts(
         verified_story_facts,
         local_story_intelligence: local_story_intelligence,
@@ -131,12 +137,14 @@ module Ai
       conversational_voice = compact_conversational_voice(conversational_voice)
 
       context_json = {
-        task: "instagram_story_comment_generation",
+        task: "instagram_#{Ai::CommentToneProfile.normalize(channel)}_comment_generation",
+        channel: Ai::CommentToneProfile.normalize(channel),
         output_contract: {
           format: "strict_json",
           count: 8,
           max_chars_per_comment: 140
         },
+        tone_profile: tone_profile,
         profile: profile_summary,
         profile_preparation: profile_preparation,
         conversational_voice: conversational_voice,
@@ -171,6 +179,8 @@ module Ai
         - never fabricate OCR text, usernames, objects, scenes, or participants
 
         Writing rules:
+        - channel mode: #{Ai::CommentToneProfile.normalize(channel)}
+        - tone guidance: #{tone_profile[:guidance]}
         - natural, public-safe, short comments
         - max 140 chars each
         - vary openings and avoid duplicates
@@ -192,14 +202,13 @@ module Ai
       PROMPT
     end
 
-    def filter_safe_comments(comments)
-      filtered = Array(comments)
-      return filtered if BLOCKED_TERMS.empty?
-
-      filtered.reject do |comment|
-        lc = comment.to_s.downcase
-        BLOCKED_TERMS.any? { |term| lc.include?(term) }
-      end
+    def evaluate_suggestions(suggestions:, historical_comments:)
+      result = @policy_engine.evaluate(
+        suggestions: suggestions,
+        historical_comments: historical_comments,
+        max_suggestions: MAX_SUGGESTIONS
+      )
+      Array(result[:accepted])
     end
 
     def normalize_comment(value)
@@ -214,11 +223,11 @@ module Ai
       Array(parsed&.dig("comment_suggestions")).map { |v| normalize_comment(v) }.compact.uniq
     end
 
-    def fallback_comments(image_description:, topics:)
+    def fallback_comments(image_description:, topics:, channel:)
       anchor = Array(topics).map(&:to_s).find(&:present?) || image_description.to_s.split(/[,.]/).first.to_s.downcase
       anchor = "this post" if anchor.blank?
 
-      [
+      base = [
         "Okay this is a whole vibe 🔥",
         "Not gonna lie, this #{anchor} moment is clean 👏",
         "Love the energy on this one ✨",
@@ -227,6 +236,19 @@ module Ai
         "Ate this one, no notes 💯",
         "This made me stop scrolling fr 👀",
         "Super solid post, keep these coming 🚀"
+      ]
+
+      return base unless Ai::CommentToneProfile.normalize(channel) == "story"
+
+      [
+        "This story is such a mood ✨",
+        "Clean story frame, love this 👏",
+        "Instant vibe on this one 🔥",
+        "This story energy is elite 🙌",
+        "Low-key obsessed with this moment 😮‍💨",
+        "This one hit right away 👀",
+        "Love this quick story drop 💯",
+        "Story game is strong here 🚀"
       ]
     end
 

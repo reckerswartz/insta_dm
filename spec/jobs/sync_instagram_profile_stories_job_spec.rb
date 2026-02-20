@@ -2,6 +2,58 @@ require "rails_helper"
 require "securerandom"
 
 RSpec.describe "SyncInstagramProfileStoriesJobTest" do
+  it "stores story_downloaded events with deterministic external_id per story" do
+    account = InstagramAccount.create!(username: "story_ext_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_ext_profile_#{SecureRandom.hex(4)}")
+    story_id = "3834712783221666503"
+    dataset = {
+      profile: { display_name: profile.username, profile_pic_url: nil, ig_user_id: nil, bio: nil, last_post_at: nil },
+      stories: [
+        {
+          story_id: story_id,
+          media_type: "image",
+          media_url: "https://cdn.example.com/story.jpg",
+          image_url: "https://cdn.example.com/story.jpg",
+          video_url: nil,
+          primary_media_source: "api_image_versions",
+          primary_media_index: 0,
+          media_variants: [],
+          carousel_media: [],
+          can_reply: true,
+          can_reshare: true,
+          owner_user_id: nil,
+          owner_username: profile.username,
+          api_has_external_profile_indicator: false,
+          api_external_profile_reason: nil,
+          api_external_profile_targets: [],
+          api_should_skip: false,
+          caption: nil,
+          permalink: "https://www.instagram.com/stories/#{profile.username}/#{story_id}/",
+          taken_at: Time.current,
+          expiring_at: 12.hours.from_now
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
+
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:analyze_story_for_comments).and_return({ ok: false })
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:download_story_media).and_return([ "bytes", "image/jpeg", "story.jpg" ])
+
+    with_client_stub(client_stub) do
+      SyncInstagramProfileStoriesJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        max_stories: 1
+      )
+    end
+
+    event = profile.instagram_profile_events.where(kind: "story_downloaded").order(id: :desc).first
+    expect(event.external_id).to eq("story_downloaded:#{story_id}")
+  end
+
   it "reuses saved story media across accounts by story_id before downloading" do
     source_account = InstagramAccount.create!(username: "story_src_#{SecureRandom.hex(4)}")
     source_profile = source_account.instagram_profiles.create!(username: "story_src_profile_#{SecureRandom.hex(4)}")
@@ -70,6 +122,75 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
     assert downloaded_event.media.attached?
     assert_equal true, ActiveModel::Type::Boolean.new.cast(downloaded_event.metadata["reused_local_cache"])
     assert_equal source_story.media.blob.id, downloaded_event.media.blob.id
+  end
+
+  it "reuses media from existing instagram_stories in the same profile before downloading" do
+    account = InstagramAccount.create!(username: "story_local_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_local_profile_#{SecureRandom.hex(4)}")
+    existing_story = InstagramStory.create!(
+      instagram_account: account,
+      instagram_profile: profile,
+      story_id: "shared_local_story_1",
+      media_type: "image",
+      taken_at: 2.minutes.ago
+    )
+    existing_story.media.attach(
+      io: StringIO.new("local-cached-story-media"),
+      filename: "story_local.jpg",
+      content_type: "image/jpeg"
+    )
+
+    dataset = {
+      profile: { display_name: profile.username, profile_pic_url: nil, ig_user_id: nil, bio: nil, last_post_at: nil },
+      stories: [
+        {
+          story_id: "shared_local_story_1",
+          media_type: "image",
+          media_url: "https://cdn.example.com/story-should-not-download.jpg",
+          image_url: "https://cdn.example.com/story-should-not-download.jpg",
+          video_url: nil,
+          primary_media_source: "api_image_versions",
+          primary_media_index: 1,
+          media_variants: [],
+          carousel_media: [],
+          can_reply: true,
+          can_reshare: true,
+          owner_user_id: nil,
+          owner_username: profile.username,
+          api_has_external_profile_indicator: false,
+          api_external_profile_reason: nil,
+          api_external_profile_targets: [],
+          api_should_skip: false,
+          caption: nil,
+          permalink: "https://www.instagram.com/stories/#{profile.username}/shared_local_story_1/",
+          taken_at: Time.current,
+          expiring_at: 12.hours.from_now
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
+
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:analyze_story_for_comments).and_return({ ok: false })
+    expect_any_instance_of(SyncInstagramProfileStoriesJob).not_to receive(:download_story_media)
+
+    with_client_stub(client_stub) do
+      SyncInstagramProfileStoriesJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        max_stories: 1,
+        force_analyze_all: true
+      )
+    end
+
+    downloaded_event = profile.instagram_profile_events.where(kind: "story_downloaded").order(id: :desc).first
+    assert_not_nil downloaded_event
+    assert downloaded_event.media.attached?
+    assert_equal existing_story.media.blob.id, downloaded_event.media.blob.id
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(downloaded_event.metadata["reused_local_cache"])
+    assert_equal "instagram_story_same_profile", downloaded_event.metadata["reused_local_cache_source"]
   end
 
   private

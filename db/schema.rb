@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_20_024818) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_20_110000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -585,6 +585,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_20_024818) do
     t.boolean "can_message"
     t.datetime "created_at", null: false
     t.string "display_name"
+    t.string "dm_auto_mode", default: "draft_only", null: false
     t.datetime "dm_interaction_checked_at"
     t.string "dm_interaction_reason"
     t.datetime "dm_interaction_retry_after_at"
@@ -607,6 +608,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_20_024818) do
     t.boolean "story_reaction_available"
     t.datetime "updated_at", null: false
     t.string "username", null: false
+    t.index ["dm_auto_mode"], name: "index_instagram_profiles_on_dm_auto_mode"
     t.index ["dm_interaction_retry_after_at"], name: "index_instagram_profiles_on_dm_interaction_retry_after_at"
     t.index ["dm_interaction_state"], name: "index_instagram_profiles_on_dm_interaction_state"
     t.index ["followers_count"], name: "index_instagram_profiles_on_followers_count"

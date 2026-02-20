@@ -173,21 +173,21 @@ class ProfileReevaluationService
     end
     
     # Gender extraction
-    if text.match?(/\b(she\/her|she her|woman|girl|mrs|ms)\b/)
+    if text.match?(/\b(she\/her)\b/)
       demographics[:gender] = "female"
-      demographics[:gender_confidence] = 0.26
-    elsif text.match?(/\b(he\/him|he him|man|boy|mr)\b/)
+      demographics[:gender_confidence] = 0.4
+    elsif text.match?(/\b(he\/him)\b/)
       demographics[:gender] = "male"
-      demographics[:gender_confidence] = 0.26
+      demographics[:gender_confidence] = 0.4
     elsif text.match?(/\b(they\/them|non[- ]?binary)\b/)
       demographics[:gender] = "non-binary"
-      demographics[:gender_confidence] = 0.26
+      demographics[:gender_confidence] = 0.4
     end
     
     # Location extraction
-    if (m = text.match(/(?:📍|based in|from|in)\s+([a-z][a-z\s,.-]{2,25})/))
+    if (m = text.match(/(?:📍|based in|from)\s+([a-z][a-z\s,.-]{2,25})/))
       demographics[:location] = m[1].to_s.split(/[|•,]/).first.to_s.strip.titleize
-      demographics[:location_confidence] = 0.24
+      demographics[:location_confidence] = 0.35
     end
     
     demographics

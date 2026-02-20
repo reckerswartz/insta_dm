@@ -544,15 +544,16 @@ module Instagram
                       story_url: story_url
                     }
                   )
+                  reused_download = load_story_download_media_for_profile(profile: profile, story_id: story_id)
 
                   if media[:media_type].to_s == "video"
                     begin
-                      download = download_media_with_metadata(url: media[:url], user_agent: @account.user_agent)
-                      stats[:downloaded] += 1
+                      download = reused_download || download_media_with_metadata(url: media[:url], user_agent: @account.user_agent)
+                      stats[:downloaded] += 1 unless reused_download
                       now = Time.current
                       downloaded_event = profile.record_event!(
                         kind: "story_downloaded",
-                        external_id: "story_downloaded:#{story_id}:#{now.utc.iso8601(6)}",
+                        external_id: story_download_external_id(story_id),
                         occurred_at: now,
                         metadata: {
                           source: "home_story_carousel",
@@ -576,7 +577,7 @@ module Instagram
                           media_bytes: download[:bytes].bytesize
                         }
                       )
-                      downloaded_event.media.attach(io: StringIO.new(download[:bytes]), filename: download[:filename], content_type: download[:content_type])
+                      attach_download_to_event(event: downloaded_event, download: download)
                       InstagramProfileEvent.broadcast_story_archive_refresh!(account: @account)
                       StoryIngestionService.new(account: @account, profile: profile).ingest!(
                         story: {
@@ -650,8 +651,8 @@ module Instagram
                   end
 
                   begin
-                    download = download_media_with_metadata(url: media[:url], user_agent: @account.user_agent)
-                    stats[:downloaded] += 1
+                    download = reused_download || download_media_with_metadata(url: media[:url], user_agent: @account.user_agent)
+                    stats[:downloaded] += 1 unless reused_download
                     quality = evaluate_story_image_quality(download: download, media: media)
                     if quality[:skip]
                       stats[:skipped_invalid_media] += 1
@@ -697,7 +698,7 @@ module Instagram
                     now = Time.current
                     downloaded_event = profile.record_event!(
                       kind: "story_downloaded",
-                      external_id: "story_downloaded:#{story_id}:#{now.utc.iso8601(6)}",
+                      external_id: story_download_external_id(story_id),
                       occurred_at: now,
                       metadata: {
                         source: "home_story_carousel",
@@ -721,7 +722,7 @@ module Instagram
                         media_bytes: download[:bytes].bytesize
                       }
                     )
-                    downloaded_event.media.attach(io: StringIO.new(download[:bytes]), filename: download[:filename], content_type: download[:content_type])
+                    attach_download_to_event(event: downloaded_event, download: download)
                     InstagramProfileEvent.broadcast_story_archive_refresh!(account: @account)
 
                     payload = build_auto_engagement_post_payload(
@@ -901,6 +902,96 @@ module Instagram
               end
             end
           end
+        end
+
+        private
+
+        def story_download_external_id(story_id)
+          "story_downloaded:#{story_id.to_s.strip}"
+        end
+
+        def attach_media_to_event(event, bytes:, filename:, content_type:)
+          return unless event
+          return if event.media.attached?
+
+          event.media.attach(io: StringIO.new(bytes), filename: filename, content_type: content_type)
+        rescue StandardError
+          nil
+        end
+
+        def attach_download_to_event(event:, download:)
+          return unless event
+          return if event.media.attached?
+
+          blob = download.is_a?(Hash) ? download[:blob] : nil
+          if blob.present?
+            event.media.attach(blob)
+            return
+          end
+
+          attach_media_to_event(
+            event,
+            bytes: download[:bytes],
+            filename: download[:filename],
+            content_type: download[:content_type]
+          )
+        rescue StandardError
+          nil
+        end
+
+        def load_story_download_media_for_profile(profile:, story_id:)
+          sid = story_id.to_s.strip
+          return nil if sid.blank?
+
+          event = profile.instagram_profile_events
+            .joins(:media_attachment)
+            .with_attached_media
+            .where(kind: "story_downloaded")
+            .where("metadata ->> 'story_id' = ?", sid)
+            .order(detected_at: :desc, id: :desc)
+            .first
+          return media_download_payload_for_event(event) if event&.media&.attached?
+
+          escaped_story_id = ActiveRecord::Base.sanitize_sql_like(sid)
+          legacy_event = profile.instagram_profile_events
+            .joins(:media_attachment)
+            .with_attached_media
+            .where(kind: "story_downloaded")
+            .where("external_id LIKE ?", "story_downloaded:#{escaped_story_id}:%")
+            .order(detected_at: :desc, id: :desc)
+            .first
+          return media_download_payload_for_event(legacy_event) if legacy_event&.media&.attached?
+
+          story_record = profile.instagram_stories
+            .joins(:media_attachment)
+            .where(story_id: sid)
+            .order(taken_at: :desc, id: :desc)
+            .first
+          return nil unless story_record&.media&.attached?
+
+          blob = story_record.media.blob
+          {
+            blob: blob,
+            bytes: blob.download,
+            content_type: blob.content_type.to_s.presence || "application/octet-stream",
+            filename: blob.filename.to_s.presence || "story_#{story_record.id}.bin"
+          }
+        rescue StandardError
+          nil
+        end
+
+        def media_download_payload_for_event(event)
+          return nil unless event&.media&.attached?
+
+          blob = event.media.blob
+          {
+            blob: blob,
+            bytes: blob.download,
+            content_type: blob.content_type.to_s.presence || "application/octet-stream",
+            filename: blob.filename.to_s.presence || "story_#{event.id}.bin"
+          }
+        rescue StandardError
+          nil
         end
       end
     end

@@ -67,6 +67,7 @@ module Ai
         image_description: image_description,
         topics: topics,
         author_type: inferred_author_type,
+        channel: "post",
         historical_comments: historical_comments,
         historical_context: historical_context,
         profile_preparation: preparation,

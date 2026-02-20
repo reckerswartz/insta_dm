@@ -13,15 +13,16 @@ RSpec.describe Ai::PostCommentGenerationService do
   end
 
   class FakeCommentGenerator
-    attr_reader :calls
+    attr_reader :calls, :last_kwargs
 
     def initialize(result)
       @result = result
       @calls = 0
     end
 
-    def generate!(**_kwargs)
+    def generate!(**kwargs)
       @calls += 1
+      @last_kwargs = kwargs
       @result
     end
   end
@@ -127,6 +128,7 @@ RSpec.describe Ai::PostCommentGenerationService do
     assert_equal "ollama", post.analysis["comment_generation_source"]
     assert_equal 3, Array(post.analysis["comment_suggestions"]).length
     assert_equal 1, generator.calls
+    assert_equal "post", generator.last_kwargs[:channel]
     assert_equal "enabled", post.metadata.dig("comment_generation_policy", "status")
     assert_equal true, post.metadata.dig("comment_generation_policy", "history_ready")
   end

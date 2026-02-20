@@ -31,7 +31,7 @@ class InstagramProfileEvent < ApplicationRecord
     story_media_downloaded_via_feed
   ].freeze
 
-  LLM_SUCCESS_STATUSES = %w[ok].freeze
+  LLM_SUCCESS_STATUSES = %w[ok fallback_used error_fallback].freeze
 
   scope :recent_first, -> { order(detected_at: :desc, id: :desc) }
 

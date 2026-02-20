@@ -517,6 +517,7 @@ module Ai
           image_description: image_description.to_s,
           topics: labels.first(12),
           author_type: author_type,
+          channel: "post",
           historical_comments: extract_historical_comments(post_payload),
           historical_context: extract_historical_context(post_payload)
         )
@@ -735,47 +736,30 @@ module Ai
       end
 
       def infer_demographic_estimates(text:, bio:, labels:)
-        age =
-          extract_age(bio) ||
-          if text.match?(/\b(high school|class of 20\d{2})\b/)
-            17
-          elsif text.match?(/\b(student|college|university|campus)\b/)
-            21
-          elsif text.match?(/\b(mom|dad|parent)\b/)
-            34
-          else
-            26
-          end
+        age = extract_age(bio)
 
         gender =
-          if text.match?(/\b(she\/her|she her|woman|girl|mrs|ms)\b/)
-            "female"
-          elsif text.match?(/\b(he\/him|he him|man|boy|mr)\b/)
-            "male"
-          elsif text.match?(/\b(they\/them|non[- ]?binary)\b/)
-            "non-binary"
-          else
-            "unknown"
+          if text.match?(/\b(she\/her|they\/them|he\/him)\b/)
+            pronoun = Regexp.last_match(1).to_s.downcase
+            case pronoun
+            when "she/her" then "female"
+            when "he/him" then "male"
+            when "they/them" then "non-binary"
+            end
           end
 
         location =
           if (m = text.match(/(?:📍|based in|from)\s+([a-z][a-z\s,.-]{2,40})/))
             m[1].to_s.split(/[|•]/).first.to_s.strip.titleize
-          elsif text.match?(/\b(usa|us|united states)\b/)
-            "United States"
-          elsif text.match?(/\b(india|indian|hindi)\b/)
-            "India"
-          else
-            "unknown"
           end
 
         {
           age: age,
-          age_confidence: extract_age(bio).present? ? 0.75 : 0.3,
+          age_confidence: age.present? ? 0.75 : nil,
           gender: gender,
-          gender_confidence: gender == "unknown" ? 0.2 : 0.35,
+          gender_confidence: gender.present? ? 0.45 : nil,
           location: location,
-          location_confidence: location == "unknown" ? 0.2 : 0.35,
+          location_confidence: location.present? ? 0.45 : nil,
           evidence: "Estimated from bio/text pronouns, language hints, and local AI vision labels: #{Array(labels).first(4).join(', ')}"
         }
       end

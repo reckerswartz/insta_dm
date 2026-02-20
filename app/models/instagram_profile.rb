@@ -1,4 +1,6 @@
 class InstagramProfile < ApplicationRecord
+  DM_AUTO_MODES = %w[draft_only autonomous].freeze
+
   belongs_to :instagram_account
   has_many :instagram_messages, dependent: :destroy
   has_many :instagram_profile_events, dependent: :destroy
@@ -23,6 +25,7 @@ class InstagramProfile < ApplicationRecord
   has_one_attached :avatar
 
   validates :username, presence: true
+  validates :dm_auto_mode, inclusion: { in: DM_AUTO_MODES }, allow_blank: false
   after_commit :broadcast_profiles_table_refresh
 
   def mutual?
@@ -55,6 +58,14 @@ class InstagramProfile < ApplicationRecord
     dm_interaction_state.to_s == "unavailable" &&
       dm_interaction_retry_after_at.present? &&
       dm_interaction_retry_after_at > Time.current
+  end
+
+  def dm_draft_only?
+    dm_auto_mode.to_s == "draft_only"
+  end
+
+  def dm_autonomous?
+    dm_auto_mode.to_s == "autonomous"
   end
 
   def auto_reply_enabled?

@@ -4,12 +4,13 @@ class ProcessPostVisualAnalysisJob < PostAnalysisPipelineJob
   queue_as :ai_visual_queue
 
   MAX_VISUAL_ATTEMPTS = ENV.fetch("AI_VISUAL_MAX_ATTEMPTS", 6).to_i.clamp(1, 20)
+  MAX_DEFER_ATTEMPTS = ENV.fetch("AI_VISUAL_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
 
-  def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:)
+  def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, defer_attempt: 0)
     enqueue_finalizer = true
     context = load_pipeline_context!(
       instagram_account_id: instagram_account_id,
@@ -63,6 +64,10 @@ class ProcessPostVisualAnalysisJob < PostAnalysisPipelineJob
           max_attempts: MAX_VISUAL_ATTEMPTS
         }
       )
+      return
+    end
+
+    unless resource_available?(defer_attempt: defer_attempt, context: context, pipeline_run_id: pipeline_run_id)
       return
     end
 
@@ -206,5 +211,50 @@ class ProcessPostVisualAnalysisJob < PostAnalysisPipelineJob
 
   def visual_timeout_seconds
     ENV.fetch("AI_VISUAL_TIMEOUT_SECONDS", 210).to_i.clamp(30, 600)
+  end
+
+  def resource_available?(defer_attempt:, context:, pipeline_run_id:)
+    guard = Ops::ResourceGuard.allow_ai_task?(task: "visual", queue_name: queue_name, critical: false)
+    return true if ActiveModel::Type::Boolean.new.cast(guard[:allow])
+
+    if defer_attempt.to_i >= MAX_DEFER_ATTEMPTS
+      context[:pipeline_state].mark_step_completed!(
+        run_id: pipeline_run_id,
+        step: "visual",
+        status: "failed",
+        error: "resource_guard_exhausted: #{guard[:reason]}",
+        result: {
+          reason: "resource_constraints",
+          snapshot: guard[:snapshot]
+        }
+      )
+      return false
+    end
+
+    retry_seconds = guard[:retry_in_seconds].to_i
+    retry_seconds = 20 if retry_seconds <= 0
+
+    context[:pipeline_state].mark_step_queued!(
+      run_id: pipeline_run_id,
+      step: "visual",
+      queue_name: queue_name,
+      active_job_id: job_id,
+      result: {
+        reason: "resource_constrained",
+        defer_attempt: defer_attempt.to_i,
+        retry_in_seconds: retry_seconds,
+        snapshot: guard[:snapshot]
+      }
+    )
+
+    self.class.set(wait: retry_seconds.seconds).perform_later(
+      instagram_account_id: context[:account].id,
+      instagram_profile_id: context[:profile].id,
+      instagram_profile_post_id: context[:post].id,
+      pipeline_run_id: pipeline_run_id,
+      defer_attempt: defer_attempt.to_i + 1
+    )
+
+    false
   end
 end

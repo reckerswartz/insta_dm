@@ -6,6 +6,9 @@ require "net/http"
 class FaceEmbeddingService
   DEFAULT_DIMENSION = 512
   REQUEST_TIMEOUT_SECONDS = 8
+  ALLOW_DETERMINISTIC_FALLBACK = ActiveModel::Type::Boolean.new.cast(
+    ENV.fetch("FACE_EMBEDDING_ALLOW_DETERMINISTIC_FALLBACK", "false")
+  )
 
   def initialize(service_url: ENV["FACE_EMBEDDING_SERVICE_URL"], dimension: DEFAULT_DIMENSION)
     @service_url = service_url.to_s.strip
@@ -21,14 +24,14 @@ class FaceEmbeddingService
       version = "external_service_v1" if vector.present?
     end
 
-    if vector.blank?
+    if vector.blank? && ALLOW_DETERMINISTIC_FALLBACK
       vector = deterministic_embedding(media_payload: media_payload, face: face)
       version = "deterministic_v1"
     end
 
     {
       vector: normalize(vector),
-      version: version
+      version: version || "unavailable"
     }
   end
 
