@@ -62,6 +62,7 @@ end
 group :test do
   gem "parallel_tests", "~> 4.0"
   gem "rspec-rails", "~> 8.0"
+  gem "simplecov", "~> 0.22", require: false
   gem "vcr", "~> 6.3"
   gem "webmock", "~> 3.23"
 end

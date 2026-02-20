@@ -24,7 +24,8 @@ RSpec.describe "EnqueueFeedAutoEngagementForAllAccountsJobTest" do
       batch_size: 2,
       max_posts: 2,
       include_story: false,
-      story_hold_seconds: 12
+      story_hold_seconds: 12,
+      cursor_id: first.id - 1
     )
 
     enqueued_feed_jobs = enqueued_jobs.select { |row| row[:job] == AutoEngageHomeFeedJob }

@@ -24,7 +24,8 @@ RSpec.describe "EnqueueStoryAutoRepliesForAllAccountsJobTest" do
       batch_size: 2,
       profile_limit: 5,
       max_stories: 4,
-      force_analyze_all: true
+      force_analyze_all: true,
+      cursor_id: first.id - 1
     )
 
     account_jobs = enqueued_jobs.select { |row| row[:job] == SyncProfileStoriesForAccountJob }

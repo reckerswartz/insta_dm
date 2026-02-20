@@ -175,6 +175,7 @@ module Ai
         steps = pipeline["steps"].is_a?(Hash) ? pipeline["steps"] : {}
         row = steps[key].is_a?(Hash) ? steps[key] : {}
 
+        # Count attempts only when a worker actually starts execution.
         attempts = row["attempts"].to_i
         attempts += 1 if status.to_s == "running"
 

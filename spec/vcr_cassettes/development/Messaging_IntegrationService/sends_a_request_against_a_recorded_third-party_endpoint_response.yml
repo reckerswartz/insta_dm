@@ -1,0 +1,53 @@
+---
+http_interactions:
+- request:
+    method: post
+    uri: https://httpbin.org/anything
+    body:
+      encoding: UTF-8
+      string: '{"recipient_id":"recipient_123","message":"hello from rspec","context":{"source":"vcr_spec"}}'
+    headers:
+      Accept-Encoding:
+      - gzip;q=1.0,deflate;q=0.6,identity;q=0.3
+      Accept:
+      - "*/*"
+      User-Agent:
+      - Ruby
+      Content-Type:
+      - application/json
+      Authorization:
+      - Bearer <OFFICIAL_MESSAGING_API_TOKEN>
+  response:
+    status:
+      code: 200
+      message: OK
+    headers:
+      Date:
+      - Fri, 20 Feb 2026 02:11:39 GMT
+      Content-Type:
+      - application/json
+      Content-Length:
+      - '765'
+      Connection:
+      - keep-alive
+      Server:
+      - gunicorn/19.9.0
+      Access-Control-Allow-Origin:
+      - "*"
+      Access-Control-Allow-Credentials:
+      - 'true'
+    body:
+      encoding: UTF-8
+      string: "{\n  \"args\": {}, \n  \"data\": \"{\\\"recipient_id\\\":\\\"recipient_123\\\",\\\"message\\\":\\\"hello
+        from rspec\\\",\\\"context\\\":{\\\"source\\\":\\\"vcr_spec\\\"}}\", \n  \"files\":
+        {}, \n  \"form\": {}, \n  \"headers\": {\n    \"Accept\": \"*/*\", \n    \"Accept-Encoding\":
+        \"gzip;q=1.0,deflate;q=0.6,identity;q=0.3\", \n    \"Authorization\": \"Bearer
+        <OFFICIAL_MESSAGING_API_TOKEN>\", \n    \"Content-Length\": \"93\", \n    \"Content-Type\":
+        \"application/json\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\":
+        \"Ruby\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6997c2db-5f6a967902e6d414599ccdfb\"\n
+        \ }, \n  \"json\": {\n    \"context\": {\n      \"source\": \"vcr_spec\"\n
+        \   }, \n    \"message\": \"hello from rspec\", \n    \"recipient_id\": \"recipient_123\"\n
+        \ }, \n  \"method\": \"POST\", \n  \"origin\": \"117.235.79.14, 136.226.231.34\",
+        \n  \"url\": \"https://httpbin.org/anything\"\n}\n"
+  recorded_at: Fri, 20 Feb 2026 02:11:39 GMT
+recorded_with: VCR 6.4.0

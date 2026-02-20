@@ -11,6 +11,7 @@ RSpec.describe Jobs::FailureRetry do
 
   it "skips automatic retry when post-analysis pipeline is already terminal" do
     failure = build_visual_failure(pipeline_status: "failed", visual_status: "failed")
+    allow(described_class).to receive(:each_retry_candidate).and_yield(failure)
 
     result = nil
     assert_no_enqueued_jobs do
@@ -26,6 +27,7 @@ RSpec.describe Jobs::FailureRetry do
 
   it "enqueues automatic retry when post-analysis pipeline is still active" do
     failure = build_visual_failure(pipeline_status: "running", visual_status: "pending")
+    allow(described_class).to receive(:each_retry_candidate).and_yield(failure)
 
     result = described_class.enqueue_automatic_retries!(limit: 5, max_attempts: 3, cooldown: 0.minutes)
 

@@ -24,7 +24,7 @@ RSpec.describe "EnqueueContinuousAccountProcessingJobTest" do
     _third = create_continuous_account
     _fourth = create_continuous_account
 
-    EnqueueContinuousAccountProcessingJob.perform_now(limit: 3, batch_size: 2)
+    EnqueueContinuousAccountProcessingJob.perform_now(limit: 3, batch_size: 2, cursor_id: first.id - 1)
 
     queued_processing_jobs = enqueued_jobs.select { |row| row[:job] == ProcessInstagramAccountContinuouslyJob }
     expect(queued_processing_jobs.length).to eq(2)

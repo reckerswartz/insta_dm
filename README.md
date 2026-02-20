@@ -18,6 +18,33 @@ Use this only for accounts and usage patterns you are authorized to automate. In
 - Selenium WebDriver
 - Google Chrome + ChromeDriver
 
+## Documentation map
+
+- Documentation index:
+  - `docs/README.md`
+- Architecture:
+  - `docs/architecture/system-overview.md`
+- Core workflows:
+  - `docs/workflows/account-sync-and-processing.md`
+  - `docs/workflows/post-analysis-pipeline.md`
+  - `docs/workflows/story-intelligence-pipeline.md`
+  - `docs/workflows/workspace-actions-queue.md`
+- Query/lookups reference:
+  - `docs/components/lookups-and-query-surfaces.md`
+- Ops/debugging:
+  - `docs/operations/background-jobs-and-schedules.md`
+  - `docs/operations/debugging-playbook.md`
+- Documentation changelog:
+  - `docs/changelog/`
+
+## Current Architecture Highlights
+
+- Account-level automation is driven by Sidekiq jobs with API-first Instagram calls and Selenium fallback paths.
+- Post analysis uses a multi-step pipeline (`visual`, `face`, `ocr`, `video`, `metadata`) with explicit per-step state in post metadata.
+- Story media is persisted and processed through a local intelligence pipeline (face matching, OCR/transcript, content signals).
+- Workspace action cards are backed by persisted per-post queue metadata and can resume automatically after build-history completion.
+- Job failures are persisted (`BackgroundJobFailure`), deduplicated (`AppIssue`), and retried through explicit retry policy.
+
 ## Setup
 
 ```bash

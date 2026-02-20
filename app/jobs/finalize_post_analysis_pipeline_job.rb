@@ -115,6 +115,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     now = Time.current
     acquired = false
 
+    # Every pipeline step enqueues a finalizer; this short lock serializes metadata writes.
     post.with_lock do
       metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
       pipeline = metadata["ai_pipeline"]
@@ -166,6 +167,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
   def maybe_enqueue_metadata_step!(context:, pipeline_run_id:)
     pipeline_state = context[:pipeline_state]
     return unless pipeline_state.required_step_pending?(run_id: pipeline_run_id, step: "metadata")
+    # Metadata tagging depends on outputs from core extraction steps.
     return unless pipeline_state.core_steps_terminal?(run_id: pipeline_run_id)
 
     job = ProcessPostMetadataTaggingJob.perform_later(

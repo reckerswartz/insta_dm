@@ -232,6 +232,7 @@ class SyncRecentProfilePostsForProfileJob < ApplicationJob
   def claim_profile_scan_lock!(profile_id:)
     return true unless postgres_adapter?
 
+    # Advisory lock keeps at most one scan worker active per profile id.
     key_a, key_b = profile_scan_lock_keys(profile_id: profile_id)
     value = ActiveRecord::Base.connection.select_value("SELECT pg_try_advisory_lock(#{key_a}, #{key_b})")
     ActiveModel::Type::Boolean.new.cast(value)

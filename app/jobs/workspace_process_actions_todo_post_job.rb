@@ -28,6 +28,7 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     forced = ActiveModel::Type::Boolean.new.cast(force)
     scheduled_at = wait_until.is_a?(Time) ? wait_until : nil
 
+    # Persisted queue state is row-local; lock to prevent duplicate enqueue races.
     post.with_lock do
       metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
       state = metadata["workspace_actions"].is_a?(Hash) ? metadata["workspace_actions"].deep_dup : {}

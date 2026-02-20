@@ -64,6 +64,16 @@ RSpec.configure do |config|
   #
   config.infer_spec_type_from_file_location!
 
+  config.before(:suite) do
+    next unless Rails.env.development?
+
+    %w[www.example.com example.org].each do |host|
+      Rails.application.config.hosts << host unless Rails.application.config.hosts.include?(host)
+    end
+
+    ActionController::Base.allow_forgery_protection = false
+  end
+
   # Filter lines from Rails gems in backtraces.
   config.filter_rails_from_backtrace!
   # arbitrary gems may also be filtered via:
