@@ -34,228 +34,39 @@ module Instagram
     end
 
     def validate_session!
-      return { valid: false, message: "No cookies stored" } if @account.cookies.empty?
-
-      with_driver(headless: true) do |driver|
-        driver.navigate.to(INSTAGRAM_BASE_URL)
-        wait_for(driver, css: "body", timeout: 12)
-        
-        # Check if we're still logged in by looking for authentication indicators
-        current_url = driver.current_url
-        
-        # If redirected to login page, session is invalid
-        if current_url.include?("/accounts/login/") || current_url.include?("/accounts/emailsignup/")
-          return { valid: false, message: "Session expired - redirected to login page" }
-        end
-        
-        # Look for reliable signs of authenticated session
-        begin
-          # Check for reliable authenticated user elements based on actual testing
-          authenticated_selectors = [
-            "svg[aria-label='Home']",           # Home icon in navigation
-            "svg[aria-label='Search']",          # Search icon in navigation  
-            "img[alt*='profile picture']",       # Profile pictures (multiple elements)
-            "a[href*='/direct/inbox/']",        # Direct messages/inbox link
-            "[aria-label='Settings']",           # Settings icon/menu
-            ".x9f619",                         # Common Instagram class for UI elements
-            ".x78zum5",                        # Another common Instagram class
-            ".x1i10hfl"                        # Interactive elements class
-          ]
-          
-          authenticated_found = 0
-          found_selectors = []
-          
-          authenticated_selectors.each do |selector|
-            begin
-              elements = driver.find_elements(css: selector)
-              visible_elements = elements.select(&:displayed?)
-              if visible_elements.any?
-                authenticated_found += 1
-                found_selectors << "#{selector} (#{visible_elements.length})"
-              end
-            rescue Selenium::WebDriver::Error::NoSuchElementError, Selenium::WebDriver::Error::StaleElementReferenceError
-              # Continue checking other elements
-            rescue StandardError => e
-              # Log unexpected errors but continue
-              Rails.logger.warn "Validation selector error for #{selector}: #{e.message}" if defined?(Rails)
-            end
-          end
-          
-          # Require at least 3 different authentication indicators to be confident
-          min_required_indicators = 3
-          
-          if authenticated_found >= min_required_indicators
-            # Additional verification: try to access the user's profile page
-            original_url = driver.current_url
-            driver.navigate.to("#{INSTAGRAM_BASE_URL}/#{@account.username}/")
-            wait_for(driver, css: "body", timeout: 8)
-            
-            # Check if we can see the profile (not redirected to login)
-            final_url = driver.current_url
-            if final_url.include?("/accounts/login/")
-              return { valid: false, message: "Session invalid - cannot access profile page" }
-            end
-            
-            # Check for profile-specific elements
-            profile_indicators = [
-              "img[alt*='profile picture']",
-              "h2",                           # Profile name header
-              "a[href*='/followers/']",        # Followers link
-              "a[href*='/following/']"         # Following link
-            ]
-            
-            profile_elements_found = 0
-            profile_indicators.each do |selector|
-              begin
-                elements = driver.find_elements(css: selector)
-                visible_elements = elements.select(&:displayed?)
-                profile_elements_found += 1 if visible_elements.any?
-              rescue
-                # Continue checking
-              end
-            end
-            
-            return { 
-              valid: true, 
-              message: "Session is valid and authenticated (found #{authenticated_found}/#{authenticated_selectors.length} indicators, #{profile_elements_found} profile elements)",
-              details: {
-                homepage_indicators: authenticated_found,
-                profile_indicators: profile_elements_found,
-                found_selectors: found_selectors
-              }
-            }
-          else
-            return { 
-              valid: false, 
-              message: "Session appears to be invalid - only found #{authenticated_found}/#{authenticated_selectors.length} authentication indicators",
-              details: {
-                homepage_indicators: authenticated_found,
-                required_indicators: min_required_indicators,
-                found_selectors: found_selectors
-              }
-            }
-          end
-          
-        rescue StandardError => e
-          return { valid: false, message: "Session validation error: #{e.message}" }
-        end
-      end
-    rescue StandardError => e
-      { valid: false, message: "Validation failed: #{e.message}" }
+      SessionValidationService.new(
+        account: @account,
+        with_driver: method(:with_driver),
+        wait_for: method(:wait_for),
+        logger: defined?(Rails) ? Rails.logger : nil
+      ).call
     end
 
     def sync_data!
-      with_recoverable_session(label: "sync") do
-        with_authenticated_driver do |driver|
-          conversation_users = collect_conversation_users(driver)
-          story_users = collect_story_users(driver)
-
-          usernames = (conversation_users.keys + story_users.keys).uniq
-
-          usernames.each do |username|
-            # If a user is present in the inbox conversation list, this account can message them
-            # (at minimum within the existing thread). Profile-based heuristics can be flaky.
-            eligibility =
-              if conversation_users.key?(username)
-                { can_message: true, restriction_reason: nil }
-              else
-                fetch_eligibility(driver, username)
-              end
-
-            recipient = @account.recipients.find_or_initialize_by(username: username)
-            recipient.display_name = conversation_users.dig(username, :display_name) || story_users.dig(username, :display_name) || username
-            recipient.source = source_for(username, conversation_users, story_users)
-            recipient.story_visible = story_users.key?(username)
-            recipient.can_message = eligibility[:can_message]
-            recipient.restriction_reason = eligibility[:restriction_reason]
-            recipient.save!
-
-            peer = @account.conversation_peers.find_or_initialize_by(username: username)
-            peer.display_name = recipient.display_name
-            peer.last_message_at = Time.current
-            peer.save!
-          end
-
-          @account.update!(last_synced_at: Time.current)
-
-          {
-            recipients: @account.recipients.count,
-            eligible: @account.recipients.eligible.count
-          }
-        end
-      end
+      SyncDataService.new(
+        account: @account,
+        with_recoverable_session: method(:with_recoverable_session),
+        with_authenticated_driver: method(:with_authenticated_driver),
+        collect_conversation_users: method(:collect_conversation_users),
+        collect_story_users: method(:collect_story_users),
+        fetch_eligibility: method(:fetch_eligibility),
+        source_for: method(:source_for)
+      ).call
     end
 
     # Primary sync: followers/following lists (plus inbox to mark known-messageable threads).
     #
     # Returns stats hash suitable for storing in SyncRun.
     def sync_follow_graph!
-      with_recoverable_session(label: "sync_follow_graph") do
-        with_authenticated_driver do |driver|
-          raise "Instagram username must be set on the account before syncing" if @account.username.blank?
-
-          conversation_users = collect_conversation_users(driver)
-          story_users = collect_story_users(driver)
-
-          followers = collect_follow_list(driver, list_kind: :followers, profile_username: @account.username)
-          following = collect_follow_list(driver, list_kind: :following, profile_username: @account.username)
-
-          follower_usernames = followers.keys
-          following_usernames = following.keys
-          mutuals = (follower_usernames & following_usernames)
-
-          InstagramProfile.transaction do
-            # Reset follow flags before applying the latest graph.
-            @account.instagram_profiles.update_all(following: false, follows_you: false)
-
-            upsert_follow_list!(followers, following_flag: false, follows_you_flag: true)
-            upsert_follow_list!(following, following_flag: true, follows_you_flag: false)
-
-            # Mark mutuals explicitly via flags (already set from above).
-            @account.instagram_profiles.where(username: mutuals).update_all(last_synced_at: Time.current)
-
-            # Inbox-derived messageability is our most reliable signal.
-            messageable_usernames = conversation_users.keys
-            @account.instagram_profiles.where(username: messageable_usernames).update_all(
-              can_message: true,
-              restriction_reason: nil,
-              dm_interaction_state: "messageable",
-              dm_interaction_reason: "inbox_thread_seen",
-              dm_interaction_checked_at: Time.current,
-              dm_interaction_retry_after_at: nil
-            )
-          end
-
-          # "Last active" signal: story tray visibility (approximate; we only know it was visible now).
-          now = Time.current
-          story_users.keys.each do |username|
-            profile = @account.instagram_profiles.find_by(username: username)
-            next unless profile
-
-            profile.last_story_seen_at = now
-            profile.recompute_last_active!
-            profile.save!
-
-            profile.record_event!(
-              kind: "story_seen",
-              external_id: "story_seen:#{now.utc.to_date.iso8601}",
-              occurred_at: nil,
-              metadata: { source: "home_story_tray" }
-            )
-          end
-
-          @account.update!(last_synced_at: Time.current)
-
-          {
-            followers: follower_usernames.length,
-            following: following_usernames.length,
-            mutuals: mutuals.length,
-            conversation_threads: conversation_users.length,
-            profiles_total: @account.instagram_profiles.count,
-            story_tray_visible: story_users.length
-          }
-        end
-      end
+      SyncFollowGraphService.new(
+        account: @account,
+        with_recoverable_session: method(:with_recoverable_session),
+        with_authenticated_driver: method(:with_authenticated_driver),
+        collect_conversation_users: method(:collect_conversation_users),
+        collect_story_users: method(:collect_story_users),
+        collect_follow_list: method(:collect_follow_list),
+        upsert_follow_list: method(:upsert_follow_list!)
+      ).call
     end
 
     # Captures "home feed" post identifiers that appear while scrolling.
@@ -1308,131 +1119,33 @@ module Instagram
     end
 
     def send_messages!(usernames:, message_text:)
-      raise "Message cannot be blank" if message_text.to_s.strip.blank?
-
-      with_recoverable_session(label: "send_messages") do
-        sent = 0
-        failed = 0
-        fallback_usernames = []
-
-        usernames.each do |username|
-          begin
-            profile = find_profile_for_interaction(username: username)
-            if dm_interaction_retry_pending?(profile)
-              failed += 1
-              next
-            end
-
-            api_result = send_direct_message_via_api!(username: username, message_text: message_text)
-            if api_result[:sent]
-              mark_profile_dm_state!(
-                profile: profile,
-                state: "messageable",
-                reason: "api_text_sent",
-                retry_after_at: nil
-              )
-              sent += 1
-            else
-              apply_dm_state_from_send_result(profile: profile, result: api_result)
-              fallback_usernames << username
-            end
-          rescue StandardError => e
-            raise if disconnected_session_error?(e)
-
-            fallback_usernames << username
-          end
-        end
-
-        if fallback_usernames.any?
-          with_authenticated_driver do |driver|
-            fallback_usernames.each do |username|
-              begin
-                next unless open_dm(driver, username)
-
-                send_text_message_from_driver!(driver, message_text)
-                profile = find_profile_for_interaction(username: username)
-                mark_profile_dm_state!(
-                  profile: profile,
-                  state: "messageable",
-                  reason: "ui_fallback_sent",
-                  retry_after_at: nil
-                )
-                sent += 1
-                sleep(0.8)
-              rescue StandardError => e
-                raise if disconnected_session_error?(e)
-
-                failed += 1
-              end
-            end
-          end
-        end
-
-        # API failures that did not send and were not recovered by UI fallback count as failed.
-        unresolved = usernames.length - sent - failed
-        failed += unresolved if unresolved.positive?
-
-        {
-          attempted: usernames.length,
-          sent: sent,
-          failed: failed
-        }
-      end
+      BulkMessageSendService.new(
+        with_recoverable_session: method(:with_recoverable_session),
+        with_authenticated_driver: method(:with_authenticated_driver),
+        find_profile_for_interaction: method(:find_profile_for_interaction),
+        dm_interaction_retry_pending: method(:dm_interaction_retry_pending?),
+        send_direct_message_via_api: method(:send_direct_message_via_api!),
+        mark_profile_dm_state: method(:mark_profile_dm_state!),
+        apply_dm_state_from_send_result: method(:apply_dm_state_from_send_result),
+        disconnected_session_error: method(:disconnected_session_error?),
+        open_dm: method(:open_dm),
+        send_text_message_from_driver: method(:send_text_message_from_driver!)
+      ).call(usernames: usernames, message_text: message_text)
     end
 
     def send_message_to_user!(username:, message_text:)
-      with_recoverable_session(label: "send_message") do
-        profile = find_profile_for_interaction(username: username)
-        if dm_interaction_retry_pending?(profile)
-          retry_after = profile&.dm_interaction_retry_after_at
-          stamp = retry_after&.utc&.iso8601
-          raise "DM retry pending for #{username}#{stamp.present? ? " until #{stamp}" : ""}"
-        end
-
-        api_result = send_direct_message_via_api!(username: username, message_text: message_text)
-        if api_result[:sent]
-          mark_profile_dm_state!(
-            profile: profile,
-            state: "messageable",
-            reason: "api_text_sent",
-            retry_after_at: nil
-          )
-          return true
-        end
-
-        apply_dm_state_from_send_result(profile: profile, result: api_result)
-
-        with_authenticated_driver do |driver|
-          raise "Message cannot be blank" if message_text.to_s.strip.blank?
-          raise "Username cannot be blank" if username.to_s.strip.blank?
-
-          ok =
-            with_task_capture(driver: driver, task_name: "dm_open", meta: { username: username }) do
-              open_dm(driver, username)
-            end
-          raise "Unable to open DM for #{username}" unless ok
-
-          with_task_capture(
-            driver: driver,
-            task_name: "dm_send_text",
-            meta: {
-              username: username,
-              message_preview: message_text.to_s.strip.byteslice(0, 80),
-              api_fallback_reason: api_result[:reason].to_s
-            }
-          ) do
-            send_text_message_from_driver!(driver, message_text.to_s, expected_username: username)
-          end
-          mark_profile_dm_state!(
-            profile: profile,
-            state: "messageable",
-            reason: "ui_fallback_sent",
-            retry_after_at: nil
-          )
-          sleep(0.6)
-          true
-        end
-      end
+      SingleMessageSendService.new(
+        with_recoverable_session: method(:with_recoverable_session),
+        with_authenticated_driver: method(:with_authenticated_driver),
+        with_task_capture: method(:with_task_capture),
+        find_profile_for_interaction: method(:find_profile_for_interaction),
+        dm_interaction_retry_pending: method(:dm_interaction_retry_pending?),
+        send_direct_message_via_api: method(:send_direct_message_via_api!),
+        mark_profile_dm_state: method(:mark_profile_dm_state!),
+        apply_dm_state_from_send_result: method(:apply_dm_state_from_send_result),
+        open_dm: method(:open_dm),
+        send_text_message_from_driver: method(:send_text_message_from_driver!)
+      ).call(username: username, message_text: message_text)
     end
 
     # API-first DM text send. Falls back to UI from caller when this returns sent=false.
@@ -1592,37 +1305,14 @@ module Instagram
     end
 
     def fetch_profile_analysis_dataset!(username:, posts_limit: nil, comments_limit: 8)
-      username = normalize_username(username)
-      raise "Username cannot be blank" if username.blank?
-
-      details = fetch_profile_details!(username: username)
-      web_info = fetch_web_profile_info(username)
-      user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
-      user_id = user.is_a?(Hash) ? user["id"].to_s.strip.presence : nil
-      user_id ||= details[:ig_user_id].to_s.strip.presence if details.is_a?(Hash)
-
-      feed_result = fetch_profile_feed_items_for_analysis(
-        username: username,
-        user_id: user_id,
-        posts_limit: posts_limit
-      )
-      items = Array(feed_result[:items])
-
-      posts = items.filter_map do |item|
-        extract_post_for_analysis(item, comments_limit: comments_limit, referer_username: username)
-      end
-      enrich_missing_post_comments_via_browser!(
-        username: username,
-        posts: posts,
-        comments_limit: comments_limit
-      )
-
-      {
-        profile: details,
-        posts: posts,
-        fetched_at: Time.current,
-        feed_fetch: feed_result.except(:items)
-      }
+      ProfileAnalysisDatasetService.new(
+        fetch_profile_details: method(:fetch_profile_details!),
+        fetch_web_profile_info: method(:fetch_web_profile_info),
+        fetch_profile_feed_items_for_analysis: method(:fetch_profile_feed_items_for_analysis),
+        extract_post_for_analysis: method(:extract_post_for_analysis),
+        enrich_missing_post_comments_via_browser: method(:enrich_missing_post_comments_via_browser!),
+        normalize_username: method(:normalize_username)
+      ).call(username: username, posts_limit: posts_limit, comments_limit: comments_limit)
     end
 
     def fetch_profile_feed_items_for_analysis(username:, user_id:, posts_limit:)
