@@ -24,6 +24,20 @@ Included modules and responsibilities:
 - `Instagram::Client::FeedEngagementService`: feed capture and engagement orchestration.
 - `Instagram::Client::StoryScraperService`: story traversal and story-level automation pipeline.
 
+### Story Scraper Decomposition
+`StoryScraperService` is now a composition module that exposes facade entrypoints and delegates implementation to smaller components:
+
+- `Instagram::Client::StoryScraper::HomeCarouselSync` (`app/services/instagram/client/story_scraper/home_carousel_sync.rb`)
+  - Owns end-to-end `sync_home_story_carousel!` workflow orchestration.
+  - Handles traversal limits, per-story processing flow, skip/error recording, and completion telemetry.
+- `Instagram::Client::StoryScraper::CarouselOpening` (`app/services/instagram/client/story_scraper/carousel_opening.rb`)
+  - Owns first-story discovery/opening from home carousel, including fallback strategies and capture diagnostics.
+- `Instagram::Client::StoryScraper::CarouselNavigation` (`app/services/instagram/client/story_scraper/carousel_navigation.rb`)
+  - Owns "move to next story" logic and selector probing for resilient carousel progression.
+- `Instagram::Client::StoryScraper::SyncStats` (`app/services/instagram/client/story_scraper/sync_stats.rb`)
+  - Typed state carrier for sync counters (downloaded/analyzed/commented/skipped/failed metrics).
+  - Replaces inline ad-hoc hash initialization to keep metric contracts explicit and reusable.
+
 ### Service Objects
 Facade methods delegate multi-step dataset assembly to dedicated services:
 - `Instagram::Client::ProfileAnalysisDatasetService`
@@ -44,6 +58,16 @@ The model stays persistence-centric and delegates orchestration via concerns:
 3. Domain modules reuse shared supports (`CoreHelpers`, `TaskCaptureSupport`, `SessionRecoverySupport`).
 4. Results return to jobs/controllers without exposing low-level Selenium/HTTP internals.
 
+Story scraper interaction path:
+
+1. Job/controller calls `Instagram::Client#sync_home_story_carousel!`.
+2. `StoryScraperService` resolves the method from `StoryScraper::HomeCarouselSync`.
+3. `HomeCarouselSync` invokes:
+   - `CarouselOpening` to enter the viewer on the first valid story.
+   - `CarouselNavigation` for deterministic movement to the next story.
+4. `SyncStats` carries the mutable per-run metric contract across the workflow.
+5. Shared supports (`TaskCaptureSupport`, `StoryApiSupport`, `CoreHelpers`) provide cross-cutting behavior.
+
 ## Guidelines for New Features
 
 1. Add feature behavior in a new module or service object, not directly in `app/services/instagram/client.rb`.
@@ -51,6 +75,12 @@ The model stays persistence-centric and delegates orchestration via concerns:
 3. For workflows combining 3+ collaborators, prefer a service object with injected collaborators.
 4. Keep helper modules private-first; expose only explicit entrypoints.
 5. If a module grows beyond one capability boundary, split by concern.
+6. Keep state contracts explicit:
+   - introduce a dedicated object (like `SyncStats`) for workflow state that crosses multiple branches.
+   - avoid free-form hash growth inside large loops.
+7. Keep navigation/retry mechanics separate from content processing:
+   - selector probing and movement belong in navigation components.
+   - media/comment analysis belongs in workflow components.
 
 ## Scalability and Drift Prevention
 
@@ -63,3 +93,7 @@ The model stays persistence-centric and delegates orchestration via concerns:
 3. Prefer dependency injection over global lookups.
 4. Keep diagnostics capture centralized in `TaskCaptureSupport`.
 5. Update this document when adding/removing facade modules.
+6. Trigger a decomposition review when a single file exceeds ~400-500 lines or mixes more than one capability boundary.
+7. Keep orchestration and selectors deterministic:
+   - expose exit reasons/status keys as stable strings.
+   - preserve backward-compatible metric keys consumed by jobs/UI telemetry.

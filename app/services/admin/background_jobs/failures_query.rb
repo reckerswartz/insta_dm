@@ -7,7 +7,11 @@ module Admin
 
       Result = Struct.new(:failures, :total, :pages, keyword_init: true)
 
-      def initialize(params:, base_scope: BackgroundJobFailure.order(occurred_at: :desc, id: :desc), tabulator: TabulatorParams.new(params: params))
+      def initialize(
+        params:,
+        base_scope: BackgroundJobFailure.order(occurred_at: :desc, id: :desc),
+        tabulator: Admin::BackgroundJobs::TabulatorParams.new(params: params)
+      )
         @params = params
         @base_scope = base_scope
         @tabulator = tabulator

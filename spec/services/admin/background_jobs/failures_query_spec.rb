@@ -23,7 +23,7 @@ RSpec.describe Admin::BackgroundJobs::FailuresQuery do
       occurred_at: 1.hour.ago,
       retryable: true
     )
-    create_failure(
+    skipped = create_failure(
       job_class: "FetchInstagramProfileDetailsJob",
       queue_name: "default",
       error_class: "ArgumentError",
@@ -31,6 +31,9 @@ RSpec.describe Admin::BackgroundJobs::FailuresQuery do
       occurred_at: 30.minutes.ago,
       retryable: false
     )
+    base_scope = BackgroundJobFailure
+      .where(id: [older.id, newer.id, skipped.id])
+      .order(occurred_at: :desc, id: :desc)
 
     params = ActionController::Parameters.new(
       filters: [
@@ -43,7 +46,7 @@ RSpec.describe Admin::BackgroundJobs::FailuresQuery do
       page: 1
     )
 
-    result = described_class.new(params: params).call
+    result = described_class.new(params: params, base_scope: base_scope).call
 
     expect(result.total).to eq(2)
     expect(result.pages).to eq(1)
@@ -51,11 +54,14 @@ RSpec.describe Admin::BackgroundJobs::FailuresQuery do
   end
 
   it "normalizes invalid page and per_page inputs" do
-    create_failure(error_message: "first")
-    create_failure(error_message: "second")
+    first = create_failure(error_message: "first")
+    second = create_failure(error_message: "second")
+    base_scope = BackgroundJobFailure
+      .where(id: [first.id, second.id])
+      .order(occurred_at: :desc, id: :desc)
 
     params = ActionController::Parameters.new(page: -2, per_page: 0)
-    result = described_class.new(params: params).call
+    result = described_class.new(params: params, base_scope: base_scope).call
 
     expect(result.total).to eq(2)
     expect(result.pages).to eq(1)

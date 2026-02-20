@@ -1,4 +1,5 @@
 require "json"
+require_dependency "scheduled_account_batching"
 
 class ApplicationJob < ActiveJob::Base
   # Automatically retry jobs that encountered a deadlock

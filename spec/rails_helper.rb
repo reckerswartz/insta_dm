@@ -74,6 +74,15 @@ RSpec.configure do |config|
     ActionController::Base.allow_forgery_protection = false
   end
 
+  config.around do |example|
+    # Running specs against development can leave execution context state between
+    # examples; clear it to keep query log tag generation deterministic.
+    ActiveSupport::ExecutionContext.clear
+    example.run
+  ensure
+    ActiveSupport::ExecutionContext.clear
+  end
+
   # Filter lines from Rails gems in backtraces.
   config.filter_rails_from_backtrace!
   # arbitrary gems may also be filtered via:

@@ -3,7 +3,7 @@ module Admin
     class DashboardSnapshot
       Snapshot = Struct.new(:backend, :counts, :processes, :recent_jobs, :recent_failed, keyword_init: true)
 
-      def initialize(backend:, serializer: JobSerializer.new)
+      def initialize(backend:, serializer: Admin::BackgroundJobs::JobSerializer.new)
         @backend = backend.to_s
         @serializer = serializer
       end

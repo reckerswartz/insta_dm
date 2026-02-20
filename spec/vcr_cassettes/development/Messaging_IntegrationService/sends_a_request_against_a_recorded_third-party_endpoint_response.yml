@@ -23,7 +23,7 @@ http_interactions:
       message: OK
     headers:
       Date:
-      - Fri, 20 Feb 2026 03:44:12 GMT
+      - Fri, 20 Feb 2026 03:55:49 GMT
       Content-Type:
       - application/json
       Content-Length:
@@ -44,10 +44,10 @@ http_interactions:
         \"gzip;q=1.0,deflate;q=0.6,identity;q=0.3\", \n    \"Authorization\": \"Bearer
         <OFFICIAL_MESSAGING_API_TOKEN>\", \n    \"Content-Length\": \"93\", \n    \"Content-Type\":
         \"application/json\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\":
-        \"Ruby\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6997d88c-554dadc86eb232553919a69e\"\n
+        \"Ruby\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6997db45-5ab2485d7810d5fd0cca25f4\"\n
         \ }, \n  \"json\": {\n    \"context\": {\n      \"source\": \"vcr_spec\"\n
         \   }, \n    \"message\": \"hello from rspec\", \n    \"recipient_id\": \"recipient_123\"\n
         \ }, \n  \"method\": \"POST\", \n  \"origin\": \"117.235.79.14, 136.226.231.34\",
         \n  \"url\": \"https://httpbin.org/anything\"\n}\n"
-  recorded_at: Fri, 20 Feb 2026 03:44:11 GMT
+  recorded_at: Fri, 20 Feb 2026 03:55:49 GMT
 recorded_with: VCR 6.4.0
