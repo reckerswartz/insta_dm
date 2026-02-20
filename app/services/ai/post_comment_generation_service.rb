@@ -26,8 +26,15 @@ module Ai
 
       analysis = normalized_hash(post.analysis)
       metadata = normalized_hash(post.metadata)
+      Ai::ProfileInsightStore.new.ingest_post!(
+        profile: profile,
+        post: post,
+        analysis: analysis,
+        metadata: metadata
+      )
       preparation = prepared_history_summary
       signals = signal_context(analysis: analysis, metadata: metadata)
+      scored_context = build_scored_context(analysis: analysis)
 
       face_count = signals.face_count
       ocr_text = signals.ocr_text
@@ -73,7 +80,8 @@ module Ai
         profile_preparation: preparation,
         verified_profile_history: verified_profile_history,
         conversational_voice: conversational_voice,
-        cv_ocr_evidence: signals.cv_ocr_evidence
+        cv_ocr_evidence: signals.cv_ocr_evidence,
+        scored_context: scored_context
       )
 
       suggestions = signals.normalize_suggestions(result[:comment_suggestions])
@@ -265,6 +273,22 @@ module Ai
         metadata: metadata,
         max_suggestions: MAX_SUGGESTIONS
       )
+    end
+
+    def build_scored_context(analysis:)
+      Ai::ContextSignalScorer.new(profile: profile, channel: "post").build(
+        current_topics: normalized_topics(analysis["topics"]),
+        image_description: analysis["image_description"].to_s,
+        caption: post.caption.to_s,
+        limit: 12
+      )
+    rescue StandardError
+      {
+        prioritized_signals: [],
+        style_profile: {},
+        engagement_memory: {},
+        context_keywords: []
+      }
     end
 
     def policy_persistence

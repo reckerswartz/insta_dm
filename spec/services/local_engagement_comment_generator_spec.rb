@@ -57,6 +57,12 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       generation_policy: {
         allow_comment: true,
         reason_code: "verified_context_available"
+      },
+      scored_context: {
+        prioritized_signals: [
+          { value: "fitness", signal_type: "topics", score: 2.1, source: "store" }
+        ],
+        context_keywords: [ "fitness", "morning" ]
       }
     )
 
@@ -67,6 +73,8 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     assert_includes prompt, "\"comparison\""
     assert_includes prompt, "\"detected_usernames\""
     assert_includes prompt, "\"identity_verification\""
+    assert_includes prompt, "\"scored_context\""
+    assert_includes prompt, "\"prioritized_signals\""
     refute_includes prompt, "\"local_story_intelligence\""
     refute_includes prompt, "\"media_url\""
     refute_includes prompt, "\"historical_context_summary\""

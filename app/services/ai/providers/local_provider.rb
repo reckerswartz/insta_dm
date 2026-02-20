@@ -507,6 +507,7 @@ module Ai
       end
 
       def generate_engagement_comments(post_payload:, image_description:, labels:, author_type:)
+        channel = infer_comment_channel(post_payload)
         generator = Ai::LocalEngagementCommentGenerator.new(
           ollama_client: ollama_client,
           model: ollama_model
@@ -517,7 +518,7 @@ module Ai
           image_description: image_description.to_s,
           topics: labels.first(12),
           author_type: author_type,
-          channel: "post",
+          channel: channel,
           historical_comments: extract_historical_comments(post_payload),
           historical_context: extract_historical_context(post_payload)
         )
@@ -564,6 +565,17 @@ module Ai
           error_message: warning[:error_message],
           comment_suggestions: build_comment_suggestions(labels: labels, description: image_description)
         }
+      end
+
+      def infer_comment_channel(post_payload)
+        payload = post_payload.is_a?(Hash) ? post_payload : {}
+        rules = payload[:rules].is_a?(Hash) ? payload[:rules] : (payload["rules"].is_a?(Hash) ? payload["rules"] : {})
+        context = rules[:context].to_s.presence || rules["context"].to_s.presence
+        return "story" if context.to_s.include?("story")
+
+        "post"
+      rescue StandardError
+        "post"
       end
 
       def meaningful_visual_labels(labels)
@@ -702,7 +714,7 @@ module Ai
         top = labels.first(6)
         return "Video frames indicate: #{top.join(', ')}." if top.any?
 
-        "Video content analyzed with local AI models."
+        "Video scene detected, but clear objects were limited; keep comments short and neutral."
       end
 
       def infer_tone(text)

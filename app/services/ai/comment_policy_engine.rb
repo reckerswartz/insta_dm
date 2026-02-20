@@ -18,10 +18,18 @@ module Ai
       /\b(age|gender|ethnicity|religion|nationality)\b/i
     ].freeze
 
-    def evaluate(suggestions:, historical_comments: [], max_suggestions: 8)
+    GENERIC_PHRASE_PATTERNS = [
+      /\b(great content|nice post|good post|love the vibes?)\b/i,
+      /\b(whole vibe|clean shot|on point|keep it up)\b/i,
+      /\b(hot vibes?|story media moment)\b/i,
+      /\b(ai-powered video|ai-enhanced video|video analysis is|local ai models?)\b/i
+    ].freeze
+
+    def evaluate(suggestions:, historical_comments: [], context_keywords: [], max_suggestions: 8)
       accepted = []
       rejected = []
       history = Array(historical_comments).map(&:to_s)
+      context_tokens = tokenize(Array(context_keywords).join(" "))
 
       Array(suggestions).each do |raw|
         text = normalize_comment(raw)
@@ -31,6 +39,8 @@ module Ai
         reasons << "blocked_term" if blocked_term?(text)
         reasons << "sensitive_claim" if sensitive_claim?(text)
         reasons << "history_repetition" if repetitive_against_history?(text, history)
+        reasons << "generic_phrase" if generic_phrase?(text)
+        reasons << "weak_visual_grounding" if weak_visual_grounding?(text, context_tokens)
 
         if reasons.any?
           rejected << { comment: text, reasons: reasons }
@@ -64,6 +74,10 @@ module Ai
       SENSITIVE_CLAIM_PATTERNS.any? { |pattern| comment.to_s.match?(pattern) }
     end
 
+    def generic_phrase?(comment)
+      GENERIC_PHRASE_PATTERNS.any? { |pattern| comment.to_s.match?(pattern) }
+    end
+
     def repetitive_against_history?(comment, history)
       candidate_tokens = tokenize(comment)
       return false if candidate_tokens.empty?
@@ -72,6 +86,16 @@ module Ai
         score = jaccard(candidate_tokens, tokenize(past))
         score >= 0.82
       end
+    end
+
+    def weak_visual_grounding?(comment, context_tokens)
+      return false if context_tokens.empty?
+
+      candidate_tokens = tokenize(comment)
+      return true if candidate_tokens.empty?
+
+      overlap = (candidate_tokens & context_tokens).size
+      overlap <= 0
     end
 
     def tokenize(value)

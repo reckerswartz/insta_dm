@@ -19,7 +19,7 @@ module Ai
       @policy_engine = policy_engine || Ai::CommentPolicyEngine.new
     end
 
-    def generate!(post_payload:, image_description:, topics:, author_type:, channel: "post", historical_comments: [], historical_context: nil, historical_story_context: [], local_story_intelligence: {}, historical_comparison: {}, cv_ocr_evidence: {}, verified_story_facts: {}, story_ownership_classification: {}, generation_policy: {}, profile_preparation: {}, verified_profile_history: [], conversational_voice: {}, **_extra)
+    def generate!(post_payload:, image_description:, topics:, author_type:, channel: "post", historical_comments: [], historical_context: nil, historical_story_context: [], local_story_intelligence: {}, historical_comparison: {}, cv_ocr_evidence: {}, verified_story_facts: {}, story_ownership_classification: {}, generation_policy: {}, profile_preparation: {}, verified_profile_history: [], conversational_voice: {}, scored_context: {}, **_extra)
       if generation_policy.is_a?(Hash) && generation_policy.key?(:allow_comment) && !ActiveModel::Type::Boolean.new.cast(generation_policy[:allow_comment] || generation_policy["allow_comment"])
         return {
           model: @model,
@@ -50,7 +50,8 @@ module Ai
         generation_policy: generation_policy,
         profile_preparation: profile_preparation,
         verified_profile_history: verified_profile_history,
-        conversational_voice: conversational_voice
+        conversational_voice: conversational_voice,
+        scored_context: scored_context
       )
 
       resp = @ollama_client.generate(
@@ -60,9 +61,12 @@ module Ai
         max_tokens: 300
       )
 
+      @last_topics_for_policy = Array(topics).map(&:to_s)
+      @last_image_description_for_policy = image_description.to_s
       suggestions = evaluate_suggestions(
         suggestions: parse_comment_suggestions(resp),
-        historical_comments: historical_comments
+        historical_comments: historical_comments,
+        scored_context: scored_context
       )
 
       if suggestions.size < MIN_SUGGESTIONS
@@ -74,7 +78,8 @@ module Ai
         )
         retry_suggestions = evaluate_suggestions(
           suggestions: parse_comment_suggestions(retry_resp),
-          historical_comments: historical_comments
+          historical_comments: historical_comments,
+          scored_context: scored_context
         )
         suggestions = retry_suggestions if retry_suggestions.size >= MIN_SUGGESTIONS
       end
@@ -120,7 +125,7 @@ module Ai
 
     private
 
-    def build_prompt(post_payload:, image_description:, topics:, author_type:, channel:, historical_comments:, historical_context:, historical_story_context:, local_story_intelligence:, historical_comparison:, cv_ocr_evidence:, verified_story_facts:, story_ownership_classification:, generation_policy:, profile_preparation: {}, verified_profile_history: [], conversational_voice: {})
+    def build_prompt(post_payload:, image_description:, topics:, author_type:, channel:, historical_comments:, historical_context:, historical_story_context:, local_story_intelligence:, historical_comparison:, cv_ocr_evidence:, verified_story_facts:, story_ownership_classification:, generation_policy:, profile_preparation: {}, verified_profile_history: [], conversational_voice: {}, scored_context: {})
       tone_profile = Ai::CommentToneProfile.for(channel)
       verified_story_facts = compact_verified_story_facts(
         verified_story_facts,
@@ -135,6 +140,13 @@ module Ai
       profile_preparation = compact_profile_preparation(profile_preparation)
       verified_profile_history = compact_verified_profile_history(verified_profile_history)
       conversational_voice = compact_conversational_voice(conversational_voice)
+      scored_context = compact_scored_context(scored_context)
+      situational_cues = detect_situational_cues(
+        image_description: image_description,
+        topics: topics,
+        verified_story_facts: verified_story_facts,
+        historical_comparison: historical_comparison
+      )
 
       context_json = {
         task: "instagram_#{Ai::CommentToneProfile.normalize(channel)}_comment_generation",
@@ -145,9 +157,11 @@ module Ai
           max_chars_per_comment: 140
         },
         tone_profile: tone_profile,
+        situational_cues: situational_cues,
         profile: profile_summary,
         profile_preparation: profile_preparation,
         conversational_voice: conversational_voice,
+        scored_context: scored_context,
         current_story: {
           image_description: truncate_text(image_description.to_s, max: 280),
           topics: Array(topics).map(&:to_s).reject(&:blank?).uniq.first(10),
@@ -181,11 +195,13 @@ module Ai
         Writing rules:
         - channel mode: #{Ai::CommentToneProfile.normalize(channel)}
         - tone guidance: #{tone_profile[:guidance]}
+        - use `situational_cues` to tailor tone (for example celebration/travel/lifestyle)
         - natural, public-safe, short comments
         - max 140 chars each
         - vary openings and avoid duplicates
         - avoid explicit/adult language
         - avoid identity, age, gender, or sensitive-trait claims
+        - avoid empty praise with no visual anchor from topics/description
         - reflect recurring themes and wording style from `historical_context` and `conversational_voice`
 
         Output STRICT JSON only:
@@ -202,10 +218,21 @@ module Ai
       PROMPT
     end
 
-    def evaluate_suggestions(suggestions:, historical_comments:)
+    def evaluate_suggestions(suggestions:, historical_comments:, scored_context: {})
+      context_keywords = []
+      context_keywords.concat(Array(@last_topics_for_policy))
+      context_keywords.concat(extract_keywords_from_text(@last_image_description_for_policy))
+      context_keywords.concat(Array(scored_context[:context_keywords] || scored_context["context_keywords"]).map(&:to_s))
+      context_keywords.concat(
+        Array(scored_context[:prioritized_signals] || scored_context["prioritized_signals"]).first(8).flat_map do |row|
+          value = row.is_a?(Hash) ? (row[:value] || row["value"]).to_s : row.to_s
+          extract_keywords_from_text(value)
+        end
+      )
       result = @policy_engine.evaluate(
         suggestions: suggestions,
         historical_comments: historical_comments,
+        context_keywords: context_keywords,
         max_suggestions: MAX_SUGGESTIONS
       )
       Array(result[:accepted])
@@ -250,6 +277,29 @@ module Ai
         "Love this quick story drop 💯",
         "Story game is strong here 🚀"
       ]
+    end
+
+    def detect_situational_cues(image_description:, topics:, verified_story_facts:, historical_comparison:)
+      tokens = []
+      tokens.concat(Array(topics).map(&:to_s))
+      tokens.concat(Array(verified_story_facts[:topics] || verified_story_facts["topics"]).map(&:to_s))
+      tokens.concat(Array(verified_story_facts[:hashtags] || verified_story_facts["hashtags"]).map(&:to_s))
+      tokens.concat(Array(historical_comparison[:novel_topics] || historical_comparison["novel_topics"]).map(&:to_s))
+      tokens.concat(extract_keywords_from_text(image_description.to_s))
+      corpus = tokens.join(" ").downcase
+
+      cues = []
+      cues << "celebration" if corpus.match?(/\b(birthday|party|wedding|anniversary|celebrat|congrats|graduation)\b/)
+      cues << "travel" if corpus.match?(/\b(travel|trip|vacation|beach|airport|hotel|flight|mountain|city)\b/)
+      cues << "lifestyle" if corpus.match?(/\b(workout|gym|coffee|food|restaurant|fashion|outfit|selfcare|morning)\b/)
+      cues << "social" if corpus.match?(/\b(friend|family|hangout|crew|together|date)\b/)
+      cues << "creative" if corpus.match?(/\b(art|music|dance|shoot|photo|film|design)\b/)
+      cues = [ "general" ] if cues.empty?
+      cues.uniq.first(4)
+    end
+
+    def extract_keywords_from_text(text)
+      text.to_s.downcase.scan(/[a-z0-9]+/).reject { |token| token.length < 4 }.uniq.first(20)
     end
 
     def truncate_text(value, max:)
@@ -431,6 +481,25 @@ module Ai
         frequent_people_labels: Array(data[:frequent_people_labels] || data["frequent_people_labels"]).first(8),
         prior_comment_examples: Array(data[:prior_comment_examples] || data["prior_comment_examples"]).map { |value| truncate_text(value, max: 100) }.first(6)
       }.compact
+    end
+
+    def compact_scored_context(payload)
+      data = payload.is_a?(Hash) ? payload : {}
+      {
+        prioritized_signals: Array(data[:prioritized_signals] || data["prioritized_signals"]).first(12).map do |row|
+          next unless row.is_a?(Hash)
+
+          {
+            value: (row[:value] || row["value"]).to_s,
+            signal_type: (row[:signal_type] || row["signal_type"]).to_s,
+            source: (row[:source] || row["source"]).to_s,
+            score: (row[:score] || row["score"]).to_f.round(3)
+          }
+        end.compact,
+        style_profile: (data[:style_profile] || data["style_profile"]).is_a?(Hash) ? (data[:style_profile] || data["style_profile"]) : {},
+        engagement_memory: (data[:engagement_memory] || data["engagement_memory"]).is_a?(Hash) ? (data[:engagement_memory] || data["engagement_memory"]) : {},
+        context_keywords: Array(data[:context_keywords] || data["context_keywords"]).map(&:to_s).reject(&:blank?).first(24)
+      }
     end
 
     def compact_historical_story_context(rows)

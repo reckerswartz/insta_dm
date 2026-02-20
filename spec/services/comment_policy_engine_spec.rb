@@ -13,6 +13,7 @@ RSpec.describe Ai::CommentPolicyEngine do
         "Great lighting and strong mood here"
       ],
       historical_comments: [ "Love this frame, super clean shot" ],
+      context_keywords: %w[lighting mood sunset skyline],
       max_suggestions: 8
     )
 
@@ -21,5 +22,21 @@ RSpec.describe Ai::CommentPolicyEngine do
     expect(result[:accepted]).not_to include("This post is porn level")
     expect(result[:accepted]).not_to include("Love this frame, super clean shot")
     expect(result[:rejected]).not_to be_empty
+  end
+
+  it "rejects comments with weak visual grounding when context keywords exist" do
+    engine = described_class.new
+
+    result = engine.evaluate(
+      suggestions: [
+        "Amazing content, keep it up!",
+        "Skyline colors look beautiful tonight"
+      ],
+      context_keywords: %w[skyline city lights],
+      max_suggestions: 8
+    )
+
+    expect(result[:accepted]).to include("Skyline colors look beautiful tonight")
+    expect(result[:accepted]).not_to include("Amazing content, keep it up!")
   end
 end

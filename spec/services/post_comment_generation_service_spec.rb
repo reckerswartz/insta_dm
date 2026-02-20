@@ -129,6 +129,8 @@ RSpec.describe Ai::PostCommentGenerationService do
     assert_equal 3, Array(post.analysis["comment_suggestions"]).length
     assert_equal 1, generator.calls
     assert_equal "post", generator.last_kwargs[:channel]
+    assert_kind_of Hash, generator.last_kwargs[:scored_context]
+    assert_includes generator.last_kwargs[:scored_context].keys.map(&:to_sym), :prioritized_signals
     assert_equal "enabled", post.metadata.dig("comment_generation_policy", "status")
     assert_equal true, post.metadata.dig("comment_generation_policy", "history_ready")
   end

@@ -111,7 +111,8 @@ module LlmComment
         generation_policy: context[:generation_policy],
         profile_preparation: context[:profile_preparation],
         verified_profile_history: context[:verified_profile_history],
-        conversational_voice: context[:conversational_voice]
+        conversational_voice: context[:conversational_voice],
+        scored_context: context[:scored_context]
       }
     end
 
@@ -180,6 +181,7 @@ module LlmComment
           "ownership_classification" => context[:story_ownership_classification],
           "generation_policy" => context[:generation_policy],
           "validated_story_insights" => context[:validated_story_insights],
+          "scored_context" => context[:scored_context],
           "ranked_candidates" => ranked.first(8).map { |text, value| { "comment" => text, "score" => value } },
           "selected_comment" => selected_comment,
           "selected_relevance_score" => relevance_score,

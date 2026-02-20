@@ -713,7 +713,11 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
 
   def queue_story_reply!(account:, profile:, story:, analysis:, downloaded_event: nil)
     story_id = story[:story_id].to_s
-    suggestion = select_unique_story_comment(profile: profile, suggestions: Array(analysis[:comment_suggestions]))
+    suggestion = select_unique_story_comment(
+      profile: profile,
+      suggestions: Array(analysis[:comment_suggestions]),
+      analysis: analysis
+    )
     return false if suggestion.blank?
 
     result = official_messaging_service.send_text!(
@@ -825,7 +829,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       end
   end
 
-  def select_unique_story_comment(profile:, suggestions:)
+  def select_unique_story_comment(profile:, suggestions:, analysis: nil)
     candidates = Array(suggestions).map(&:to_s).map(&:strip).reject(&:blank?)
     return nil if candidates.empty?
 
@@ -835,6 +839,19 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       .limit(40)
       .map { |e| e.metadata.is_a?(Hash) ? (e.metadata["ai_reply_text"].to_s.presence || e.metadata["comment_text"].to_s) : "" }
       .reject(&:blank?)
+
+    analysis_hash = analysis.is_a?(Hash) ? analysis : {}
+    context_keywords = []
+    context_keywords.concat(Array(analysis_hash[:topics] || analysis_hash["topics"]).map(&:to_s))
+    context_keywords.concat(Array(analysis_hash[:image_description] || analysis_hash["image_description"]).map(&:to_s))
+    engine = Ai::CommentPolicyEngine.new
+    filtered = engine.evaluate(
+      suggestions: candidates,
+      historical_comments: history,
+      context_keywords: context_keywords,
+      max_suggestions: 8
+    )[:accepted]
+    candidates = Array(filtered).presence || candidates
 
     return candidates.first if history.empty?
 

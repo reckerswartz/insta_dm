@@ -117,6 +117,11 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         metadata: raw_metadata
       ).build
       verified_story_facts = validated_story_insights[:verified_story_facts].is_a?(Hash) ? validated_story_insights[:verified_story_facts] : {}
+      Ai::ProfileInsightStore.new.ingest_story!(
+        profile: profile,
+        event: self,
+        intelligence: verified_story_facts.presence || local_story_intelligence
+      )
 
       post_payload = {
         post: {
@@ -150,6 +155,12 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         verified_profile_history: verified_profile_history,
         profile_preparation: profile_preparation
       )
+      scored_context = Ai::ContextSignalScorer.new(profile: profile, channel: "story").build(
+        current_topics: topics,
+        image_description: image_description.to_s,
+        caption: nil,
+        limit: 12
+      )
       historical_comparison = build_historical_comparison(
         current: verified_story_facts.presence || local_story_intelligence,
         historical_story_context: historical_story_context
@@ -169,6 +180,7 @@ module InstagramProfileEvent::CommentGenerationCoordinator
       post_payload[:profile_comment_preparation] = profile_preparation
       post_payload[:conversational_voice] = conversational_voice
       post_payload[:verified_profile_history] = verified_profile_history
+      post_payload[:scored_context] = scored_context
       historical_context = build_compact_historical_context(
         profile: profile,
         historical_story_context: historical_story_context,
@@ -193,7 +205,8 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         validated_story_insights: validated_story_insights,
         profile_preparation: profile_preparation,
         verified_profile_history: verified_profile_history,
-        conversational_voice: conversational_voice
+        conversational_voice: conversational_voice,
+        scored_context: scored_context
       }
     end
 
