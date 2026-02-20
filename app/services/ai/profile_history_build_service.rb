@@ -4,6 +4,8 @@ module Ai
     TARGET_CAPTURED_POSTS = 50
     COLLECTION_COMMENTS_LIMIT = 20
     FACE_RECENCY_REFRESH_DAYS = 7
+    FACE_REFRESH_MAX_ENQUEUE_PER_RUN = ENV.fetch("PROFILE_HISTORY_FACE_REFRESH_MAX_ENQUEUE_PER_RUN", "6").to_i.clamp(1, 20)
+    FACE_REFRESH_PENDING_WINDOW_HOURS = ENV.fetch("PROFILE_HISTORY_FACE_REFRESH_PENDING_WINDOW_HOURS", "6").to_i.clamp(1, 24)
     FACE_VERIFICATION_MIN_APPEARANCES = FaceIdentityResolutionService::MIN_PRIMARY_APPEARANCES
     FACE_VERIFICATION_MIN_RATIO = FaceIdentityResolutionService::MIN_PRIMARY_RATIO
 
@@ -25,14 +27,12 @@ module Ai
       account:,
       profile:,
       collector: nil,
-      face_identity_resolution_service: FaceIdentityResolutionService.new,
-      post_face_recognition_service: PostFaceRecognitionService.new
+      face_identity_resolution_service: FaceIdentityResolutionService.new
     )
       @account = account
       @profile = profile
       @collector = collector
       @face_identity_resolution_service = face_identity_resolution_service
-      @post_face_recognition_service = post_face_recognition_service
     end
 
     def execute!
@@ -58,14 +58,20 @@ module Ai
       checks = build_capture_checks(collection: collection, latest_50_posts: latest_50_posts, latest_20_posts: latest_20_posts)
       download_queue = queue_missing_media_downloads(posts: latest_50_posts)
       analysis_queue = queue_missing_post_analysis(posts: latest_20_posts)
-      queue_state = build_queue_state(download_queue: download_queue, analysis_queue: analysis_queue)
+      preparation = prepare_history_summary(latest_20_posts: latest_20_posts)
+      face_verification = verify_face_identity(latest_posts: latest_50_posts)
+      queue_state = build_queue_state(
+        download_queue: download_queue,
+        analysis_queue: analysis_queue,
+        face_refresh_queue: face_refresh_queue_state(face_verification: face_verification)
+      )
       queue_work_pending = queue_state["downloads_queued"].to_i.positive? ||
         queue_state["downloads_pending"].to_i.positive? ||
         queue_state["analyses_queued"].to_i.positive? ||
-        queue_state["analyses_pending"].to_i.positive?
-
-      preparation = prepare_history_summary(latest_20_posts: latest_20_posts)
-      face_verification = verify_face_identity(latest_posts: latest_50_posts)
+        queue_state["analyses_pending"].to_i.positive? ||
+        queue_state["face_refresh_queued"].to_i.positive? ||
+        queue_state["face_refresh_pending"].to_i.positive? ||
+        queue_state["face_refresh_deferred"].to_i.positive?
       preparation_ready = ActiveModel::Type::Boolean.new.cast(preparation["ready_for_comment_generation"])
       face_ready = ActiveModel::Type::Boolean.new.cast(face_verification["confirmed"])
 
@@ -308,7 +314,7 @@ module Ai
       }
     end
 
-    def build_queue_state(download_queue:, analysis_queue:)
+    def build_queue_state(download_queue:, analysis_queue:, face_refresh_queue: {})
       {
         "downloads_queued" => download_queue[:queued_count].to_i,
         "downloads_pending" => download_queue[:pending_count].to_i,
@@ -317,7 +323,11 @@ module Ai
         "analyses_queued" => analysis_queue[:queued_count].to_i,
         "analyses_pending" => analysis_queue[:pending_count].to_i,
         "analyses_skipped" => analysis_queue[:skipped_count].to_i,
-        "analysis_queue_failures" => Array(analysis_queue[:failures]).first(20)
+        "analysis_queue_failures" => Array(analysis_queue[:failures]).first(20),
+        "face_refresh_queued" => face_refresh_queue[:queued_count].to_i,
+        "face_refresh_pending" => face_refresh_queue[:pending_count].to_i,
+        "face_refresh_deferred" => face_refresh_queue[:deferred_count].to_i,
+        "face_refresh_failures" => Array(face_refresh_queue[:failures]).first(20)
       }
     end
 
@@ -341,10 +351,44 @@ module Ai
     end
 
     def verify_face_identity(latest_posts:)
-      Array(latest_posts).select { |post| post_analyzed?(post) && post.media.attached? }.each do |post|
-        maybe_refresh_post_faces!(post: post)
+      refresh_queue = {
+        "queued_count" => 0,
+        "pending_count" => 0,
+        "deferred_count" => 0,
+        "failures" => []
+      }
+      eligible_posts = Array(latest_posts).select { |post| post_analyzed?(post) && post.media.attached? }
+
+      eligible_posts.each do |post|
+        if face_refresh_required?(post: post)
+          if face_refresh_in_flight?(post: post)
+            refresh_queue["pending_count"] = refresh_queue["pending_count"].to_i + 1
+            next
+          end
+
+          if refresh_queue["queued_count"].to_i >= FACE_REFRESH_MAX_ENQUEUE_PER_RUN
+            refresh_queue["deferred_count"] = refresh_queue["deferred_count"].to_i + 1
+            next
+          end
+
+          enqueue_state = enqueue_face_refresh_for_post(post: post)
+          if enqueue_state[:queued]
+            refresh_queue["queued_count"] = refresh_queue["queued_count"].to_i + 1
+          else
+            refresh_queue["failures"] << {
+              "instagram_profile_post_id" => post.id,
+              "shortcode" => post.shortcode.to_s.presence,
+              "error_class" => enqueue_state[:error_class].to_s.presence || "enqueue_failed",
+              "error_message" => enqueue_state[:error_message].to_s.byteslice(0, 220)
+            }.compact
+          end
+          next
+        end
+
         resolve_identity_for_post!(post: post) if post.instagram_post_faces.exists?
       end
+
+      refresh_queue["failures"] = Array(refresh_queue["failures"]).first(20)
 
       counts = InstagramPostFace.joins(:instagram_profile_post)
         .where(instagram_profile_posts: { instagram_profile_id: @profile.id })
@@ -361,7 +405,8 @@ module Ai
           "total_faces" => 0,
           "reference_face_count" => 0,
           "dominance_ratio" => 0.0,
-          "combined_faces" => []
+          "combined_faces" => [],
+          "refresh_queue" => refresh_queue
         }
       end
 
@@ -410,7 +455,8 @@ module Ai
         "total_faces" => total_faces,
         "reference_face_count" => reference_face_count,
         "dominance_ratio" => dominance_ratio,
-        "combined_faces" => combined.first(12)
+        "combined_faces" => combined.first(12),
+        "refresh_queue" => refresh_queue
       }
     rescue StandardError => e
       {
@@ -421,7 +467,13 @@ module Ai
         "total_faces" => 0,
         "reference_face_count" => 0,
         "dominance_ratio" => 0.0,
-        "combined_faces" => []
+        "combined_faces" => [],
+        "refresh_queue" => {
+          "queued_count" => 0,
+          "pending_count" => 0,
+          "deferred_count" => 0,
+          "failures" => []
+        }
       }
     end
 
@@ -446,6 +498,12 @@ module Ai
 
       if queue_state["analyses_queued"].to_i.positive? || queue_state["analyses_pending"].to_i.positive?
         return [ "latest_posts_not_analyzed", "Waiting for latest posts to finish analysis." ]
+      end
+
+      if queue_state["face_refresh_queued"].to_i.positive? ||
+          queue_state["face_refresh_pending"].to_i.positive? ||
+          queue_state["face_refresh_deferred"].to_i.positive?
+        return [ "waiting_for_face_refresh", "Waiting for face refresh tasks to complete before verification." ]
       end
 
       unless ActiveModel::Type::Boolean.new.cast(checks.dig("latest_20_analyzed", "ready"))
@@ -559,16 +617,83 @@ module Ai
       }
     end
 
-    def maybe_refresh_post_faces!(post:)
+    def face_refresh_queue_state(face_verification:)
+      raw = face_verification.is_a?(Hash) ? face_verification["refresh_queue"] : nil
+      queue = raw.is_a?(Hash) ? raw : {}
+      {
+        queued_count: queue["queued_count"].to_i,
+        pending_count: queue["pending_count"].to_i,
+        deferred_count: queue["deferred_count"].to_i,
+        failures: Array(queue["failures"]).first(20)
+      }
+    rescue StandardError
+      {
+        queued_count: 0,
+        pending_count: 0,
+        deferred_count: 0,
+        failures: []
+      }
+    end
+
+    def face_refresh_required?(post:)
       metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
       face_recognition = metadata["face_recognition"].is_a?(Hash) ? metadata["face_recognition"] : {}
       updated_at = parse_time(face_recognition["updated_at"])
       stale = updated_at.nil? || updated_at < FACE_RECENCY_REFRESH_DAYS.days.ago
-      return unless stale || post.instagram_post_faces.none?
-
-      @post_face_recognition_service.process!(post: post)
+      stale || post.instagram_post_faces.none?
     rescue StandardError
-      nil
+      true
+    end
+
+    def face_refresh_in_flight?(post:)
+      state = history_build_face_refresh_state(post: post)
+      status = state["status"].to_s
+      return false unless status.in?(%w[queued running])
+
+      reference_time = parse_time(state["started_at"]) || parse_time(state["queued_at"])
+      reference_time.present? && reference_time >= FACE_REFRESH_PENDING_WINDOW_HOURS.hours.ago
+    rescue StandardError
+      false
+    end
+
+    def enqueue_face_refresh_for_post(post:)
+      return { queued: false, error_class: "AlreadyQueued", error_message: "Face refresh already in flight." } if face_refresh_in_flight?(post: post)
+
+      job = RefreshProfilePostFaceIdentityJob.perform_later(
+        instagram_account_id: @account.id,
+        instagram_profile_id: @profile.id,
+        instagram_profile_post_id: post.id,
+        trigger_source: "profile_history_build"
+      )
+      mark_history_build_metadata!(
+        post: post,
+        attributes: {
+          "face_refresh" => {
+            "status" => "queued",
+            "job_id" => job.job_id,
+            "queue_name" => job.queue_name,
+            "queued_at" => Time.current.iso8601(3),
+            "requested_by" => self.class.name
+          }
+        }
+      )
+
+      { queued: true, job_id: job.job_id, queue_name: job.queue_name }
+    rescue StandardError => e
+      {
+        queued: false,
+        error_class: e.class.name,
+        error_message: e.message.to_s
+      }
+    end
+
+    def history_build_face_refresh_state(post:)
+      metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+      history = metadata["history_build"].is_a?(Hash) ? metadata["history_build"] : {}
+      refresh = history["face_refresh"].is_a?(Hash) ? history["face_refresh"] : {}
+      refresh
+    rescue StandardError
+      {}
     end
 
     def resolve_identity_for_post!(post:)
@@ -694,7 +819,11 @@ module Ai
         "analyses_queued" => 0,
         "analyses_pending" => 0,
         "analyses_skipped" => 0,
-        "analysis_queue_failures" => []
+        "analysis_queue_failures" => [],
+        "face_refresh_queued" => 0,
+        "face_refresh_pending" => 0,
+        "face_refresh_deferred" => 0,
+        "face_refresh_failures" => []
       }
     end
 
@@ -706,7 +835,13 @@ module Ai
         "total_faces" => 0,
         "reference_face_count" => 0,
         "dominance_ratio" => 0.0,
-        "combined_faces" => []
+        "combined_faces" => [],
+        "refresh_queue" => {
+          "queued_count" => 0,
+          "pending_count" => 0,
+          "deferred_count" => 0,
+          "failures" => []
+        }
       }
     end
 

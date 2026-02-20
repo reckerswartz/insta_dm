@@ -16,40 +16,14 @@ class InstagramProfilesController < ApplicationController
   def index
     @account = current_account
 
-    scope = @account.instagram_profiles
-
-    scope = apply_tabulator_profile_filters(scope)
-
-    @q = params[:q].to_s.strip
-    if @q.present?
-      term = "%#{@q.downcase}%"
-      scope = scope.where("LOWER(username) LIKE ? OR LOWER(display_name) LIKE ?", term, term)
-    end
-
-    @filter = {
-      mutual: truthy_param?(:mutual),
-      following: truthy_param?(:following),
-      follows_you: truthy_param?(:follows_you),
-      can_message: truthy_param?(:can_message)
-    }
-
-    scope = scope.where(following: true, follows_you: true) if @filter[:mutual]
-    scope = scope.where(following: true) if @filter[:following]
-    scope = scope.where(follows_you: true) if @filter[:follows_you]
-    scope = scope.where(can_message: true) if @filter[:can_message]
-
-    scope = apply_remote_sort(scope) || apply_sort(scope, params[:sort].to_s)
-
-    @page = params.fetch(:page, 1).to_i
-    @page = 1 if @page < 1
-    per_page_param = params[:per_page].presence || params[:size].presence
-    @per_page = per_page_param.to_i
-    @per_page = 50 if @per_page <= 0
-    @per_page = @per_page.clamp(10, 200)
-
-    @total = scope.count
-    @pages = (@total / @per_page.to_f).ceil
-    @profiles = scope.offset((@page - 1) * @per_page).limit(@per_page)
+    query_result = InstagramProfiles::ProfilesIndexQuery.new(account: @account, params: params).call
+    @q = query_result.q
+    @filter = query_result.filter
+    @page = query_result.page
+    @per_page = query_result.per_page
+    @total = query_result.total
+    @pages = query_result.pages
+    @profiles = query_result.profiles
 
     @latest_sync_run = @account.sync_runs.order(created_at: :desc).first
     @counts = {
@@ -62,47 +36,33 @@ class InstagramProfilesController < ApplicationController
     respond_to do |format|
       format.html
       format.json do
-        render json: tabulator_payload(profiles: @profiles, total: @total, pages: @pages)
+        render json: InstagramProfiles::TabulatorProfilesPayloadBuilder.new(
+          profiles: @profiles,
+          total: @total,
+          pages: @pages,
+          view_context: view_context
+        ).call
       end
     end
   end
 
   def show
-    posts_scope = @profile.instagram_profile_posts
-    @profile_posts_total_count = posts_scope.count
-    @deleted_posts_count = posts_scope.where.not(metadata: nil).pluck(:metadata).count { |meta| ActiveModel::Type::Boolean.new.cast(meta.is_a?(Hash) ? meta["deleted_from_source"] : nil) }
-    @active_posts_count = [@profile_posts_total_count - @deleted_posts_count, 0].max
-    @analyzed_posts_count = posts_scope.where(ai_status: "analyzed").count
-    @pending_posts_count = [@profile_posts_total_count - @analyzed_posts_count, 0].max
-    @messages_count = @profile.instagram_messages.count
-    @action_logs_count = @profile.instagram_profile_action_logs.count
+    snapshot = InstagramProfiles::ShowSnapshotService.new(account: @account, profile: @profile).call
 
+    @profile_posts_total_count = snapshot[:profile_posts_total_count]
+    @deleted_posts_count = snapshot[:deleted_posts_count]
+    @active_posts_count = snapshot[:active_posts_count]
+    @analyzed_posts_count = snapshot[:analyzed_posts_count]
+    @pending_posts_count = snapshot[:pending_posts_count]
+    @messages_count = snapshot[:messages_count]
+    @action_logs_count = snapshot[:action_logs_count]
     @new_message = @profile.instagram_messages.new
-    @latest_analysis = @profile.latest_analysis
-    @latest_story_intelligence_event =
-      @profile.instagram_profile_events
-        .where(kind: InstagramProfileEvent::STORY_ARCHIVE_EVENT_KINDS)
-        .order(detected_at: :desc, id: :desc)
-        .limit(60)
-        .detect do |event|
-          metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
-          story_intelligence_available_for_snapshot?(metadata: metadata)
-        end
-    @available_tags = %w[personal_user friend female_friend male_friend relative page excluded automatic_reply]
-
-    behavior_profile = @profile.instagram_profile_behavior_profile
-    behavior_metadata = behavior_profile&.metadata
-    behavior_metadata = {} unless behavior_metadata.is_a?(Hash)
-    @history_build_state = behavior_metadata["history_build"].is_a?(Hash) ? behavior_metadata["history_build"] : {}
-    @history_ready = ActiveModel::Type::Boolean.new.cast(@history_build_state["ready"])
-
-    @mutual_profiles =
-      @account.instagram_profiles
-        .where(following: true, follows_you: true)
-        .where.not(id: @profile.id)
-        .with_attached_avatar
-        .order(Arel.sql("COALESCE(last_active_at, last_synced_at, updated_at) DESC"))
-        .limit(36)
+    @latest_analysis = snapshot[:latest_analysis]
+    @latest_story_intelligence_event = snapshot[:latest_story_intelligence_event]
+    @available_tags = snapshot[:available_tags]
+    @history_build_state = snapshot[:history_build_state]
+    @history_ready = snapshot[:history_ready]
+    @mutual_profiles = snapshot[:mutual_profiles]
   end
 
   def captured_posts_section
@@ -163,38 +123,22 @@ class InstagramProfilesController < ApplicationController
   end
 
   def events
-    scope = @profile.instagram_profile_events.with_attached_media.with_attached_preview_image
-    scope = apply_tabulator_event_filters(scope)
+    query_result = InstagramProfiles::EventsQuery.new(profile: @profile, params: params).call
 
-    @q = params[:q].to_s.strip
-    if @q.present?
-      term = "%#{@q.downcase}%"
-      scope = scope.where("LOWER(kind) LIKE ? OR LOWER(COALESCE(external_id, '')) LIKE ?", term, term)
-    end
-
-    scope = apply_events_remote_sort(scope) || scope.order(detected_at: :desc, id: :desc)
-
-    page = params.fetch(:page, 1).to_i
-    page = 1 if page < 1
-
-    per_page_param = params[:per_page].presence || params[:size].presence
-    per_page = per_page_param.to_i
-    per_page = 25 if per_page <= 0
-    per_page = per_page.clamp(10, 100)
-
-    total = scope.count
-    pages = (total / per_page.to_f).ceil
-    events = scope.offset((page - 1) * per_page).limit(per_page)
-
-    render json: tabulator_events_payload(events: events, total: total, pages: pages)
+    render json: InstagramProfiles::TabulatorEventsPayloadBuilder.new(
+      events: query_result.events,
+      total: query_result.total,
+      pages: query_result.pages,
+      view_context: view_context
+    ).call
   end
 
   def tags
-    names = Array(params[:tag_names]).map { |t| t.to_s.strip.downcase }.reject(&:blank?)
-    custom = params[:custom_tags].to_s.split(/[,\n]/).map { |t| t.to_s.strip.downcase }.reject(&:blank?)
+    names = Array(params[:tag_names]).map { |tag| tag.to_s.strip.downcase }.reject(&:blank?)
+    custom = params[:custom_tags].to_s.split(/[,\n]/).map { |tag| tag.to_s.strip.downcase }.reject(&:blank?)
     desired = (names + custom).uniq
 
-    tags = desired.map { |n| ProfileTag.find_or_create_by!(name: n) }
+    tags = desired.map { |name| ProfileTag.find_or_create_by!(name: name) }
 
     @profile.profile_tags = tags
     @profile.save!
@@ -213,7 +157,7 @@ class InstagramProfilesController < ApplicationController
             partial: "instagram_profiles/profile_tags_section",
             locals: {
               profile: @profile,
-              available_tags: %w[personal_user friend female_friend male_friend relative page excluded automatic_reply]
+              available_tags: InstagramProfiles::ShowSnapshotService::AVAILABLE_TAGS
             }
           )
         ]
@@ -234,306 +178,9 @@ class InstagramProfilesController < ApplicationController
 
   private
 
-  def story_intelligence_available_for_snapshot?(metadata:)
-    intel = metadata["local_story_intelligence"].is_a?(Hash) ? metadata["local_story_intelligence"] : {}
-    return true if intel.present?
-    return true if metadata["ocr_text"].to_s.present?
-    return true if Array(metadata["content_signals"]).any?
-    return true if Array(metadata["object_detections"]).any?
-    return true if Array(metadata["ocr_blocks"]).any?
-    return true if Array(metadata["scenes"]).any?
-
-    false
-  end
-
   def set_account_and_profile!
     @account = current_account
     @profile = @account.instagram_profiles.find(params[:id])
-  end
-
-  def apply_tabulator_profile_filters(scope)
-    extract_tabulator_filters.each do |f|
-      field = f[:field]
-      value = f[:value]
-      next if value.blank?
-
-      case field
-      when "username"
-        term = "%#{value.downcase}%"
-        scope = scope.where("LOWER(username) LIKE ?", term)
-      when "display_name"
-        term = "%#{value.downcase}%"
-        scope = scope.where("LOWER(COALESCE(display_name, '')) LIKE ?", term)
-      when "following"
-        parsed = parse_tri_bool(value)
-        scope = scope.where(following: parsed) unless parsed.nil?
-      when "follows_you"
-        parsed = parse_tri_bool(value)
-        scope = scope.where(follows_you: parsed) unless parsed.nil?
-      when "mutual"
-        parsed = parse_tri_bool(value)
-        if parsed == true
-          scope = scope.where(following: true, follows_you: true)
-        elsif parsed == false
-          scope = scope.where.not(following: true, follows_you: true)
-        end
-      when "can_message"
-        scope = if value.to_s == "unknown"
-          scope.where(can_message: nil)
-        else
-          parsed = parse_tri_bool(value)
-          parsed.nil? ? scope : scope.where(can_message: parsed)
-        end
-      end
-    end
-    scope
-  end
-
-  def apply_tabulator_event_filters(scope)
-    extract_tabulator_filters.each do |f|
-      field = f[:field]
-      value = f[:value]
-      next if value.blank?
-      next unless field == "kind"
-
-      term = "%#{value.downcase}%"
-      scope = scope.where("LOWER(kind) LIKE ?", term)
-    end
-    scope
-  end
-
-  def extract_tabulator_filters
-    raw = params[:filters].presence || params[:filter]
-    return [] unless raw.present?
-
-    entries =
-      case raw
-      when String
-        JSON.parse(raw)
-      when Array
-        raw
-      when ActionController::Parameters
-        raw.to_unsafe_h.values
-      else
-        []
-      end
-
-    Array(entries).filter_map do |item|
-      h = item.respond_to?(:to_h) ? item.to_h : {}
-      field = h["field"].to_s
-      next if field.blank?
-
-      { field: field, value: h["value"] }
-    end
-  rescue StandardError
-    []
-  end
-
-  def parse_tri_bool(value)
-    s = value.to_s
-    return nil if s.blank?
-    return true if %w[true 1 yes].include?(s.downcase)
-    return false if %w[false 0 no].include?(s.downcase)
-
-    nil
-  end
-
-  def truthy_param?(key)
-    ActiveModel::Type::Boolean.new.cast(params[key])
-  end
-
-  def apply_sort(scope, sort)
-    case sort
-    when "username_asc"
-      scope.order(Arel.sql("username ASC"))
-    when "username_desc"
-      scope.order(Arel.sql("username DESC"))
-    when "recent_sync"
-      scope.order(Arel.sql("last_synced_at DESC NULLS LAST, username ASC"))
-    when "messageable"
-      scope.order(Arel.sql("can_message DESC NULLS LAST, username ASC"))
-    when "recent_active"
-      scope.order(Arel.sql("last_active_at DESC NULLS LAST, username ASC"))
-    else
-      scope.order(Arel.sql("following DESC, follows_you DESC, username ASC"))
-    end
-  end
-
-  def apply_remote_sort(scope)
-    sorters = extract_tabulator_sorters
-    return nil unless sorters.is_a?(Array)
-
-    first = sorters.first
-    return nil unless first.respond_to?(:[])
-
-    field = first["field"].to_s
-    dir = first["dir"].to_s.downcase == "desc" ? "DESC" : "ASC"
-
-    case field
-    when "username"
-      scope.order(Arel.sql("username #{dir}"))
-    when "display_name"
-      scope.order(Arel.sql("display_name #{dir} NULLS LAST, username ASC"))
-    when "following"
-      scope.order(Arel.sql("following #{dir}, username ASC"))
-    when "follows_you"
-      scope.order(Arel.sql("follows_you #{dir}, username ASC"))
-    when "mutual"
-      scope.order(Arel.sql("following #{dir}, follows_you #{dir}, username ASC"))
-    when "can_message"
-      scope.order(Arel.sql("can_message #{dir} NULLS LAST, username ASC"))
-    when "last_synced_at"
-      scope.order(Arel.sql("last_synced_at #{dir} NULLS LAST, username ASC"))
-    when "last_active_at"
-      scope.order(Arel.sql("last_active_at #{dir} NULLS LAST, username ASC"))
-    else
-      nil
-    end
-  end
-
-  def tabulator_payload(profiles:, total:, pages:)
-    data = profiles.map do |p|
-      {
-        id: p.id,
-        username: p.username,
-        display_name: p.display_name,
-        following: p.following,
-        follows_you: p.follows_you,
-        mutual: p.mutual?,
-        can_message: p.can_message,
-        restriction_reason: p.restriction_reason,
-        last_synced_at: p.last_synced_at&.iso8601,
-        last_active_at: p.last_active_at&.iso8601,
-        avatar_url: avatar_url_for(p)
-      }
-    end
-
-    {
-      data: data,
-      last_page: pages,
-      last_row: total
-    }
-  end
-
-  def avatar_url_for(profile)
-    if profile.avatar.attached?
-      Rails.application.routes.url_helpers.rails_blob_path(profile.avatar, only_path: true)
-    elsif profile.profile_pic_url.present?
-      profile.profile_pic_url
-    else
-      view_context.asset_path("default_avatar.svg")
-    end
-  end
-
-  def apply_events_remote_sort(scope)
-    sorters = extract_tabulator_sorters
-    return nil unless sorters.is_a?(Array)
-
-    first = sorters.first
-    return nil unless first.respond_to?(:[])
-
-    field = first["field"].to_s
-    dir = first["dir"].to_s.downcase == "desc" ? "DESC" : "ASC"
-
-    case field
-    when "kind"
-      scope.order(Arel.sql("kind #{dir}, detected_at DESC, id DESC"))
-    when "occurred_at"
-      scope.order(Arel.sql("occurred_at #{dir} NULLS LAST, detected_at DESC, id DESC"))
-    when "detected_at"
-      scope.order(Arel.sql("detected_at #{dir}, id #{dir}"))
-    else
-      nil
-    end
-  end
-
-  def tabulator_events_payload(events:, total:, pages:)
-    data = events.map do |e|
-      metadata = e.metadata.is_a?(Hash) ? e.metadata : {}
-      {
-        id: e.id,
-        kind: e.kind,
-        external_id: e.external_id,
-        occurred_at: e.occurred_at&.iso8601,
-        detected_at: e.detected_at&.iso8601,
-        metadata_json: metadata_preview_json(metadata),
-        media_content_type: (e.media.attached? ? e.media.blob.content_type : nil),
-        media_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true) : nil),
-        media_download_url: (e.media.attached? ? Rails.application.routes.url_helpers.rails_blob_path(e.media, only_path: true, disposition: "attachment") : nil),
-        media_preview_image_url: preferred_video_preview_image_url(event: e, metadata: metadata),
-        video_static_frame_only: static_video_preview?(metadata: metadata)
-      }
-    end
-
-    {
-      data: data,
-      last_page: pages,
-      last_row: total
-    }
-  end
-
-  def metadata_preview_json(raw_metadata)
-    json = (raw_metadata || {}).to_json
-    return json if json.length <= 1200
-
-    "#{json[0, 1200]}..."
-  end
-
-  def static_video_preview?(metadata:)
-    data = metadata.is_a?(Hash) ? metadata : {}
-    processing = data["processing_metadata"].is_a?(Hash) ? data["processing_metadata"] : {}
-    frame_change = processing["frame_change_detection"].is_a?(Hash) ? processing["frame_change_detection"] : {}
-    local_intel = data["local_story_intelligence"].is_a?(Hash) ? data["local_story_intelligence"] : {}
-
-    processing["source"].to_s == "video_static_single_frame" ||
-      frame_change["processing_mode"].to_s == "static_image" ||
-      local_intel["video_processing_mode"].to_s == "static_image"
-  end
-
-  def preferred_video_preview_image_url(event:, metadata:)
-    if event.preview_image.attached?
-      return Rails.application.routes.url_helpers.rails_blob_path(event.preview_image, only_path: true)
-    end
-
-    data = metadata.is_a?(Hash) ? metadata : {}
-    direct = data["image_url"].to_s.presence
-    return direct if direct.present?
-
-    variants = Array(data["carousel_media"])
-    candidate = variants.find { |entry| entry.is_a?(Hash) && entry["image_url"].to_s.present? }
-    variant_url = candidate.is_a?(Hash) ? candidate["image_url"].to_s.presence : nil
-    return variant_url if variant_url.present?
-
-    local_video_preview_representation_url(event: event)
-  end
-
-  def local_video_preview_representation_url(event:)
-    return nil unless event.media.attached?
-    return nil unless event.media.blob&.content_type.to_s.start_with?("video/")
-
-    preview = event.media.preview(resize_to_limit: [640, 640]).processed
-    view_context.url_for(preview)
-  rescue StandardError
-    nil
-  end
-
-  def extract_tabulator_sorters
-    raw = params[:sorters].presence || params[:sort]
-    return [] unless raw.present?
-
-    case raw
-    when String
-      parsed = JSON.parse(raw)
-      parsed.is_a?(Array) ? parsed : []
-    when Array
-      raw
-    when ActionController::Parameters
-      raw.to_unsafe_h.values
-    else
-      []
-    end
-  rescue StandardError
-    []
   end
 
   def render_profile_frame(frame_id:, partial:, locals:)

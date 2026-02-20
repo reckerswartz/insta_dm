@@ -21,6 +21,7 @@ class BuildInstagramProfileHistoryJob < ApplicationJob
 
   MAX_RETRY_ATTEMPTS = ENV.fetch("PROFILE_HISTORY_BUILD_MAX_RETRY_ATTEMPTS", 8).to_i.clamp(1, 30)
   SHORT_RETRY_WAIT_MINUTES = ENV.fetch("PROFILE_HISTORY_BUILD_RETRY_WAIT_MINUTES", 45).to_i.clamp(10, 240)
+  FACE_REFRESH_RETRY_WAIT_MINUTES = ENV.fetch("PROFILE_HISTORY_BUILD_FACE_REFRESH_RETRY_WAIT_MINUTES", 15).to_i.clamp(5, 120)
   LONG_RETRY_WAIT_HOURS = ENV.fetch("PROFILE_HISTORY_BUILD_RETRY_WAIT_HOURS", 4).to_i.clamp(1, 24)
   ACTIVE_LOG_LOOKBACK_HOURS = ENV.fetch("PROFILE_HISTORY_BUILD_ACTIVE_LOG_LOOKBACK_HOURS", 12).to_i.clamp(1, 72)
 
@@ -303,7 +304,9 @@ class BuildInstagramProfileHistoryJob < ApplicationJob
 
   def retry_wait_seconds_for(reason_code:)
     code = reason_code.to_s
-    if PROFILE_INCOMPLETE_REASON_CODES.include?(code)
+    if code == "waiting_for_face_refresh"
+      FACE_REFRESH_RETRY_WAIT_MINUTES.minutes.to_i
+    elsif PROFILE_INCOMPLETE_REASON_CODES.include?(code)
       LONG_RETRY_WAIT_HOURS.hours.to_i
     else
       SHORT_RETRY_WAIT_MINUTES.minutes.to_i

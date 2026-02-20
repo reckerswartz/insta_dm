@@ -6,6 +6,7 @@
   # `video_processing_queue`, `ai_metadata_queue`, `frame_generation`) are
   # handled by dedicated Sidekiq capsules in `config/initializers/sidekiq.rb`.
   - [sync, 4]
+  - [engagements, 2]
   - [story_downloads, 3]
   - [post_downloads, 3]
   - [profiles, 2]

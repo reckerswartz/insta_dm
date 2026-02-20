@@ -1,32 +1,52 @@
 class EnqueueProfileRefreshForAllAccountsJob < ApplicationJob
+  include ScheduledAccountBatching
+
   queue_as :profiles
 
-  def perform(opts = nil, **kwargs)
-    params = normalize_params(opts, kwargs, limit_per_account: 30)
-    limit = params[:limit_per_account].to_i.clamp(1, 500)
+  DEFAULT_ACCOUNT_BATCH_SIZE = ENV.fetch("PROFILE_REFRESH_ACCOUNT_BATCH_SIZE", "20").to_i.clamp(5, 120)
+  CONTINUATION_WAIT_SECONDS = ENV.fetch("PROFILE_REFRESH_CONTINUATION_WAIT_SECONDS", "3").to_i.clamp(1, 90)
 
-    InstagramAccount.find_each do |account|
+  def perform(opts = nil, **kwargs)
+    params = normalize_scheduler_params(
+      opts,
+      kwargs,
+      limit_per_account: 30,
+      batch_size: DEFAULT_ACCOUNT_BATCH_SIZE,
+      cursor_id: nil
+    )
+    limit = params[:limit_per_account].to_i.clamp(1, 500)
+    batch = load_account_batch(
+      scope: InstagramAccount.all,
+      cursor_id: params[:cursor_id],
+      batch_size: params[:batch_size]
+    )
+    enqueued = 0
+
+    batch[:accounts].each do |account|
       next if account.cookies.blank?
 
-      # Prioritize profiles that have never been fetched or are stale.
-      profiles = account.instagram_profiles
-        .order(Arel.sql("last_synced_at DESC NULLS LAST, last_active_at DESC NULLS LAST, username ASC"))
-        .limit(limit)
-
-      profiles.each do |profile|
-        FetchInstagramProfileDetailsJob.perform_later(instagram_account_id: account.id, instagram_profile_id: profile.id)
-      rescue StandardError
-        next
-      end
+      SyncNextProfilesForAccountJob.perform_later(instagram_account_id: account.id, limit: limit)
+      enqueued += 1
     rescue StandardError
       next
     end
-  end
 
-  private
+    continuation_job = nil
+    if batch[:has_more]
+      continuation_job = schedule_account_batch_continuation!(
+        wait_seconds: CONTINUATION_WAIT_SECONDS,
+        payload: {
+          limit_per_account: limit,
+          batch_size: batch[:batch_size],
+          cursor_id: batch[:next_cursor_id]
+        }
+      )
+    end
 
-  def normalize_params(opts, kwargs, defaults)
-    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
-    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
+    {
+      accounts_enqueued: enqueued,
+      scanned_accounts: batch[:accounts].length,
+      continuation_job_id: continuation_job&.job_id
+    }
   end
 end

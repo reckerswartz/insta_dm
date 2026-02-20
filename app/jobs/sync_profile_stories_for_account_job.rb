@@ -4,12 +4,20 @@ class SyncProfileStoriesForAccountJob < ApplicationJob
   STORY_BATCH_LIMIT = 10
   STORIES_PER_PROFILE = SyncInstagramProfileStoriesJob::MAX_STORIES
 
-  def perform(instagram_account_id:, story_limit: STORY_BATCH_LIMIT, stories_per_profile: STORIES_PER_PROFILE, with_comments: false, require_auto_reply_tag: false)
+  def perform(
+    instagram_account_id:,
+    story_limit: STORY_BATCH_LIMIT,
+    stories_per_profile: STORIES_PER_PROFILE,
+    with_comments: false,
+    require_auto_reply_tag: false,
+    force_analyze_all: false
+  )
     account = InstagramAccount.find(instagram_account_id)
     limit = story_limit.to_i.clamp(1, STORY_BATCH_LIMIT)
     stories_per_profile_i = stories_per_profile.to_i.clamp(1, SyncInstagramProfileStoriesJob::MAX_STORIES)
     auto_reply = ActiveModel::Type::Boolean.new.cast(with_comments)
     require_tag = ActiveModel::Type::Boolean.new.cast(require_auto_reply_tag)
+    force_analyze = ActiveModel::Type::Boolean.new.cast(force_analyze_all)
 
     scope = account.instagram_profiles
       .order(Arel.sql("COALESCE(last_story_seen_at, '1970-01-01') ASC, COALESCE(last_active_at, '1970-01-01') DESC, username ASC"))
@@ -32,7 +40,8 @@ class SyncProfileStoriesForAccountJob < ApplicationJob
           story_limit: limit,
           max_stories_per_profile: stories_per_profile_i,
           auto_reply: auto_reply,
-          require_auto_reply_tag: require_tag
+          require_auto_reply_tag: require_tag,
+          force_analyze_all: force_analyze
         }
       )
 
@@ -41,7 +50,7 @@ class SyncProfileStoriesForAccountJob < ApplicationJob
         instagram_profile_id: profile.id,
         profile_action_log_id: log.id,
         max_stories: stories_per_profile_i,
-        force_analyze_all: false,
+        force_analyze_all: force_analyze,
         auto_reply: auto_reply,
         require_auto_reply_tag: require_tag
       )

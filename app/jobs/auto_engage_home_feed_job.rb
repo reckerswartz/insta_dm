@@ -1,5 +1,5 @@
 class AutoEngageHomeFeedJob < ApplicationJob
-  queue_as :sync
+  queue_as :engagements
 
   def perform(instagram_account_id:, max_posts: 3, include_story: true, story_hold_seconds: 18)
     account = InstagramAccount.find(instagram_account_id)

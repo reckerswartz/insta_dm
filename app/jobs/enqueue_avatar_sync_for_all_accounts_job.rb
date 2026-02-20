@@ -1,23 +1,52 @@
 class EnqueueAvatarSyncForAllAccountsJob < ApplicationJob
+  include ScheduledAccountBatching
+
   queue_as :avatars
 
-  def perform(opts = nil, **kwargs)
-    params = normalize_params(opts, kwargs, limit: 500)
-    limit = params[:limit].to_i.clamp(1, 2000)
+  DEFAULT_ACCOUNT_BATCH_SIZE = ENV.fetch("AVATAR_SYNC_ACCOUNT_BATCH_SIZE", "30").to_i.clamp(5, 160)
+  CONTINUATION_WAIT_SECONDS = ENV.fetch("AVATAR_SYNC_CONTINUATION_WAIT_SECONDS", "2").to_i.clamp(1, 90)
 
-    InstagramAccount.find_each do |account|
+  def perform(opts = nil, **kwargs)
+    params = normalize_scheduler_params(
+      opts,
+      kwargs,
+      limit: 500,
+      batch_size: DEFAULT_ACCOUNT_BATCH_SIZE,
+      cursor_id: nil
+    )
+    limit = params[:limit].to_i.clamp(1, 2000)
+    batch = load_account_batch(
+      scope: InstagramAccount.all,
+      cursor_id: params[:cursor_id],
+      batch_size: params[:batch_size]
+    )
+    enqueued = 0
+
+    batch[:accounts].each do |account|
       next if account.cookies.blank?
 
       DownloadMissingAvatarsJob.perform_later(instagram_account_id: account.id, limit: limit)
+      enqueued += 1
     rescue StandardError
       next
     end
-  end
 
-  private
+    continuation_job = nil
+    if batch[:has_more]
+      continuation_job = schedule_account_batch_continuation!(
+        wait_seconds: CONTINUATION_WAIT_SECONDS,
+        payload: {
+          limit: limit,
+          batch_size: batch[:batch_size],
+          cursor_id: batch[:next_cursor_id]
+        }
+      )
+    end
 
-  def normalize_params(opts, kwargs, defaults)
-    from_opts = opts.is_a?(Hash) ? opts.symbolize_keys : {}
-    defaults.merge(from_opts).merge(kwargs.symbolize_keys)
+    {
+      accounts_enqueued: enqueued,
+      scanned_accounts: batch[:accounts].length,
+      continuation_job_id: continuation_job&.job_id
+    }
   end
 end

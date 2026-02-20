@@ -1546,6 +1546,19 @@ module Instagram
       end
     end
 
+    # Returns profile-specific mutual friends by using the target user's followers API and
+    # keeping only followers the current account already follows.
+    #
+    # Endpoint:
+    #   GET /api/v1/friendships/<target_user_id>/followers/
+    def fetch_mutual_friends(profile_username:, limit: 36)
+      max_results = limit.to_i.clamp(1, 100)
+      fetch_mutual_friends_via_api(profile_username: profile_username, limit: max_results)
+    rescue StandardError => e
+      Rails.logger.warn("Instagram fetch_mutual_friends failed for #{profile_username}: #{e.class}: #{e.message}")
+      []
+    end
+
     def fetch_profile_details!(username:)
       with_recoverable_session(label: "fetch_profile_details") do
         with_authenticated_driver do |driver|
@@ -3080,6 +3093,75 @@ module Instagram
       users
     rescue StandardError
       {}
+    end
+
+    def fetch_mutual_friends_via_api(profile_username:, limit:)
+      uname = normalize_username(profile_username)
+      return [] if uname.blank?
+
+      web_info = fetch_web_profile_info(uname)
+      user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
+      user_id = user.is_a?(Hash) ? user["id"].to_s.strip : ""
+      return [] if user_id.blank?
+
+      max_results = limit.to_i.clamp(1, 100)
+      max_id = nil
+      safety = 0
+      mutuals = []
+      seen_usernames = Set.new
+      following_usernames_cache = nil
+
+      loop do
+        break if mutuals.length >= max_results
+        safety += 1
+        break if safety > 25
+
+        query = [ "count=200", "search_surface=follow_list_page", "query=", "enable_groups=true" ]
+        query << "max_id=#{CGI.escape(max_id)}" if max_id.present?
+
+        path = "/api/v1/friendships/#{user_id}/followers/?#{query.join('&')}"
+        body = ig_api_get_json(path: path, referer: "#{INSTAGRAM_BASE_URL}/#{uname}/")
+        break unless body.is_a?(Hash)
+
+        users = Array(body["users"]).select { |entry| entry.is_a?(Hash) }
+        break if users.empty?
+
+        users.each do |entry|
+          username = normalize_username(entry["username"])
+          next if username.blank? || seen_usernames.include?(username)
+
+          friendship_status = entry["friendship_status"].is_a?(Hash) ? entry["friendship_status"] : {}
+          follows_from_status =
+            if friendship_status.key?("following")
+              ActiveModel::Type::Boolean.new.cast(friendship_status["following"])
+            end
+
+          viewer_follows =
+            if follows_from_status.nil?
+              following_usernames_cache ||= @account.instagram_profiles.where(following: true).pluck(:username).map { |u| normalize_username(u) }.to_set
+              following_usernames_cache.include?(username)
+            else
+              follows_from_status
+            end
+
+          next unless viewer_follows
+
+          seen_usernames << username
+          mutuals << {
+            username: username,
+            display_name: entry["full_name"].to_s.strip.presence || username,
+            profile_pic_url: CGI.unescapeHTML(entry["profile_pic_url"].to_s).strip.presence
+          }
+          break if mutuals.length >= max_results
+        end
+
+        max_id = body["next_max_id"].to_s.strip.presence
+        break if max_id.blank?
+      end
+
+      mutuals
+    rescue StandardError
+      []
     end
 
     def fetch_conversation_users_via_api(limit: 120)
