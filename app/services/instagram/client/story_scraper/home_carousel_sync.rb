@@ -2,7 +2,6 @@ module Instagram
   class Client
     module StoryScraper
       module HomeCarouselSync
-        private
         def sync_home_story_carousel!(story_limit: 10, auto_reply_only: false)
           limit = story_limit.to_i.clamp(1, 50)
           tagged_only = ActiveModel::Type::Boolean.new.cast(auto_reply_only)

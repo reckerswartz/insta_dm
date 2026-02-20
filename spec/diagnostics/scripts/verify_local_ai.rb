@@ -8,7 +8,7 @@ require 'base64'
 
 # Load Rails environment manually
 ENV['RAILS_ENV'] ||= 'development'
-require_relative 'config/environment'
+require_relative '../../../config/environment'
 
 puts "=== LOCAL AI PROCESSING VERIFICATION ==="
 puts "Testing local AI services with sample images..."

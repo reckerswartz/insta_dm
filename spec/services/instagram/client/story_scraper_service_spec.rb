@@ -14,6 +14,7 @@ RSpec.describe Instagram::Client::StoryScraperService do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
 
+    expect(client).to respond_to(:sync_home_story_carousel!)
     expect(client.method(:sync_home_story_carousel!).owner.name).to eq("Instagram::Client::StoryScraper::HomeCarouselSync")
     expect(client.method(:open_first_story_from_home_carousel!).owner.name).to eq("Instagram::Client::StoryScraper::CarouselOpening")
     expect(client.method(:click_next_story_in_carousel!).owner.name).to eq("Instagram::Client::StoryScraper::CarouselNavigation")
