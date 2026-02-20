@@ -1,37 +1,69 @@
 # Instagram Application Architecture Guidelines
 
-This document outlines the refactored architecture of the Instagram application, focusing on `Instagram::Client` and `InstagramProfileEvent`, which have been restructured to adhere to SOLID principles and prevent "God Object" anti-patterns.
+This document captures the current decomposition of large objects into smaller, composable units, with `Instagram::Client` acting as a facade and domain services/modules owning behavior.
 
-## Structure and Responsibilities
+## Core Structure
 
-Our application relies on two primary entities for external interactions and internal event tracking. To maintain scalability, their responsibilities have been isolated into cohesive modules.
+### `Instagram::Client` (Facade)
+`Instagram::Client` remains the single entry point used by jobs/controllers, but it now composes focused modules instead of hosting all behavior directly.
 
-### `Instagram::Client` 
-Acts as a Facade that coordinates external Instagram interactions. It delegates logic to specialized domains:
-- **`Instagram::Client::BrowserAutomation`**: Manages Selenium WebDriver setup, session cookies, local storage management, and authentication states.
-- **`Instagram::Client::FeedEngagementService`**: Handles UI scrolling and capturing `capture_home_feed_posts!` as well as `auto_engage_home_feed!` logic.
-- **`Instagram::Client::StoryScraperService`**: Manages navigating story carousels, detecting next buttons, and extracting story metadata from the DOM.
-- **`Instagram::Client::ApiAdapter`** (Existing): Manages HTTP JSON API calls when browser emulation is unnecessary.
+Included modules and responsibilities:
+- `Instagram::Client::BrowserAutomation`: Selenium driver/session bootstrap, cookie/localStorage persistence, and authenticated browser lifecycle.
+- `Instagram::Client::SessionRecoverySupport`: retry policy for recoverable browser disconnect/session-drop failures.
+- `Instagram::Client::TaskCaptureSupport`: structured HTML/JSON/screenshot task captures for diagnostics and observability.
+- `Instagram::Client::CoreHelpers`: shared low-level helpers (waiters, normalization, cookie headers, parsing helpers).
+- `Instagram::Client::StoryApiSupport`: story/feed API adapters and story/media extraction logic.
+- `Instagram::Client::SyncCollectionSupport`: collection of conversation/story users used by sync/follow graph workflows.
+- `Instagram::Client::DirectMessagingService`: DM transport, messageability checks, and UI/API fallback flow.
+- `Instagram::Client::CommentPostingService`: post-comment API flow with UI fallback.
+- `Instagram::Client::FollowGraphFetchingService`: followers/following/mutuals sync and persistence coordination.
+- `Instagram::Client::ProfileFetchingService`: profile details and eligibility enrichment.
+- `Instagram::Client::FeedFetchingService`: profile/home feed item acquisition and pagination.
+- `Instagram::Client::FeedEngagementService`: feed capture and engagement orchestration.
+- `Instagram::Client::StoryScraperService`: story carousel traversal and story-level automation pipeline.
+
+### Service Objects
+
+Facade methods delegate dataset assembly into dedicated service objects:
+- `Instagram::Client::ProfileAnalysisDatasetService`: builds profile + posts analysis dataset.
+- `Instagram::Client::ProfileStoryDatasetService`: builds profile + stories dataset (newly extracted from the facade).
+
+Both services use dependency injection of callables (`method(...)`) to stay testable and avoid hidden coupling.
 
 ### `InstagramProfileEvent`
-Represents an immutable record of an event occurring on a profile (e.g., a story post). It includes the following extracted modules to separate concerns:
-- **`InstagramProfileEvent::CommentGenerationCoordinator`**: Manages the state machine workflows for initiating, tracking, and completing LLM-generated comments.
-- **`InstagramProfileEvent::Broadcastable`**: Encapsulates ActionCable WebSocket broadcasting logic for real-time UI updates (e.g., `broadcast_llm_comment_generation_queued`).
-- **`InstagramProfileEvent::LocalStoryIntelligence`**: Parses local media files (images/videos) to extract ML-compatible analysis logic without ballooning the main model.
+The model remains decomposed with concerns:
+- `InstagramProfileEvent::CommentGenerationCoordinator`
+- `InstagramProfileEvent::Broadcastable`
+- `InstagramProfileEvent::LocalStoryIntelligence`
 
-## Component Interaction
+This keeps persistence-centric behavior in the model while orchestration/analysis is delegated.
 
-1. **Clients and Services**: The `Instagram::Client` includes its service modules using Ruby's `include` to provide a unified Public API. Callers (like background jobs) invoke `Instagram::Client.new`, which natively responds to `capture_home_feed_posts!`—delegated internally to the `FeedEngagementService`.
-2. **Models and Concerns**: `InstagramProfileEvent` leverages `ActiveSupport::Concern`. When an event occurs, methods inside the `LocalStoryIntelligence` module parse the payload, and state transitions in `CommentGenerationCoordinator` trigger alerts through `Broadcastable`.
+## Interaction Model
 
-## Guidelines for Adding New Features
+1. Caller invokes facade API (`Instagram::Client.new(account: ...)`).
+2. Facade routes work to a domain module (`DirectMessagingService`, `StoryScraperService`, etc.).
+3. Domain modules use shared supports (`CoreHelpers`, `TaskCaptureSupport`, `SessionRecoverySupport`) and explicit service objects (`ProfileStoryDatasetService`, `ProfileAnalysisDatasetService`) where orchestration is multi-step.
+4. Results return to jobs/controllers without leaking low-level Selenium/HTTP details.
 
-To prevent architectural drift and maintain a clean Dry/SOLID pattern:
-1. **Never Add to God Objects**: If implementing a new Instagram feature (e.g., Reels engagement), **do not** add methods directly to `Instagram::Client`. Create a new module (e.g., `Instagram::Client::ReelsEngagementService`) and include it.
-2. **Limit ActiveRecord Scope**: Models like `InstagramProfileEvent` should primarily handle associations, validations, and lifecycle callbacks. If logic relates to an external API (like ActionCable or OpenAI), extract it into a dedicated `Concern` or a Service Object.
-3. **Keep Methods Small**: If an extracted module begins exceeding 400 lines, evaluate if it has violated the Single Responsibility Principle and split it further.
-4. **Prefer Composition Over Inheritance**: Service classes in `app/services/` should generally be instantiated and injected with context (`account: @account`) rather than inheriting from giant base classes.
+## Guidelines for New Features
 
-## Best Practices
-- **Testing**: Whenever extracting a module from a God object, rely on existing integration/unit specs (like `spec/services/instagram`) to verify that the extraction behaves identically before committing.
-- **Isolation**: Use `private` heavily within included modules to minimize the public footprint of the Facade objects.
+1. Add new behavior in a new module or service object, not directly in `instagram/client.rb`.
+2. Keep `Instagram::Client` as a facade:
+   - public API methods only;
+   - orchestration delegation only;
+   - avoid embedding feature logic.
+3. For workflows that combine 3+ collaborators, prefer a service object class with injected collaborators.
+4. Keep helper modules private-first: expose only intentional entry points.
+5. If a module exceeds ~400 lines or owns multiple unrelated workflows, split by capability (e.g. `StoryApiSupport` vs `StoryReplySupport`).
+
+## Scalability / Drift Prevention
+
+1. Enforce architectural boundaries in code reviews:
+   - no direct Selenium logic in jobs/controllers;
+   - no new cross-domain coupling inside shared helpers.
+2. Require targeted specs for each extraction:
+   - keep behavior parity tests for facade APIs;
+   - add unit specs for new service objects.
+3. Prefer dependency injection over global lookups for new services.
+4. Keep diagnostics centralized in `TaskCaptureSupport` to avoid ad-hoc logging patterns.
+5. Update this document when adding a module/service so structure stays discoverable.
