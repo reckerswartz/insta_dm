@@ -67,6 +67,10 @@ require "digest"
       accepted_media_context: accepted_media_context
     )
 
+    # Trigger profile re-evaluation after profile analysis completes
+    ProfileReevaluationService.new(account: account, profile: profile)
+      .reevaluate_after_content_scan!(content_type: "profile_analysis", content_id: profile.id)
+
     Turbo::StreamsChannel.broadcast_append_to(
       account,
       target: "notifications",

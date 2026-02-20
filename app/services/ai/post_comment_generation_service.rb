@@ -1,6 +1,6 @@
 module Ai
   class PostCommentGenerationService
-    REQUIRED_SIGNAL_KEYS = %w[history face text_context].freeze
+    REQUIRED_SIGNAL_KEYS = %w[face text_context history].freeze
     MAX_SUGGESTIONS = 8
 
     def initialize(
@@ -35,9 +35,9 @@ module Ai
       history_ready = ActiveModel::Type::Boolean.new.cast(preparation["ready_for_comment_generation"])
 
       missing = []
-      missing << "history" unless history_ready
       missing << "face" unless face_count.positive?
       missing << "text_context" if text_context.blank?
+      missing << "history" unless history_ready
 
       if missing.any? && enforce_required_evidence?
         return persist_blocked!(
@@ -410,7 +410,6 @@ module Ai
 
     def blocked_reason(preparation:, missing_signals:, fallback_reason_code:)
       parts = []
-      parts << "history_not_ready(#{preparation['reason_code']})" if missing_signals.include?("history")
       parts << "face_signal_missing" if missing_signals.include?("face")
       parts << "text_context_missing(ocr_or_transcript)" if missing_signals.include?("text_context")
       parts << fallback_reason_code.to_s if parts.empty?

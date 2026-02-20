@@ -33,6 +33,8 @@ class InstagramProfileEvent < ApplicationRecord
 
   LLM_SUCCESS_STATUSES = %w[ok].freeze
 
+  scope :recent_first, -> { order(detected_at: :desc, id: :desc) }
+
 
 
 

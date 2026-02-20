@@ -432,17 +432,17 @@ module Instagram
       safety = 0
       mutuals = []
       seen_usernames = Set.new
-      following_usernames_cache = nil
 
       loop do
         break if mutuals.length >= max_results
         safety += 1
         break if safety > 25
 
-        query = [ "count=200", "search_surface=follow_list_page", "query=", "enable_groups=true" ]
+        query = [ "count=#{[max_results, 200].min}" ]
         query << "max_id=#{CGI.escape(max_id)}" if max_id.present?
 
-        path = "/api/v1/friendships/#{user_id}/followers/?#{query.join('&')}"
+        # Use the dedicated mutual friends endpoint
+        path = "/api/v1/friendships/#{user_id}/mutual_friends/?#{query.join('&')}"
         body = ig_api_get_json(path: path, referer: "#{INSTAGRAM_BASE_URL}/#{uname}/")
         break unless body.is_a?(Hash)
 
@@ -452,22 +452,6 @@ module Instagram
         users.each do |entry|
           username = normalize_username(entry["username"])
           next if username.blank? || seen_usernames.include?(username)
-
-          friendship_status = entry["friendship_status"].is_a?(Hash) ? entry["friendship_status"] : {}
-          follows_from_status =
-            if friendship_status.key?("following")
-              ActiveModel::Type::Boolean.new.cast(friendship_status["following"])
-            end
-
-          viewer_follows =
-            if follows_from_status.nil?
-              following_usernames_cache ||= @account.instagram_profiles.where(following: true).pluck(:username).map { |u| normalize_username(u) }.to_set
-              following_usernames_cache.include?(username)
-            else
-              follows_from_status
-            end
-
-          next unless viewer_follows
 
           seen_usernames << username
           mutuals << {

@@ -150,12 +150,36 @@ module Instagram
           end
         end
 
+        dom_story = resolve_story_item_via_dom(driver: driver)
+        if dom_story.is_a?(Hash)
+          dom_media_url = dom_story[:media_url].to_s
+          if dom_media_url.present?
+            hinted_story_id = story_id_hint_from_media_url(dom_media_url).to_s
+            return {
+              media_type: dom_story[:media_type].to_s.presence || "unknown",
+              url: dom_media_url,
+              width: dom_story[:width],
+              height: dom_story[:height],
+              source: "dom_visible_media",
+              story_id: sid.presence || hinted_story_id.presence || fallback_story_key.to_s,
+              image_url: dom_story[:image_url].to_s.presence,
+              video_url: dom_story[:video_url].to_s.presence,
+              owner_user_id: nil,
+              owner_username: nil,
+              media_variant_count: 1,
+              primary_media_index: 0,
+              primary_media_source: "dom",
+              carousel_media: []
+            }
+          end
+        end
+
         Ops::StructuredLogger.warn(
           event: "instagram.story_media.api_unresolved",
           payload: {
             username: uname,
             story_id: sid.presence || fallback_story_key.to_s,
-            source: "api_only_resolution"
+            source: "api_then_dom_resolution"
           }
         )
         {
@@ -191,6 +215,123 @@ module Instagram
           primary_media_source: nil,
           carousel_media: []
         }
+      end
+
+      def resolve_story_item_via_dom(driver:)
+        payload = driver.execute_script(<<~JS)
+          const out = {
+            media_url: "",
+            media_type: "",
+            image_url: "",
+            video_url: "",
+            width: null,
+            height: null
+          };
+
+          const isVisible = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (!style || style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 220 || rect.height < 220) return false;
+            return rect.bottom > 0 && rect.top < window.innerHeight;
+          };
+
+          const absUrl = (value) => {
+            if (!value) return "";
+            const str = value.toString().trim();
+            if (!str) return "";
+            try { return new URL(str, window.location.href).toString(); } catch (e) { return str; }
+          };
+
+          const blockedAvatarLikeUrl = (value) => {
+            const src = (value || "").toString().toLowerCase();
+            if (!src) return true;
+            if (src.startsWith("data:")) return true;
+            if (src.includes("/t51.2885-19/")) return true;
+            if (src.includes("profile_pic")) return true;
+            if (src.includes("s150x150")) return true;
+            return false;
+          };
+
+          const centerBonus = (rect) => {
+            const cx = rect.left + (rect.width / 2);
+            const cy = rect.top + (rect.height / 2);
+            const dx = Math.abs(cx - (window.innerWidth / 2));
+            const dy = Math.abs(cy - (window.innerHeight / 2));
+            const distance = Math.sqrt((dx * dx) + (dy * dy));
+            return Math.max(0, 500 - distance);
+          };
+
+          const candidates = [];
+          Array.from(document.querySelectorAll("video, img")).forEach((el) => {
+            if (!isVisible(el)) return;
+            const rect = el.getBoundingClientRect();
+            const mediaType = el.tagName.toLowerCase() === "video" ? "video" : "image";
+            const src = absUrl(
+              mediaType === "video" ?
+                (el.currentSrc || el.src || el.getAttribute("src")) :
+                (el.currentSrc || el.src || el.getAttribute("src"))
+            );
+            if (!src || blockedAvatarLikeUrl(src)) return;
+
+            let score = rect.width * rect.height;
+            score += centerBonus(rect);
+            if (mediaType === "video") score += 1500;
+            if (src.includes("scontent")) score += 1000;
+            if (src.includes("/stories/")) score += 500;
+
+            candidates.push({
+              score: score,
+              mediaType: mediaType,
+              src: src,
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+              poster: mediaType === "video" ? absUrl(el.poster || "") : ""
+            });
+          });
+
+          candidates.sort((a, b) => b.score - a.score);
+          const chosen = candidates[0];
+          if (!chosen) return out;
+
+          out.media_url = chosen.src;
+          out.media_type = chosen.mediaType;
+          out.width = chosen.width;
+          out.height = chosen.height;
+          if (chosen.mediaType === "video") {
+            out.video_url = chosen.src;
+            out.image_url = chosen.poster || "";
+          } else {
+            out.image_url = chosen.src;
+            out.video_url = "";
+          }
+          return out;
+        JS
+
+        return nil unless payload.is_a?(Hash)
+
+        media_url = payload["media_url"].to_s.presence
+        return nil if media_url.blank?
+
+        media_type = payload["media_type"].to_s
+        {
+          media_url: media_url,
+          media_type: media_type.presence || "unknown",
+          image_url: payload["image_url"].to_s,
+          video_url: payload["video_url"].to_s,
+          width: normalize_dom_story_media_dimension(payload["width"]),
+          height: normalize_dom_story_media_dimension(payload["height"])
+        }
+      rescue StandardError
+        nil
+      end
+
+      def normalize_dom_story_media_dimension(value)
+        parsed = value.to_i
+        parsed.positive? ? parsed : nil
+      rescue StandardError
+        nil
       end
 
       def resolve_story_item_via_api(username:, story_id:, cache: nil)

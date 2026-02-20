@@ -30,6 +30,7 @@ Run locally:
 ```bash
 docker compose up -d postgres redis
 bundle install
+yarn install
 bin/rails db:prepare
 bin/dev
 ```

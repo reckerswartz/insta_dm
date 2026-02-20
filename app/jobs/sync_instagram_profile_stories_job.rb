@@ -211,6 +211,10 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       )
       analyzed_count += 1
 
+      # Trigger profile re-evaluation after story analysis
+      ProfileReevaluationService.new(account: account, profile: profile)
+        .reevaluate_after_content_scan!(content_type: "story", content_id: story_id)
+
       if auto_reply_enabled
         decision = story_reply_decision(analysis: analysis, profile: profile, story_id: story_id)
 

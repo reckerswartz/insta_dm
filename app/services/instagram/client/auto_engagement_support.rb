@@ -334,21 +334,6 @@ module Instagram
       end
 
       def generate_comment_suggestions_from_analysis!(profile:, payload:, analysis:)
-        preparation = ensure_profile_comment_generation_readiness(profile: profile)
-        unless ActiveModel::Type::Boolean.new.cast(preparation[:ready_for_comment_generation] || preparation["ready_for_comment_generation"])
-          log_automation_event(
-            task_name: "comment_generation_blocked_profile_preparation",
-            severity: "warn",
-            details: {
-              profile_id: profile&.id,
-              username: profile&.username,
-              reason_code: preparation[:reason_code] || preparation["reason_code"],
-              reason: preparation[:reason] || preparation["reason"]
-            }
-          )
-          return []
-        end
-
         suggestions = Array(analysis["comment_suggestions"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
         suggestions = ensure_story_comment_diversity(profile: profile, suggestions: suggestions)
         return suggestions if suggestions.present?
@@ -360,29 +345,6 @@ module Instagram
           author_type: analysis["author_type"].to_s
         )
         ensure_story_comment_diversity(profile: profile, suggestions: generated)
-      end
-
-      def ensure_profile_comment_generation_readiness(profile:)
-        return { ready_for_comment_generation: false, reason_code: "profile_missing", reason: "Profile missing." } unless profile
-
-        @profile_comment_preparation_cache ||= {}
-        cached = @profile_comment_preparation_cache[profile.id]
-        return cached if cached.is_a?(Hash)
-
-        summary = Ai::ProfileCommentPreparationService.new(
-          account: @account,
-          profile: profile,
-          posts_limit: 10,
-          comments_limit: 12
-        ).prepare!
-        @profile_comment_preparation_cache[profile.id] = summary.is_a?(Hash) ? summary : {}
-      rescue StandardError => e
-        {
-          ready_for_comment_generation: false,
-          reason_code: "profile_preparation_error",
-          reason: e.message.to_s,
-          error_class: e.class.name
-        }
       end
 
       def recent_story_and_post_history(profile:)

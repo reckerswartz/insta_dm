@@ -1,4 +1,5 @@
 require_relative "boot"
+require_relative "../lib/job_safety_measures"
 
 require "rails"
 # Pick the frameworks you want:
@@ -38,5 +39,10 @@ module InstaDm
 
     # Don't generate system test files.
     config.generators.system_tests = nil
+
+    # Initialize job safety measures
+    config.after_initialize do
+      DiagnosticsJobPrevention.prevent_test_jobs_in_production!
+    end
   end
 end

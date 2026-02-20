@@ -42,6 +42,12 @@ class AnalyzeInstagramPostJob < ApplicationJob
       post.update!(status: "ignored", purge_at: 24.hours.from_now)
     end
 
+    # Trigger profile re-evaluation after post analysis
+    if post.instagram_profile.present?
+      ProfileReevaluationService.new(account: account, profile: post.instagram_profile)
+        .reevaluate_after_content_scan!(content_type: "post", content_id: post.id)
+    end
+
     Turbo::StreamsChannel.broadcast_append_to(
       account,
       target: "notifications",

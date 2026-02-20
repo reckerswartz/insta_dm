@@ -279,7 +279,17 @@ async def get_face_embedding(file: UploadFile = File(...)):
     """
     try:
         image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes))
+        if not image_bytes:
+            raise HTTPException(status_code=422, detail="empty_image_payload")
+        
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
+            image.verify()  # Verify image integrity
+            # Reopen after verify (verify() closes the file)
+            image = Image.open(io.BytesIO(image_bytes))
+        except (UnidentifiedImageError, OSError) as e:
+            raise HTTPException(status_code=422, detail=f"invalid_or_corrupted_image: {str(e)}")
+        
         opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         
         embedding = face_service.get_face_embedding(opencv_image)
@@ -292,6 +302,8 @@ async def get_face_embedding(file: UploadFile = File(...)):
             }
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Face embedding error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -310,8 +322,22 @@ async def compare_faces(
         img1_bytes = await file1.read()
         img2_bytes = await file2.read()
         
-        img1 = Image.open(io.BytesIO(img1_bytes))
-        img2 = Image.open(io.BytesIO(img2_bytes))
+        if not img1_bytes or not img2_bytes:
+            raise HTTPException(status_code=422, detail="empty_image_payload")
+        
+        try:
+            img1 = Image.open(io.BytesIO(img1_bytes))
+            img1.verify()
+            img1 = Image.open(io.BytesIO(img1_bytes))
+        except (UnidentifiedImageError, OSError) as e:
+            raise HTTPException(status_code=422, detail=f"invalid_or_corrupted_image_1: {str(e)}")
+            
+        try:
+            img2 = Image.open(io.BytesIO(img2_bytes))
+            img2.verify()
+            img2 = Image.open(io.BytesIO(img2_bytes))
+        except (UnidentifiedImageError, OSError) as e:
+            raise HTTPException(status_code=422, detail=f"invalid_or_corrupted_image_2: {str(e)}")
         
         opencv_img1 = cv2.cvtColor(np.array(img1), cv2.COLOR_RGB2BGR)
         opencv_img2 = cv2.cvtColor(np.array(img2), cv2.COLOR_RGB2BGR)
@@ -325,6 +351,8 @@ async def compare_faces(
             "threshold": threshold
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Face comparison error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

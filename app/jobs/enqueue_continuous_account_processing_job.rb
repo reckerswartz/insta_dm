@@ -1,3 +1,5 @@
+require_dependency "scheduled_account_batching"
+
 class EnqueueContinuousAccountProcessingJob < ApplicationJob
   include ScheduledAccountBatching
 
