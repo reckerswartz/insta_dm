@@ -68,6 +68,19 @@ Sources merged into one payload:
 - `Workspace::ActionsTodoQueueService`
 - `InstagramAccounts::SkipDiagnosticsService`
 
+## Admin Background Job Lookups
+
+Query and payload services:
+
+- `Admin::BackgroundJobs::FailuresQuery`
+  - failure table filtering, search, sorting, pagination
+- `Admin::BackgroundJobs::FailurePayloadBuilder`
+  - tabulator JSON rows (`job_scope`, context labels, retry/open URLs)
+- `Admin::BackgroundJobs::DashboardSnapshot`
+  - queue/process/recent-job snapshot for Sidekiq or Solid Queue
+- `Admin::BackgroundJobs::RecentJobDetailsEnricher`
+  - joins recent jobs with operational artifacts for inspect panel
+
 ## Metadata Keys Used by Lookups and UI States
 
 ### Post-level metadata

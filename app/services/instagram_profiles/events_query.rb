@@ -6,7 +6,7 @@ module InstagramProfiles
 
     Result = Struct.new(:events, :total, :pages, keyword_init: true)
 
-    def initialize(profile:, params:, tabulator: TabulatorParams.new(params: params))
+    def initialize(profile:, params:, tabulator: InstagramProfiles::TabulatorParams.new(params: params))
       @profile = profile
       @params = params
       @tabulator = tabulator

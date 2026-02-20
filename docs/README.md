@@ -89,5 +89,7 @@ Use this mapping:
   - update `docs/workflows/workspace-actions-queue.md`
 - Changes to recurring schedules, queue routing, or retry policy:
   - update `docs/operations/background-jobs-and-schedules.md`
+- Changes under `app/controllers/admin/background_jobs_controller.rb` or `app/services/admin/background_jobs/*`:
+  - update `docs/operations/background-jobs-and-schedules.md`
 - Changes to lookup/query behavior for profile/event/dashboard/story archive surfaces:
   - update `docs/components/lookups-and-query-surfaces.md`

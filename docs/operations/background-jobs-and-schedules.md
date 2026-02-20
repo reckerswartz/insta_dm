@@ -117,3 +117,43 @@ Primary topics:
   - `/admin/background_jobs/failures`
 - Mission Control jobs UI:
   - `/admin/jobs`
+
+## Admin Background Jobs Service Layer
+
+Controller surface:
+
+- `Admin::BackgroundJobsController` only orchestrates requests and delegates data shaping to services.
+
+Service components:
+
+- `Admin::BackgroundJobs::DashboardSnapshot`
+  - resolves backend-specific queue/process/job snapshots
+- `Admin::BackgroundJobs::JobSerializer`
+  - normalizes Sidekiq and Solid Queue jobs into one UI contract
+- `Admin::BackgroundJobs::RecentJobDetailsEnricher`
+  - links recent jobs to action logs, failures, ingestions, LLM events, and API calls
+- `Admin::BackgroundJobs::JobDetailsBuilder`
+  - builds human-readable processing timeline + technical payloads for job details
+- `Admin::BackgroundJobs::FailuresQuery`
+  - applies tabulator filters, search, remote sort, and pagination for failure logs
+- `Admin::BackgroundJobs::FailurePayloadBuilder`
+  - serializes failure rows for tabulator JSON responses
+- `Admin::BackgroundJobs::QueueClearer`
+  - encapsulates queue reset/quiet logic per backend
+- `Admin::BackgroundJobs::TabulatorParams`
+  - isolates tabulator parameter parsing from controller logic
+
+Interaction flow:
+
+1. Controller action receives params and selects backend.
+2. Query/snapshot service loads core rows with safe fallbacks.
+3. Enricher links related records and delegates formatting to `JobDetailsBuilder`.
+4. Payload builder emits stable JSON shape for tabulator clients.
+
+## Extension Guidelines
+
+- Add new dashboard data via a dedicated service class, then inject it into `DashboardSnapshot`; avoid re-growing controller logic.
+- Keep backend-specific behavior behind `QueueClearer`/`DashboardSnapshot`; do not branch on backend in views or controllers.
+- If a new table/UI needs tabulator filtering, create a query object with `call -> Result` contract and isolate parsing in a params object.
+- Keep serializers pure (no writes, no broadcasts) so payload generation is deterministic and testable.
+- Treat `JobDetailsBuilder` as read-only aggregation; if a new artifact source is needed, add a focused fallback/query method and cap record limits.

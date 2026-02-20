@@ -30,6 +30,8 @@ Last updated: 2026-02-20
   - `InstagramProfilePostsController` (`app/controllers/instagram_profile_posts_controller.rb`)
 - Workspace queue:
   - `WorkspacesController` (`app/controllers/workspaces_controller.rb`)
+- Admin operations dashboard:
+  - `Admin::BackgroundJobsController` + service layer in `app/services/admin/background_jobs/`
 
 ## Core Data Entities
 
@@ -69,6 +71,8 @@ Most important contracts:
 ## Architectural Pattern Notes
 
 - Controllers are thin and defer to service/query classes for data assembly.
+- Admin background-jobs UI follows the same split:
+  - query (`FailuresQuery`), snapshot (`DashboardSnapshot`), enrichment (`RecentJobDetailsEnricher`), and payload (`FailurePayloadBuilder`) services.
 - High-latency/unstable work (Instagram API/UI calls, AI inference, media processing) is job-driven.
 - Resilience patterns are consistent across subsystems:
   - enqueue in batches,

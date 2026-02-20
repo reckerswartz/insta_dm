@@ -1,5 +1,6 @@
 require "rails_helper"
 require "securerandom"
+require "tempfile"
 
 RSpec.describe Ai::PostAnalysisContextBuilder do
   it "skips corrupted image media based on signature validation" do
@@ -24,8 +25,6 @@ RSpec.describe Ai::PostAnalysisContextBuilder do
   end
 
   it "skips very large direct video analysis when no source URL exists" do
-    stub_const("Ai::PostAnalysisContextBuilder::MAX_DIRECT_VIDEO_ANALYSIS_BYTES", 1024)
-
     account = InstagramAccount.create!(username: "acct_builder_vid_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "profile_builder_vid_#{SecureRandom.hex(4)}")
     post = profile.instagram_profile_posts.create!(
@@ -33,11 +32,24 @@ RSpec.describe Ai::PostAnalysisContextBuilder do
       shortcode: "builder_vid_post_#{SecureRandom.hex(4)}",
       source_media_url: nil
     )
-    post.media.attach(
-      io: StringIO.new("....ftypisom....".b + ("a" * 1600).b),
-      filename: "large.mp4",
-      content_type: "video/mp4"
-    )
+    target_size = Ai::PostAnalysisContextBuilder::MAX_DIRECT_VIDEO_ANALYSIS_BYTES + 256
+    Tempfile.create([ "large-video-test", ".mp4" ]) do |file|
+      file.binmode
+      file.write("....ftypisom....".b)
+      written = "....ftypisom....".bytesize
+      while written < target_size
+        chunk_size = [16 * 1024, target_size - written].min
+        file.write("a" * chunk_size)
+        written += chunk_size
+      end
+      file.rewind
+
+      post.media.attach(
+        io: file,
+        filename: "large.mp4",
+        content_type: "video/mp4"
+      )
+    end
 
     payload = described_class.new(profile: profile, post: post).media_payload
 

@@ -15,7 +15,7 @@ module InstagramProfiles
       keyword_init: true
     )
 
-    def initialize(account:, params:, tabulator: TabulatorParams.new(params: params))
+    def initialize(account:, params:, tabulator: InstagramProfiles::TabulatorParams.new(params: params))
       @account = account
       @params = params
       @tabulator = tabulator

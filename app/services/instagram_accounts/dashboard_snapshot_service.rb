@@ -63,7 +63,7 @@ module InstagramAccounts
     end
 
     def skip_diagnostics
-      SkipDiagnosticsService.new(account: account, hours: skip_window_hours).call
+      InstagramAccounts::SkipDiagnosticsService.new(account: account, hours: skip_window_hours).call
     end
   end
 end
