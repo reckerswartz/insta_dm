@@ -16,6 +16,8 @@ Ai::Runner                         ← orchestrator: provider selection, cache, 
 
 Ai::PostAnalysisPipelineState      ← step state machine for post analysis
 Ai::PostCommentGenerationService   ← evidence-gated comment generation
+├── Ai::PostCommentGeneration::SignalContext    ← evidence extraction/normalization
+└── Ai::PostCommentGeneration::PolicyPersistence← policy + metadata persistence
 Ai::PostAnalysisContextBuilder     ← assembles analysis payloads
 Ai::ProfileAnalyzer                ← profile-level analysis orchestration
 Ai::PostAnalyzer                   ← post-level analysis orchestration
@@ -28,6 +30,9 @@ Ai::ProfileCommentPreparationService ← builds profile context for comment gen
 Ai::ProfileAutoTagger              ← automatic tag application from AI results
 Ai::VerifiedStoryInsightBuilder    ← builds verified story intelligence for LLM prompts
 Ai::PostOcrService                 ← OCR extraction from post media
+
+LlmComment::GenerationService      ← job-level workflow, locking, retries/skips
+└── LlmComment::EventGenerationPipeline ← event-level context/policy/model/ranking orchestration
 ```
 
 ## Ai::Runner — Analysis Orchestrator
@@ -166,11 +171,11 @@ When `enforce_required_evidence` is true (default), missing evidence blocks gene
 ### Generation Flow
 
 1. Build preparation summary via `Ai::ProfileCommentPreparationService`
-2. Assemble comment context: image description, topics, OCR text, transcript, face count
+2. Build normalized evidence context via `Ai::PostCommentGeneration::SignalContext`
 3. Build conversational voice from profile history and insights
 4. Call `Ai::LocalEngagementCommentGenerator` to generate candidates
-5. Normalize and persist suggestions to `instagram_post_insights` (`comment_suggestions`, `image_description`)
-6. Update `post.ai_status` and metadata
+5. Persist policy + output through `Ai::PostCommentGeneration::PolicyPersistence`
+6. Update post analysis/metadata in one write path
 
 ### Blocked Policy Metadata
 
@@ -184,6 +189,23 @@ When blocked, `post.metadata["comment_generation_policy"]` stores:
   "checked_at": "2026-02-20T..."
 }
 ```
+
+## LlmComment::EventGenerationPipeline — Event LLM Pipeline
+
+File: `app/services/llm_comment/event_generation_pipeline.rb`
+
+Moves story-event comment generation orchestration out of model concern methods.
+
+### Responsibilities
+
+1. Build event comment context (`build_comment_context` on event model).
+2. Persist validated/local story intelligence snapshots.
+3. Enforce intelligence availability and verified policy gates.
+4. Run local generator + relevance ranking.
+5. Persist selected comment and ranked metadata payload.
+6. Emit progress/completion broadcasts.
+
+See also: `docs/architecture/comment-generation-refactor-guidelines.md`.
 
 ## Ai::InsightSync — Materialized Table Projection
 
