@@ -103,7 +103,7 @@ module InstagramProfileEvent::CommentGenerationCoordinator
       if local_story_intelligence_blank?(local_intel)
         reason = local_intel[:reason].to_s.presence || "local_story_intelligence_blank"
         source = local_intel[:source].to_s.presence || "unknown"
-        raise LocalStoryIntelligenceUnavailableError.new(
+        raise InstagramProfileEvent::LocalStoryIntelligence::LocalStoryIntelligenceUnavailableError.new(
           "Local story intelligence unavailable (reason: #{reason}, source: #{source}).",
           reason: reason,
           source: source
@@ -112,7 +112,7 @@ module InstagramProfileEvent::CommentGenerationCoordinator
       unless ActiveModel::Type::Boolean.new.cast(generation_policy[:allow_comment])
         policy_reason_code = generation_policy[:reason_code].to_s.presence || "policy_blocked"
         policy_reason = generation_policy[:reason].to_s.presence || "Comment generation blocked by verified story policy."
-        raise LocalStoryIntelligenceUnavailableError.new(
+        raise InstagramProfileEvent::LocalStoryIntelligence::LocalStoryIntelligenceUnavailableError.new(
           policy_reason,
           reason: policy_reason_code,
           source: "validated_story_policy"

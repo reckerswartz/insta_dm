@@ -10,6 +10,8 @@ class ApplicationJob < ActiveJob::Base
 
   discard_on Instagram::AuthenticationRequiredError do |job, error|
     context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
+    job.send(:apply_auth_backoff!, context: context, error: error)
+
     Rails.logger.warn(
       "[jobs.auth_required] #{job.class.name} discarded: #{error.message} " \
       "(account_id=#{context[:instagram_account_id] || '-'}, profile_id=#{context[:instagram_profile_id] || '-'})"
@@ -236,5 +238,25 @@ class ApplicationJob < ActiveJob::Base
     msg.include?("stored cookies are not authenticated") ||
       msg.include?("authentication required") ||
       msg.include?("no stored cookies")
+  end
+
+  def apply_auth_backoff!(context:, error:)
+    account_id = context[:instagram_account_id]
+    return if account_id.blank?
+
+    account = InstagramAccount.find_by(id: account_id)
+    return unless account
+
+    account.with_lock do
+      next_retry_at = [ account.continuous_processing_retry_after_at, 2.hours.from_now ].compact.max
+      account.update!(
+        continuous_processing_state: "idle",
+        continuous_processing_last_error: "#{error.class}: #{error.message}",
+        continuous_processing_failure_count: account.continuous_processing_failure_count.to_i + 1,
+        continuous_processing_retry_after_at: next_retry_at
+      )
+    end
+  rescue StandardError
+    nil
   end
 end

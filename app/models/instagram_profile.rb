@@ -65,12 +65,23 @@ class InstagramProfile < ApplicationRecord
     eid = external_id.to_s.strip
     raise ArgumentError, "external_id is required for profile events" if eid.blank?
 
-    event = instagram_profile_events.find_or_initialize_by(kind: kind.to_s, external_id: eid)
+    attrs = { kind: kind.to_s, external_id: eid }
+    event = instagram_profile_events.find_or_initialize_by(attrs)
     event.detected_at = Time.current
     event.occurred_at = occurred_at if occurred_at.present?
     event.metadata = (event.metadata || {}).merge(metadata.to_h)
     event.save!
     event
+  rescue ActiveRecord::RecordNotUnique
+    # Concurrent jobs can race on the unique (profile_id, kind, external_id) index.
+    # Prefer returning the already-created row instead of bubbling a transient failure.
+    existing_event = instagram_profile_events.find_by!(attrs)
+    existing_event.update!(
+      detected_at: Time.current,
+      occurred_at: occurred_at.presence || existing_event.occurred_at,
+      metadata: (existing_event.metadata || {}).merge(metadata.to_h)
+    )
+    existing_event
   end
 
   def latest_analysis

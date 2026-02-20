@@ -138,4 +138,28 @@ RSpec.describe "InstagramProfileEventLocalStoryIntelligenceTest" do
 
     assert_equal true, excluded
   end
+
+  it "deduplicates story intelligence narrative enqueue for identical payloads" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(4)}")
+    event = InstagramProfileEvent.create!(
+      instagram_profile: profile,
+      kind: "story_downloaded",
+      external_id: "event_#{SecureRandom.hex(4)}",
+      detected_at: Time.current,
+      metadata: {}
+    )
+    payload = {
+      source: "live_local_vision_ocr",
+      ocr_text: "flash sale",
+      objects: ["shoe"]
+    }
+
+    allow(AppendProfileHistoryNarrativeJob).to receive(:perform_later)
+
+    event.persist_local_story_intelligence!(payload)
+    event.persist_local_story_intelligence!(payload)
+
+    expect(AppendProfileHistoryNarrativeJob).to have_received(:perform_later).once
+  end
 end

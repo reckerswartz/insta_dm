@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+require "digest"
 
 module StoryIntelligence
   # Service for persisting story intelligence data
@@ -14,8 +15,26 @@ module StoryIntelligence
       return unless valid_payload?(payload)
       return if unavailable_source?(payload)
 
-      update_metadata_with_intelligence(payload)
-      trigger_narrative_append_if_needed(payload)
+      normalized_payload = payload.deep_symbolize_keys
+      history_payload = nil
+
+      event.with_lock do
+        event.reload
+        current_meta = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
+        update_metadata_with_intelligence(current_meta, normalized_payload)
+
+        ownership = current_meta["story_ownership_classification"].is_a?(Hash) ? current_meta["story_ownership_classification"] : {}
+        policy = current_meta["story_generation_policy"].is_a?(Hash) ? current_meta["story_generation_policy"] : {}
+        unless story_excluded_from_narrative?(ownership: ownership, policy: policy)
+          history_payload = normalized_payload.merge(description: build_story_image_description(normalized_payload))
+        end
+
+        event.update_columns(metadata: current_meta, updated_at: Time.current)
+      end
+
+      return if history_payload.blank?
+
+      enqueue_story_intelligence_narrative_once!(history_payload)
     end
 
     def persist_validated_insights!(payload)
@@ -23,13 +42,37 @@ module StoryIntelligence
 
       insights = extract_insights(payload)
       return if insights_blank?(insights)
+      history_payload = nil
+      should_enqueue = false
 
-      signature = generate_insights_signature(insights)
-      return if insights_already_processed?(signature)
+      event.with_lock do
+        event.reload
+        current_meta = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
+        signature = generate_insights_signature(insights)
+        stored = current_meta["validated_story_insights"].is_a?(Hash) ? current_meta["validated_story_insights"] : {}
+        next if stored["signature"].to_s == signature
 
-      update_metadata_with_insights(insights, signature)
-      update_content_classification(insights)
-      trigger_narrative_append_if_not_excluded(insights)
+        update_metadata_with_insights(current_meta, insights, signature)
+        excluded_from_narrative = update_content_classification(current_meta, insights)
+        event.update_columns(metadata: current_meta, updated_at: Time.current)
+
+        unless excluded_from_narrative
+          ownership = insights[:ownership_classification]
+          policy = insights[:generation_policy]
+          verified_facts = insights[:verified_story_facts]
+          history_payload = verified_facts.merge(
+            ownership_classification: ownership[:label] || ownership["label"],
+            ownership_summary: ownership[:summary] || ownership["summary"],
+            ownership_confidence: ownership[:confidence] || ownership["confidence"],
+            ownership_reason_codes: Array(ownership[:reason_codes] || ownership["reason_codes"]).first(12),
+            generation_policy: policy,
+            description: build_story_image_description(verified_facts)
+          )
+          should_enqueue = true
+        end
+      end
+
+      enqueue_story_intelligence_narrative_once!(history_payload) if should_enqueue
     end
 
     private
@@ -44,14 +87,10 @@ module StoryIntelligence
       payload[:source].to_s.blank? || payload[:source] == "unavailable"
     end
 
-    def update_metadata_with_intelligence(payload)
-      current_meta = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
-      
+    def update_metadata_with_intelligence(current_meta, payload)
       update_basic_intelligence_fields(current_meta, payload)
       update_detailed_intelligence_fields(current_meta, payload)
       update_intelligence_snapshot(current_meta, payload)
-
-      event.update_columns(metadata: current_meta, updated_at: Time.current)
     end
 
     def update_basic_intelligence_fields(current_meta, payload)
@@ -92,21 +131,6 @@ module StoryIntelligence
       current_meta["local_story_intelligence_history_appended_at"] = Time.current.iso8601
     end
 
-    def trigger_narrative_append_if_needed(payload)
-      ownership = extract_ownership_classification
-      policy = extract_generation_policy
-      return if story_excluded_from_narrative?(ownership: ownership, policy: policy)
-
-      history_payload = payload.merge(description: build_story_image_description(payload))
-      AppendProfileHistoryNarrativeJob.perform_later(
-        instagram_profile_event_id: event.id,
-        mode: "story_intelligence",
-        intelligence: history_payload
-      )
-    rescue StandardError
-      nil
-    end
-
     def valid_insights_payload?(payload)
       payload.is_a?(Hash)
     end
@@ -134,15 +158,7 @@ module StoryIntelligence
       Digest::SHA256.hexdigest(signature_payload.to_json)
     end
 
-    def insights_already_processed?(signature)
-      current_meta = event.metadata.is_a?(Hash) ? event.metadata : {}
-      stored = current_meta["validated_story_insights"].is_a?(Hash) ? current_meta["validated_story_insights"] : {}
-      stored["signature"].to_s == signature
-    end
-
-    def update_metadata_with_insights(insights, signature)
-      current_meta = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
-      
+    def update_metadata_with_insights(current_meta, insights, signature)
       current_meta["validated_story_insights"] = {
         "signature" => signature,
         "validated_at" => Time.current.iso8601,
@@ -153,13 +169,9 @@ module StoryIntelligence
 
       current_meta["story_ownership_classification"] = insights[:ownership_classification]
       current_meta["story_generation_policy"] = insights[:generation_policy]
-
-      event.update_columns(metadata: current_meta, updated_at: Time.current)
     end
 
-    def update_content_classification(insights)
-      current_meta = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
-      
+    def update_content_classification(current_meta, insights)
       ownership = insights[:ownership_classification]
       policy = insights[:generation_policy]
       verified_facts = insights[:verified_story_facts]
@@ -188,7 +200,7 @@ module StoryIntelligence
         "source_profile_ids" => source_profile_ids
       }
 
-      event.update_columns(metadata: current_meta, updated_at: Time.current)
+      excluded_from_narrative
     end
 
     def extract_source_profile_references(ownership, verified_facts)
@@ -222,38 +234,34 @@ module StoryIntelligence
       policy[:reason].to_s.presence || policy["reason"].to_s.presence
     end
 
-    def trigger_narrative_append_if_not_excluded(insights)
-      ownership = insights[:ownership_classification]
-      policy = insights[:generation_policy]
-      return if story_excluded_from_narrative?(ownership: ownership, policy: policy)
+    def enqueue_story_intelligence_narrative_once!(history_payload)
+      return unless history_payload.is_a?(Hash)
 
-      verified_facts = insights[:verified_story_facts]
-      history_payload = verified_facts.merge(
-        ownership_classification: ownership[:label] || ownership["label"],
-        ownership_summary: ownership[:summary] || ownership["summary"],
-        ownership_confidence: ownership[:confidence] || ownership["confidence"],
-        ownership_reason_codes: Array(ownership[:reason_codes] || ownership["reason_codes"]).first(12),
-        generation_policy: policy,
-        description: build_story_image_description(verified_facts)
-      )
+      payload = history_payload.deep_symbolize_keys
+      fingerprint = Digest::SHA256.hexdigest(payload.to_json)
+      enqueue = false
+
+      event.with_lock do
+        event.reload
+        current_meta = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
+        fingerprints = Array(current_meta["story_intelligence_narrative_fingerprints"]).map(&:to_s)
+        next if fingerprints.include?(fingerprint)
+
+        current_meta["story_intelligence_narrative_fingerprints"] = (fingerprints << fingerprint).last(50)
+        current_meta["story_intelligence_history_appended_at"] = Time.current.iso8601
+        event.update_columns(metadata: current_meta, updated_at: Time.current)
+        enqueue = true
+      end
+
+      return unless enqueue
 
       AppendProfileHistoryNarrativeJob.perform_later(
         instagram_profile_event_id: event.id,
         mode: "story_intelligence",
-        intelligence: history_payload
+        intelligence: payload
       )
     rescue StandardError
       nil
-    end
-
-    def extract_ownership_classification
-      current_meta = event.metadata.is_a?(Hash) ? event.metadata : {}
-      current_meta["story_ownership_classification"].is_a?(Hash) ? current_meta["story_ownership_classification"] : {}
-    end
-
-    def extract_generation_policy
-      current_meta = event.metadata.is_a?(Hash) ? event.metadata : {}
-      current_meta["story_generation_policy"].is_a?(Hash) ? current_meta["story_generation_policy"] : {}
     end
 
     def story_excluded_from_narrative?(ownership:, policy:)
@@ -308,7 +316,7 @@ module StoryIntelligence
 
     def normalize_object_detections(*values, limit: 120)
       rows = normalize_hash_array(*values).map do |row|
-        label = (row[:label] || row["label"] || row[:description] || row["description"]).to_s.downcase.strip
+        label = (row[:label] || row["label"] || row[:description] || row["description"]).to_s.strip
         next if label.blank?
 
         {

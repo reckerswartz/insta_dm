@@ -337,7 +337,7 @@ module StoryIntelligence
 
     def normalize_object_detections(*values, limit: 120)
       rows = normalize_hash_array(*values).map do |row|
-        label = (row[:label] || row["label"] || row[:description] || row["description"]).to_s.downcase.strip
+        label = (row[:label] || row["label"] || row[:description] || row["description"]).to_s.strip
         next if label.blank?
 
         {

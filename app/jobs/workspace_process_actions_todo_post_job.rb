@@ -188,6 +188,17 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     ).run!
 
     post.reload
+    history_retry_result = nil
+    if history_build_retry_needed_for_comment_generation?(post: post)
+      history_retry_result = schedule_build_history_retry!(
+        account: account,
+        profile: profile,
+        post: post,
+        requested_by: requested_by,
+        history_reason_code: post.metadata.dig("comment_generation_policy", "history_reason_code").to_s
+      )
+    end
+
     suggestions = self.class.normalized_suggestions(post)
     if suggestions.any?
       persist_workspace_state!(
@@ -200,15 +211,11 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       return
     end
 
-    if retryable_profile_incomplete_block?(post: post, comment_result: comment_result)
-      retry_result = schedule_build_history_retry!(
-        account: account,
-        profile: profile,
-        post: post,
-        requested_by: requested_by,
-        history_reason_code: post.metadata.dig("comment_generation_policy", "history_reason_code").to_s
-      )
-
+    if history_build_retry_needed_for_comment_generation?(post: post)
+      retry_result = history_retry_result || {
+        queued: false,
+        reason: "build_history_retry_not_triggered"
+      }
       persist_workspace_state!(
         post: post,
         status: "waiting_build_history",
@@ -454,10 +461,7 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     }
   end
 
-  def retryable_profile_incomplete_block?(post:, comment_result:)
-    return false unless ActiveModel::Type::Boolean.new.cast(comment_result[:blocked])
-    return false unless comment_result[:reason_code].to_s == "missing_required_evidence"
-
+  def history_build_retry_needed_for_comment_generation?(post:)
     policy = post.metadata.is_a?(Hash) ? post.metadata["comment_generation_policy"] : nil
     return false unless policy.is_a?(Hash)
     return false if ActiveModel::Type::Boolean.new.cast(policy["history_ready"])

@@ -19,6 +19,8 @@ module LlmComment
     def call
       return skip_if_not_story_archive_item unless event.story_archive_item?
       return skip_if_already_completed if event.has_llm_generated_comment?
+      return self unless claim_generation_slot!
+      return skip_if_already_completed if @already_completed_during_claim
 
       prepare_profile_context
       persist_profile_preparation_snapshot
@@ -63,16 +65,56 @@ module LlmComment
     def persist_profile_preparation_snapshot
       return unless profile_preparation.is_a?(Hash)
 
-      existing = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata.deep_dup : {}
-      existing["profile_comment_preparation"] = profile_preparation
-      event.update_columns(llm_comment_metadata: existing, updated_at: Time.current)
+      event.with_lock do
+        event.reload
+        existing = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata.deep_dup : {}
+        existing["profile_comment_preparation"] = profile_preparation
+        event.update_columns(llm_comment_metadata: existing, updated_at: Time.current)
+      end
     rescue StandardError
       nil
     end
 
     def generate_comment
-      event.mark_llm_comment_running!(job_id: Current.active_job_id)
       @result = event.generate_llm_comment!(provider: @provider, model: @model)
+    end
+
+    def claim_generation_slot!
+      active_job = Current.active_job_id.to_s
+      claimed = false
+
+      event.with_lock do
+        event.reload
+        if event.has_llm_generated_comment?
+          @already_completed_during_claim = true
+          event.update_columns(
+            llm_comment_status: "completed",
+            llm_comment_last_error: nil,
+            updated_at: Time.current
+          )
+          next
+        end
+
+        if event.llm_comment_in_progress? && event.llm_comment_job_id.to_s.present? && event.llm_comment_job_id.to_s != active_job
+          Ops::StructuredLogger.info(
+            event: "llm_comment.duplicate_job_skipped",
+            payload: {
+              event_id: event.id,
+              active_job_id: active_job,
+              claimed_job_id: event.llm_comment_job_id.to_s,
+              instagram_profile_id: event.instagram_profile_id
+            }
+          )
+          next
+        end
+
+        event.mark_llm_comment_running!(job_id: active_job)
+        claimed = true
+      end
+
+      claimed
+    rescue StandardError
+      false
     end
 
     def log_completion(already_completed: false)

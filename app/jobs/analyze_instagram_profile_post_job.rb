@@ -247,6 +247,7 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
     end
 
     comment_result = nil
+    history_retry_result = nil
     if task_flags[:generate_comments]
       comment_result = Ai::PostCommentGenerationService.new(
         account: account,
@@ -257,15 +258,18 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       post.reload
 
       if ActiveModel::Type::Boolean.new.cast(task_flags[:retry_on_incomplete_profile]) &&
-          retryable_profile_incomplete_block?(post: post, comment_result: comment_result)
-        enqueue_build_history_retry_if_needed!(account: account, profile: profile, post: post)
+          history_build_retry_needed_for_comment_generation?(post: post)
+        history_retry_result = enqueue_build_history_retry_if_needed!(account: account, profile: profile, post: post)
       end
     end
 
     post.update!(ai_status: "analyzed", analyzed_at: Time.current) unless post.ai_status.to_s == "analyzed"
     notification_message =
-      if comment_result&.dig(:reason_code).to_s == "missing_required_evidence"
+      if ActiveModel::Type::Boolean.new.cast(history_retry_result&.dig(:queued)) &&
+          ActiveModel::Type::Boolean.new.cast(comment_result&.dig(:blocked))
         "Profile post analyzed: #{post.shortcode}. Waiting for Build History to finish comment generation."
+      elsif ActiveModel::Type::Boolean.new.cast(history_retry_result&.dig(:queued))
+        "Profile post analyzed: #{post.shortcode}. Comment generation completed while Build History continues in background."
       else
         "Profile post analyzed: #{post.shortcode}."
       end
@@ -330,10 +334,7 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
     }
   end
 
-  def retryable_profile_incomplete_block?(post:, comment_result:)
-    return false unless ActiveModel::Type::Boolean.new.cast(comment_result[:blocked])
-    return false unless comment_result[:reason_code].to_s == "missing_required_evidence"
-
+  def history_build_retry_needed_for_comment_generation?(post:)
     policy = post.metadata.is_a?(Hash) ? post.metadata["comment_generation_policy"] : nil
     return false unless policy.is_a?(Hash)
     return false if ActiveModel::Type::Boolean.new.cast(policy["history_ready"])

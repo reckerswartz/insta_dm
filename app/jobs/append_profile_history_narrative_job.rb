@@ -1,9 +1,10 @@
 class AppendProfileHistoryNarrativeJob < ApplicationJob
   queue_as :maintenance
+  retry_on ActiveRecord::Deadlocked, ActiveRecord::LockWaitTimeout, wait: 2.seconds, attempts: 5
+  discard_on ActiveRecord::RecordNotFound
 
   def perform(instagram_profile_event_id:, mode: "event", intelligence: nil)
-    event = InstagramProfileEvent.find_by(id: instagram_profile_event_id)
-    return unless event
+    event = InstagramProfileEvent.find(instagram_profile_event_id)
 
     case mode.to_s
     when "event"
@@ -11,9 +12,11 @@ class AppendProfileHistoryNarrativeJob < ApplicationJob
     when "story_intelligence"
       payload = intelligence.is_a?(Hash) ? intelligence.deep_symbolize_keys : {}
       Ai::ProfileHistoryNarrativeBuilder.append_story_intelligence!(event, intelligence: payload)
+    else
+      Ops::StructuredLogger.warn(
+        event: "profile_history_narrative.unknown_mode",
+        payload: { instagram_profile_event_id: event.id, mode: mode.to_s }
+      )
     end
-  rescue StandardError => e
-    Rails.logger.warn("[AppendProfileHistoryNarrativeJob] failed for event_id=#{instagram_profile_event_id}: #{e.class}: #{e.message}")
-    nil
   end
 end

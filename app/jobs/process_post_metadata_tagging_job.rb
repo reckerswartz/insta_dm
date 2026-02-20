@@ -181,10 +181,7 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
     true
   end
 
-  def enqueue_comment_retry_if_needed!(account:, profile:, post:, comment_result:)
-    return { queued: false, reason: "comment_not_blocked" } unless ActiveModel::Type::Boolean.new.cast(comment_result[:blocked])
-    return { queued: false, reason: "reason_not_retryable" } unless comment_result[:reason_code].to_s == "missing_required_evidence"
-
+  def enqueue_comment_retry_if_needed!(account:, profile:, post:, comment_result: nil)
     metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
     policy = metadata["comment_generation_policy"]
     return { queued: false, reason: "policy_missing" } unless policy.is_a?(Hash)

@@ -45,7 +45,7 @@ RSpec.describe Ai::PostCommentGenerationService do
     [ account, profile, post ]
   end
 
-  it "blocks comment generation when required history/face/ocr evidence is missing" do
+  it "blocks comment generation when required face/text evidence is missing" do
     account, profile, post = build_account_profile_post
     prep = FakePreparationService.new(
       {
@@ -129,6 +129,52 @@ RSpec.describe Ai::PostCommentGenerationService do
     assert_equal 1, generator.calls
     assert_equal "enabled", post.metadata.dig("comment_generation_policy", "status")
     assert_equal true, post.metadata.dig("comment_generation_policy", "history_ready")
+  end
+
+  it "generates comments when history is pending but required content signals are present" do
+    account, profile, post = build_account_profile_post
+    post.update!(
+      metadata: {
+        "face_recognition" => { "face_count" => 1 },
+        "ocr_analysis" => { "ocr_text" => "night skyline and traffic lights" }
+      }
+    )
+
+    prep = FakePreparationService.new(
+      {
+        "ready_for_comment_generation" => false,
+        "reason_code" => "latest_posts_not_analyzed",
+        "reason" => "Latest posts are not analyzed yet."
+      }
+    )
+    generator = FakeCommentGenerator.new(
+      {
+        status: "ok",
+        source: "ollama",
+        fallback_used: false,
+        error_message: nil,
+        comment_suggestions: [
+          "Great city framing here.",
+          "This shot has such a strong mood."
+        ]
+      }
+    )
+
+    result = Ai::PostCommentGenerationService.new(
+      account: account,
+      profile: profile,
+      post: post,
+      profile_preparation_service: prep,
+      comment_generator: generator
+    ).run!
+
+    post.reload
+    assert_equal false, result[:blocked]
+    assert_equal "ok", post.analysis["comment_generation_status"]
+    assert_equal 1, generator.calls
+    assert_equal "enabled_history_pending", post.metadata.dig("comment_generation_policy", "status")
+    assert_includes Array(post.metadata.dig("comment_generation_policy", "missing_signals")), "history"
+    assert_equal false, post.metadata.dig("comment_generation_policy", "history_ready")
   end
 
   it "allows generation with missing evidence when policy enforcement is disabled" do

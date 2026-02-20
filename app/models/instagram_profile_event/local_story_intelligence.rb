@@ -56,4 +56,25 @@ module InstagramProfileEvent::LocalStoryIntelligence
       validated_story_insights
     end
   end
+
+  private
+
+  def local_story_intelligence_blank?(payload)
+    return true unless payload.is_a?(Hash)
+    
+    # Check if there's any meaningful content
+    has_face_context = payload[:face_count].to_i > 0
+    has_scene_context = Array(payload[:scenes]).any?
+    has_objects = Array(payload[:objects]).any?
+    has_ocr_content = payload[:ocr_text].present? || Array(payload[:ocr_blocks]).any?
+    has_transcript = payload[:transcript].present?
+    has_hashtags = Array(payload[:hashtags]).any?
+    has_mentions = Array(payload[:mentions]).any?
+    has_topics = Array(payload[:topics]).any?
+    has_people = Array(payload[:people]).any?
+    
+    # If any content exists, it's not blank
+    !(has_face_context || has_scene_context || has_objects || has_ocr_content || 
+      has_transcript || has_hashtags || has_mentions || has_topics || has_people)
+  end
 end

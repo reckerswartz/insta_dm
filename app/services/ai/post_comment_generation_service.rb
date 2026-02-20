@@ -1,6 +1,6 @@
 module Ai
   class PostCommentGenerationService
-    REQUIRED_SIGNAL_KEYS = %w[face text_context history].freeze
+    REQUIRED_SIGNAL_KEYS = %w[face text_context].freeze
     MAX_SUGGESTIONS = 8
 
     def initialize(
@@ -34,17 +34,19 @@ module Ai
       text_context = extract_text_context(analysis: analysis, metadata: metadata)
       history_ready = ActiveModel::Type::Boolean.new.cast(preparation["ready_for_comment_generation"])
 
-      missing = []
-      missing << "face" unless face_count.positive?
-      missing << "text_context" if text_context.blank?
-      missing << "history" unless history_ready
+      missing_required = []
+      missing_required << "face" unless face_count.positive?
+      missing_required << "text_context" if text_context.blank?
+      history_pending = !history_ready
+      missing_signals = missing_required.dup
+      missing_signals << "history" if history_pending
 
-      if missing.any? && enforce_required_evidence?
+      if missing_required.any? && enforce_required_evidence?
         return persist_blocked!(
           analysis: analysis,
           metadata: metadata,
           preparation: preparation,
-          missing_signals: missing,
+          missing_signals: missing_signals,
           reason_code: "missing_required_evidence"
         )
       end
@@ -105,9 +107,9 @@ module Ai
       analysis["comment_generation_error"] = result[:error_message].to_s.presence
 
       metadata["comment_generation_policy"] = {
-        "status" => missing.any? ? "enabled_with_missing_required_evidence" : "enabled",
+        "status" => policy_status(missing_required: missing_required, history_pending: history_pending),
         "required_signals" => REQUIRED_SIGNAL_KEYS,
-        "missing_signals" => missing.any? ? missing : [],
+        "missing_signals" => missing_signals,
         "enforce_required_evidence" => enforce_required_evidence?,
         "history_ready" => history_ready,
         "history_reason_code" => preparation["reason_code"].to_s.presence,
@@ -189,7 +191,7 @@ module Ai
       builder = Ai::PostAnalysisContextBuilder.new(profile: profile, post: post)
       payload = builder.payload
       payload[:rules] = (payload[:rules].is_a?(Hash) ? payload[:rules] : {}).merge(
-        require_history_context: true,
+        require_history_context: false,
         require_face_signal: true,
         require_ocr_signal: true,
         require_text_context: true
@@ -414,6 +416,13 @@ module Ai
       parts << "text_context_missing(ocr_or_transcript)" if missing_signals.include?("text_context")
       parts << fallback_reason_code.to_s if parts.empty?
       parts.join(", ")
+    end
+
+    def policy_status(missing_required:, history_pending:)
+      return "enabled_with_missing_required_evidence" if missing_required.any?
+      return "enabled_history_pending" if history_pending
+
+      "enabled"
     end
 
     def skipped_result(reason_code:)
