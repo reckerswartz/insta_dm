@@ -171,8 +171,30 @@ class BuildInstagramProfileHistoryJob < ApplicationJob
   end
 
   def perform(instagram_account_id:, instagram_profile_id:, profile_action_log_id: nil, attempts: 0, resume_job: nil)
-    account = InstagramAccount.find(instagram_account_id)
-    profile = account.instagram_profiles.find(instagram_profile_id)
+    account = InstagramAccount.find_by(id: instagram_account_id)
+    unless account
+      Ops::StructuredLogger.info(
+        event: "profile_history_build.skipped_missing_account",
+        payload: {
+          instagram_account_id: instagram_account_id,
+          instagram_profile_id: instagram_profile_id
+        }
+      )
+      return
+    end
+
+    profile = account.instagram_profiles.find_by(id: instagram_profile_id)
+    unless profile
+      Ops::StructuredLogger.info(
+        event: "profile_history_build.skipped_missing_profile",
+        payload: {
+          instagram_account_id: account.id,
+          instagram_profile_id: instagram_profile_id
+        }
+      )
+      return
+    end
+
     action_log = find_or_create_action_log(
       account: account,
       profile: profile,

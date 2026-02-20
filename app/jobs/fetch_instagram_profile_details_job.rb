@@ -6,8 +6,30 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
   queue_as :profiles
 
   def perform(instagram_account_id:, instagram_profile_id:, profile_action_log_id: nil)
-    account = InstagramAccount.find(instagram_account_id)
-    profile = account.instagram_profiles.find(instagram_profile_id)
+    account = InstagramAccount.find_by(id: instagram_account_id)
+    unless account
+      Ops::StructuredLogger.info(
+        event: "profile_fetch_details.skipped_missing_account",
+        payload: {
+          instagram_account_id: instagram_account_id,
+          instagram_profile_id: instagram_profile_id
+        }
+      )
+      return
+    end
+
+    profile = account.instagram_profiles.find_by(id: instagram_profile_id)
+    unless profile
+      Ops::StructuredLogger.info(
+        event: "profile_fetch_details.skipped_missing_profile",
+        payload: {
+          instagram_account_id: account.id,
+          instagram_profile_id: instagram_profile_id
+        }
+      )
+      return
+    end
+
     action_log = find_or_create_action_log(
       account: account,
       profile: profile,
@@ -16,7 +38,8 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
     )
     action_log.mark_running!(extra_metadata: { queue_name: queue_name, active_job_id: job_id })
 
-    details = Instagram::Client.new(account: account).fetch_profile_details_and_verify_messageability!(username: profile.username)
+    client = Instagram::Client.new(account: account)
+    details = fetch_profile_details_with_messageability(client: client, username: profile.username)
     normalized_pic_url = Instagram::AvatarUrlNormalizer.normalize(details[:profile_pic_url])
     followers_count = normalize_count(details[:followers_count])
 
@@ -132,6 +155,29 @@ class FetchInstagramProfileDetailsJob < ApplicationJob
     text.to_i
   rescue StandardError
     nil
+  end
+
+  def fetch_profile_details_with_messageability(client:, username:)
+    if client.respond_to?(:fetch_profile_details_and_verify_messageability!)
+      result = client.fetch_profile_details_and_verify_messageability!(username: username)
+      return result.is_a?(Hash) ? result.symbolize_keys : {}
+    end
+
+    Ops::StructuredLogger.warn(
+      event: "profile_fetch_details.fallback_missing_combined_method",
+      payload: { username: username.to_s }
+    )
+    details = client.fetch_profile_details!(username: username)
+    details_hash = details.is_a?(Hash) ? details : {}
+    eligibility =
+      if client.respond_to?(:verify_messageability!)
+        value = client.verify_messageability!(username: username)
+        value.is_a?(Hash) ? value : {}
+      else
+        {}
+      end
+
+    details_hash.symbolize_keys.merge(eligibility.symbolize_keys)
   end
 
   def apply_scan_exclusion_tag!(profile:, details:)

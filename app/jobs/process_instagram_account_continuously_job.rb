@@ -7,7 +7,18 @@ class ProcessInstagramAccountContinuouslyJob < ApplicationJob
   retry_on Errno::ECONNREFUSED, Errno::ECONNRESET, wait: :polynomially_longer, attempts: 4
 
   def perform(instagram_account_id:, trigger_source: "scheduler")
-    account = InstagramAccount.find(instagram_account_id)
+    account = InstagramAccount.find_by(id: instagram_account_id)
+    unless account
+      Ops::StructuredLogger.info(
+        event: "continuous_processing.skipped_missing_account",
+        payload: {
+          instagram_account_id: instagram_account_id,
+          trigger_source: trigger_source
+        }
+      )
+      return
+    end
+
     return unless account.continuous_processing_enabled?
 
     if retry_backoff_active?(account)

@@ -12,7 +12,15 @@ class SyncProfileStoriesForAccountJob < ApplicationJob
     require_auto_reply_tag: false,
     force_analyze_all: false
   )
-    account = InstagramAccount.find(instagram_account_id)
+    account = InstagramAccount.find_by(id: instagram_account_id)
+    unless account
+      Ops::StructuredLogger.info(
+        event: "sync_profile_stories.skipped_missing_account",
+        payload: { instagram_account_id: instagram_account_id }
+      )
+      return
+    end
+
     limit = story_limit.to_i.clamp(1, STORY_BATCH_LIMIT)
     stories_per_profile_i = stories_per_profile.to_i.clamp(1, SyncInstagramProfileStoriesJob::MAX_STORIES)
     auto_reply = ActiveModel::Type::Boolean.new.cast(with_comments)

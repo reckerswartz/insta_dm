@@ -81,14 +81,16 @@ module Ops
       def upsert_issue!(issue_type:, source:, severity:, title:, details:, metadata: {}, fingerprint:, instagram_account_id: nil, instagram_profile_id: nil, background_job_failure_id: nil)
         now = Time.current
         issue = AppIssue.find_or_initialize_by(fingerprint: fingerprint.to_s)
+        account_id = validated_instagram_account_id(instagram_account_id)
+        profile_id = validated_instagram_profile_id(instagram_profile_id, instagram_account_id: account_id)
 
         issue.issue_type = issue_type.to_s
         issue.source = source.to_s
         issue.severity = normalize_severity(severity)
         issue.title = title.to_s
         issue.details = details.to_s
-        issue.instagram_account_id = instagram_account_id
-        issue.instagram_profile_id = instagram_profile_id
+        issue.instagram_account_id = account_id
+        issue.instagram_profile_id = profile_id
         issue.background_job_failure_id = background_job_failure_id
         issue.metadata = (issue.metadata || {}).merge(metadata.to_h)
         issue.first_seen_at ||= now
@@ -111,6 +113,26 @@ module Ops
         else
           "Job failure in #{job.class.name}"
         end
+      end
+
+      def validated_instagram_account_id(raw_id)
+        id = raw_id.to_i
+        return nil unless id.positive?
+
+        InstagramAccount.where(id: id).pick(:id)
+      rescue StandardError
+        nil
+      end
+
+      def validated_instagram_profile_id(raw_id, instagram_account_id:)
+        id = raw_id.to_i
+        return nil unless id.positive?
+
+        scope = InstagramProfile.where(id: id)
+        scope = scope.where(instagram_account_id: instagram_account_id) if instagram_account_id.present?
+        scope.pick(:id)
+      rescue StandardError
+        nil
       end
 
       def normalize_severity(value)
