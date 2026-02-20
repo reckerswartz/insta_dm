@@ -51,7 +51,17 @@ module Instagram
         req["Cookie"] = cookie_header_for(@account.cookies)
 
         res = http.request(req)
-        return nil unless res.is_a?(Net::HTTPSuccess)
+        unless res.is_a?(Net::HTTPSuccess)
+          log_story_api_http_failure(
+            endpoint: "feed_reels_media",
+            url: uri.to_s,
+            status: res.code.to_i,
+            body: res.body,
+            username: referer_username,
+            user_id: user_id
+          )
+          return nil
+        end
 
         body = JSON.parse(res.body.to_s)
       
@@ -169,6 +179,30 @@ module Instagram
               media_variant_count: 1,
               primary_media_index: 0,
               primary_media_source: "dom",
+              carousel_media: []
+            }
+          end
+        end
+
+        perf_story = resolve_story_item_via_performance_logs(driver: driver)
+        if perf_story.is_a?(Hash)
+          perf_media_url = perf_story[:media_url].to_s
+          if downloadable_story_media_url?(perf_media_url)
+            hinted_story_id = story_id_hint_from_media_url(perf_media_url).to_s
+            return {
+              media_type: perf_story[:media_type].to_s.presence || "unknown",
+              url: perf_media_url,
+              width: perf_story[:width],
+              height: perf_story[:height],
+              source: "performance_logs_media",
+              story_id: sid.presence || hinted_story_id.presence || fallback_story_key.to_s,
+              image_url: perf_story[:image_url].to_s.presence,
+              video_url: perf_story[:video_url].to_s.presence,
+              owner_user_id: nil,
+              owner_username: nil,
+              media_variant_count: 1,
+              primary_media_index: 0,
+              primary_media_source: "performance_logs",
               carousel_media: []
             }
           end
@@ -337,6 +371,58 @@ module Instagram
         nil
       end
 
+      def resolve_story_item_via_performance_logs(driver:)
+        return nil unless driver.respond_to?(:logs)
+
+        types = driver.logs.available_types
+        return nil unless types.include?(:performance) || types.include?("performance")
+
+        perf_entries = Array(driver.logs.get(:performance))
+        candidates = perf_entries.filter_map do |entry|
+          raw = entry.respond_to?(:message) ? entry.message.to_s : entry.to_s
+          next if raw.blank?
+
+          parsed = JSON.parse(raw) rescue nil
+          inner = parsed.is_a?(Hash) ? parsed["message"] : nil
+          next unless inner.is_a?(Hash)
+          next unless inner["method"].to_s == "Network.responseReceived"
+
+          params = inner["params"].is_a?(Hash) ? inner["params"] : {}
+          response = params["response"].is_a?(Hash) ? params["response"] : {}
+          status = response["status"].to_i
+          next unless status.between?(200, 299)
+
+          url = normalize_story_media_url(response["url"].to_s)
+          next if url.blank?
+          next unless downloadable_story_media_url?(url)
+          next unless url.include?("cdninstagram.com") || url.include?("fbcdn.net")
+
+          mime_type = response["mimeType"].to_s.downcase
+          media_type =
+            if mime_type.start_with?("video/") || url.match?(/\.(mp4|mov|webm)(\?|$)/i)
+              "video"
+            elsif mime_type.start_with?("image/") || url.match?(/\.(jpg|jpeg|png|webp)(\?|$)/i)
+              "image"
+            else
+              "unknown"
+            end
+          next if media_type == "unknown"
+
+          {
+            media_url: url,
+            media_type: media_type,
+            image_url: (media_type == "image" ? url : nil),
+            video_url: (media_type == "video" ? url : nil),
+            width: nil,
+            height: nil
+          }
+        end
+
+        candidates.reverse.find { |entry| entry[:media_url].to_s.present? }
+      rescue StandardError
+        nil
+      end
+
       def resolve_story_item_via_api(username:, story_id:, cache: nil)
         uname = normalize_username(username)
         return nil if uname.blank?
@@ -372,7 +458,12 @@ module Instagram
         web_info = fetch_web_profile_info(uname)
         user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
         user_id = user.is_a?(Hash) ? user["id"].to_s.strip : ""
-        return [] if user_id.blank?
+        if user_id.blank?
+          if cache.is_a?(Hash)
+            cache[cache_key] = { user_id: nil, items: [], fetched_at: Time.current.utc.iso8601(3), error: "web_profile_info_unavailable" }
+          end
+          return []
+        end
 
         reel = fetch_story_reel(user_id: user_id, referer_username: uname)
         raw_items = reel.is_a?(Hash) ? Array(reel["items"]) : []
@@ -383,6 +474,9 @@ module Instagram
         end
         stories
       rescue StandardError
+        if cache.is_a?(Hash)
+          cache[cache_key] = { user_id: nil, items: [], fetched_at: Time.current.utc.iso8601(3), error: "story_items_exception" }
+        end
         []
       end
 
@@ -705,6 +799,77 @@ module Instagram
         when 2 then "video"
         else "image"
         end
+      end
+
+      def log_story_api_http_failure(endpoint:, url:, status:, body:, username:, user_id: nil)
+        remember_story_api_failure!(
+          endpoint: endpoint,
+          url: url,
+          status: status,
+          username: username,
+          user_id: user_id,
+          response_snippet: body
+        )
+
+        Ops::StructuredLogger.warn(
+          event: "instagram.story_api.http_failure",
+          payload: {
+            endpoint: endpoint.to_s,
+            url: url.to_s,
+            status: status.to_i,
+            username: username.to_s,
+            user_id: user_id.to_s.presence,
+            rate_limited: status.to_i == 429,
+            response_snippet: body.to_s.byteslice(0, 300)
+          }.compact
+        )
+      rescue StandardError
+        nil
+      end
+
+      def remember_story_api_failure!(endpoint:, url:, status:, username:, user_id: nil, response_snippet: nil)
+        @story_api_recent_failures ||= {}
+        payload = {
+          endpoint: endpoint.to_s,
+          url: url.to_s.presence,
+          status: status.to_i,
+          rate_limited: status.to_i == 429,
+          username: normalize_username(username),
+          user_id: user_id.to_s.presence,
+          response_snippet: response_snippet.to_s.byteslice(0, 300),
+          occurred_at_epoch: Time.current.to_i
+        }.compact
+        return if payload[:status].to_i <= 0
+
+        @story_api_recent_failures[payload[:username]] = payload if payload[:username].present?
+        @story_api_recent_failures[:global] = payload
+      rescue StandardError
+        nil
+      end
+
+      def story_api_recent_failure_for(username:)
+        failures = @story_api_recent_failures
+        return nil unless failures.is_a?(Hash)
+
+        uname = normalize_username(username)
+        payload = uname.present? ? failures[uname] : nil
+        payload ||= failures[:global]
+        return nil unless payload.is_a?(Hash)
+
+        occurred_at_epoch = payload[:occurred_at_epoch].to_i
+        return nil if occurred_at_epoch <= 0
+        return nil if Time.at(occurred_at_epoch) < 10.minutes.ago
+
+        payload
+      rescue StandardError
+        nil
+      end
+
+      def story_api_rate_limited_for?(username:)
+        payload = story_api_recent_failure_for(username: username)
+        ActiveModel::Type::Boolean.new.cast(payload&.dig(:rate_limited))
+      rescue StandardError
+        false
       end
 
       def debug_story_reel_data(referer_username:, user_id:, body:)

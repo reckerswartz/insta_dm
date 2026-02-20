@@ -92,7 +92,27 @@ module Instagram
       req["Cookie"] = cookie_header_for(@account.cookies)
 
       res = http.request(req)
-      return nil unless res.is_a?(Net::HTTPSuccess)
+      unless res.is_a?(Net::HTTPSuccess)
+        remember_story_api_failure!(
+          endpoint: "web_profile_info",
+          url: uri.to_s,
+          status: res.code.to_i,
+          username: username,
+          response_snippet: res.body
+        ) if respond_to?(:remember_story_api_failure!, true)
+
+        Ops::StructuredLogger.warn(
+          event: "instagram.web_profile_info.http_failure",
+          payload: {
+            endpoint: "web_profile_info",
+            username: username.to_s,
+            status: res.code.to_i,
+            rate_limited: res.code.to_i == 429,
+            response_snippet: res.body.to_s.byteslice(0, 300)
+          }
+        )
+        return nil
+      end
 
       JSON.parse(res.body.to_s)
     rescue StandardError

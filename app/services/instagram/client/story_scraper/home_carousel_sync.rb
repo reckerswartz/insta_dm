@@ -107,6 +107,22 @@ module Instagram
                   story_id = normalize_story_id_token(context[:story_id])
                   story_id = normalize_story_id_token(ref.to_s.split(":")[1].to_s) if story_id.blank?
                   story_id = normalize_story_id_token(current_story_reference(driver.current_url.to_s).to_s.split(":")[1].to_s) if story_id.blank?
+                  media_probe = nil
+                  if story_id.blank?
+                    media_probe = resolve_story_media_with_retry(
+                      driver: driver,
+                      username: context[:username],
+                      story_id: "",
+                      fallback_story_key: story_key,
+                      cache: story_api_cache
+                    )
+                    story_id = resolve_story_id_for_processing(
+                      current_story_id: story_id,
+                      ref: ref,
+                      live_url: driver.current_url.to_s,
+                      media: media_probe[:media]
+                    )
+                  end
                   story_url = canonical_story_url(
                     username: context[:username],
                     story_id: story_id,
@@ -135,7 +151,8 @@ module Instagram
                         story_id: nil,
                         story_ref: ref,
                         story_url: story_url,
-                        story_key: story_key
+                        story_key: story_key,
+                        **story_media_resolution_metadata(media_probe)
                       )
                     )
                     moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
@@ -221,13 +238,51 @@ module Instagram
                     next
                   end
 
-                  media = resolve_story_media_for_current_context(
-                    driver: driver,
-                    username: context[:username],
-                    story_id: story_id,
-                    fallback_story_key: story_key,
-                    cache: story_api_cache
-                  )
+                  existing_story_download = find_existing_story_download_for_profile(profile: profile, story_id: story_id)
+                  if existing_story_download
+                    profile.record_event!(
+                      kind: "story_reply_skipped",
+                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                      occurred_at: Time.current,
+                      metadata: {
+                        source: "home_story_carousel",
+                        story_id: story_id,
+                        story_ref: ref,
+                        story_url: story_url,
+                        reason: "duplicate_story_already_downloaded",
+                        matched_event_external_id: existing_story_download.external_id.to_s,
+                        matched_event_id: existing_story_download.id
+                      }
+                    )
+                    capture_task_html(
+                      driver: driver,
+                      task_name: "home_story_sync_duplicate_story_download_skipped",
+                      status: "ok",
+                      meta: {
+                        story_id: story_id,
+                        story_ref: ref,
+                        matched_event_external_id: existing_story_download.external_id.to_s,
+                        matched_event_id: existing_story_download.id
+                      }
+                    )
+                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                    unless moved
+                      exit_reason = "next_navigation_failed"
+                      break
+                    end
+                    next
+                  end
+
+                  if media_probe.blank? || media_probe.dig(:media, :url).to_s.blank?
+                    media_probe = resolve_story_media_with_retry(
+                      driver: driver,
+                      username: context[:username],
+                      story_id: story_id,
+                      fallback_story_key: story_key,
+                      cache: story_api_cache
+                    )
+                  end
+                  media = media_probe[:media].is_a?(Hash) ? media_probe[:media] : {}
                   if media[:url].to_s.blank?
                     stats[:failed] += 1
                     profile.record_event!(
@@ -241,7 +296,8 @@ module Instagram
                         story_ref: ref,
                         story_url: story_url,
                         media_source: media[:source].to_s,
-                        media_variant_count: media[:media_variant_count].to_i
+                        media_variant_count: media[:media_variant_count].to_i,
+                        **story_media_resolution_metadata(media_probe)
                       )
                     )
                     moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
@@ -585,7 +641,8 @@ module Instagram
                           media_bytes: download[:bytes].bytesize
                         }
                       )
-                      attach_download_to_event(event: downloaded_event, download: download)
+                      attached = attach_download_to_event(event: downloaded_event, download: download)
+                      raise "story_media_attach_failed" unless attached
                       InstagramProfileEvent.broadcast_story_archive_refresh!(account: @account)
                       StoryIngestionService.new(account: @account, profile: profile).ingest!(
                         story: {
@@ -739,7 +796,8 @@ module Instagram
                         media_bytes: download[:bytes].bytesize
                       }
                     )
-                    attach_download_to_event(event: downloaded_event, download: download)
+                    attached = attach_download_to_event(event: downloaded_event, download: download)
+                    raise "story_media_attach_failed" unless attached
                     InstagramProfileEvent.broadcast_story_archive_refresh!(account: @account)
 
                     payload = build_auto_engagement_post_payload(
@@ -937,6 +995,115 @@ module Instagram
           "story_downloaded:#{story_id.to_s.strip}"
         end
 
+        def find_existing_story_download_for_profile(profile:, story_id:)
+          sid = story_id.to_s.strip
+          return nil if sid.blank?
+
+          escaped_story_id = ActiveRecord::Base.sanitize_sql_like(sid)
+          profile.instagram_profile_events
+            .joins(:media_attachment)
+            .with_attached_media
+            .where(kind: "story_downloaded")
+            .where(
+              "(metadata ->> 'story_id' = :sid) OR (external_id = :exact_id) OR (external_id LIKE :legacy_prefix)",
+              sid: sid,
+              exact_id: story_download_external_id(sid),
+              legacy_prefix: "story_downloaded:#{escaped_story_id}:%"
+            )
+            .order(detected_at: :desc, id: :desc)
+            .first
+        rescue StandardError
+          nil
+        end
+
+        def resolve_story_media_with_retry(driver:, username:, story_id:, fallback_story_key:, cache:)
+          attempts = []
+          media = nil
+
+          3.times do |idx|
+            attempt_number = idx + 1
+            media = resolve_story_media_for_current_context(
+              driver: driver,
+              username: username,
+              story_id: story_id,
+              fallback_story_key: fallback_story_key,
+              cache: cache
+            )
+            attempts << {
+              attempt: attempt_number,
+              source: media[:source].to_s,
+              resolved: media[:url].to_s.present?
+            }
+            break if media[:url].to_s.present?
+            break if attempt_number >= 3
+
+            freeze_story_progress!(driver)
+            sleep(0.25 * attempt_number)
+            if attempt_number == 2 && username.to_s.present?
+              recover_story_url_context!(driver: driver, username: username, reason: "media_resolution_retry")
+            end
+          end
+
+          api_failure = story_api_recent_failure_for(username: username)
+          {
+            media: media || {},
+            attempts: attempts,
+            api_rate_limited: ActiveModel::Type::Boolean.new.cast(api_failure&.dig(:rate_limited)),
+            api_failure: api_failure
+          }
+        rescue StandardError => e
+          {
+            media: {},
+            attempts: attempts || [],
+            api_rate_limited: story_api_rate_limited_for?(username: username),
+            api_failure: story_api_recent_failure_for(username: username),
+            media_resolution_error_class: e.class.name,
+            media_resolution_error_message: e.message.to_s.byteslice(0, 220)
+          }
+        end
+
+        def resolve_story_id_for_processing(current_story_id:, ref:, live_url:, media:)
+          candidates = []
+          candidates << normalize_story_id_token(current_story_id)
+          candidates << normalize_story_id_token(ref.to_s.split(":")[1].to_s)
+          candidates << normalize_story_id_token(current_story_reference(live_url.to_s).to_s.split(":")[1].to_s)
+          if media.is_a?(Hash)
+            candidates << normalize_story_id_token(media[:story_id].to_s)
+            candidates << normalize_story_id_token(story_id_hint_from_media_url(media[:url].to_s))
+            candidates << normalize_story_id_token(story_id_hint_from_media_url(media[:video_url].to_s))
+            candidates << normalize_story_id_token(story_id_hint_from_media_url(media[:image_url].to_s))
+          end
+
+          candidates.find(&:present?).to_s
+        rescue StandardError
+          ""
+        end
+
+        def story_media_resolution_metadata(media_probe)
+          payload = media_probe.is_a?(Hash) ? media_probe : {}
+          attempts = Array(payload[:attempts]).select { |row| row.is_a?(Hash) }
+          api_failure = payload[:api_failure].is_a?(Hash) ? payload[:api_failure] : {}
+
+          meta = {
+            media_resolution_attempts: attempts.length,
+            media_resolution_sources: attempts.map { |row| row[:source].to_s.presence }.compact.uniq,
+            media_resolution_recovered: payload.dig(:media, :url).to_s.present?,
+            api_rate_limited: ActiveModel::Type::Boolean.new.cast(payload[:api_rate_limited]),
+            api_failure_status: api_failure[:status].to_i.positive? ? api_failure[:status].to_i : nil,
+            api_failure_endpoint: api_failure[:endpoint].to_s.presence,
+            media_resolution_error_class: payload[:media_resolution_error_class].to_s.presence,
+            media_resolution_error_message: payload[:media_resolution_error_message].to_s.presence
+          }
+
+          occurred_at_epoch = api_failure[:occurred_at_epoch].to_i
+          if occurred_at_epoch.positive?
+            meta[:api_failure_at] = Time.at(occurred_at_epoch).utc.iso8601
+          end
+          meta.compact
+        rescue StandardError
+          {}
+        end
+
         def normalize_story_media_download_url(url)
           value = url.to_s.strip
           return nil if value.blank?
@@ -950,11 +1117,12 @@ module Instagram
         end
 
         def story_sync_failure_metadata(reason:, error:, story_id:, story_ref:, story_url:, media_url: nil, **extra)
+          extra_meta = extra.compact
           payload = {
             source: "home_story_carousel",
             reason: reason.to_s,
-            failure_category: classify_story_sync_failure(error: error, reason: reason),
-            retryable: transient_story_sync_failure?(error),
+            failure_category: classify_story_sync_failure(error: error, reason: reason, extra: extra_meta),
+            retryable: retryable_story_sync_failure?(error: error, reason: reason, extra: extra_meta),
             story_id: story_id.to_s,
             story_ref: story_ref.to_s,
             story_url: story_url.to_s,
@@ -962,20 +1130,43 @@ module Instagram
             error_class: error&.class&.name,
             error_message: error&.message.to_s&.byteslice(0, 500)
           }.compact
-          payload.merge!(extra.compact)
+          payload.merge!(extra_meta)
           payload
         end
 
-        def classify_story_sync_failure(error:, reason: nil)
+        def classify_story_sync_failure(error:, reason: nil, extra: {})
           message = error&.message.to_s&.downcase.to_s
           normalized_reason = reason.to_s.downcase
+          api_status = extra[:api_failure_status].to_i
+          api_rate_limited = ActiveModel::Type::Boolean.new.cast(extra[:api_rate_limited])
+
           return "network" if transient_story_sync_failure?(error)
+          return "throttled" if api_rate_limited || api_status == 429
           return "session" if message.include?("login") || message.include?("cookie") || message.include?("csrf")
+          return "navigation" if normalized_reason.include?("next_navigation_failed") || normalized_reason.include?("duplicate_story_key")
           return "parsing" if normalized_reason.include?("story_id_unresolved") || normalized_reason.include?("context_missing")
+          return "storage" if message.include?("attach_failed") || message.include?("active storage")
+          return "media_fetch" if normalized_reason.include?("api_story_media_unavailable")
           return "media_fetch" if message.include?("media") || message.include?("invalid media url") || message.include?("http")
           return "media_fetch" if normalized_reason.include?("media")
 
           "unknown"
+        end
+
+        def retryable_story_sync_failure?(error:, reason:, extra: {})
+          return true if transient_story_sync_failure?(error)
+
+          normalized_reason = reason.to_s.downcase
+          api_status = extra[:api_failure_status].to_i
+          api_rate_limited = ActiveModel::Type::Boolean.new.cast(extra[:api_rate_limited])
+          return true if api_rate_limited || [ 429, 502, 503, 504 ].include?(api_status)
+
+          return true if normalized_reason.include?("api_story_media_unavailable")
+          return true if normalized_reason.include?("story_id_unresolved")
+          return true if normalized_reason.include?("next_navigation_failed")
+          return true if normalized_reason.include?("loop_exited_without_story_processing")
+
+          false
         end
 
         def transient_story_sync_failure?(error)
@@ -990,22 +1181,24 @@ module Instagram
         end
 
         def attach_media_to_event(event, bytes:, filename:, content_type:)
-          return unless event
-          return if event.media.attached?
+          return false unless event
+          return true if event.media.attached?
 
           event.media.attach(io: StringIO.new(bytes), filename: filename, content_type: content_type)
-        rescue StandardError
-          nil
+          event.media.attached?
+        rescue StandardError => e
+          Rails.logger.warn("[HomeCarouselSync] direct media attach failed event_id=#{event&.id}: #{e.class}: #{e.message}")
+          false
         end
 
         def attach_download_to_event(event:, download:)
-          return unless event
-          return if event.media.attached?
+          return false unless event
+          return true if event.media.attached?
 
           blob = download.is_a?(Hash) ? download[:blob] : nil
           if blob.present?
             event.media.attach(blob)
-            return
+            return event.media.attached?
           end
 
           attach_media_to_event(
@@ -1014,8 +1207,9 @@ module Instagram
             filename: download[:filename],
             content_type: download[:content_type]
           )
-        rescue StandardError
-          nil
+        rescue StandardError => e
+          Rails.logger.warn("[HomeCarouselSync] media attach from download failed event_id=#{event&.id}: #{e.class}: #{e.message}")
+          false
         end
 
         def load_story_download_media_for_profile(profile:, story_id:)

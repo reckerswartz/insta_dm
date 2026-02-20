@@ -3,6 +3,7 @@ module InstagramAccounts
     VALID_REASONS = %w[
       profile_not_in_network
       duplicate_story_already_replied
+      duplicate_story_already_downloaded
       invalid_story_media
       interaction_retry_window_active
       missing_auto_reply_tag
@@ -10,6 +11,17 @@ module InstagramAccounts
       story_feed_media_external
       api_can_reply_false
       already_processed
+    ].freeze
+
+    RECOVERABLE_REASONS = %w[
+      api_story_media_unavailable
+      story_id_unresolved
+      next_navigation_failed
+      loop_exited_without_story_processing
+      transient_network_error
+      media_download_failed
+      story_context_missing
+      story_processing_failed
     ].freeze
 
     REVIEW_REASONS = %w[
@@ -66,17 +78,35 @@ module InstagramAccounts
           {
             reason: reason,
             count: count.to_i,
-            classification: classification_for(reason)
+            classification: classification_for(reason),
+            retry_recommended: retry_recommended?(reason),
+            action_hint: action_hint_for(reason)
           }
         end
     end
 
     def classification_for(reason)
       return "valid" if VALID_REASONS.include?(reason)
+      return "recoverable" if RECOVERABLE_REASONS.include?(reason)
       return "review" if REVIEW_REASONS.include?(reason)
       return "valid" if reason.include?("ad") || reason.include?("sponsored")
 
       "review"
+    end
+
+    def retry_recommended?(reason)
+      classification_for(reason) == "recoverable"
+    end
+
+    def action_hint_for(reason)
+      case classification_for(reason)
+      when "valid"
+        "No action needed."
+      when "recoverable"
+        "Retry after cooldown and verify session/API limits."
+      else
+        "Review task captures and Story sync metadata."
+      end
     end
   end
 end

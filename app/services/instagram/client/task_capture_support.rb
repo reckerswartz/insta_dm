@@ -152,6 +152,7 @@ module Instagram
       def interesting_perf_url?(url)
         u = url.to_s
         u.include?("/api/v1/") ||
+          u.include?("/ajax/") ||
           u.include?("/graphql") ||
           u.include?("/direct") ||
           u.include?("direct_v2") ||

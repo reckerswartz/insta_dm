@@ -25,6 +25,12 @@ RSpec.describe InstagramAccounts::SkipDiagnosticsService do
       metadata: {}
     )
     profile.instagram_profile_events.create!(
+      kind: "story_sync_failed",
+      external_id: "evt_#{SecureRandom.hex(4)}",
+      detected_at: 20.minutes.ago,
+      metadata: { "reason" => "api_story_media_unavailable" }
+    )
+    profile.instagram_profile_events.create!(
       kind: "story_reply_skipped",
       external_id: "evt_#{SecureRandom.hex(4)}",
       detected_at: 2.days.ago,
@@ -34,11 +40,12 @@ RSpec.describe InstagramAccounts::SkipDiagnosticsService do
     summary = described_class.new(account: account, hours: 24).call
 
     expect(summary[:window_hours]).to eq(24)
-    expect(summary[:total]).to eq(3)
+    expect(summary[:total]).to eq(4)
     expect(summary[:by_reason]).to include(
       hash_including(reason: "profile_not_in_network", count: 1, classification: "valid"),
       hash_including(reason: "reply_box_not_found", count: 1, classification: "review"),
-      hash_including(reason: "story_ad_skipped", count: 1, classification: "valid")
+      hash_including(reason: "story_ad_skipped", count: 1, classification: "valid"),
+      hash_including(reason: "api_story_media_unavailable", count: 1, classification: "recoverable", retry_recommended: true)
     )
   end
 end

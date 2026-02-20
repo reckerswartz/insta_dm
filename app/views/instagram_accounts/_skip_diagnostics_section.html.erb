@@ -12,6 +12,8 @@
             <th>Reason</th>
             <th>Count (Last <%= skip_diagnostics[:window_hours] %>h)</th>
             <th>Assessment</th>
+            <th>Retry</th>
+            <th>Action</th>
           </tr>
         </thead>
         <tbody>
@@ -22,10 +24,14 @@
               <td>
                 <% if row[:classification] == "valid" %>
                   <span class="pill sent">valid skip</span>
+                <% elsif row[:classification] == "recoverable" %>
+                  <span class="pill queued">retryable failure</span>
                 <% else %>
                   <span class="pill queued">needs review</span>
                 <% end %>
               </td>
+              <td><%= row[:retry_recommended] ? "yes" : "no" %></td>
+              <td class="meta"><%= row[:action_hint] %></td>
             </tr>
           <% end %>
         </tbody>

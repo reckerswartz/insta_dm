@@ -79,6 +79,46 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
     assert_equal "123", media[:story_id]
   end
 
+  it "resolve_story_media_for_current_context falls back to performance logs when api and dom fail" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    client = Instagram::Client.new(account: account)
+    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:| nil }
+    client.define_singleton_method(:resolve_story_item_via_dom) { |driver:| nil }
+
+    perf_payload = {
+      "message" => {
+        "method" => "Network.responseReceived",
+        "params" => {
+          "response" => {
+            "status" => 200,
+            "mimeType" => "video/mp4",
+            "url" => "https://scontent-del3-2.cdninstagram.com/o1/v/t2/f2/m78/story_sample.mp4?abc=1"
+          }
+        }
+      }
+    }
+
+    perf_entry = Struct.new(:message).new(JSON.generate(perf_payload))
+    logs = double("logs")
+    allow(logs).to receive(:available_types).and_return([ :performance ])
+    allow(logs).to receive(:get).with(:performance).and_return([ perf_entry ])
+    driver = double("driver", logs: logs, current_url: "https://www.instagram.com/stories/example/123/")
+
+    media = client.send(
+      :resolve_story_media_for_current_context,
+      driver: driver,
+      username: "example",
+      story_id: "123",
+      fallback_story_key: "example:123",
+      cache: {}
+    )
+
+    assert_equal "performance_logs_media", media[:source]
+    assert_equal "video", media[:media_type]
+    assert_equal "https://scontent-del3-2.cdninstagram.com/o1/v/t2/f2/m78/story_sample.mp4?abc=1", media[:url]
+    assert_equal "123", media[:story_id]
+  end
+
   it "extract_story_item keeps carousel media metadata from api payload" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
@@ -130,5 +170,32 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
 
     assert_equal "https://www.instagram.com/v/t51.2885-15/relative_story.jpg", story[:media_url]
     assert_equal "https://www.instagram.com/v/t51.2885-15/relative_story.jpg", story[:image_url]
+  end
+
+  it "find_existing_story_download_for_profile matches canonical and legacy external ids" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(3)}")
+    client = Instagram::Client.new(account: account)
+
+    canonical = profile.instagram_profile_events.create!(
+      kind: "story_downloaded",
+      external_id: "story_downloaded:123456",
+      occurred_at: Time.current,
+      detected_at: Time.current,
+      metadata: { "story_id" => "123456" }
+    )
+    profile.instagram_profile_events.create!(
+      kind: "story_downloaded",
+      external_id: "story_downloaded:789012:2026-02-20T00:00:00Z",
+      occurred_at: Time.current,
+      detected_at: Time.current,
+      metadata: {}
+    )
+
+    found_canonical = client.send(:find_existing_story_download_for_profile, profile: profile, story_id: "123456")
+    found_legacy = client.send(:find_existing_story_download_for_profile, profile: profile, story_id: "789012")
+
+    expect(found_canonical.id).to eq(canonical.id)
+    expect(found_legacy.external_id).to include("story_downloaded:789012:")
   end
 end
