@@ -35,16 +35,28 @@ module Instagram
                   fetch_eligibility.call(driver, username)
                 end
 
-              recipient = account.recipients.find_or_initialize_by(username: username)
-              recipient.display_name = conversation_users.dig(username, :display_name) || story_users.dig(username, :display_name) || username
-              recipient.source = source_for.call(username, conversation_users, story_users)
-              recipient.story_visible = story_users.key?(username)
-              recipient.can_message = eligibility[:can_message]
-              recipient.restriction_reason = eligibility[:restriction_reason]
-              recipient.save!
+              display_name = conversation_users.dig(username, :display_name) || story_users.dig(username, :display_name) || username
+
+              profile = account.instagram_profiles.find_or_initialize_by(username: username)
+              profile.display_name = display_name
+              profile.can_message = eligibility[:can_message]
+              profile.restriction_reason = eligibility[:restriction_reason]
+              profile.dm_interaction_state = eligibility[:can_message] ? "messageable" : "unavailable"
+              profile.dm_interaction_reason = eligibility[:restriction_reason].to_s.presence
+              profile.dm_interaction_checked_at = Time.current
+              profile.last_story_seen_at = Time.current if story_users.key?(username)
+              profile.last_synced_at = Time.current
+              profile.recompute_last_active!
+              profile.save!
+
+              profile.record_event!(
+                kind: "story_seen",
+                external_id: "story_seen:#{Time.current.utc.to_date.iso8601}",
+                metadata: { source: source_for.call(username, conversation_users, story_users) }
+              ) if story_users.key?(username)
 
               peer = account.conversation_peers.find_or_initialize_by(username: username)
-              peer.display_name = recipient.display_name
+              peer.display_name = display_name
               peer.last_message_at = Time.current
               peer.save!
             end
@@ -52,8 +64,8 @@ module Instagram
             account.update!(last_synced_at: Time.current)
 
             {
-              recipients: account.recipients.count,
-              eligible: account.recipients.eligible.count
+              recipients: account.conversation_peers.count,
+              eligible: account.instagram_profiles.where(can_message: true).count
             }
           end
         end

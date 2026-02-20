@@ -1,7 +1,6 @@
 class InstagramAccount < ApplicationRecord
   CONTINUOUS_PROCESSING_STATES = %w[idle running paused].freeze
 
-  has_many :recipients, dependent: :destroy
   has_many :conversation_peers, dependent: :destroy
   has_many :instagram_profiles, dependent: :destroy
   has_many :instagram_messages, dependent: :destroy

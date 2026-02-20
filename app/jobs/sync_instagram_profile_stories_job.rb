@@ -2,6 +2,7 @@ require "base64"
 require "net/http"
 require "digest"
 require "stringio"
+require "timeout"
 
 class SyncInstagramProfileStoriesJob < ApplicationJob
   queue_as :story_downloads
@@ -10,6 +11,11 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   MAX_INLINE_VIDEO_BYTES = 10 * 1024 * 1024
   MAX_STORIES = 10
   MAX_PREVIEW_IMAGE_BYTES = 3 * 1024 * 1024
+  MEDIA_DOWNLOAD_ATTEMPTS = 3
+
+  retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3
+  retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3
+  retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
 
   def perform(instagram_account_id:, instagram_profile_id:, profile_action_log_id: nil, max_stories: MAX_STORIES, force_analyze_all: false, auto_reply: false, require_auto_reply_tag: false)
     account = InstagramAccount.find(instagram_account_id)
@@ -94,16 +100,19 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
 
       already_processed = already_processed_story?(profile: profile, story_id: story_id)
       if already_processed && !force
+        dedupe = dedupe_state_for_story(profile: profile, story_id: story_id)
         profile.record_event!(
           kind: "story_skipped_debug",
           external_id: "story_skipped_debug:#{story_id}:#{Time.current.utc.iso8601(6)}",
           occurred_at: Time.current,
           metadata: base_story_metadata(profile: profile, story: story).merge(
             skip_reason: "already_processed",
+            skip_category: "duplicate",
             force_analyze_all: force,
             story_index: stories.find_index(story),
             total_stories: stories.size,
-            duplicate_download_prevented: latest_story_download_event(profile: profile, story_id: story_id).present?
+            duplicate_download_prevented: latest_story_download_event(profile: profile, story_id: story_id).present?,
+            dedupe_state: dedupe
           )
         )
         next
@@ -129,7 +138,20 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       )
 
       media_url = story[:media_url].to_s.strip
-      next if media_url.blank?
+      if media_url.blank?
+        profile.record_event!(
+          kind: "story_skipped_debug",
+          external_id: "story_skipped_debug:#{story_id}:#{Time.current.utc.iso8601(6)}",
+          occurred_at: Time.current,
+          metadata: base_story_metadata(profile: profile, story: story).merge(
+            skip_reason: "missing_media_url",
+            skip_category: "media_missing",
+            story_index: stories.find_index(story),
+            total_stories: stories.size
+          )
+        )
+        next
+      end
 
       existing_download_event = latest_story_download_event(profile: profile, story_id: story_id)
       reused_media = load_existing_story_media(event: existing_download_event)
@@ -167,7 +189,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         end
         reused_download_count += 1
       else
-        bytes, content_type, filename = download_story_media(url: media_url, user_agent: account.user_agent)
+        bytes, content_type, filename = download_story_media_with_retry(url: media_url, user_agent: account.user_agent)
         downloaded_at = Time.current
         downloaded_event = profile.record_event!(
           kind: "story_downloaded",
@@ -266,8 +288,21 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         end
       end
     rescue StandardError => e
+      failure = classify_story_failure(error: e).merge(
+        error_class: e.class.name,
+        error_message: e.message.to_s.byteslice(0, 500)
+      )
+      record_story_sync_failed_event(
+        profile: profile,
+        story: story,
+        story_id: story_id,
+        failure: failure
+      )
       story_failures << {
         story_id: story_id.presence || story[:story_id].to_s,
+        reason: failure[:reason],
+        category: failure[:category],
+        retryable: failure[:retryable],
         error_class: e.class.name,
         error_message: e.message.to_s.byteslice(0, 220)
       }
@@ -298,7 +333,10 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         reused_downloads: reused_download_count,
         analyzed: analyzed_count,
         replies_queued: reply_queued_count,
-        failed_story_count: story_failures.length
+        failed_story_count: story_failures.length,
+        failed_by_category: story_failures.each_with_object(Hash.new(0)) { |row, memo| memo[row[:category].to_s] += 1 },
+        failed_retryable_count: story_failures.count { |row| row[:retryable] == true },
+        skip_by_reason: summarize_skip_reasons(profile: profile, stories: stories)
       }
     )
 
@@ -434,7 +472,35 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   end
 
   def already_processed_story?(profile:, story_id:)
-    profile.instagram_profile_events.where(kind: "story_uploaded", external_id: "story_uploaded:#{story_id}").exists?
+    state = dedupe_state_for_story(profile: profile, story_id: story_id)
+    state[:downloaded_with_media] || state[:analyzed] || state[:replied]
+  end
+
+  def dedupe_state_for_story(profile:, story_id:)
+    sid = story_id.to_s.strip
+    return { downloaded_with_media: false, analyzed: false, replied: false, uploaded_only: false } if sid.blank?
+
+    latest_download = latest_story_download_event(profile: profile, story_id: sid)
+    downloaded_with_media = latest_download&.media&.attached? == true
+    analyzed = profile.instagram_profile_events
+      .where(kind: "story_analyzed")
+      .where("metadata ->> 'story_id' = ?", sid)
+      .exists?
+    replied = profile.instagram_profile_events
+      .where(kind: "story_reply_sent", external_id: "story_reply_sent:#{sid}")
+      .exists?
+    uploaded = profile.instagram_profile_events
+      .where(kind: "story_uploaded", external_id: "story_uploaded:#{sid}")
+      .exists?
+
+    {
+      downloaded_with_media: downloaded_with_media,
+      analyzed: analyzed,
+      replied: replied,
+      uploaded_only: uploaded && !downloaded_with_media && !analyzed && !replied
+    }
+  rescue StandardError
+    { downloaded_with_media: false, analyzed: false, replied: false, uploaded_only: false }
   end
 
   def attach_media_to_event(event, bytes:, filename:, content_type:)
@@ -790,7 +856,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     media_url = story[:media_url].to_s.strip
     return { downloaded: false, reused: false, event: nil } if media_url.blank?
 
-    bytes, content_type, filename = download_story_media(url: media_url, user_agent: account.user_agent)
+    bytes, content_type, filename = download_story_media_with_retry(url: media_url, user_agent: account.user_agent)
     downloaded_at = Time.current
     event = profile.record_event!(
       kind: "story_downloaded",
@@ -810,6 +876,129 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     { downloaded: true, reused: false, event: event }
   rescue StandardError
     { downloaded: false, reused: false, event: nil }
+  end
+
+  def summarize_skip_reasons(profile:, stories:)
+    story_ids = Array(stories).filter_map { |s| s.is_a?(Hash) ? s[:story_id].to_s.presence : nil }
+    return {} if story_ids.empty?
+
+    profile.instagram_profile_events
+      .where(kind: "story_skipped_debug")
+      .where("metadata ->> 'story_id' IN (?)", story_ids)
+      .where("detected_at >= ?", 1.hour.ago)
+      .limit(500)
+      .each_with_object(Hash.new(0)) do |event, memo|
+        metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
+        reason = metadata["skip_reason"].to_s.presence || "unknown"
+        memo[reason] += 1
+      end
+  rescue StandardError
+    {}
+  end
+
+  def classify_story_failure(error:)
+    klass = error.class.name.to_s
+    message = error.message.to_s
+    normalized = message.downcase
+
+    if transient_failure?(error: error, normalized: normalized)
+      return {
+        reason: "transient_network_error",
+        category: "network",
+        retryable: true,
+        resolution: "Retry automatically with backoff."
+      }
+    end
+    if session_failure?(normalized: normalized)
+      return {
+        reason: "session_or_cookie_invalid",
+        category: "session",
+        retryable: false,
+        resolution: "Refresh login/session cookies for this account."
+      }
+    end
+    if media_failure?(normalized: normalized)
+      return {
+        reason: "media_download_or_validation_failed",
+        category: "media_fetch",
+        retryable: normalized.include?("http 5") || normalized.include?("http 429"),
+        resolution: "Inspect story media URL/headers and retry if source recovers."
+      }
+    end
+
+    {
+      reason: "#{klass.underscore}_failure",
+      category: "unknown",
+      retryable: false,
+      resolution: "Inspect stack trace and metadata for root cause."
+    }
+  end
+
+  def record_story_sync_failed_event(profile:, story:, story_id:, failure:)
+    profile.record_event!(
+      kind: "story_sync_failed",
+      external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
+      occurred_at: Time.current,
+      metadata: base_story_metadata(profile: profile, story: story).merge(
+        reason: failure[:reason],
+        failure_category: failure[:category],
+        retryable: failure[:retryable],
+        resolution_hint: failure[:resolution],
+        error_class: failure[:error_class] || nil,
+        error_message: failure[:error_message] || nil
+      ).compact
+    )
+  rescue StandardError
+    nil
+  end
+
+  def transient_failure?(error:, normalized:)
+    return true if error.is_a?(Net::OpenTimeout) || error.is_a?(Net::ReadTimeout)
+    return true if error.is_a?(Errno::ECONNRESET) || error.is_a?(Errno::ECONNREFUSED)
+    return true if error.is_a?(Timeout::Error)
+
+    normalized.include?("timeout") ||
+      normalized.include?("temporarily unavailable") ||
+      normalized.include?("connection reset") ||
+      normalized.include?("read timeout") ||
+      normalized.include?("open timeout") ||
+      normalized.include?("http 502") ||
+      normalized.include?("http 503") ||
+      normalized.include?("http 504") ||
+      normalized.include?("http 429")
+  end
+
+  def session_failure?(normalized:)
+    normalized.include?("session expired") ||
+      normalized.include?("not authenticated") ||
+      normalized.include?("login") ||
+      normalized.include?("cookie") ||
+      normalized.include?("csrf") ||
+      normalized.include?("checkpoint")
+  end
+
+  def media_failure?(normalized:)
+    normalized.include?("invalid media url") ||
+      normalized.include?("empty story media body") ||
+      normalized.include?("invalid video signature") ||
+      normalized.include?("invalid jpeg signature") ||
+      normalized.include?("invalid png signature") ||
+      normalized.include?("invalid webp signature") ||
+      normalized.include?("http")
+  end
+
+  def download_story_media_with_retry(url:, user_agent:)
+    attempt = 0
+    begin
+      attempt += 1
+      download_story_media(url: url, user_agent: user_agent)
+    rescue StandardError => e
+      raise unless transient_failure?(error: e, normalized: e.message.to_s.downcase)
+      raise if attempt >= MEDIA_DOWNLOAD_ATTEMPTS
+
+      sleep(0.4 * attempt)
+      retry
+    end
   end
 
   def recent_story_history_context(profile:)

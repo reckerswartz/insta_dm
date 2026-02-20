@@ -7,6 +7,9 @@ module InstagramAccounts
       interaction_retry_window_active
       missing_auto_reply_tag
       external_profile_link_detected
+      story_feed_media_external
+      api_can_reply_false
+      already_processed
     ].freeze
 
     REVIEW_REASONS = %w[
@@ -15,6 +18,9 @@ module InstagramAccounts
       next_navigation_failed
       story_context_missing
       reply_precheck_error
+      missing_media_url
+      media_download_or_validation_failed
+      session_or_cookie_invalid
     ].freeze
 
     def initialize(account:, hours:)

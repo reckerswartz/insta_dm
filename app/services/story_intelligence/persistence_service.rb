@@ -301,31 +301,40 @@ module StoryIntelligence
     end
 
     def build_story_image_description(local_story_intelligence)
-      signals = Array(local_story_intelligence[:objects]).first(6)
+      payload = local_story_intelligence.is_a?(Hash) ? local_story_intelligence : {}
+      signals = Array(payload[:objects] || payload["objects"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(6)
       if signals.empty?
-        signals = Array(local_story_intelligence[:object_detections])
-          .map { |row| row.is_a?(Hash) ? (row[:label] || row["label"]) : nil }
+        signals = Array(payload[:object_detections] || payload["object_detections"])
+          .map { |row| row.is_a?(Hash) ? (row[:label] || row["label"] || row[:description] || row["description"]) : nil }
           .map(&:to_s)
           .map(&:strip)
           .reject(&:blank?)
           .uniq
           .first(6)
       end
-      
-      ocr = local_story_intelligence[:ocr_text].to_s.strip
-      transcript = local_story_intelligence[:transcript].to_s.strip
-      topic_text = Array(local_story_intelligence[:topics]).first(5).join(", ")
-      scene_count = Array(local_story_intelligence[:scenes]).length
-      face_count = local_story_intelligence[:face_count].to_i
+      scene_labels = Array(payload[:scenes] || payload["scenes"])
+        .map { |row| row.is_a?(Hash) ? (row[:type] || row["type"]).to_s : row.to_s }
+        .map(&:strip)
+        .reject(&:blank?)
+        .uniq
+        .first(4)
+      hashtags = Array(payload[:hashtags] || payload["hashtags"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(4)
+      mentions = Array(payload[:mentions] || payload["mentions"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(4)
+      ocr = (payload[:ocr_text] || payload["ocr_text"]).to_s.strip
+      transcript = (payload[:transcript] || payload["transcript"]).to_s.strip
+      topic_text = Array(payload[:topics] || payload["topics"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(5).join(", ")
+      face_count = (payload[:face_count] || payload["face_count"]).to_i
 
       parts = []
-      parts << "Detected visual signals: #{signals.join(', ')}." if signals.any?
-      parts << "Detected scene transitions: #{scene_count}." if scene_count.positive?
+      parts << "Visual elements: #{signals.join(', ')}." if signals.any?
+      parts << "Scene context: #{scene_labels.join(', ')}." if scene_labels.any?
       parts << "Detected faces: #{face_count}." if face_count.positive?
-      parts << "OCR text: #{ocr}." if ocr.present?
-      parts << "Audio transcript: #{transcript}." if transcript.present?
+      parts << "Visible text: #{ocr}." if ocr.present?
+      parts << "Spoken text: #{transcript}." if transcript.present?
       parts << "Inferred topics: #{topic_text}." if topic_text.present?
-      parts << "Story media context extracted from local AI pipeline." if parts.empty?
+      parts << "Hashtags: #{hashtags.join(', ')}." if hashtags.any?
+      parts << "Mentions: #{mentions.join(', ')}." if mentions.any?
+      parts << "Visual context is limited: no reliable objects or text were detected." if parts.empty?
       parts.join(" ")
     end
 

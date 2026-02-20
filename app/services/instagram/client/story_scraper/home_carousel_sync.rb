@@ -70,12 +70,15 @@ module Instagram
                         kind: "story_sync_failed",
                         external_id: "story_sync_failed:context_missing:#{Time.current.utc.iso8601(6)}",
                         occurred_at: Time.current,
-                        metadata: {
-                          source: "home_story_carousel",
+                        metadata: story_sync_failure_metadata(
                           reason: "story_context_missing",
+                          error: nil,
+                          story_id: nil,
+                          story_ref: nil,
+                          story_url: driver.current_url.to_s,
                           current_url: driver.current_url.to_s,
                           page_title: driver.title.to_s
-                        }
+                        )
                       )
                     end
                     exit_reason = "story_context_missing"
@@ -126,13 +129,14 @@ module Instagram
                       kind: "story_sync_failed",
                       external_id: "story_sync_failed:missing_story_id:#{Time.current.utc.iso8601(6)}",
                       occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
+                      metadata: story_sync_failure_metadata(
                         reason: "story_id_unresolved",
+                        error: nil,
+                        story_id: nil,
                         story_ref: ref,
-                        story_key: story_key,
-                        story_url: story_url
-                      }
+                        story_url: story_url,
+                        story_key: story_key
+                      )
                     )
                     moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
                     unless moved
@@ -230,15 +234,15 @@ module Instagram
                       kind: "story_sync_failed",
                       external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
                       occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
+                      metadata: story_sync_failure_metadata(
                         reason: "api_story_media_unavailable",
+                        error: nil,
                         story_id: story_id,
                         story_ref: ref,
                         story_url: story_url,
                         media_source: media[:source].to_s,
                         media_variant_count: media[:media_variant_count].to_i
-                      }
+                      )
                     )
                     moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
                     unless moved
@@ -255,16 +259,17 @@ module Instagram
                       kind: "story_sync_failed",
                       external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
                       occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
+                      metadata: story_sync_failure_metadata(
                         reason: "story_media_story_id_mismatch",
-                        expected_story_id: story_id,
-                        media_story_id: media_story_id_hint,
+                        error: nil,
+                        story_id: story_id,
                         story_ref: ref,
                         story_url: story_url,
+                        expected_story_id: story_id,
+                        media_story_id: media_story_id_hint,
                         media_source: media[:source].to_s,
                         media_url: media[:url].to_s
-                      }
+                      )
                     )
                     moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
                     unless moved
@@ -545,10 +550,13 @@ module Instagram
                     }
                   )
                   reused_download = load_story_download_media_for_profile(profile: profile, story_id: story_id)
+                  media_download_url = normalize_story_media_download_url(media[:url])
 
                   if media[:media_type].to_s == "video"
                     begin
-                      download = reused_download || download_media_with_metadata(url: media[:url], user_agent: @account.user_agent)
+                      raise "Invalid media URL" if !reused_download && media_download_url.blank?
+
+                      download = reused_download || download_media_with_metadata(url: media_download_url, user_agent: @account.user_agent)
                       stats[:downloaded] += 1 unless reused_download
                       now = Time.current
                       downloaded_event = profile.record_event!(
@@ -562,7 +570,7 @@ module Instagram
                           story_url: story_url,
                           media_type: "video",
                           media_source: media[:source],
-                          media_url: media[:url],
+                          media_url: media_download_url,
                           image_url: media[:image_url],
                           video_url: media[:video_url],
                           media_width: media[:width],
@@ -583,7 +591,7 @@ module Instagram
                         story: {
                           story_id: story_id,
                           media_type: "video",
-                          media_url: media[:url],
+                          media_url: media_download_url,
                           image_url: nil,
                           video_url: media[:url],
                           caption: nil,
@@ -601,7 +609,14 @@ module Instagram
                         kind: "story_sync_failed",
                         external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
                         occurred_at: Time.current,
-                        metadata: { source: "home_story_carousel", story_ref: ref, error_class: e.class.name, error_message: e.message }
+                        metadata: story_sync_failure_metadata(
+                          reason: "media_download_failed",
+                          error: e,
+                          story_id: story_id,
+                          story_ref: ref,
+                          story_url: story_url,
+                          media_url: media[:url]
+                        )
                       )
                     end
                     stats[:skipped_video] += 1
@@ -651,7 +666,9 @@ module Instagram
                   end
 
                   begin
-                    download = reused_download || download_media_with_metadata(url: media[:url], user_agent: @account.user_agent)
+                    raise "Invalid media URL" if !reused_download && media_download_url.blank?
+
+                    download = reused_download || download_media_with_metadata(url: media_download_url, user_agent: @account.user_agent)
                     stats[:downloaded] += 1 unless reused_download
                     quality = evaluate_story_image_quality(download: download, media: media)
                     if quality[:skip]
@@ -707,7 +724,7 @@ module Instagram
                         story_url: story_url,
                         media_type: "image",
                         media_source: media[:source],
-                        media_url: media[:url],
+                        media_url: media_download_url,
                         image_url: media[:image_url],
                         video_url: media[:video_url],
                         media_width: media[:width],
@@ -737,7 +754,7 @@ module Instagram
                       payload: payload,
                       bytes: download[:bytes],
                       content_type: download[:content_type],
-                      source_url: media[:url]
+                      source_url: media_download_url
                     )
                     stats[:analyzed] += 1 if analysis.present?
 
@@ -838,7 +855,14 @@ module Instagram
                       kind: "story_sync_failed",
                       external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
                       occurred_at: Time.current,
-                      metadata: { source: "home_story_carousel", story_id: story_id, story_ref: ref, story_url: story_url, error_class: e.class.name, error_message: e.message }
+                      metadata: story_sync_failure_metadata(
+                        reason: "story_processing_failed",
+                        error: e,
+                        story_id: story_id,
+                        story_ref: ref,
+                        story_url: story_url,
+                        media_url: media[:url]
+                      )
                     )
                   end
 
@@ -866,12 +890,15 @@ module Instagram
                     kind: "story_sync_failed",
                     external_id: "story_sync_failed:no_progress:#{Time.current.utc.iso8601(6)}",
                     occurred_at: Time.current,
-                    metadata: {
-                      source: "home_story_carousel",
+                    metadata: story_sync_failure_metadata(
                       reason: "loop_exited_without_story_processing",
+                      error: nil,
+                      story_id: nil,
+                      story_ref: nil,
+                      story_url: driver.current_url.to_s,
                       current_url: driver.current_url.to_s,
                       page_title: driver.title.to_s
-                    }
+                    )
                   )
                 end
                 capture_task_html(
@@ -908,6 +935,58 @@ module Instagram
 
         def story_download_external_id(story_id)
           "story_downloaded:#{story_id.to_s.strip}"
+        end
+
+        def normalize_story_media_download_url(url)
+          value = url.to_s.strip
+          return nil if value.blank?
+          return value if value.start_with?("http://", "https://")
+          return nil if value.start_with?("data:")
+          return nil if value.match?(/\A[a-z][a-z0-9+\-.]*:/i)
+
+          URI.join(INSTAGRAM_BASE_URL, value).to_s
+        rescue URI::InvalidURIError, ArgumentError
+          nil
+        end
+
+        def story_sync_failure_metadata(reason:, error:, story_id:, story_ref:, story_url:, media_url: nil, **extra)
+          payload = {
+            source: "home_story_carousel",
+            reason: reason.to_s,
+            failure_category: classify_story_sync_failure(error: error, reason: reason),
+            retryable: transient_story_sync_failure?(error),
+            story_id: story_id.to_s,
+            story_ref: story_ref.to_s,
+            story_url: story_url.to_s,
+            media_url: media_url.to_s.presence,
+            error_class: error&.class&.name,
+            error_message: error&.message.to_s&.byteslice(0, 500)
+          }.compact
+          payload.merge!(extra.compact)
+          payload
+        end
+
+        def classify_story_sync_failure(error:, reason: nil)
+          message = error&.message.to_s&.downcase.to_s
+          normalized_reason = reason.to_s.downcase
+          return "network" if transient_story_sync_failure?(error)
+          return "session" if message.include?("login") || message.include?("cookie") || message.include?("csrf")
+          return "parsing" if normalized_reason.include?("story_id_unresolved") || normalized_reason.include?("context_missing")
+          return "media_fetch" if message.include?("media") || message.include?("invalid media url") || message.include?("http")
+          return "media_fetch" if normalized_reason.include?("media")
+
+          "unknown"
+        end
+
+        def transient_story_sync_failure?(error)
+          return false unless error
+
+          return true if error.is_a?(Net::OpenTimeout) || error.is_a?(Net::ReadTimeout)
+          return true if error.is_a?(Errno::ECONNRESET) || error.is_a?(Errno::ECONNREFUSED)
+          return true if defined?(Timeout::Error) && error.is_a?(Timeout::Error)
+
+          msg = error.message.to_s.downcase
+          msg.include?("timeout") || msg.include?("http 429") || msg.include?("http 502") || msg.include?("http 503") || msg.include?("http 504")
         end
 
         def attach_media_to_event(event, bytes:, filename:, content_type:)

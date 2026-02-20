@@ -49,6 +49,36 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
     assert_nil media[:url]
     assert_equal "123", media[:story_id]
   end
+
+  it "resolve_story_media_for_current_context ignores non-http dom media urls" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    client = Instagram::Client.new(account: account)
+    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:| nil }
+    client.define_singleton_method(:resolve_story_item_via_dom) do |driver:|
+      {
+        media_url: "blob:https://www.instagram.com/823994bd-fce1-483b-9eba-694351816693",
+        media_type: "video",
+        image_url: "",
+        video_url: "",
+        width: 720,
+        height: 1280
+      }
+    end
+
+    media = client.send(
+      :resolve_story_media_for_current_context,
+      driver: Struct.new(:current_url).new("https://www.instagram.com/stories/example/123/"),
+      username: "example",
+      story_id: "123",
+      fallback_story_key: "example:123",
+      cache: {}
+    )
+
+    assert_equal "api_unresolved", media[:source]
+    assert_nil media[:url]
+    assert_equal "123", media[:story_id]
+  end
+
   it "extract_story_item keeps carousel media metadata from api payload" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
@@ -83,5 +113,22 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
     assert_equal 2, story[:primary_media_index]
     assert_equal 2, Array(story[:media_variants]).length
     assert_equal 2, Array(story[:carousel_media]).length
+  end
+
+  it "extract_story_item normalizes relative media urls to absolute instagram urls" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    client = Instagram::Client.new(account: account)
+
+    payload = {
+      "id" => "2234567890123456789_1",
+      "media_type" => 1,
+      "image_versions2" => { "candidates" => [ { "url" => "/v/t51.2885-15/relative_story.jpg", "width" => 720, "height" => 1280 } ] },
+      "user" => { "id" => "99", "username" => "relative_user" }
+    }
+
+    story = client.send(:extract_story_item, payload, username: "relative_user", reel_owner_id: "99")
+
+    assert_equal "https://www.instagram.com/v/t51.2885-15/relative_story.jpg", story[:media_url]
+    assert_equal "https://www.instagram.com/v/t51.2885-15/relative_story.jpg", story[:image_url]
   end
 end

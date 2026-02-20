@@ -56,4 +56,19 @@ RSpec.describe Ai::CommentPolicyEngine do
     expect(result[:accepted]).to include("Those sunset colors over the city look unreal.")
     expect(result[:accepted]).not_to include("Love this travel moment with the sunset.")
   end
+
+  it "rejects low-information comments even when generic context tokens appear" do
+    engine = described_class.new
+    result = engine.evaluate(
+      suggestions: [
+        "Love this vibe!",
+        "The potted plant by the window looks great."
+      ],
+      context_keywords: %w[detected visual signals story media context potted plant window],
+      max_suggestions: 8
+    )
+
+    expect(result[:accepted]).to include("The potted plant by the window looks great.")
+    expect(result[:accepted]).not_to include("Love this vibe!")
+  end
 end

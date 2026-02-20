@@ -72,6 +72,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     assert_includes prompt, "\"channel\": \"story\""
     assert_includes prompt, "\"tone_plan\""
     assert_includes prompt, "\"occasion_context\""
+    assert_includes prompt, "\"visual_anchors\""
     assert_includes prompt, "\"comparison\""
     assert_includes prompt, "\"detected_usernames\""
     assert_includes prompt, "\"identity_verification\""
@@ -112,5 +113,28 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     expect(out.length).to be >= 2
     expect(out.any? { |text| text.include?("?") }).to eq(true)
     expect(out.first.downcase).not_to start_with("love this city")
+  end
+
+  it "returns anchored fallback suggestions when generation output is empty" do
+    fake_client = Class.new do
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        { "response" => "{\"comment_suggestions\":[]}" }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    result = generator.generate!(
+      post_payload: {},
+      image_description: "Visual elements: potted plant, window light.",
+      topics: ["plant"],
+      author_type: "personal",
+      channel: "story",
+      verified_story_facts: { objects: ["potted plant"] },
+      scored_context: {}
+    )
+
+    expect(result[:source]).to eq("fallback")
+    expect(result[:comment_suggestions].first.downcase).to include("plant")
+    expect(result[:comment_suggestions].none? { |row| row.include?("story media moment") }).to eq(true)
   end
 end

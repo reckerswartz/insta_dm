@@ -3,6 +3,7 @@ class ModalManager {
     this.modal = null
     this.loadingModal = null
     this.ready = false
+    this.handleConfirmableSubmit = this.handleConfirmableSubmit.bind(this)
   }
 
   init() {
@@ -23,28 +24,33 @@ class ModalManager {
   }
 
   bindConfirmForms() {
-    if (document.body.dataset.confirmModalBound === "1") return
-    document.body.dataset.confirmModalBound = "1"
+    const priorHandler = window.__confirmModalSubmitHandler
+    if (priorHandler) {
+      document.removeEventListener("submit", priorHandler)
+    }
 
-    document.addEventListener("submit", (event) => {
-      const form = event.target
-      if (!(form instanceof HTMLFormElement)) return
-      if (!form.dataset.confirmModal) return
-      if (form.dataset.confirmed === "1") return
+    document.addEventListener("submit", this.handleConfirmableSubmit)
+    window.__confirmModalSubmitHandler = this.handleConfirmableSubmit
+  }
 
-      event.preventDefault()
-      const title = form.dataset.confirmTitle || "Please confirm"
-      const message = form.dataset.confirmMessage || "Are you sure you want to continue?"
-      const loadingText = form.dataset.modalLoadingText
+  handleConfirmableSubmit(event) {
+    const form = event.target
+    if (!(form instanceof HTMLFormElement)) return
+    if (!form.dataset.confirmModal) return
+    if (form.dataset.confirmed === "1") return
 
-      this.confirm(title, message, () => {
-        form.dataset.confirmed = "1"
-        if (loadingText) this.showLoading(loadingText)
-        form.requestSubmit()
-        setTimeout(() => {
-          delete form.dataset.confirmed
-        }, 100)
-      })
+    event.preventDefault()
+    const title = form.dataset.confirmTitle || "Please confirm"
+    const message = form.dataset.confirmMessage || "Are you sure you want to continue?"
+    const loadingText = form.dataset.modalLoadingText
+
+    this.confirm(title, message, () => {
+      form.dataset.confirmed = "1"
+      if (loadingText) this.showLoading(loadingText)
+      form.requestSubmit()
+      setTimeout(() => {
+        delete form.dataset.confirmed
+      }, 100)
     })
   }
 

@@ -25,6 +25,70 @@ module Ai
       /\b(ai-powered video|ai-enhanced video|video analysis is|local ai models?)\b/i
     ].freeze
 
+    NON_VISUAL_CONTEXT_TOKENS = %w[
+      detected
+      visual
+      signals
+      scene
+      scenes
+      transitions
+      inferred
+      topics
+      story
+      media
+      context
+      extracted
+      local
+      pipeline
+      source
+      account
+      profile
+      generation
+      policy
+      verified
+      facts
+      content
+    ].freeze
+
+    LOW_INFORMATION_TOKENS = %w[
+      this
+      that
+      such
+      very
+      really
+      vibe
+      vibes
+      mood
+      energy
+      nice
+      good
+      great
+      wow
+      amazing
+      awesome
+      cool
+      clean
+      love
+      like
+      post
+      story
+      frame
+      shot
+      moment
+      content
+      keep
+      coming
+      right
+      here
+      there
+      only
+      just
+      looks
+      look
+      feel
+      feels
+    ].freeze
+
     def evaluate(suggestions:, historical_comments: [], context_keywords: [], max_suggestions: 8)
       accepted = []
       rejected = []
@@ -44,6 +108,7 @@ module Ai
         reasons << "batch_similarity" if repetitive_within_batch?(text, accepted: accepted)
         reasons << "generic_phrase" if generic_phrase?(text)
         reasons << "weak_visual_grounding" if weak_visual_grounding?(text, context_tokens)
+        reasons << "low_information" if low_information_comment?(text)
 
         if reasons.any?
           rejected << { comment: text, reasons: reasons }
@@ -114,13 +179,22 @@ module Ai
     end
 
     def weak_visual_grounding?(comment, context_tokens)
-      return false if context_tokens.empty?
+      meaningful_context = Array(context_tokens).map(&:to_s).reject { |token| NON_VISUAL_CONTEXT_TOKENS.include?(token) }
+      return false if meaningful_context.empty?
 
       candidate_tokens = tokenize(comment)
       return true if candidate_tokens.empty?
 
-      overlap = (candidate_tokens & context_tokens).size
+      overlap = (candidate_tokens & meaningful_context).size
       overlap <= 0
+    end
+
+    def low_information_comment?(comment)
+      tokens = tokenize(comment)
+      return true if tokens.empty?
+
+      meaningful = tokens - LOW_INFORMATION_TOKENS
+      meaningful.size < 2
     end
 
     def tokenize(value)

@@ -54,4 +54,23 @@ RSpec.describe StoryIntelligence::PersistenceService do
 
     expect(second_count).to eq(first_count)
   end
+
+  it "builds image description from string-keyed intelligence payloads" do
+    _profile, event = build_event
+    service = described_class.new(event: event)
+
+    description = service.send(
+      :build_story_image_description,
+      {
+        "objects" => ["potted plant", "window"],
+        "topics" => ["lifestyle", "home"],
+        "ocr_text" => "Slow morning",
+        "face_count" => 1
+      }
+    )
+
+    expect(description).to include("Visual elements: potted plant, window.")
+    expect(description).to include("Visible text: Slow morning.")
+    expect(description).to include("Detected faces: 1.")
+  end
 end

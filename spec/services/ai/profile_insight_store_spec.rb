@@ -73,4 +73,66 @@ RSpec.describe Ai::ProfileInsightStore do
     expect(Array(store.dig("signals", "topics")).map { |row| row["value"] }).to include("celebration")
     expect(Array(store["history"]).last["type"]).to eq("story")
   end
+
+  it "accumulates multi-source signals over time and preserves source-level reuse" do
+    account, profile = build_profile
+    store = described_class.new
+
+    post_one = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "post_#{SecureRandom.hex(3)}",
+      taken_at: 2.days.ago,
+      ai_status: "analyzed",
+      likes_count: 10,
+      comments_count: 2,
+      analysis: {
+        "topics" => ["travel", "coffee"],
+        "hashtags" => ["#trip"],
+        "mentions" => ["@sam"],
+        "image_description" => "Travel morning with coffee at the airport"
+      },
+      metadata: {}
+    )
+    post_two = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "post_#{SecureRandom.hex(3)}",
+      taken_at: 1.day.ago,
+      ai_status: "analyzed",
+      likes_count: 16,
+      comments_count: 4,
+      analysis: {
+        "topics" => ["travel", "fitness"],
+        "hashtags" => ["#run"],
+        "mentions" => ["@alex"],
+        "image_description" => "Travel run before dinner"
+      },
+      metadata: {}
+    )
+    event = profile.instagram_profile_events.create!(
+      kind: "story_analyzed",
+      external_id: "story_#{SecureRandom.hex(3)}",
+      detected_at: Time.current,
+      metadata: {}
+    )
+
+    store.ingest_post!(profile: profile, post: post_one, analysis: post_one.analysis, metadata: post_one.metadata)
+    store.ingest_post!(profile: profile, post: post_two, analysis: post_two.analysis, metadata: post_two.metadata)
+    store.ingest_story!(
+      profile: profile,
+      event: event,
+      intelligence: { "topics" => ["travel"], "transcript" => "airport run and dinner with friends" }
+    )
+    # Reprocessing unchanged source should no-op.
+    store.ingest_post!(profile: profile, post: post_two, analysis: post_two.analysis, metadata: post_two.metadata)
+
+    profile.reload
+    signal_store = profile.instagram_profile_behavior_profile.metadata.dig("ai_signal_store")
+    topic_rows = Array(signal_store.dig("signals", "topics"))
+    travel_row = topic_rows.find { |row| row["value"] == "travel" }
+
+    expect(travel_row["count"]).to eq(3)
+    expect(Array(signal_store.dig("signals", "lifestyle")).map { |row| row["value"] }).to include("travel", "fitness")
+    expect(Array(signal_store["history"]).count).to eq(3)
+    expect(signal_store["processed_sources"].keys.grep(/\Apost:/).size).to eq(2)
+  end
 end

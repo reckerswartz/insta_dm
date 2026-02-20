@@ -130,7 +130,7 @@ module Instagram
         api_story = resolve_story_item_via_api(username: uname, story_id: sid, cache: cache)
         if api_story.is_a?(Hash)
           url = api_story[:media_url].to_s
-          if url.present?
+          if downloadable_story_media_url?(url)
             return {
               media_type: api_story[:media_type].to_s.presence || "unknown",
               url: url,
@@ -153,7 +153,7 @@ module Instagram
         dom_story = resolve_story_item_via_dom(driver: driver)
         if dom_story.is_a?(Hash)
           dom_media_url = dom_story[:media_url].to_s
-          if dom_media_url.present?
+          if downloadable_story_media_url?(dom_media_url)
             hinted_story_id = story_id_hint_from_media_url(dom_media_url).to_s
             return {
               media_type: dom_story[:media_type].to_s.presence || "unknown",
@@ -248,6 +248,9 @@ module Instagram
             const src = (value || "").toString().toLowerCase();
             if (!src) return true;
             if (src.startsWith("data:")) return true;
+            if (src.startsWith("blob:")) return true;
+            if (src.startsWith("mediastream:")) return true;
+            if (src.startsWith("javascript:")) return true;
             if (src.includes("/t51.2885-19/")) return true;
             if (src.includes("profile_pic")) return true;
             if (src.includes("s150x150")) return true;
@@ -454,8 +457,8 @@ module Instagram
         media_type = story_media_type(item["media_type"])
         image_candidate = item.dig("image_versions2", "candidates", 0)
         video_candidate = Array(item["video_versions"]).first
-        image_url = CGI.unescapeHTML(image_candidate&.dig("url").to_s).strip.presence
-        video_url = CGI.unescapeHTML(video_candidate&.dig("url").to_s).strip.presence
+        image_url = normalize_story_media_url(CGI.unescapeHTML(image_candidate&.dig("url").to_s).strip)
+        video_url = normalize_story_media_url(CGI.unescapeHTML(video_candidate&.dig("url").to_s).strip)
         media_url = media_type == "video" ? (video_url.presence || image_url.presence) : (image_url.presence || video_url.presence)
         width = item["original_width"] || image_candidate&.dig("width") || video_candidate&.dig("width")
         height = item["original_height"] || image_candidate&.dig("height") || video_candidate&.dig("height")
@@ -489,6 +492,29 @@ module Instagram
         list.first
       rescue StandardError
         {}
+      end
+
+      def normalize_story_media_url(url)
+        value = url.to_s.strip
+        return nil if value.blank?
+        return value if value.start_with?("http://", "https://")
+        return nil if value.start_with?("data:")
+        return nil if value.match?(/\A[a-z][a-z0-9+\-.]*:/i)
+
+        URI.join(INSTAGRAM_BASE_URL, value).to_s
+      rescue URI::InvalidURIError, ArgumentError
+        nil
+      end
+
+      def downloadable_story_media_url?(url)
+        value = url.to_s.strip
+        return false if value.blank?
+        return false unless value.start_with?("http://", "https://")
+
+        uri = URI.parse(value)
+        uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+      rescue URI::InvalidURIError, ArgumentError
+        false
       end
 
       def compact_story_media_variants_for_metadata(variants, limit: 8)

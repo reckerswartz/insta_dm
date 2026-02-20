@@ -6,6 +6,30 @@ module Ai
     DEFAULT_MODEL = "mistral:7b".freeze
     MIN_SUGGESTIONS = 3
     MAX_SUGGESTIONS = 8
+    NON_VISUAL_CONTEXT_TOKENS = %w[
+      detected
+      visual
+      signals
+      scene
+      scenes
+      transitions
+      inferred
+      topics
+      story
+      media
+      context
+      extracted
+      local
+      pipeline
+      source
+      account
+      profile
+      generation
+      policy
+      verified
+      facts
+      content
+    ].freeze
     TRANSIENT_ERRORS = [
       Net::OpenTimeout,
       Net::ReadTimeout,
@@ -99,7 +123,13 @@ module Ai
       end
 
       if suggestions.size < MIN_SUGGESTIONS
-        fallback = fallback_comments(image_description: image_description, topics: topics, channel: channel).first(MAX_SUGGESTIONS)
+        fallback = fallback_comments(
+          image_description: image_description,
+          topics: topics,
+          channel: channel,
+          scored_context: scored_context,
+          verified_story_facts: verified_story_facts
+        ).first(MAX_SUGGESTIONS)
         return {
           model: @model,
           prompt: prompt,
@@ -133,7 +163,13 @@ module Ai
         status: "error_fallback",
         fallback_used: true,
         error_message: e.message.to_s,
-        comment_suggestions: fallback_comments(image_description: image_description, topics: topics, channel: channel).first(MAX_SUGGESTIONS)
+        comment_suggestions: fallback_comments(
+          image_description: image_description,
+          topics: topics,
+          channel: channel,
+          scored_context: scored_context,
+          verified_story_facts: verified_story_facts
+        ).first(MAX_SUGGESTIONS)
       }
     end
 
@@ -167,6 +203,12 @@ module Ai
         verified_story_facts: verified_story_facts,
         historical_comparison: historical_comparison
       )
+      visual_anchors = build_visual_anchors(
+        image_description: image_description,
+        topics: topics,
+        verified_story_facts: verified_story_facts,
+        scored_context: scored_context
+      )
 
       context_json = {
         task: "instagram_#{Ai::CommentToneProfile.normalize(channel)}_comment_generation",
@@ -187,6 +229,7 @@ module Ai
         current_story: {
           image_description: truncate_text(image_description.to_s, max: 280),
           topics: Array(topics).map(&:to_s).reject(&:blank?).uniq.first(10),
+          visual_anchors: visual_anchors.first(14),
           verified_story_facts: verified_story_facts,
           ownership: story_ownership_classification,
           generation_policy: generation_policy
@@ -220,6 +263,7 @@ module Ai
         - follow `tone_plan` and vary style across suggestions
         - use `situational_cues` to tailor tone (for example celebration/travel/lifestyle)
         - adapt to `occasion_context` (weekday/daypart/holiday-like moments)
+        - each comment must include at least one phrase grounded in `current_story.visual_anchors` or `current_story.topics`
         - natural, public-safe, short comments
         - max 140 chars each
         - vary openings and avoid duplicates
@@ -320,33 +364,38 @@ module Ai
       Array(parsed&.dig("comment_suggestions")).map { |v| normalize_comment(v) }.compact.uniq
     end
 
-    def fallback_comments(image_description:, topics:, channel:)
-      anchor = Array(topics).map(&:to_s).find(&:present?) || image_description.to_s.split(/[,.]/).first.to_s.downcase
-      anchor = "this post" if anchor.blank?
+    def fallback_comments(image_description:, topics:, channel:, scored_context:, verified_story_facts:)
+      anchors = build_visual_anchors(
+        image_description: image_description,
+        topics: topics,
+        verified_story_facts: verified_story_facts,
+        scored_context: scored_context
+      )
+      anchor = anchors.first.to_s.presence || "this moment"
 
-      base = [
-        "Okay this is a whole vibe 🔥",
-        "Not gonna lie, this #{anchor} moment is clean 👏",
-        "Love the energy on this one ✨",
-        "This is low-key so good, great post 🙌",
-        "Major main-feed energy right here 😮‍💨",
-        "Ate this one, no notes 💯",
-        "This made me stop scrolling fr 👀",
-        "Super solid post, keep these coming 🚀"
-      ]
-
-      return base unless Ai::CommentToneProfile.normalize(channel) == "story"
-
-      [
-        "This story is such a mood ✨",
-        "Clean story frame, love this 👏",
-        "Instant vibe on this one 🔥",
-        "This story energy is elite 🙌",
-        "Low-key obsessed with this moment 😮‍💨",
-        "This one hit right away 👀",
-        "Love this quick story drop 💯",
-        "Story game is strong here 🚀"
-      ]
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "#{anchor.capitalize} looks great here.",
+          "Love how you framed the #{anchor}.",
+          "The #{anchor} detail really stands out.",
+          "This #{anchor} shot feels super natural.",
+          "Great capture of the #{anchor}.",
+          "What made you choose this #{anchor} moment?",
+          "Strong story frame around the #{anchor}.",
+          "The #{anchor} adds a nice touch."
+        ]
+      else
+        [
+          "Great focus on the #{anchor}.",
+          "The #{anchor} detail lands really well.",
+          "Love the way the #{anchor} is framed.",
+          "Clean composition with the #{anchor}.",
+          "The #{anchor} gives this post personality.",
+          "What inspired this #{anchor} setup?",
+          "Nice balance and strong #{anchor} context.",
+          "The #{anchor} makes this feel more real."
+        ]
+      end
     end
 
     def detect_situational_cues(image_description:, topics:, verified_story_facts:, historical_comparison:)
@@ -422,7 +471,11 @@ module Ai
     end
 
     def extract_keywords_from_text(text)
-      text.to_s.downcase.scan(/[a-z0-9]+/).reject { |token| token.length < 4 }.uniq.first(20)
+      text.to_s.downcase.scan(/[a-z0-9]+/)
+        .reject { |token| token.length < 4 }
+        .reject { |token| NON_VISUAL_CONTEXT_TOKENS.include?(token) }
+        .uniq
+        .first(24)
     end
 
     def truncate_text(value, max:)
@@ -772,6 +825,48 @@ module Ai
       else
         "What inspired this #{anchor} setup?"
       end
+    end
+
+    def build_visual_anchors(image_description:, topics:, verified_story_facts:, scored_context:)
+      facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      anchors = []
+      anchors.concat(Array(topics).map(&:to_s))
+      anchors.concat(Array(facts[:topics] || facts["topics"]).map(&:to_s))
+      anchors.concat(Array(facts[:objects] || facts["objects"]).map(&:to_s))
+      anchors.concat(Array(facts[:hashtags] || facts["hashtags"]).map(&:to_s))
+      anchors.concat(Array(facts[:mentions] || facts["mentions"]).map(&:to_s))
+      anchors.concat(Array(facts[:profile_handles] || facts["profile_handles"]).map(&:to_s))
+      anchors.concat(
+        Array(facts[:object_detections] || facts["object_detections"]).map do |row|
+          row.is_a?(Hash) ? (row[:label] || row["label"]).to_s : ""
+        end
+      )
+      anchors.concat(
+        Array(scored_context[:prioritized_signals] || scored_context["prioritized_signals"]).map do |row|
+          row.is_a?(Hash) ? (row[:value] || row["value"]).to_s : row.to_s
+        end
+      )
+      anchors.concat(extract_keywords_from_text(image_description.to_s))
+
+      anchors
+        .map { |value| normalize_anchor(value) }
+        .reject(&:blank?)
+        .uniq
+        .first(18)
+    end
+
+    def normalize_anchor(value)
+      text = value.to_s.downcase.strip
+      return nil if text.blank?
+
+      cleaned = text.gsub(/[^a-z0-9#@_\-\s]/, " ").gsub(/\s+/, " ").strip
+      return nil if cleaned.blank?
+
+      tokens = cleaned.scan(/[a-z0-9#@_\-]+/)
+      return nil if tokens.empty?
+      return nil if tokens.all? { |token| NON_VISUAL_CONTEXT_TOKENS.include?(token) }
+
+      tokens.join(" ").byteslice(0, 36)
     end
   end
 end
