@@ -22,7 +22,11 @@ class SyncProfileStoriesForAccountJob < ApplicationJob
     scope = account.instagram_profiles
       .order(Arel.sql("COALESCE(last_story_seen_at, '1970-01-01') ASC, COALESCE(last_active_at, '1970-01-01') DESC, username ASC"))
     if require_tag
-      scope = scope.joins(:profile_tags).where(profile_tags: { name: [ "automatic_reply", "automatic reply", "auto_reply", "auto reply" ] }).distinct
+      tagged_profiles = account.instagram_profiles
+        .joins(:profile_tags)
+        .where(profile_tags: { name: [ "automatic_reply", "automatic reply", "auto_reply", "auto reply" ] })
+        .select(:id)
+      scope = scope.where(id: tagged_profiles)
     end
 
     profiles = scope.limit(limit)

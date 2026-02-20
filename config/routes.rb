@@ -97,12 +97,5 @@ Rails.application.routes.draw do
     end
   end
 
-  # Legacy endpoints kept for now (conversation/story recipients + bulk sending).
-  resource :sync, only: :create
-  resources :recipients, only: [] do
-    collection { patch :update_all }
-  end
-  resources :messages, only: :create
-
   get "up" => "rails/health#show", as: :rails_health_check
 end

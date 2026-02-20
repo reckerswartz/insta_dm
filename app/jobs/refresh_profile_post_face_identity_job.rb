@@ -8,10 +8,14 @@ class RefreshProfilePostFaceIdentityJob < ApplicationJob
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, trigger_source: "profile_history_build")
-    account = InstagramAccount.find(instagram_account_id)
-    profile = account.instagram_profiles.find(instagram_profile_id)
-    post = profile.instagram_profile_posts.find(instagram_profile_post_id)
-    return unless post.media.attached?
+    account = InstagramAccount.find_by(id: instagram_account_id)
+    return unless account
+
+    profile = account.instagram_profiles.find_by(id: instagram_profile_id)
+    return unless profile
+
+    post = profile.instagram_profile_posts.find_by(id: instagram_profile_post_id)
+    return unless post && post.media.attached?
 
     mark_face_refresh_state!(
       post: post,

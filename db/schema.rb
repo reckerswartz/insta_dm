@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_19_103000) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_20_024818) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -688,21 +688,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_19_103000) do
     t.index ["name"], name: "index_profile_tags_on_name", unique: true
   end
 
-  create_table "recipients", force: :cascade do |t|
-    t.boolean "can_message", default: false, null: false
-    t.datetime "created_at", null: false
-    t.string "display_name"
-    t.bigint "instagram_account_id", null: false
-    t.string "restriction_reason"
-    t.boolean "selected", default: false, null: false
-    t.string "source", default: "conversation", null: false
-    t.boolean "story_visible", default: false, null: false
-    t.datetime "updated_at", null: false
-    t.string "username", null: false
-    t.index ["instagram_account_id", "username"], name: "index_recipients_on_instagram_account_id_and_username", unique: true
-    t.index ["instagram_account_id"], name: "index_recipients_on_instagram_account_id"
-  end
-
   create_table "sync_runs", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.text "error_message"
@@ -775,6 +760,5 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_19_103000) do
   add_foreign_key "instagram_story_faces", "instagram_story_people"
   add_foreign_key "instagram_story_people", "instagram_accounts"
   add_foreign_key "instagram_story_people", "instagram_profiles"
-  add_foreign_key "recipients", "instagram_accounts"
   add_foreign_key "sync_runs", "instagram_accounts"
 end

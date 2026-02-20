@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Button</title>
+</head>
+<body>
+    <h1>Test Generate Comment Button</h1>
+    
+    <div id="story-archive" data-controller="story-media-archive" data-story-media-archive-url-value="/instagram_accounts/2/story_media_archive">
+        <div class="story-media-scroll" data-story-media-archive-target="scroll">
+            <div class="story-media-grid" data-story-media-archive-target="gallery"></div>
+            <p class="meta" data-story-media-archive-target="loader">Loading story media…</p>
+        </div>
+    </div>
+
+    <script>
+        // Test the fallback function directly
+        console.log("Testing fallback function...")
+        
+        // Mock the fallback function
+        window.generateCommentFallback = function(eventId, accountId) {
+            console.log("Fallback function called", { eventId, accountId })
+            alert("Button clicked! Event ID: " + eventId + ", Account ID: " + accountId)
+        }
+        
+        // Test with sample data
+        setTimeout(() => {
+            const gallery = document.querySelector('[data-story-media-archive-target="gallery"]')
+            if (gallery) {
+                gallery.innerHTML = `
+                    <div class="story-media-card" data-event-id="375" data-controller="llm-comment technical-details" data-llm-comment-account-id-value="2" data-technical-details-account-id-value="2">
+                        <div class="story-media-meta">
+                            <div class="llm-comment-section">
+                                <button class="btn small secondary generate-comment-btn" 
+                                        data-action="click->llm-comment#generateComment"
+                                        data-event-id="375"
+                                        onclick="window.generateCommentFallback(375, 2)">
+                                    Generate Comment Locally
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `
+                console.log("Test button added")
+            }
+        }, 1000)
+    </script>
+</body>
+</html>

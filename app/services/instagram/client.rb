@@ -42,18 +42,6 @@ module Instagram
       ).call
     end
 
-    def sync_data!
-      SyncDataService.new(
-        account: @account,
-        with_recoverable_session: method(:with_recoverable_session),
-        with_authenticated_driver: method(:with_authenticated_driver),
-        collect_conversation_users: method(:collect_conversation_users),
-        collect_story_users: method(:collect_story_users),
-        fetch_eligibility: method(:fetch_eligibility),
-        source_for: method(:source_for)
-      ).call
-    end
-
     # Primary sync: followers/following lists (plus inbox to mark known-messageable threads).
     #
     # Returns stats hash suitable for storing in SyncRun.
