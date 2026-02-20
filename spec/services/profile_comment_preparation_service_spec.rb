@@ -41,6 +41,23 @@ RSpec.describe Ai::ProfileCommentPreparationService do
     end
   end
 
+  class FakeInsightStore
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+
+    def ingest_post!(profile:, post:, analysis:, metadata:)
+      @calls << {
+        profile_id: profile.id,
+        post_id: post.id,
+        has_analysis: analysis.is_a?(Hash),
+        has_metadata: metadata.is_a?(Hash)
+      }
+    end
+  end
+
   def build_account_profile
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(
@@ -99,6 +116,7 @@ RSpec.describe Ai::ProfileCommentPreparationService do
 
     user_profile_builder = FakeUserProfileBuilder.new
     face_resolver = FakeFaceIdentityResolver.new
+    insight_store = FakeInsightStore.new
 
     summary = Ai::ProfileCommentPreparationService.new(
       account: account,
@@ -106,7 +124,8 @@ RSpec.describe Ai::ProfileCommentPreparationService do
       collector: FakeCollector.new(posts: posts),
       post_analyzer: ->(_post) { raise "post analyzer should not be called for analyzed posts" },
       user_profile_builder_service: user_profile_builder,
-      face_identity_resolution_service: face_resolver
+      face_identity_resolution_service: face_resolver,
+      insight_store: insight_store
     ).prepare!(force: true)
 
     assert_equal true, summary["ready_for_comment_generation"]
@@ -115,6 +134,8 @@ RSpec.describe Ai::ProfileCommentPreparationService do
     assert_equal true, summary.dig("identity_consistency", "consistent")
     assert_equal 1, user_profile_builder.refresh_calls
     assert_equal 3, face_resolver.calls.length
+    assert_equal 3, insight_store.calls.length
+    assert_equal 3, summary.dig("analysis", "insight_store_refreshed_posts_count")
 
     behavior_profile = profile.instagram_profile_behavior_profile
     assert_not_nil behavior_profile
@@ -159,7 +180,8 @@ RSpec.describe Ai::ProfileCommentPreparationService do
       collector: FakeCollector.new(posts: posts),
       post_analyzer: ->(_post) { nil },
       user_profile_builder_service: FakeUserProfileBuilder.new,
-      face_identity_resolution_service: FakeFaceIdentityResolver.new
+      face_identity_resolution_service: FakeFaceIdentityResolver.new,
+      insight_store: FakeInsightStore.new
     ).prepare!(force: true)
 
     assert_equal false, summary["ready_for_comment_generation"]

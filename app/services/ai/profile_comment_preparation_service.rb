@@ -16,7 +16,8 @@ module Ai
       collector: nil,
       post_analyzer: nil,
       user_profile_builder_service: UserProfileBuilderService.new,
-      face_identity_resolution_service: FaceIdentityResolutionService.new
+      face_identity_resolution_service: FaceIdentityResolutionService.new,
+      insight_store: Ai::ProfileInsightStore.new
     )
       @account = account
       @profile = profile
@@ -27,6 +28,7 @@ module Ai
       @post_analyzer = post_analyzer
       @user_profile_builder_service = user_profile_builder_service
       @face_identity_resolution_service = face_identity_resolution_service
+      @insight_store = insight_store
     end
 
     def prepare!(force: false)
@@ -103,6 +105,7 @@ module Ai
       pending = 0
       failed = []
       structured_signals = 0
+      insight_store_refreshed = 0
 
       recent_posts.each do |post|
         begin
@@ -118,6 +121,8 @@ module Ai
 
           if post_analyzed?(post)
             analyzed += 1
+            ingest_post_signals!(post: post)
+            insight_store_refreshed += 1
             ensure_post_face_recognition!(post: post)
             structured_signals += 1 if post_has_structured_signals?(post)
           else
@@ -138,6 +143,7 @@ module Ai
         "failed_posts_count" => failed.length,
         "failed_posts" => failed.first(12),
         "posts_with_structured_signals_count" => structured_signals,
+        "insight_store_refreshed_posts_count" => insight_store_refreshed,
         "latest_posts_analyzed" => (pending.zero? && failed.empty?)
       }
     end
@@ -164,6 +170,17 @@ module Ai
       return if post.instagram_post_faces.exists?
 
       PostFaceRecognitionService.new.process!(post: post)
+    rescue StandardError
+      nil
+    end
+
+    def ingest_post_signals!(post:)
+      @insight_store.ingest_post!(
+        profile: @profile,
+        post: post,
+        analysis: post.analysis,
+        metadata: post.metadata
+      )
     rescue StandardError
       nil
     end

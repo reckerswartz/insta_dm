@@ -32,6 +32,8 @@ module StoryIntelligence
         event.update_columns(metadata: current_meta, updated_at: Time.current)
       end
 
+      sync_insight_store!(intelligence: normalized_payload)
+
       return if history_payload.blank?
 
       enqueue_story_intelligence_narrative_once!(history_payload)
@@ -71,6 +73,8 @@ module StoryIntelligence
           should_enqueue = true
         end
       end
+
+      sync_insight_store!(intelligence: insights[:verified_story_facts])
 
       enqueue_story_intelligence_narrative_once!(history_payload) if should_enqueue
     end
@@ -258,6 +262,22 @@ module StoryIntelligence
       AppendProfileHistoryNarrativeJob.perform_later(
         instagram_profile_event_id: event.id,
         mode: "story_intelligence",
+        intelligence: payload
+      )
+    rescue StandardError
+      nil
+    end
+
+    def sync_insight_store!(intelligence:)
+      payload = intelligence.is_a?(Hash) ? intelligence.deep_stringify_keys : {}
+      return if payload.blank?
+
+      profile = event.instagram_profile
+      return unless profile
+
+      Ai::ProfileInsightStore.new.ingest_story!(
+        profile: profile,
+        event: event,
         intelligence: payload
       )
     rescue StandardError
