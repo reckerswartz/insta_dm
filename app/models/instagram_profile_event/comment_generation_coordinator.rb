@@ -126,7 +126,8 @@ module InstagramProfileEvent::CommentGenerationCoordinator
       post_payload = {
         post: {
           event_id: id,
-          media_type: raw_metadata["media_type"].to_s.presence || media&.blob&.content_type.to_s.presence || "unknown"
+          media_type: raw_metadata["media_type"].to_s.presence || media&.blob&.content_type.to_s.presence || "unknown",
+          occurred_at: (occurred_at || detected_at || Time.current).iso8601
         },
         author_profile: {
           username: profile&.username,

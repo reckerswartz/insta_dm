@@ -70,6 +70,8 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     assert_includes prompt, "\"ownership\""
     assert_includes prompt, "\"generation_policy\""
     assert_includes prompt, "\"channel\": \"story\""
+    assert_includes prompt, "\"tone_plan\""
+    assert_includes prompt, "\"occasion_context\""
     assert_includes prompt, "\"comparison\""
     assert_includes prompt, "\"detected_usernames\""
     assert_includes prompt, "\"identity_verification\""
@@ -79,5 +81,36 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     refute_includes prompt, "\"media_url\""
     refute_includes prompt, "\"historical_context_summary\""
     refute_includes prompt, "\"rules\""
+  end
+
+  it "diversifies suggestions and adds a light question when missing" do
+    fake_client = Class.new do
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        { "response" => "{\"comment_suggestions\":[]}" }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+
+    out = generator.send(
+      :diversify_suggestions,
+      suggestions: [
+        "Love this city scene and lighting.",
+        "Love this city scene and lighting right now.",
+        "Great framing on the skyline tonight."
+      ],
+      topics: %w[city skyline],
+      image_description: "City skyline at sunset",
+      channel: "post",
+      scored_context: {
+        engagement_memory: {
+          recent_openers: [ "love this city" ]
+        }
+      }
+    )
+
+    expect(out.length).to be >= 2
+    expect(out.any? { |text| text.include?("?") }).to eq(true)
+    expect(out.first.downcase).not_to start_with("love this city")
   end
 end

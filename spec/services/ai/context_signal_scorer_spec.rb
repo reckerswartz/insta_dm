@@ -36,6 +36,12 @@ RSpec.describe Ai::ContextSignalScorer do
       detected_at: Time.current,
       metadata: { "comment_text" => "Love this travel vibe" }
     )
+    profile.instagram_profile_events.create!(
+      kind: "story_analyzed",
+      external_id: "story_#{SecureRandom.hex(3)}",
+      detected_at: Time.current,
+      llm_generated_comment: "Love this travel vibe right here"
+    )
 
     result = described_class.new(profile: profile, channel: "post").build(
       current_topics: ["travel", "sunset"],
@@ -48,5 +54,7 @@ RSpec.describe Ai::ContextSignalScorer do
     expect(result[:context_keywords]).to include("travel")
     expect(result.dig(:style_profile, :tone)).to eq("optimistic")
     expect(result.dig(:engagement_memory, :recent_generated_comments)).to include("Love this travel vibe")
+    expect(result.dig(:engagement_memory, :recent_openers)).not_to be_empty
+    expect(result.dig(:engagement_memory, :relationship_familiarity)).to eq("neutral")
   end
 end

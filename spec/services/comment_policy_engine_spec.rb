@@ -39,4 +39,21 @@ RSpec.describe Ai::CommentPolicyEngine do
     expect(result[:accepted]).to include("Skyline colors look beautiful tonight")
     expect(result[:accepted]).not_to include("Amazing content, keep it up!")
   end
+
+  it "rejects repeated openings from history and near-duplicates in the same batch" do
+    engine = described_class.new
+    result = engine.evaluate(
+      suggestions: [
+        "Love this travel moment with the sunset.",
+        "Love this travel scene by the sunset glow.",
+        "Those sunset colors over the city look unreal."
+      ],
+      historical_comments: [ "Love this travel moment from yesterday." ],
+      context_keywords: %w[travel sunset city],
+      max_suggestions: 8
+    )
+
+    expect(result[:accepted]).to include("Those sunset colors over the city look unreal.")
+    expect(result[:accepted]).not_to include("Love this travel moment with the sunset.")
+  end
 end

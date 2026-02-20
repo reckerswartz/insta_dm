@@ -68,6 +68,13 @@ module Ai
         historical_comments: historical_comments,
         scored_context: scored_context
       )
+      suggestions = diversify_suggestions(
+        suggestions: suggestions,
+        topics: topics,
+        image_description: image_description,
+        channel: channel,
+        scored_context: scored_context
+      )
 
       if suggestions.size < MIN_SUGGESTIONS
         retry_resp = @ollama_client.generate(
@@ -79,6 +86,13 @@ module Ai
         retry_suggestions = evaluate_suggestions(
           suggestions: parse_comment_suggestions(retry_resp),
           historical_comments: historical_comments,
+          scored_context: scored_context
+        )
+        retry_suggestions = diversify_suggestions(
+          suggestions: retry_suggestions,
+          topics: topics,
+          image_description: image_description,
+          channel: channel,
           scored_context: scored_context
         )
         suggestions = retry_suggestions if retry_suggestions.size >= MIN_SUGGESTIONS
@@ -141,6 +155,12 @@ module Ai
       verified_profile_history = compact_verified_profile_history(verified_profile_history)
       conversational_voice = compact_conversational_voice(conversational_voice)
       scored_context = compact_scored_context(scored_context)
+      occasion_context = build_occasion_context(
+        post_payload: post_payload,
+        topics: topics,
+        image_description: image_description
+      )
+      tone_plan = build_tone_plan(channel: channel, scored_context: scored_context, occasion_context: occasion_context)
       situational_cues = detect_situational_cues(
         image_description: image_description,
         topics: topics,
@@ -157,6 +177,8 @@ module Ai
           max_chars_per_comment: 140
         },
         tone_profile: tone_profile,
+        tone_plan: tone_plan,
+        occasion_context: occasion_context,
         situational_cues: situational_cues,
         profile: profile_summary,
         profile_preparation: profile_preparation,
@@ -195,7 +217,9 @@ module Ai
         Writing rules:
         - channel mode: #{Ai::CommentToneProfile.normalize(channel)}
         - tone guidance: #{tone_profile[:guidance]}
+        - follow `tone_plan` and vary style across suggestions
         - use `situational_cues` to tailor tone (for example celebration/travel/lifestyle)
+        - adapt to `occasion_context` (weekday/daypart/holiday-like moments)
         - natural, public-safe, short comments
         - max 140 chars each
         - vary openings and avoid duplicates
@@ -211,6 +235,7 @@ module Ai
 
         Generate exactly 8 suggestions, each <= 140 characters.
         Keep at least 3 suggestions neutral-safe for public comments.
+        Include 1-2 light conversational questions to invite engagement.
         Avoid repeating phrases from previous comments for the same profile.
 
         CONTEXT_JSON:
@@ -219,6 +244,13 @@ module Ai
     end
 
     def evaluate_suggestions(suggestions:, historical_comments:, scored_context: {})
+      memory_comments = []
+      memory_comments.concat(Array(historical_comments))
+      memory_comments.concat(Array(scored_context.dig(:engagement_memory, :recent_generated_comments)))
+      memory_comments.concat(Array(scored_context.dig("engagement_memory", "recent_generated_comments")))
+      memory_comments.concat(Array(scored_context.dig(:engagement_memory, :recent_story_generated_comments)))
+      memory_comments.concat(Array(scored_context.dig("engagement_memory", "recent_story_generated_comments")))
+
       context_keywords = []
       context_keywords.concat(Array(@last_topics_for_policy))
       context_keywords.concat(extract_keywords_from_text(@last_image_description_for_policy))
@@ -231,11 +263,49 @@ module Ai
       )
       result = @policy_engine.evaluate(
         suggestions: suggestions,
-        historical_comments: historical_comments,
+        historical_comments: memory_comments,
         context_keywords: context_keywords,
         max_suggestions: MAX_SUGGESTIONS
       )
       Array(result[:accepted])
+    end
+
+    def diversify_suggestions(suggestions:, topics:, image_description:, channel:, scored_context:)
+      rows = Array(suggestions).map { |value| normalize_comment(value) }.compact
+      return [] if rows.empty?
+
+      selected = []
+      used_openers = Array(scored_context.dig(:engagement_memory, :recent_openers)) +
+        Array(scored_context.dig("engagement_memory", "recent_openers"))
+      used_openers = used_openers.map(&:to_s)
+
+      buckets = rows.group_by { |text| tone_bucket(text) }
+      order = %w[observational supportive playful celebratory curious]
+
+      loop do
+        added = false
+        order.each do |bucket|
+          candidate = Array(buckets[bucket]).find do |text|
+            !selected.include?(text) &&
+              !used_openers.include?(opening_signature(text)) &&
+              !too_similar_to_selected?(text, selected)
+          end
+          next unless candidate
+
+          selected << candidate
+          used_openers << opening_signature(candidate)
+          added = true
+          break if selected.size >= MAX_SUGGESTIONS
+        end
+        break if selected.size >= MAX_SUGGESTIONS || !added
+      end
+
+      if selected.none? { |row| row.include?("?") }
+        question = build_light_question(topics: topics, image_description: image_description, channel: channel)
+        selected << question if question.present?
+      end
+
+      selected.uniq.first(MAX_SUGGESTIONS)
     end
 
     def normalize_comment(value)
@@ -296,6 +366,59 @@ module Ai
       cues << "creative" if corpus.match?(/\b(art|music|dance|shoot|photo|film|design)\b/)
       cues = [ "general" ] if cues.empty?
       cues.uniq.first(4)
+    end
+
+    def build_occasion_context(post_payload:, topics:, image_description:)
+      post = post_payload.is_a?(Hash) ? (post_payload[:post] || post_payload["post"]) : {}
+      timestamp = parse_time(post[:taken_at] || post["taken_at"] || post[:occurred_at] || post["occurred_at"]) || Time.current
+      month_day = timestamp.strftime("%m-%d")
+      text_blob = "#{Array(topics).join(' ')} #{image_description}".downcase
+
+      holiday = case month_day
+      when "12-25" then "christmas"
+      when "01-01" then "new_year"
+      when "07-04" then "independence_day"
+      when "10-31" then "halloween"
+      when "02-14" then "valentines_day"
+      else
+        nil
+      end
+
+      inferred_event =
+        if text_blob.match?(/\b(birthday|anniversary|graduation|wedding|party)\b/)
+          "milestone"
+        elsif text_blob.match?(/\b(travel|trip|vacation|airport|hotel)\b/)
+          "travel"
+        elsif text_blob.match?(/\b(festival|concert|game|match)\b/)
+          "event"
+        end
+
+      {
+        weekday: timestamp.strftime("%A").downcase,
+        daypart: daypart_for(timestamp),
+        month: timestamp.strftime("%B").downcase,
+        holiday_hint: holiday,
+        inferred_event: inferred_event
+      }.compact
+    end
+
+    def build_tone_plan(channel:, scored_context:, occasion_context:)
+      relationship = scored_context.dig(:engagement_memory, :relationship_familiarity) ||
+        scored_context.dig("engagement_memory", "relationship_familiarity") || "neutral"
+      daypart = occasion_context[:daypart].to_s
+      event = occasion_context[:inferred_event].to_s
+
+      styles = %w[observational supportive playful curious celebratory]
+      styles.delete("playful") if relationship == "professional"
+      styles.unshift("celebratory") if event == "milestone"
+      styles.unshift("observational") if daypart == "morning"
+      styles.unshift("supportive") if channel.to_s == "story"
+
+      {
+        relationship_familiarity: relationship,
+        preferred_style_order: styles.uniq.first(5),
+        include_light_question: true
+      }
     end
 
     def extract_keywords_from_text(text)
@@ -599,6 +722,56 @@ module Ai
       Time.zone.parse(value.to_s)
     rescue StandardError
       nil
+    end
+
+    def daypart_for(timestamp)
+      hour = timestamp.hour
+      return "morning" if hour < 12
+      return "afternoon" if hour < 17
+      return "evening" if hour < 21
+
+      "night"
+    end
+
+    def tone_bucket(text)
+      body = text.to_s.downcase
+      return "curious" if body.include?("?")
+      return "celebratory" if body.match?(/\b(congrats|celebrate|huge|big win|so proud)\b/)
+      return "playful" if body.match?(/\b(low-key|fr|vibe|mood|iconic)\b/)
+      return "supportive" if body.match?(/\b(love|solid|great|nice|clean)\b/)
+
+      "observational"
+    end
+
+    def opening_signature(comment)
+      comment.to_s.downcase.scan(/[a-z0-9]+/).first(3).join(" ")
+    end
+
+    def too_similar_to_selected?(candidate, selected)
+      tokens = candidate.to_s.downcase.scan(/[a-z0-9]+/).uniq
+      return false if tokens.empty?
+
+      Array(selected).any? do |row|
+        compare = row.to_s.downcase.scan(/[a-z0-9]+/).uniq
+        next false if compare.empty?
+
+        intersection = (tokens & compare).length
+        union = (tokens | compare).length
+        next false if union.zero?
+
+        (intersection.to_f / union.to_f) >= 0.74
+      end
+    end
+
+    def build_light_question(topics:, image_description:, channel:)
+      anchor = Array(topics).map(&:to_s).find(&:present?) || extract_keywords_from_text(image_description.to_s).first
+      return nil if anchor.blank?
+
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        "What made this #{anchor} moment stand out most for you?"
+      else
+        "What inspired this #{anchor} setup?"
+      end
     end
   end
 end

@@ -30,6 +30,7 @@ module Ai
       rejected = []
       history = Array(historical_comments).map(&:to_s)
       context_tokens = tokenize(Array(context_keywords).join(" "))
+      recent_openers = Array(history).map { |row| opening_signature(row) }.reject(&:blank?)
 
       Array(suggestions).each do |raw|
         text = normalize_comment(raw)
@@ -39,6 +40,8 @@ module Ai
         reasons << "blocked_term" if blocked_term?(text)
         reasons << "sensitive_claim" if sensitive_claim?(text)
         reasons << "history_repetition" if repetitive_against_history?(text, history)
+        reasons << "recent_opening_reuse" if repetitive_opening?(text, recent_openers: recent_openers, accepted: accepted)
+        reasons << "batch_similarity" if repetitive_within_batch?(text, accepted: accepted)
         reasons << "generic_phrase" if generic_phrase?(text)
         reasons << "weak_visual_grounding" if weak_visual_grounding?(text, context_tokens)
 
@@ -86,6 +89,28 @@ module Ai
         score = jaccard(candidate_tokens, tokenize(past))
         score >= 0.82
       end
+    end
+
+    def repetitive_within_batch?(comment, accepted:)
+      tokens = tokenize(comment)
+      return false if tokens.empty?
+
+      Array(accepted).any? do |row|
+        score = jaccard(tokens, tokenize(row))
+        score >= 0.75
+      end
+    end
+
+    def repetitive_opening?(comment, recent_openers:, accepted:)
+      signature = opening_signature(comment)
+      return false if signature.blank?
+
+      accepted_openers = Array(accepted).map { |row| opening_signature(row) }.reject(&:blank?)
+      recent_openers.include?(signature) || accepted_openers.include?(signature)
+    end
+
+    def opening_signature(comment)
+      tokenize(comment).first(3).join(" ")
     end
 
     def weak_visual_grounding?(comment, context_tokens)

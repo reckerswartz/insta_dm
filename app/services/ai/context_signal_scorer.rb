@@ -253,14 +253,40 @@ module Ai
         end
         .first(10)
 
+      story_comments = profile.instagram_profile_events
+        .where.not(llm_generated_comment: [ nil, "" ])
+        .order(detected_at: :desc, id: :desc)
+        .limit(12)
+        .pluck(:llm_generated_comment)
+        .filter_map { |text| text.to_s.strip.presence }
+        .first(8)
+
+      all_recent_comments = (recent_comments + story_comments).uniq.first(14)
+      opener_counts = Hash.new(0)
+      all_recent_comments.each do |text|
+        signature = opening_signature(text)
+        opener_counts[signature] += 1 if signature.present?
+      end
+
+      recent_interactions = profile.instagram_profile_events
+        .where(kind: [ "post_comment_sent", "message_sent", "message_received" ])
+        .where("detected_at >= ?", 45.days.ago)
+        .count
+
       {
         top_performing_topics: top,
-        recent_generated_comments: recent_comments
+        recent_generated_comments: recent_comments,
+        recent_story_generated_comments: story_comments,
+        recent_openers: opener_counts.select { |_sig, count| count >= 1 }.keys.first(12),
+        relationship_familiarity: relationship_familiarity(interactions: recent_interactions)
       }
     rescue StandardError
       {
         top_performing_topics: [],
-        recent_generated_comments: []
+        recent_generated_comments: [],
+        recent_story_generated_comments: [],
+        recent_openers: [],
+        relationship_familiarity: "neutral"
       }
     end
 
@@ -333,6 +359,20 @@ module Ai
         end
       end
       index.values
+    end
+
+    def opening_signature(comment)
+      comment.to_s.downcase.scan(/[a-z0-9]+/).first(3).join(" ")
+    end
+
+    def relationship_familiarity(interactions:)
+      tags = profile.profile_tags.pluck(:name).map(&:to_s)
+      return "professional" if tags.include?("page") || tags.include?("business")
+      return "friendly" if interactions.to_i >= 6 || tags.include?("friend") || tags.include?("relative")
+
+      "neutral"
+    rescue StandardError
+      "neutral"
     end
   end
 end
