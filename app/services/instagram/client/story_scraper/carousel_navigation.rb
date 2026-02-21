@@ -42,9 +42,23 @@ module Instagram
           end
 
           sleep(1.0)
+          gate_result = click_story_view_gate_if_present!(driver: driver)
+          sleep(0.45) if gate_result[:clicked]
           new_ref = current_story_reference(driver.current_url.to_s)
           new_signature = visible_story_media_signature(driver)
           moved = (new_ref.present? && new_ref != current_ref) || (new_signature.present? && previous_signature.present? && new_signature != previous_signature)
+
+          if !moved
+            moved = recover_story_navigation_when_stalled!(
+              driver: driver,
+              current_ref: current_ref,
+              previous_signature: previous_signature
+            )
+            if moved
+              new_ref = current_story_reference(driver.current_url.to_s)
+              new_signature = visible_story_media_signature(driver)
+            end
+          end
 
           capture_task_html(
             driver: driver,
@@ -53,6 +67,7 @@ module Instagram
             meta: {
               previous_ref: current_ref,
               new_ref: new_ref,
+              view_gate_clicked: gate_result[:clicked],
               previous_signature: previous_signature.to_s.byteslice(0, 120),
               new_signature: new_signature.to_s.byteslice(0, 120),
               moved: moved
@@ -118,6 +133,51 @@ module Instagram
           }
         rescue StandardError
           { found: false, selector: nil, aria_label: nil, outer_html_preview: nil }
+        end
+
+        def recover_story_navigation_when_stalled!(driver:, current_ref:, previous_signature:)
+          excluded_username = normalize_username(current_ref.to_s.split(":").first.to_s)
+
+          driver.navigate.to(INSTAGRAM_BASE_URL)
+          wait_for(driver, css: "body", timeout: 12)
+          dismiss_common_overlays!(driver)
+          open_first_story_from_home_carousel!(
+            driver: driver,
+            excluded_usernames: excluded_username.present? ? [ excluded_username ] : []
+          )
+          click_story_view_gate_if_present!(driver: driver)
+
+          recovered_ref = current_story_reference(driver.current_url.to_s)
+          recovered_signature = visible_story_media_signature(driver)
+          moved = (recovered_ref.present? && recovered_ref != current_ref) || (recovered_signature.present? && recovered_signature != previous_signature)
+
+          capture_task_html(
+            driver: driver,
+            task_name: "home_story_sync_next_navigation_recovered",
+            status: moved ? "ok" : "error",
+            meta: {
+              previous_ref: current_ref,
+              recovered_ref: recovered_ref,
+              excluded_username: excluded_username,
+              previous_signature: previous_signature.to_s.byteslice(0, 120),
+              recovered_signature: recovered_signature.to_s.byteslice(0, 120),
+              moved: moved
+            }
+          )
+          moved
+        rescue StandardError => e
+          capture_task_html(
+            driver: driver,
+            task_name: "home_story_sync_next_navigation_recovery_error",
+            status: "error",
+            meta: {
+              previous_ref: current_ref,
+              excluded_username: excluded_username,
+              error_class: e.class.name,
+              error_message: e.message.to_s.byteslice(0, 220)
+            }
+          )
+          false
         end
       end
     end

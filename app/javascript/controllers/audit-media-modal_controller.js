@@ -24,7 +24,7 @@ export default class extends Controller {
     event.preventDefault()
     const data = event.currentTarget.dataset
     const mediaUrl = data.mediaUrl || ""
-    const downloadUrl = data.mediaDownloadUrl || mediaUrl || "#"
+    const downloadUrl = data.mediaDownloadUrl || mediaUrl || ""
     const contentType = (data.mediaContentType || "").toLowerCase()
     const previewImageUrl = data.mediaPreviewImageUrl || ""
     const staticVideo = this.toBoolean(data.videoStaticFrameOnly)
@@ -51,7 +51,17 @@ export default class extends Controller {
     }
     this.metaTarget.textContent = `Type: ${contentType || "unknown"} | Time: ${occurredAt}`
 
-    this.downloadTarget.href = downloadUrl
+    if (downloadUrl) {
+      this.downloadTarget.href = downloadUrl
+      this.downloadTarget.classList.remove("disabled")
+      this.downloadTarget.removeAttribute("aria-disabled")
+      this.downloadTarget.tabIndex = 0
+    } else {
+      this.downloadTarget.href = "#"
+      this.downloadTarget.classList.add("disabled")
+      this.downloadTarget.setAttribute("aria-disabled", "true")
+      this.downloadTarget.tabIndex = -1
+    }
 
     const mediaPath = mediaUrl.split("?")[0].toLowerCase()
     const isVideo = contentType.startsWith("video/") ||

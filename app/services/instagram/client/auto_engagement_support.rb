@@ -347,6 +347,41 @@ module Instagram
         ensure_story_comment_diversity(profile: profile, suggestions: generated)
       end
 
+      def generate_google_engagement_comments!(payload:, image_description:, topics:, author_type:)
+        generator = Ai::LocalEngagementCommentGenerator.new(
+          ollama_client: Ai::OllamaClient.new
+        )
+        result = generator.generate!(
+          post_payload: payload,
+          image_description: image_description,
+          topics: Array(topics),
+          author_type: author_type.to_s,
+          channel: "story"
+        )
+        suggestions = Array(result[:comment_suggestions]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+        return suggestions if suggestions.present?
+
+        fallback_story_comments(image_description: image_description, topics: topics)
+      rescue StandardError
+        fallback_story_comments(image_description: image_description, topics: topics)
+      end
+
+      def fallback_story_comments(image_description:, topics:)
+        topic = Array(topics).map(&:to_s).find(&:present?).to_s
+        visual_hint = image_description.to_s.split(/[.!?]/).first.to_s.strip
+        visual_hint = visual_hint.gsub(/\s+/, " ").byteslice(0, 80)
+
+        candidates = [
+          "This one looks really good.",
+          "Love the vibe in this story.",
+          "Nice share.",
+          (topic.present? ? "This #{topic} update is great." : nil),
+          (visual_hint.present? ? "The #{visual_hint.downcase} looks awesome." : nil)
+        ].compact
+
+        candidates.map(&:strip).reject(&:blank?).uniq
+      end
+
       def recent_story_and_post_history(profile:)
         story_items = profile.instagram_profile_events
           .where(kind: [ "story_analyzed", "story_reply_sent", "story_comment_posted_via_feed" ])

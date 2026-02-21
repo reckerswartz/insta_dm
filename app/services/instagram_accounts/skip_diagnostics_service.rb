@@ -5,6 +5,9 @@ module InstagramAccounts
       duplicate_story_already_replied
       duplicate_story_already_downloaded
       invalid_story_media
+      story_page_unavailable
+      replies_not_allowed
+      reply_unavailable
       interaction_retry_window_active
       missing_auto_reply_tag
       external_profile_link_detected
@@ -18,6 +21,7 @@ module InstagramAccounts
       story_id_unresolved
       next_navigation_failed
       loop_exited_without_story_processing
+      rate_limited
       transient_network_error
       media_download_failed
       story_context_missing
@@ -90,6 +94,8 @@ module InstagramAccounts
       return "recoverable" if RECOVERABLE_REASONS.include?(reason)
       return "review" if REVIEW_REASONS.include?(reason)
       return "valid" if reason.include?("ad") || reason.include?("sponsored")
+      return "recoverable" if reason.include?("rate_limit") || reason.include?("429")
+      return "valid" if reason.include?("duplicate") || reason.include?("already_")
 
       "review"
     end
@@ -103,7 +109,7 @@ module InstagramAccounts
       when "valid"
         "No action needed."
       when "recoverable"
-        "Retry after cooldown and verify session/API limits."
+        "Retry after cooldown and verify session/API limits or transport errors."
       else
         "Review task captures and Story sync metadata."
       end

@@ -227,6 +227,7 @@ module Instagram
 
             4.times do
               sleep(0.6)
+              click_story_view_gate_if_present!(driver: driver)
               dom = extract_story_dom_context(driver)
               if story_viewer_ready?(dom)
                 capture_task_html(
@@ -265,6 +266,73 @@ module Instagram
             usernames_tried: candidates
           }
         )
+        false
+      end
+
+      def click_story_view_gate_if_present!(driver:)
+        payload = driver.execute_script(<<~JS)
+          const normalize = (value) => (value || "").toString().replace(/\\s+/g, " ").trim().toLowerCase();
+          const isVisible = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (!style || style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") return false;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 14 && rect.height > 14;
+          };
+
+          const matchesLabel = (el) => {
+            const aria = normalize(el.getAttribute("aria-label"));
+            const text = normalize(el.innerText || el.textContent);
+            return (
+              aria === "view story" ||
+              text === "view story" ||
+              text === "view stories" ||
+              text.includes("view as")
+            );
+          };
+
+          const clickEl = (el) => {
+            try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
+            const evt = { view: window, bubbles: true, cancelable: true, composed: true, button: 0 };
+            ["pointerdown", "mousedown", "mouseup", "click"].forEach((type) => {
+              try { el.dispatchEvent(new MouseEvent(type, evt)); } catch (e) {}
+            });
+            try { el.click(); } catch (e) {}
+          };
+
+          const candidates = Array.from(document.querySelectorAll("button, [role='button'], a")).filter((el) => isVisible(el) && matchesLabel(el));
+          const target = candidates[0];
+          if (!target) return { clicked: false, label: "" };
+
+          clickEl(target);
+          return {
+            clicked: true,
+            label: normalize(target.innerText || target.textContent || target.getAttribute("aria-label") || "")
+          };
+        JS
+
+        clicked = payload.is_a?(Hash) && payload["clicked"] == true
+        return { clicked: false, label: "" } unless clicked
+
+        sleep(0.45)
+        {
+          clicked: true,
+          label: payload["label"].to_s
+        }
+      rescue StandardError
+        { clicked: false, label: "" }
+      end
+
+      def story_page_unavailable?(driver)
+        title = driver.title.to_s.downcase
+        return true if title.include?("page couldn't load")
+        return true if title.include?("story unavailable")
+
+        body = driver.page_source.to_s.downcase
+        body.include?("story unavailable") ||
+          body.include?("this story is unavailable") ||
+          body.include?("page couldn't load")
+      rescue StandardError
         false
       end
 

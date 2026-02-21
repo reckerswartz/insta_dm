@@ -44,6 +44,19 @@ module Instagram
                     break
                   end
 
+                  gate = click_story_view_gate_if_present!(driver: driver)
+                  if gate[:clicked]
+                    capture_task_html(
+                      driver: driver,
+                      task_name: "home_story_sync_view_gate_acknowledged",
+                      status: "ok",
+                      meta: {
+                        current_url: driver.current_url.to_s,
+                        gate_label: gate[:label]
+                      }
+                    )
+                  end
+
                   context = normalized_story_context_for_processing(driver: driver, context: current_story_context(driver))
                   if context[:story_url_recovery_needed]
                     recover_story_url_context!(driver: driver, username: context[:username], reason: "fallback_profile_url")
@@ -66,23 +79,30 @@ module Instagram
                     fallback_username = context[:username].presence || @account.username.to_s
                     if fallback_username.present?
                       fallback_profile = find_or_create_profile_for_auto_engagement!(username: fallback_username)
+                      reason = story_page_unavailable?(driver) ? "story_page_unavailable" : "story_context_missing"
+                      status = reason == "story_page_unavailable" ? "Story unavailable or expired" : "Story context missing"
                       fallback_profile.record_event!(
                         kind: "story_sync_failed",
                         external_id: "story_sync_failed:context_missing:#{Time.current.utc.iso8601(6)}",
                         occurred_at: Time.current,
                         metadata: story_sync_failure_metadata(
-                          reason: "story_context_missing",
+                          reason: reason,
                           error: nil,
                           story_id: nil,
                           story_ref: nil,
                           story_url: driver.current_url.to_s,
                           current_url: driver.current_url.to_s,
-                          page_title: driver.title.to_s
+                          page_title: driver.title.to_s,
+                          status: status
                         )
                       )
                     end
-                    exit_reason = "story_context_missing"
-                    break
+                    moved = click_next_story_in_carousel!(driver: driver, current_ref: context[:ref].to_s)
+                    unless moved
+                      exit_reason = "story_context_missing"
+                      break
+                    end
+                    next
                   end
                   story_key = context[:story_key].presence || ref
                   if visited_refs[story_key]
@@ -310,29 +330,25 @@ module Instagram
 
                   media_story_id_hint = story_id_hint_from_media_url(media[:url])
                   if media_story_id_hint.present? && media_story_id_hint != story_id
-                    stats[:failed] += 1
-                    profile.record_event!(
-                      kind: "story_sync_failed",
-                      external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                      occurred_at: Time.current,
-                      metadata: story_sync_failure_metadata(
-                        reason: "story_media_story_id_mismatch",
-                        error: nil,
-                        story_id: story_id,
-                        story_ref: ref,
-                        story_url: story_url,
+                    capture_task_html(
+                      driver: driver,
+                      task_name: "home_story_sync_story_id_reconciled_from_media",
+                      status: "ok",
+                      meta: {
                         expected_story_id: story_id,
                         media_story_id: media_story_id_hint,
-                        media_source: media[:source].to_s,
-                        media_url: media[:url].to_s
-                      )
+                        story_ref: ref,
+                        story_url: story_url,
+                        media_source: media[:source].to_s
+                      }
                     )
-                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                    unless moved
-                      exit_reason = "next_navigation_failed"
-                      break
-                    end
-                    next
+                    story_id = media_story_id_hint
+                    ref = "#{context[:username]}:#{story_id}" if context[:username].present?
+                    story_url = canonical_story_url(
+                      username: context[:username],
+                      story_id: story_id,
+                      fallback_url: driver.current_url.to_s
+                    )
                   end
                   ad_context = detect_story_ad_context(driver: driver, media: media)
                   capture_task_html(
@@ -1145,6 +1161,7 @@ module Instagram
           return "session" if message.include?("login") || message.include?("cookie") || message.include?("csrf")
           return "navigation" if normalized_reason.include?("next_navigation_failed") || normalized_reason.include?("duplicate_story_key")
           return "parsing" if normalized_reason.include?("story_id_unresolved") || normalized_reason.include?("context_missing")
+          return "navigation" if normalized_reason.include?("story_page_unavailable")
           return "storage" if message.include?("attach_failed") || message.include?("active storage")
           return "media_fetch" if normalized_reason.include?("api_story_media_unavailable")
           return "media_fetch" if message.include?("media") || message.include?("invalid media url") || message.include?("http")
@@ -1165,6 +1182,7 @@ module Instagram
           return true if normalized_reason.include?("story_id_unresolved")
           return true if normalized_reason.include?("next_navigation_failed")
           return true if normalized_reason.include?("loop_exited_without_story_processing")
+          return true if normalized_reason.include?("story_page_unavailable")
 
           false
         end

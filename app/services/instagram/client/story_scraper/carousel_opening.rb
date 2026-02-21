@@ -3,13 +3,13 @@ module Instagram
     module StoryScraper
       module CarouselOpening
         private
-        def open_first_story_from_home_carousel!(driver:)
+        def open_first_story_from_home_carousel!(driver:, excluded_usernames: [])
           started_at = Time.current
           deadline = started_at + 45.seconds  # Further increased timeout
           attempts = 0
           last_probe = {}
           prefetch_route_attempted = false
-          excluded_usernames = []
+          excluded_usernames = Array(excluded_usernames).map { |value| normalize_username(value) }.reject(&:blank?).uniq
 
           while Time.current < deadline
             attempts += 1
@@ -108,6 +108,7 @@ module Instagram
 
               if clicked_target
                 sleep(0.8)
+                click_story_view_gate_if_present!(driver: driver)
                 dom = extract_story_dom_context(driver)
                 unless story_viewer_ready?(dom)
                   current_url = driver.current_url.to_s
@@ -169,6 +170,7 @@ module Instagram
               js_fallback = click_home_story_open_target_via_js(driver, excluded_usernames: excluded_usernames)
               if js_fallback[:clicked]
                 sleep(0.8)
+                click_story_view_gate_if_present!(driver: driver)
                 dom = extract_story_dom_context(driver)
                 if story_viewer_ready?(dom)
                   capture_task_html(

@@ -40,7 +40,10 @@
                 <td><%= entry[:kind].to_s.tr("_", " ").titleize %></td>
                 <td><span class="pill <%= entry[:status] == "failed" ? "failed" : (entry[:status] == "succeeded" ? "sent" : "queued") %>"><%= entry[:status] %></span></td>
                 <td class="meta">
-                  <%= entry[:detail].to_s.truncate(180) %>
+                  <%= entry[:detail].to_s.truncate(220) %>
+                  <% if entry[:skip_reason].present? %>
+                    <div><code><%= entry[:skip_reason] %></code></div>
+                  <% end %>
                   <% if entry[:comment_text].present? %>
                     <details>
                       <summary>View Comment</summary>
@@ -49,26 +52,38 @@
                   <% end %>
                 </td>
                 <td>
-                  <% if entry[:media_attached] %>
-                    <button
-                      type="button"
-                      class="btn small secondary"
-                      data-action="audit-media-modal#open"
-                      data-media-url="<%= entry[:media_url] %>"
-                      data-media-download-url="<%= entry[:media_download_url] %>"
-                      data-media-content-type="<%= entry[:media_content_type] %>"
-                      data-media-preview-image-url="<%= entry[:media_preview_image_url] %>"
-                      data-video-static-frame-only="<%= entry[:video_static_frame_only] %>"
-                      data-profile-id="<%= entry[:profile_id] %>"
-                      data-profile-username="<%= entry[:profile_username] %>"
-                      data-activity-kind="<%= entry[:kind] %>"
-                      data-occurred-at="<%= entry[:occurred_at]&.strftime("%Y-%m-%d %H:%M:%S") %>"
-                    >
-                      View
-                    </button>
-                  <% else %>
-                    <span class="meta">-</span>
-                  <% end %>
+                  <div class="d-flex flex-wrap gap-2">
+                    <% if entry[:media_url].present? && entry[:media_modal_supported] %>
+                      <button
+                        type="button"
+                        class="btn small secondary"
+                        data-action="audit-media-modal#open"
+                        data-media-url="<%= entry[:media_url] %>"
+                        data-media-download-url="<%= entry[:media_download_url] %>"
+                        data-media-content-type="<%= entry[:media_content_type] %>"
+                        data-media-preview-image-url="<%= entry[:media_preview_image_url] %>"
+                        data-video-static-frame-only="<%= entry[:video_static_frame_only] %>"
+                        data-profile-id="<%= entry[:profile_id] %>"
+                        data-profile-username="<%= entry[:profile_username] %>"
+                        data-activity-kind="<%= entry[:kind] %>"
+                        data-occurred-at="<%= entry[:occurred_at]&.strftime("%Y-%m-%d %H:%M:%S") %>"
+                      >
+                        View
+                      </button>
+                    <% elsif entry[:media_url].present? %>
+                      <a class="btn small secondary" href="<%= entry[:media_url] %>" target="_blank" rel="noopener noreferrer">View</a>
+                    <% elsif entry[:skip_event] %>
+                      <button type="button" class="btn small secondary" disabled>View</button>
+                    <% else %>
+                      <span class="meta">-</span>
+                    <% end %>
+
+                    <% if entry[:media_download_url].present? %>
+                      <a class="btn small secondary" href="<%= entry[:media_download_url] %>" target="_blank" rel="noopener noreferrer">Download</a>
+                    <% elsif entry[:skip_event] %>
+                      <button type="button" class="btn small secondary" disabled>Download</button>
+                    <% end %>
+                  </div>
                 </td>
               </tr>
             <% end %>
