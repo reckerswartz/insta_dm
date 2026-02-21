@@ -335,10 +335,45 @@ module StoryIntelligence
       duration_ms = ((monotonic_time - stage_started_at) * 1000.0).round
 
       processing_stages = {
-        ocr_analysis: stage_row(state: "completed", progress: 100, message: "OCR extraction completed"),
-        vision_detection: stage_row(state: "completed", progress: 100, message: "Vision/object extraction completed"),
-        face_recognition: stage_row(state: "completed", progress: 100, message: "Face detection completed"),
-        metadata_extraction: stage_row(state: "completed", progress: 100, message: "Metadata extraction completed")
+        ocr_analysis: stage_row(
+          label: "OCR Analysis",
+          group: "media_analysis",
+          state: "completed",
+          progress: 100,
+          message: "OCR extraction completed"
+        ),
+        vision_detection: stage_row(
+          label: "Image Analysis",
+          group: "media_analysis",
+          state: "completed",
+          progress: 100,
+          message: "Vision/object extraction completed"
+        ),
+        face_recognition: stage_row(
+          label: "Face Recognition",
+          group: "media_analysis",
+          state: "completed",
+          progress: 100,
+          message: "Face detection completed"
+        ),
+        metadata_extraction: stage_row(
+          label: "Metadata Extraction",
+          group: "media_analysis",
+          state: "completed",
+          progress: 100,
+          message: "Metadata extraction completed"
+        ),
+        parallel_services: stage_row(
+          label: "Parallel AI Services",
+          group: "media_analysis",
+          state: extraction_errors.empty? ? "completed" : "completed_with_warnings",
+          progress: 100,
+          message: "OCR, vision, face, and metadata extraction processed in parallel.",
+          details: {
+            duration_ms: duration_ms,
+            warnings: extraction_errors.presence
+          }.compact
+        )
       }
 
       {
@@ -417,30 +452,78 @@ module StoryIntelligence
     end
 
     def video_processing_stages(extraction)
+      metadata = extraction[:metadata].is_a?(Hash) ? extraction[:metadata].deep_stringify_keys : {}
+      processing_mode = extraction[:processing_mode].to_s.presence || "dynamic_video"
       ocr_available = extraction[:ocr_text].to_s.present? || Array(extraction[:ocr_blocks]).any?
       visual_available = Array(extraction[:objects]).any? || Array(extraction[:topics]).any? || Array(extraction[:scenes]).any?
       faces_available = extraction[:face_count].to_i.positive? || Array(extraction[:people]).any?
+      transcript_available = extraction[:transcript].to_s.present?
+      audio_reason = metadata.dig("audio_extraction", "reason").to_s.presence
+      transcription_reason = metadata.dig("transcription", "reason").to_s.presence
+      visual_reason = if processing_mode == "static_image"
+        metadata.dig("static_frame_intelligence", "reason").to_s.presence
+      else
+        metadata.dig("local_video_intelligence", "reason").to_s.presence
+      end
+      parallel_execution = metadata["parallel_execution"].is_a?(Hash) ? metadata["parallel_execution"] : {}
 
       {
         ocr_analysis: stage_row(
-          state: "completed",
+          label: "OCR Analysis",
+          group: "media_analysis",
+          state: ocr_available ? "completed" : "completed_with_warnings",
           progress: 100,
           message: ocr_available ? "Video OCR extraction completed." : "Video OCR returned no reliable text."
         ),
         vision_detection: stage_row(
-          state: "completed",
+          label: "Video Analysis",
+          group: "media_analysis",
+          state: visual_available ? "completed" : "completed_with_warnings",
           progress: 100,
-          message: visual_available ? "Video context extraction completed." : "Video context extraction returned limited visual signals."
+          message: visual_available ? "Video context extraction completed." : "Video context extraction returned limited visual signals.",
+          details: {
+            processing_mode: processing_mode,
+            reason: visual_reason
+          }.compact
         ),
         face_recognition: stage_row(
-          state: "completed",
+          label: "Face Recognition",
+          group: "media_analysis",
+          state: faces_available ? "completed" : "completed_with_warnings",
           progress: 100,
           message: faces_available ? "Face signals extracted from video context." : "No usable face evidence detected."
         ),
         metadata_extraction: stage_row(
+          label: "Metadata Extraction",
+          group: "media_analysis",
           state: "completed",
           progress: 100,
           message: "Video processing metadata captured."
+        ),
+        audio_extraction: stage_row(
+          label: "Audio Extraction",
+          group: "media_analysis",
+          state: audio_reason.in?(%w[no_audio_stream video_too_long_for_audio_extraction video_too_large_for_audio_extraction]) ? "skipped" : (audio_reason.present? ? "completed_with_warnings" : "completed"),
+          progress: 100,
+          message: audio_reason.present? ? "Audio extraction skipped (#{audio_reason.tr('_', ' ')})." : "Audio extraction completed."
+        ),
+        speech_transcription: stage_row(
+          label: "Speech Transcription",
+          group: "media_analysis",
+          state: transcript_available ? "completed" : (transcription_reason.in?(%w[audio_unavailable no_audio_stream]) ? "skipped" : (transcription_reason.present? ? "completed_with_warnings" : "completed")),
+          progress: 100,
+          message: transcript_available ? "Speech transcription completed." : "Speech transcription unavailable#{transcription_reason.present? ? " (#{transcription_reason.tr('_', ' ')})" : ""}."
+        ),
+        parallel_services: stage_row(
+          label: "Parallel AI Services",
+          group: "media_analysis",
+          state: parallel_execution["errors"].is_a?(Hash) && parallel_execution["errors"].present? ? "completed_with_warnings" : "completed",
+          progress: 100,
+          message: "Audio/transcription and video-analysis services executed in parallel.",
+          details: {
+            duration_ms: parallel_execution["duration_ms"],
+            errors: parallel_execution["errors"]
+          }.compact
         )
       }
     end
@@ -462,7 +545,8 @@ module StoryIntelligence
           audio_reason: metadata.dig("audio_extraction", "reason").to_s.presence,
           transcription_reason: metadata.dig("transcription", "reason").to_s.presence,
           static_frame_reason: metadata.dig("static_frame_intelligence", "reason").to_s.presence,
-          local_video_reason: metadata.dig("local_video_intelligence", "reason").to_s.presence
+          local_video_reason: metadata.dig("local_video_intelligence", "reason").to_s.presence,
+          parallel_execution: metadata["parallel_execution"].is_a?(Hash) ? metadata["parallel_execution"] : nil
         }.compact
       } ]
     end
@@ -489,12 +573,15 @@ module StoryIntelligence
       reasons.find { |value| !ignore_reasons.include?(value) }
     end
 
-    def stage_row(state:, progress:, message:)
+    def stage_row(label:, group:, state:, progress:, message:, details: nil)
       {
+        label: label.to_s,
+        group: group.to_s,
         state: state,
         progress: progress.to_i.clamp(0, 100),
         message: message.to_s,
-        updated_at: Time.current.iso8601(3)
+        updated_at: Time.current.iso8601(3),
+        details: details
       }
     end
 

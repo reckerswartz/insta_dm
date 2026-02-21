@@ -1,4 +1,4 @@
 web: env PATH=$HOME/.local/bin:$PATH WEBPACK_DEV_SERVER=true FFMPEG_BIN=${FFMPEG_BIN:-$HOME/.local/bin/ffmpeg} bin/rails server
-worker: env PATH=$HOME/.local/bin:$PATH FFMPEG_BIN=${FFMPEG_BIN:-$HOME/.local/bin/ffmpeg} bundle exec sidekiq -C config/sidekiq.yml
+worker: env PATH=$HOME/.local/bin:$PATH FFMPEG_BIN=${FFMPEG_BIN:-$HOME/.local/bin/ffmpeg} RAILS_MAX_THREADS=${RAILS_MAX_THREADS:-40} bundle exec sidekiq -C config/sidekiq.yml
 js: env PATH=$HOME/.local/bin:$PATH yarn dev:server
 css: env PATH=$HOME/.local/bin:$PATH yarn build:css --watch

@@ -53,26 +53,20 @@ class PostVideoContextExtractionService
     probe_metadata = probe[:metadata].is_a?(Hash) ? probe[:metadata] : {}
     has_audio = ActiveModel::Type::Boolean.new.cast(probe_metadata["has_audio"] || probe_metadata[:has_audio])
 
-    audio = extract_audio_if_allowed(
+    parallel_branches = extract_parallel_branches(
       bytes: bytes,
       reference_id: reference_id,
       content_type: content_type,
       duration_seconds: duration_seconds,
-      has_audio: has_audio
+      has_audio: has_audio,
+      static_video: static_video,
+      mode: mode
     )
-    transcript = transcribe_audio_if_available(audio: audio, reference_id: reference_id)
+    audio = parallel_branches[:audio]
+    transcript = parallel_branches[:transcript]
     transcript_text = truncate_text(transcript[:transcript].to_s, max: TRANSCRIPT_MAX_CHARS)
-
-    local_video_intelligence = extract_local_video_intelligence_if_allowed(
-      bytes: bytes,
-      reference_id: reference_id,
-      static_video: static_video
-    )
-    static_frame_intelligence = extract_static_frame_intelligence_if_available(
-      mode: mode,
-      reference_id: reference_id,
-      static_video: static_video
-    )
+    local_video_intelligence = parallel_branches[:local_video_intelligence]
+    static_frame_intelligence = parallel_branches[:static_frame_intelligence]
 
     detections =
       detections_from_static_frame_intelligence(static_frame_intelligence: static_frame_intelligence) +
@@ -120,7 +114,8 @@ class PostVideoContextExtractionService
         audio_extraction: audio[:metadata],
         transcription: transcript[:metadata],
         static_frame_intelligence: static_frame_intelligence[:metadata],
-        local_video_intelligence: local_video_intelligence[:metadata]
+        local_video_intelligence: local_video_intelligence[:metadata],
+        parallel_execution: parallel_branches[:parallel_execution]
       }
     }
   rescue StandardError => e
@@ -132,6 +127,106 @@ class PostVideoContextExtractionService
   end
 
   private
+
+  def extract_parallel_branches(bytes:, reference_id:, content_type:, duration_seconds:, has_audio:, static_video:, mode:)
+    started_at = monotonic_time
+    errors = {}
+    audio_thread = Thread.new do
+      parallel_audio_branch(
+        bytes: bytes,
+        reference_id: reference_id,
+        content_type: content_type,
+        duration_seconds: duration_seconds,
+        has_audio: has_audio
+      )
+    end
+    visual_thread = Thread.new do
+      parallel_visual_branch(
+        bytes: bytes,
+        reference_id: reference_id,
+        static_video: static_video,
+        mode: mode
+      )
+    end
+
+    audio_branch = resolve_parallel_branch(thread: audio_thread, key: :audio_pipeline, errors: errors) do
+      {
+        audio: empty_audio(reason: "audio_pipeline_parallel_error"),
+        transcript: empty_transcript(reason: "audio_pipeline_parallel_error")
+      }
+    end
+    visual_branch = resolve_parallel_branch(thread: visual_thread, key: :visual_pipeline, errors: errors) do
+      {
+        local_video_intelligence: {
+          data: {},
+          metadata: { reason: "visual_pipeline_parallel_error" }
+        },
+        static_frame_intelligence: {
+          data: {},
+          metadata: { reason: "visual_pipeline_parallel_error" }
+        }
+      }
+    end
+
+    {
+      audio: audio_branch[:audio].is_a?(Hash) ? audio_branch[:audio] : empty_audio(reason: "audio_pipeline_missing"),
+      transcript: audio_branch[:transcript].is_a?(Hash) ? audio_branch[:transcript] : empty_transcript(reason: "transcript_pipeline_missing"),
+      local_video_intelligence: visual_branch[:local_video_intelligence].is_a?(Hash) ? visual_branch[:local_video_intelligence] : { data: {}, metadata: { reason: "visual_pipeline_missing" } },
+      static_frame_intelligence: visual_branch[:static_frame_intelligence].is_a?(Hash) ? visual_branch[:static_frame_intelligence] : { data: {}, metadata: { reason: "visual_pipeline_missing" } },
+      parallel_execution: {
+        enabled: true,
+        branch_count: 2,
+        duration_ms: ((monotonic_time - started_at) * 1000.0).round,
+        errors: errors.presence
+      }.compact
+    }
+  end
+
+  def parallel_audio_branch(bytes:, reference_id:, content_type:, duration_seconds:, has_audio:)
+    audio = extract_audio_if_allowed(
+      bytes: bytes,
+      reference_id: reference_id,
+      content_type: content_type,
+      duration_seconds: duration_seconds,
+      has_audio: has_audio
+    )
+    transcript = transcribe_audio_if_available(audio: audio, reference_id: reference_id)
+    {
+      audio: audio,
+      transcript: transcript
+    }
+  end
+
+  def parallel_visual_branch(bytes:, reference_id:, static_video:, mode:)
+    {
+      local_video_intelligence: extract_local_video_intelligence_if_allowed(
+        bytes: bytes,
+        reference_id: reference_id,
+        static_video: static_video
+      ),
+      static_frame_intelligence: extract_static_frame_intelligence_if_available(
+        mode: mode,
+        reference_id: reference_id,
+        static_video: static_video
+      )
+    }
+  end
+
+  def resolve_parallel_branch(thread:, key:, errors:)
+    thread.value
+  rescue StandardError => e
+    errors[key] = {
+      error_class: e.class.name,
+      error_message: e.message.to_s
+    }
+    yield
+  ensure
+    begin
+      thread&.join(0.01)
+    rescue StandardError
+      nil
+    end
+  end
 
   def build_probe(bytes:, reference_id:, content_type:, mode:)
     probe_metadata = mode.dig(:metadata, :video_probe)
@@ -317,6 +412,12 @@ class PostVideoContextExtractionService
 
     text = parts.join(" ").strip
     text.presence
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  rescue StandardError
+    Time.current.to_f
   end
 
   def normalize_string_array(values, limit:)

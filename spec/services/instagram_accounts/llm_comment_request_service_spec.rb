@@ -91,6 +91,46 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     expect(GenerateLlmCommentJob).not_to have_received(:perform_later)
   end
 
+  it "merges local extraction stages with llm stages for status responses" do
+    event = create_story_event(
+      profile: profile,
+      llm_comment_status: "running",
+      metadata: {
+        "local_story_intelligence" => {
+          "processing_stages" => {
+            "video_analysis" => { "label" => "Video Analysis", "state" => "completed", "progress" => 100 }
+          },
+          "processing_log" => [
+            { "stage" => "video_analysis", "state" => "completed", "message" => "Video analysis completed.", "at" => 2.minutes.ago.iso8601 }
+          ]
+        }
+      },
+      llm_comment_metadata: {
+        "processing_stages" => {
+          "llm_generation" => { "label" => "Generating Comments", "state" => "running", "progress" => 68 }
+        },
+        "processing_log" => [
+          { "stage" => "llm_generation", "state" => "running", "message" => "Generating comments.", "at" => Time.current.iso8601 }
+        ]
+      }
+    )
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: true,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:accepted)
+    expect(result.payload[:status]).to eq("running")
+    stages = result.payload[:llm_processing_stages]
+    expect(stages).to include("video_analysis", "llm_generation")
+    expect(result.payload[:llm_last_stage]).to include("stage" => "llm_generation")
+  end
+
   it "queues generation job when no comment exists and status_only is false" do
     event = create_story_event(profile: profile, llm_comment_status: "failed")
     job = instance_double(ActiveJob::Base, job_id: "job-123")
@@ -107,6 +147,8 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
 
     expect(result.status).to eq(:accepted)
     expect(result.payload).to include(success: true, status: "queued", event_id: event.id, job_id: "job-123", queue_size: 2)
+    expect(result.payload[:llm_processing_stages]).to include("llm_generation")
+    expect(result.payload[:llm_last_stage]).to include("stage" => "queue_wait")
     expect(event.reload.llm_comment_status).to eq("queued")
     expect(event.llm_comment_job_id).to eq("job-123")
     expect(GenerateLlmCommentJob).to have_received(:perform_later).with(

@@ -46,7 +46,7 @@ module Ops
         category: "analysis",
         capsule_name: "ai_profile_analysis_lane",
         concurrency_env: "SIDEKIQ_AI_PROFILE_ANALYSIS_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 6
       },
@@ -72,7 +72,7 @@ module Ops
         category: "orchestration",
         capsule_name: "ai_profile_history_lane",
         concurrency_env: "SIDEKIQ_AI_PROFILE_HISTORY_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 4
       },
@@ -98,7 +98,7 @@ module Ops
         category: "generation",
         capsule_name: "ai_comment_generation_lane",
         concurrency_env: "SIDEKIQ_AI_COMMENT_GENERATION_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 6
       },
@@ -111,7 +111,7 @@ module Ops
         category: "orchestration",
         capsule_name: "ai_pipeline_orchestration_lane",
         concurrency_env: "SIDEKIQ_AI_PIPELINE_ORCHESTRATION_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 5
       },
@@ -124,7 +124,7 @@ module Ops
         category: "analysis",
         capsule_name: "ai_profile_image_description_lane",
         concurrency_env: "SIDEKIQ_AI_PROFILE_IMAGE_DESCRIPTION_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 6
       },
@@ -137,7 +137,7 @@ module Ops
         category: "analysis",
         capsule_name: "ai_visual_lane",
         concurrency_env: "SIDEKIQ_AI_VISUAL_CONCURRENCY",
-        concurrency_default: 3,
+        concurrency_default: 2,
         concurrency_min: 1,
         concurrency_max: 5
       },
@@ -150,7 +150,7 @@ module Ops
         category: "analysis",
         capsule_name: "ai_face_lane",
         concurrency_env: "SIDEKIQ_AI_FACE_CONCURRENCY",
-        concurrency_default: 3,
+        concurrency_default: 2,
         concurrency_min: 1,
         concurrency_max: 5
       },
@@ -176,7 +176,7 @@ module Ops
         category: "analysis",
         capsule_name: "ai_ocr_lane",
         concurrency_env: "SIDEKIQ_AI_OCR_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 4
       },
@@ -189,7 +189,7 @@ module Ops
         category: "analysis",
         capsule_name: "ai_video_lane",
         concurrency_env: "SIDEKIQ_AI_VIDEO_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 4
       },
@@ -202,7 +202,7 @@ module Ops
         category: "enrichment",
         capsule_name: "ai_metadata_lane",
         concurrency_env: "SIDEKIQ_AI_METADATA_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 4
       },
@@ -215,7 +215,7 @@ module Ops
         category: "analysis",
         capsule_name: "story_analysis_lane",
         concurrency_env: "SIDEKIQ_STORY_ANALYSIS_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 4
       }

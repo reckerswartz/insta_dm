@@ -7,12 +7,12 @@ class WorkspacesController < ApplicationController
 
   def actions
     @account = resolved_account
-    @queue_result = load_queue_result(account: @account)
+    @queue_result = load_queue_result(account: @account, enqueue_processing: true)
   end
 
   def actions_feed
     account = resolved_account
-    queue_result = load_queue_result(account: account)
+    queue_result = load_queue_result(account: account, enqueue_processing: false)
 
     render partial: "workspaces/actions_queue_section", locals: { account: account, queue_result: queue_result }
   rescue StandardError => e
@@ -30,11 +30,11 @@ class WorkspacesController < ApplicationController
     current_account
   end
 
-  def load_queue_result(account:)
+  def load_queue_result(account:, enqueue_processing:)
     Workspace::ActionsTodoQueueService.new(
       account: account,
       limit: params.fetch(:limit, DEFAULT_QUEUE_LIMIT),
-      enqueue_processing: true
+      enqueue_processing: enqueue_processing
     ).fetch!
   end
 end

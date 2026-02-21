@@ -333,6 +333,44 @@ module Instagram
         payload
       end
 
+      def ensure_profile_comment_generation_readiness(profile:)
+        target_profile = profile
+        return profile_preparation_blocked(reason_code: "profile_missing", reason: "Profile missing for comment generation.") unless target_profile&.persisted?
+
+        Ai::ProfileCommentPreparationService.new(
+          account: @account,
+          profile: target_profile,
+          analyze_missing_posts: false
+        ).prepare!(force: false)
+      rescue StandardError => e
+        profile_preparation_blocked(reason_code: "profile_preparation_failed", reason: e.message, error_class: e.class.name)
+      end
+
+      def profile_preparation_blocked(reason_code:, reason:, error_class: nil)
+        {
+          "ready_for_comment_generation" => false,
+          "reason_code" => reason_code.to_s,
+          "reason" => reason.to_s,
+          "error_class" => error_class.to_s.presence
+        }.compact
+      end
+
+      def log_automation_event(event:, reason_code: nil, reason: nil, profile: nil, extra: {})
+        payload = {
+          account_id: @account&.id,
+          profile_id: profile&.id,
+          reason_code: reason_code.to_s.presence,
+          reason: reason.to_s.presence
+        }.merge(extra.is_a?(Hash) ? extra : {}).compact
+
+        Ops::StructuredLogger.info(
+          event: "instagram.auto_engagement.#{event}",
+          payload: payload
+        )
+      rescue StandardError
+        nil
+      end
+
       def generate_comment_suggestions_from_analysis!(profile:, payload:, analysis:)
         # Check if profile is ready for comment generation
         readiness = ensure_profile_comment_generation_readiness(profile: profile)

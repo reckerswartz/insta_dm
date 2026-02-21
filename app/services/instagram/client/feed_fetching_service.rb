@@ -315,8 +315,11 @@ module Instagram
     end
 
     def extract_feed_items_from_dom(driver)
-      api_items = fetch_home_feed_items_via_api(limit: 50)
-      return api_items if api_items.present?
+      # API-first extraction when we have an authenticated session bundle.
+      if @account.respond_to?(:cookie_authenticated?) ? @account.cookie_authenticated? : @account.cookies.present?
+        api_items = fetch_home_feed_items_via_api(limit: 50)
+        return api_items if api_items.present?
+      end
 
       # Instagram feed markup changes a lot. We rely on robust link patterns (/p/ and /reel/).
       driver.execute_script(<<~JS)
@@ -447,21 +450,119 @@ module Instagram
 
     def fetch_home_feed_items_via_api(limit: 50)
       n = limit.to_i.clamp(1, 60)
-      body = ig_api_get_json(path: "/api/v1/feed/timeline/?count=#{n}", referer: INSTAGRAM_BASE_URL)
-      return [] unless body.is_a?(Hash)
-
-      # Newer payloads often use feed_items with nested media_or_ad.
-      feed_items = Array(body["feed_items"])
-      raw_items =
-        if feed_items.present?
-          feed_items.map { |entry| entry.is_a?(Hash) ? (entry["media_or_ad"] || entry["media"]) : nil }.compact
-        else
-          Array(body["items"])
-        end
-
-      raw_items.filter_map { |item| extract_home_feed_item_from_api(item) }.first(n)
+      result = fetch_home_feed_items_via_api_paginated(limit: n, max_pages: 1)
+      Array(result[:items]).first(n)
     rescue StandardError
       []
+    end
+
+    def fetch_home_feed_items_via_api_paginated(limit: 60, max_pages: 3, starting_max_id: nil)
+      n = limit.to_i.clamp(1, 200)
+      pages_cap = max_pages.to_i.clamp(1, 20)
+      items = []
+      pages = 0
+      max_id = starting_max_id.to_s.strip.presence
+      more_available = false
+      seen_cursors = Set.new
+      seen_item_keys = Set.new
+
+      while pages < pages_cap
+        break if items.length >= n
+        break if max_id.present? && seen_cursors.include?(max_id)
+
+        seen_cursors << max_id if max_id.present?
+        remaining = n - items.length
+        count = [ remaining, PROFILE_FEED_PAGE_SIZE ].min
+        body = fetch_home_feed_timeline_page(count: count, max_id: max_id)
+        break unless body.is_a?(Hash)
+
+        raw_items = raw_home_feed_items(body)
+        break if raw_items.empty?
+
+        page_no = pages + 1
+        extracted =
+          raw_items.filter_map do |item|
+            row = extract_home_feed_item_from_api(item)
+            next unless row.is_a?(Hash)
+
+            row_metadata = row[:metadata].is_a?(Hash) ? row[:metadata].deep_dup : {}
+            row[:metadata] = row_metadata.merge(
+              "capture_page" => page_no,
+              "capture_cursor" => max_id
+            )
+            row
+          end
+
+        deduped = dedupe_home_feed_capture_items(items: extracted, seen_keys: seen_item_keys, max_items: remaining)
+        items.concat(deduped)
+        pages += 1
+
+        next_max_id = body["next_max_id"].to_s.strip.presence
+        more_available = ActiveModel::Type::Boolean.new.cast(body["more_available"])
+        max_id = next_max_id
+        break if max_id.blank?
+      end
+
+      {
+        source: "api_timeline",
+        pages_fetched: pages,
+        next_max_id: max_id,
+        more_available: more_available,
+        items: items.first(n)
+      }
+    rescue StandardError => e
+      {
+        source: "api_timeline",
+        pages_fetched: 0,
+        next_max_id: nil,
+        more_available: false,
+        error: e.message.to_s,
+        items: []
+      }
+    end
+
+    def fetch_home_feed_timeline_page(count:, max_id: nil)
+      q = [ "count=#{count.to_i.clamp(1, PROFILE_FEED_PAGE_SIZE)}" ]
+      q << "max_id=#{CGI.escape(max_id.to_s)}" if max_id.present?
+      ig_api_get_json(
+        path: "/api/v1/feed/timeline/?#{q.join('&')}",
+        referer: INSTAGRAM_BASE_URL,
+        endpoint: "feed/timeline",
+        retries: 2
+      )
+    rescue StandardError
+      nil
+    end
+
+    def raw_home_feed_items(body)
+      return [] unless body.is_a?(Hash)
+
+      feed_items = Array(body["feed_items"])
+      if feed_items.present?
+        return feed_items.map { |entry| entry.is_a?(Hash) ? (entry["media_or_ad"] || entry["media"]) : nil }.compact
+      end
+
+      Array(body["items"])
+    end
+
+    def dedupe_home_feed_capture_items(items:, seen_keys:, max_items: nil)
+      out = []
+      Array(items).each do |item|
+        next unless item.is_a?(Hash)
+
+        metadata = item[:metadata].is_a?(Hash) ? item[:metadata] : {}
+        key =
+          metadata["media_id"].to_s.presence ||
+          item[:shortcode].to_s.presence ||
+          item[:author_ig_user_id].to_s.presence
+        key ||= Digest::SHA256.hexdigest(item.to_json)
+        next if key.blank? || seen_keys.include?(key)
+
+        seen_keys << key
+        out << item
+        break if max_items.present? && out.length >= max_items.to_i
+      end
+      out
     end
 
     def extract_home_feed_item_from_api(item)

@@ -38,10 +38,12 @@ export default class extends Controller {
       this.pendingEventIds.add(key)
       this.updateStatusDisplaysForEvent(eventId, { status: "queued" })
       this.updateButtonsForEvent(eventId, { disabled: true, label: "Queued", loading: true, eta: null, force: false })
+      this.updateProgressForEvent(eventId, { status: "queued", llm_processing_stages: this.defaultQueuedStages() })
       const result = await this.callGenerateCommentApi(eventId, { force })
       this.processImmediateResult(eventId, result)
     } catch (error) {
       this.pendingEventIds.delete(key)
+      this.updateProgressForEvent(eventId, { status: "failed" })
       this.updateStatusDisplaysForEvent(eventId, { status: "failed" })
       this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
       notifyApp(`Failed to generate comment: ${error.message}`, "error")
@@ -131,6 +133,7 @@ export default class extends Controller {
   processImmediateResult(eventId, result) {
     const status = String(result?.status || "").toLowerCase()
     if (status === "completed") {
+      this.updateProgressForEvent(eventId, result)
       this.stopStatusPolling(eventId)
       this.handleGenerationComplete(eventId, {
         generated_at: result.llm_comment_generated_at,
@@ -167,6 +170,7 @@ export default class extends Controller {
     }
 
     if (status === "failed" || status === "error" || status === "skipped") {
+      this.updateProgressForEvent(eventId, result)
       this.stopStatusPolling(eventId)
       this.pendingEventIds.delete(String(eventId))
       this.updateStatusDisplaysForEvent(eventId, { status })
@@ -219,6 +223,7 @@ export default class extends Controller {
       case "skipped":
         this.stopStatusPolling(eventId)
         this.pendingEventIds.delete(eventId)
+        this.updateProgressForEvent(eventId, data)
         this.updateStatusDisplaysForEvent(eventId, { status: "skipped" })
         this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
         notifyApp(data?.message || "Comment generation skipped: no usable local context.", "notice")
@@ -227,6 +232,7 @@ export default class extends Controller {
       case "failed":
         this.stopStatusPolling(eventId)
         this.pendingEventIds.delete(eventId)
+        this.updateProgressForEvent(eventId, data)
         this.updateStatusDisplaysForEvent(eventId, { status: "failed" })
         this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
         notifyApp(`Failed to generate comment: ${data?.error || data?.message || "Unknown error"}`, "error")
@@ -239,6 +245,7 @@ export default class extends Controller {
   handleGenerationComplete(eventId, data) {
     this.stopStatusPolling(eventId)
     this.pendingEventIds.delete(String(eventId))
+    this.updateProgressForEvent(eventId, data)
     const generatedAt = data?.generated_at || data?.llm_comment_generated_at
     this.updateStatusDisplaysForEvent(eventId, { status: "completed", generatedAt })
     this.updateButtonsForEvent(eventId, { disabled: false, label: "Regenerate", loading: false, eta: null, force: true })
@@ -246,8 +253,20 @@ export default class extends Controller {
   }
 
   updateProgressForEvent(eventId, data) {
-    // Card view is summary-only; detailed stage rendering lives in the modal details flow.
-    return
+    const key = String(eventId || "").trim()
+    if (!key) return
+
+    const status = String(data?.status || "").toLowerCase()
+    const stageMap = this.extractStageMap(data)
+    let entries = this.normalizeStageEntries(stageMap)
+    if (entries.length === 0 && ["queued", "running", "started"].includes(status)) {
+      entries = this.normalizeStageEntries(this.defaultQueuedStages())
+    }
+    const lastStage = this.extractLastStage(data)
+
+    this.findProgressContainersForEvent(key).forEach((container) => {
+      this.renderStageProgress(container, entries, { lastStage, status })
+    })
   }
 
   updateStatusDisplaysForEvent(eventId, { status, generatedAt = null } = {}) {
@@ -296,29 +315,221 @@ export default class extends Controller {
     return { code: "not_started", label: "Ready", chipClass: "idle" }
   }
 
-  renderStageProgress(section, stages) {
-    if (!section) return
-    const entries = Object.entries(stages)
-    if (entries.length === 0) return
-    const html = entries
-      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
-      .map(([, row]) => {
-        const state = String(row?.state || "pending")
-        const label = String(row?.label || "Stage")
-        const progress = Number(row?.progress)
-        const stateLabel = state === "completed" ? "Completed" : (state === "running" ? `In Progress${Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""}` : "Pending")
-        const icon = state === "completed" ? "✓" : (state === "running" ? "…" : "○")
-        return `<li><span>${icon}</span> ${this.esc(label)} - ${this.esc(stateLabel)}</li>`
-      })
-      .join("")
+  findProgressContainersForEvent(eventId) {
+    const escaped = this.escapeSelector(String(eventId))
+    const containers = new Set()
 
-    let container = section.querySelector(".llm-progress-steps")
-    if (!container) {
-      container = document.createElement("ul")
-      container.className = "meta llm-progress-steps"
-      section.appendChild(container)
+    document
+      .querySelectorAll(`.llm-comment-section[data-event-id="${escaped}"]`)
+      .forEach((section) => containers.add(section))
+
+    document
+      .querySelectorAll(`.story-modal .generate-comment-btn[data-event-id="${escaped}"]`)
+      .forEach((button) => {
+        const section = button.closest(".story-modal-section")
+        if (section) containers.add(section)
+      })
+
+    return Array.from(containers)
+  }
+
+  renderStageProgress(container, entries, { lastStage = null, status = "" } = {}) {
+    if (!container) return
+
+    let panel = container.querySelector("[data-role='llm-stage-panel']")
+    if (!panel) {
+      panel = document.createElement("section")
+      panel.className = "llm-stage-progress-panel"
+      panel.dataset.role = "llm-stage-panel"
+      panel.innerHTML = `
+        <p class="meta llm-stage-progress-title"><strong>AI Processing Stages</strong></p>
+        <ul class="meta llm-progress-steps llm-live-progress-steps" data-role="llm-stage-list"></ul>
+        <p class="meta llm-stage-last hidden" data-role="llm-stage-last"></p>
+      `
+      container.appendChild(panel)
     }
-    container.innerHTML = html
+
+    const activeStatus = ["queued", "running", "started", "completed", "failed", "error", "skipped"].includes(String(status))
+    if (!activeStatus && entries.length === 0) {
+      panel.classList.add("hidden")
+      return
+    }
+
+    const list = panel.querySelector("[data-role='llm-stage-list']")
+    if (list) {
+      list.innerHTML = entries
+        .map((entry) => {
+          const visual = this.resolveStageVisual(entry.state, entry.progress)
+          return `
+            <li class="llm-stage-row ${this.esc(visual.className)}" data-stage-key="${this.esc(entry.key)}">
+              <span class="llm-stage-icon">${this.esc(visual.icon)}</span>
+              <span class="llm-stage-label">${this.esc(entry.label)}</span>
+              <span class="llm-stage-state">${this.esc(visual.label)}</span>
+            </li>
+          `
+        })
+        .join("")
+    }
+
+    const lastStageEl = panel.querySelector("[data-role='llm-stage-last']")
+    if (lastStageEl) {
+      const lastStageText = this.formatLastStageText(lastStage)
+      if (lastStageText) {
+        lastStageEl.textContent = `Latest: ${lastStageText}`
+        lastStageEl.classList.remove("hidden")
+      } else {
+        lastStageEl.textContent = ""
+        lastStageEl.classList.add("hidden")
+      }
+    }
+
+    panel.classList.toggle("hidden", entries.length === 0 && !lastStage)
+  }
+
+  extractStageMap(data) {
+    const fromRequest = data?.llm_processing_stages && typeof data.llm_processing_stages === "object" ? data.llm_processing_stages : {}
+    const fromBroadcast = data?.stage_statuses && typeof data.stage_statuses === "object" ? data.stage_statuses : {}
+    return this.mergeStageMaps(fromBroadcast, fromRequest)
+  }
+
+  mergeStageMaps(primary, secondary) {
+    const merged = {}
+    const merge = (input) => {
+      if (!input || typeof input !== "object") return
+      Object.entries(input).forEach(([key, row]) => {
+        if (!row || typeof row !== "object") return
+        const current = merged[key] && typeof merged[key] === "object" ? merged[key] : {}
+        merged[key] = { ...current, ...row }
+      })
+    }
+    merge(primary)
+    merge(secondary)
+    return merged
+  }
+
+  normalizeStageEntries(stageMap) {
+    if (!stageMap || typeof stageMap !== "object") return []
+    return Object.entries(stageMap)
+      .filter(([, row]) => row && typeof row === "object")
+      .map(([key, row]) => {
+        const label = String(row?.label || this.humanizeStageKey(key))
+        const state = String(row?.state || "pending").toLowerCase()
+        const progress = Number(row?.progress)
+        const providedOrder = Number(row?.order)
+        return {
+          key: String(key),
+          label: label || "Stage",
+          state,
+          progress: Number.isFinite(progress) ? progress : null,
+          order: Number.isFinite(providedOrder) ? providedOrder : this.stageSortWeight(key),
+        }
+      })
+      .sort((a, b) => {
+        if (a.order !== b.order) return a.order - b.order
+        return a.label.localeCompare(b.label)
+      })
+  }
+
+  stageSortWeight(stageKey) {
+    const order = {
+      queue_wait: 5,
+      parallel_services: 10,
+      video_analysis: 12,
+      audio_extraction: 14,
+      speech_transcription: 16,
+      ocr_analysis: 20,
+      vision_detection: 24,
+      face_recognition: 28,
+      metadata_extraction: 32,
+      context_matching: 40,
+      prompt_construction: 50,
+      llm_generation: 60,
+      relevance_scoring: 70,
+    }
+    return Number(order[String(stageKey)] || 900)
+  }
+
+  resolveStageVisual(state, progress) {
+    const normalized = String(state || "pending").toLowerCase()
+    if (normalized === "completed") {
+      return { className: "stage-completed", label: "Completed", icon: "done" }
+    }
+    if (normalized === "completed_with_warnings") {
+      return { className: "stage-warning", label: "Completed (Warnings)", icon: "warn" }
+    }
+    if (normalized === "running" || normalized === "started") {
+      const suffix = Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""
+      return { className: "stage-running", label: `In Progress${suffix}`, icon: "run" }
+    }
+    if (normalized === "queued") {
+      return { className: "stage-queued", label: "Queued", icon: "queue" }
+    }
+    if (normalized === "failed" || normalized === "error") {
+      return { className: "stage-failed", label: "Failed", icon: "fail" }
+    }
+    if (normalized === "skipped") {
+      return { className: "stage-skipped", label: "Skipped", icon: "skip" }
+    }
+    return { className: "stage-pending", label: "Pending", icon: "wait" }
+  }
+
+  extractLastStage(data) {
+    const explicit = data?.llm_last_stage
+    if (explicit && typeof explicit === "object") return explicit
+
+    if (String(data?.stage || "").trim().length > 0 || String(data?.message || "").trim().length > 0) {
+      return {
+        stage: data?.stage,
+        state: data?.status,
+        message: data?.message,
+        at: data?.at || data?.updated_at || null,
+      }
+    }
+
+    return null
+  }
+
+  formatLastStageText(row) {
+    if (!row || typeof row !== "object") return ""
+    const stage = String(row?.stage || row?.label || "").trim()
+    const state = String(row?.state || "").trim().toLowerCase()
+    const message = String(row?.message || "").trim()
+    const timeValue = row?.at || row?.updated_at || null
+
+    const stageText = stage ? this.humanizeStageKey(stage) : ""
+    const stateText = this.resolveStageVisual(state).label
+    const at = this.formatDate(timeValue)
+    const segments = []
+    if (stageText) segments.push(stageText)
+    if (stateText && stateText !== "Pending") segments.push(stateText)
+    if (message) segments.push(message)
+    if (at !== "-") segments.push(at)
+    return segments.join(" | ")
+  }
+
+  defaultQueuedStages() {
+    return {
+      queue_wait: { label: "Queue Wait", state: "queued", progress: 0, order: 5 },
+      ocr_analysis: { label: "OCR Analysis", state: "pending", progress: 0, order: 20 },
+      vision_detection: { label: "Video/Image Analysis", state: "pending", progress: 0, order: 24 },
+      face_recognition: { label: "Face Recognition", state: "pending", progress: 0, order: 28 },
+      metadata_extraction: { label: "Metadata Extraction", state: "pending", progress: 0, order: 32 },
+      context_matching: { label: "Context Matching", state: "pending", progress: 0, order: 40 },
+      prompt_construction: { label: "Prompt Construction", state: "pending", progress: 0, order: 50 },
+      llm_generation: { label: "Comment Generation", state: "pending", progress: 0, order: 60 },
+      relevance_scoring: { label: "Relevance Scoring", state: "pending", progress: 0, order: 70 },
+    }
+  }
+
+  humanizeStageKey(value) {
+    const key = String(value || "").trim()
+    if (!key) return "Stage"
+    return key
+      .replace(/[_-]+/g, " ")
+      .split(" ")
+      .filter(Boolean)
+      .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+      .join(" ")
   }
 
   startStatusPolling(eventId) {

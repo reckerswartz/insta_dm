@@ -166,6 +166,8 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     assert_equal 1, transcriber.calls
     assert_equal 0, local_client.calls
     assert_equal "image", understanding.calls.first[:media_type]
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(result.dig(:metadata, :parallel_execution, :enabled))
+    assert_equal 2, result.dig(:metadata, :parallel_execution, :branch_count).to_i
     assert_includes result[:context_summary].to_s.downcase, "static"
   end
 
@@ -236,6 +238,8 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     assert_equal 1, probe.calls
     assert_equal 1, local_client.calls
     assert_equal 0, audio.calls
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(result.dig(:metadata, :parallel_execution, :enabled))
+    assert_equal 2, result.dig(:metadata, :parallel_execution, :branch_count).to_i
     assert_includes result[:topics], "mountain"
     assert_includes result[:hashtags], "#trail"
     assert_includes result[:mentions], "@buddy"

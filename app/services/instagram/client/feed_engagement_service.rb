@@ -1,14 +1,15 @@
 module Instagram
   class Client
     module FeedEngagementService
-      # Captures "home feed" post identifiers that appear while scrolling.
+      # Captures "home feed" post identifiers with API-first retrieval.
       #
       # This does NOT auto-like or auto-comment. It only records posts, downloads media (temporarily),
       # and queues analysis. Interaction should remain a user-confirmed action in the UI.
       def capture_home_feed_posts!(rounds: 4, delay_seconds: 45, max_new: 20)
-        rounds_i = rounds.to_i.clamp(1, 25)
+        rounds_i = rounds.to_i.clamp(1, 12)
         delay_i = delay_seconds.to_i.clamp(10, 120)
         max_new_i = max_new.to_i.clamp(1, 200)
+        fetch_limit = [ max_new_i * 3, max_new_i ].max.clamp(12, 120)
 
         with_recoverable_session(label: "feed_capture") do
           with_authenticated_driver do |driver|
@@ -16,6 +17,8 @@ module Instagram
               driver.navigate.to(INSTAGRAM_BASE_URL)
               wait_for(driver, css: "body", timeout: 12)
               dismiss_common_overlays!(driver)
+              retrieval = fetch_home_feed_items_for_capture(driver: driver, max_items: fetch_limit, max_pages: rounds_i)
+              items = Array(retrieval[:items])
 
               seen = 0
               new_posts = 0
@@ -25,92 +28,77 @@ module Instagram
               skipped_reasons = Hash.new(0)
               processed_shortcodes = Set.new
 
-              rounds_i.times do |i|
-                dismiss_common_overlays!(driver)
+              items.each do |it|
+                shortcode = it[:shortcode].to_s.strip
+                next if shortcode.blank?
+                next if processed_shortcodes.include?(shortcode)
+                processed_shortcodes << shortcode
 
-                items = extract_feed_items_from_dom(driver)
-                round_num = i + 1
+                seen += 1
+                now = Time.current
+                metadata = it[:metadata].is_a?(Hash) ? it[:metadata] : {}
+                round_num = metadata["capture_page"].to_i
+                round_num = 1 if round_num <= 0
 
-                items.each do |it|
-                  shortcode = it[:shortcode].to_s.strip
-                  next if shortcode.blank?
-                  next if processed_shortcodes.include?(shortcode)
-                  processed_shortcodes << shortcode
+                profile_resolution = resolve_feed_profile_for_action(item: it)
+                profile = profile_resolution[:profile]
+                skip_reason = profile_resolution[:reason].to_s.presence if profile.nil?
+                skip_reason ||= feed_item_skip_reason(item: it)
 
-                  seen += 1
-                  now = Time.current
-
-                  profile_resolution = resolve_feed_profile_for_action(item: it)
-                  profile = profile_resolution[:profile]
-                  skip_reason = profile_resolution[:reason]
-
-                  cache_post = persist_feed_cache_post!(item: it, profile: profile, round: round_num, captured_at: now)
-
-                  if profile.nil?
-                    skipped_posts += 1
-                    skipped_reasons[skip_reason.to_s.presence || "profile_missing"] += 1
-                    annotate_feed_cache_skip_reason!(post: cache_post, reason: skip_reason.to_s.presence || "profile_missing")
-                    next
-                  end
-
-                  item_skip_reason = feed_item_skip_reason(item: it)
-                  if item_skip_reason
-                    skipped_posts += 1
-                    skipped_reasons[item_skip_reason] += 1
-                    annotate_feed_cache_skip_reason!(post: cache_post, reason: item_skip_reason)
-                    next
-                  end
-
+                if skip_reason.blank? && profile
                   policy = Instagram::ProfileScanPolicy.new(profile: profile).decision
                   if ActiveModel::Type::Boolean.new.cast(policy[:skip_post_analysis])
                     reason_code = policy[:reason_code].to_s.presence || "policy_blocked"
-                    reason = "profile_policy_#{reason_code}"
-                    skipped_posts += 1
-                    skipped_reasons[reason] += 1
-                    annotate_feed_cache_skip_reason!(post: cache_post, reason: reason)
-                    next
+                    skip_reason = "profile_policy_#{reason_code}"
                   end
+                end
 
-                  profile_post_result = persist_feed_profile_post!(
-                    profile: profile,
-                    item: it,
-                    round: round_num,
-                    captured_at: now
-                  )
-                  profile_post = profile_post_result[:post]
+                persist_feed_cache_post!(
+                  item: it,
+                  profile: profile,
+                  round: round_num,
+                  captured_at: now,
+                  skip_reason: skip_reason
+                )
 
-                  if profile_post_result[:created]
-                    new_posts += 1
-                    record_feed_profile_capture_event!(profile: profile, post: profile_post, captured_at: now)
-                  elsif profile_post_result[:updated]
-                    updated_posts += 1
-                  end
-
-                  enqueue_result = enqueue_workspace_processing_for_feed_post!(profile: profile, post: profile_post)
-                  queued_actions += 1 if ActiveModel::Type::Boolean.new.cast(enqueue_result[:enqueued])
-
-                  break if new_posts >= max_new_i
-                rescue StandardError => e
+                if skip_reason.present?
                   skipped_posts += 1
-                  skipped_reasons["item_processing_error"] += 1
-                  Ops::StructuredLogger.warn(
-                    event: "feed_capture_home.item_failed",
-                    payload: {
-                      instagram_account_id: @account.id,
-                      shortcode: it[:shortcode].to_s,
-                      author_username: it[:author_username].to_s,
-                      error_class: e.class.name,
-                      error_message: e.message.to_s.byteslice(0, 220)
-                    }
-                  )
+                  skipped_reasons[skip_reason] += 1
                   next
                 end
 
-                break if new_posts >= max_new_i
+                profile_post_result = persist_feed_profile_post!(
+                  profile: profile,
+                  item: it,
+                  round: round_num,
+                  captured_at: now
+                )
+                profile_post = profile_post_result[:post]
 
-                # Scroll down a bit.
-                driver.execute_script("window.scrollBy(0, Math.max(700, window.innerHeight * 0.85));")
-                sleep(delay_i)
+                if profile_post_result[:created]
+                  new_posts += 1
+                  record_feed_profile_capture_event!(profile: profile, post: profile_post, captured_at: now)
+                elsif profile_post_result[:updated]
+                  updated_posts += 1
+                end
+
+                enqueue_result = enqueue_workspace_processing_for_feed_post!(profile: profile, post: profile_post)
+                queued_actions += 1 if ActiveModel::Type::Boolean.new.cast(enqueue_result[:enqueued])
+                break if new_posts >= max_new_i
+              rescue StandardError => e
+                skipped_posts += 1
+                skipped_reasons["item_processing_error"] += 1
+                Ops::StructuredLogger.warn(
+                  event: "feed_capture_home.item_failed",
+                  payload: {
+                    instagram_account_id: @account.id,
+                    shortcode: it[:shortcode].to_s,
+                    author_username: it[:author_username].to_s,
+                    error_class: e.class.name,
+                    error_message: e.message.to_s.byteslice(0, 220)
+                  }
+                )
+                next
               end
 
               result = {
@@ -119,7 +107,11 @@ module Instagram
                 updated_posts: updated_posts,
                 queued_actions: queued_actions,
                 skipped_posts: skipped_posts,
-                skipped_reasons: skipped_reasons.sort.to_h
+                skipped_reasons: skipped_reasons.sort.to_h,
+                fetched_items: items.length,
+                fetch_source: retrieval[:source].to_s.presence || "unknown",
+                fetch_pages: retrieval[:pages_fetched].to_i,
+                fetch_error: retrieval[:error].to_s.presence
               }
 
               Ops::StructuredLogger.info(
@@ -217,6 +209,42 @@ module Instagram
       end
 
       private
+
+      def fetch_home_feed_items_for_capture(driver:, max_items:, max_pages:)
+        api_error = nil
+        if feed_capture_api_eligible?
+          api_result = fetch_home_feed_items_via_api_paginated(limit: max_items, max_pages: max_pages)
+          return api_result if Array(api_result[:items]).any?
+          api_error = api_result[:error].to_s.presence
+        end
+
+        dom_items = Array(extract_feed_items_from_dom(driver)).first(max_items.to_i)
+        {
+          source: "dom_fallback",
+          pages_fetched: dom_items.any? ? 1 : 0,
+          more_available: false,
+          next_max_id: nil,
+          error: api_error,
+          items: dom_items
+        }
+      rescue StandardError => e
+        {
+          source: "dom_fallback",
+          pages_fetched: 0,
+          more_available: false,
+          next_max_id: nil,
+          error: e.message.to_s,
+          items: []
+        }
+      end
+
+      def feed_capture_api_eligible?
+        return true if @account.respond_to?(:cookie_authenticated?) && @account.cookie_authenticated?
+
+        @account.cookies.present?
+      rescue StandardError
+        false
+      end
 
       def resolve_feed_profile_for_action(item:)
         username = normalize_username(item[:author_username].to_s)
@@ -342,7 +370,7 @@ module Instagram
         nil
       end
 
-      def persist_feed_cache_post!(item:, profile:, round:, captured_at:)
+      def persist_feed_cache_post!(item:, profile:, round:, captured_at:, skip_reason: nil)
         shortcode = item[:shortcode].to_s.strip
         return nil if shortcode.blank?
 
@@ -363,11 +391,17 @@ module Instagram
           "source" => "feed_capture_home",
           "round" => round.to_i,
           "captured_at" => captured_at.utc.iso8601(3),
-          "author_ig_user_id" => post.author_ig_user_id.to_s.presence
+          "author_ig_user_id" => post.author_ig_user_id.to_s.presence,
+          "skip_reason" => skip_reason.to_s.presence,
+          "skip_recorded_at" => skip_reason.to_s.present? ? captured_at.utc.iso8601(3) : nil
         )
+        if skip_reason.to_s.blank?
+          post.metadata.delete("skip_reason")
+          post.metadata.delete("skip_recorded_at")
+        end
         post.save! if post.changed?
 
-        if is_new
+        if is_new && skip_reason.to_s.blank?
           DownloadInstagramPostMediaJob.perform_later(instagram_post_id: post.id) if post.media_url.present?
           AnalyzeInstagramPostJob.perform_later(instagram_post_id: post.id)
         end

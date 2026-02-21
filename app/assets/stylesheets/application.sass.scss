@@ -1461,6 +1461,111 @@ pre {
   color: #9fc0ef;
 }
 
+.llm-stage-progress-panel {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid rgba(120, 158, 228, 0.26);
+  border-radius: 8px;
+  background: rgba(11, 22, 44, 0.46);
+}
+
+.llm-stage-progress-title,
+.llm-stage-last {
+  margin: 0;
+}
+
+.llm-live-progress-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.llm-stage-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 7px;
+  border: 1px solid rgba(122, 159, 224, 0.2);
+  background: rgba(18, 30, 56, 0.54);
+}
+
+.llm-stage-icon {
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #a9c5f4;
+}
+
+.llm-stage-label {
+  color: #e2ecff;
+  font-size: 0.78rem;
+}
+
+.llm-stage-state {
+  color: #b6c9ea;
+  font-size: 0.72rem;
+  text-align: right;
+}
+
+.llm-stage-row.stage-completed {
+  border-color: rgba(46, 204, 143, 0.35);
+  background: rgba(14, 47, 34, 0.56);
+}
+
+.llm-stage-row.stage-completed .llm-stage-state,
+.llm-stage-row.stage-completed .llm-stage-icon {
+  color: #bcf8d7;
+}
+
+.llm-stage-row.stage-warning {
+  border-color: rgba(245, 185, 66, 0.38);
+  background: rgba(63, 42, 10, 0.56);
+}
+
+.llm-stage-row.stage-warning .llm-stage-state,
+.llm-stage-row.stage-warning .llm-stage-icon {
+  color: #ffe2a6;
+}
+
+.llm-stage-row.stage-running {
+  border-color: rgba(106, 169, 255, 0.42);
+  background: rgba(16, 45, 88, 0.56);
+}
+
+.llm-stage-row.stage-running .llm-stage-state,
+.llm-stage-row.stage-running .llm-stage-icon {
+  color: #d5e9ff;
+}
+
+.llm-stage-row.stage-queued {
+  border-color: rgba(245, 185, 66, 0.32);
+  background: rgba(51, 36, 12, 0.5);
+}
+
+.llm-stage-row.stage-queued .llm-stage-state,
+.llm-stage-row.stage-queued .llm-stage-icon {
+  color: #ffdca1;
+}
+
+.llm-stage-row.stage-failed,
+.llm-stage-row.stage-skipped {
+  border-color: rgba(255, 95, 109, 0.38);
+  background: rgba(63, 19, 29, 0.56);
+}
+
+.llm-stage-row.stage-failed .llm-stage-state,
+.llm-stage-row.stage-failed .llm-stage-icon,
+.llm-stage-row.stage-skipped .llm-stage-state,
+.llm-stage-row.stage-skipped .llm-stage-icon {
+  color: #ffc6ce;
+}
+
 .error-text {
   margin: 0;
   color: #ffacb5;

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+: "${RAILS_MAX_THREADS:=40}"
+export RAILS_MAX_THREADS
+
 bundle exec sidekiq -C config/sidekiq.yml "$@"

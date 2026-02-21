@@ -16,7 +16,8 @@ module InstagramProfileEvent::Broadcastable
           job_id: job_id.to_s.presence || llm_comment_job_id,
           message: "Comment generation queued",
           estimated_seconds: estimated_generation_seconds(queue_state: true),
-          progress: 5
+          progress: 5,
+          stage_statuses: llm_stage_statuses_for_broadcast
         }
       )
     rescue StandardError
@@ -36,7 +37,7 @@ module InstagramProfileEvent::Broadcastable
           model: llm_comment_model,
           provider: llm_comment_provider,
           relevance_score: llm_comment_relevance_score,
-          stage_statuses: respond_to?(:llm_processing_stages) ? llm_processing_stages : {},
+          stage_statuses: llm_stage_statuses_for_broadcast,
           generation_result: generation_result
         }
       )
@@ -55,7 +56,7 @@ module InstagramProfileEvent::Broadcastable
           message: "Generating comment...",
           estimated_seconds: estimated_generation_seconds(queue_state: false),
           progress: 12,
-          stage_statuses: respond_to?(:llm_processing_stages) ? llm_processing_stages : {}
+          stage_statuses: llm_stage_statuses_for_broadcast
         }
       )
     rescue StandardError
@@ -71,7 +72,8 @@ module InstagramProfileEvent::Broadcastable
           event_id: id,
           status: "error",
           error: error_message,
-          message: "Failed to generate comment"
+          message: "Failed to generate comment",
+          stage_statuses: llm_stage_statuses_for_broadcast
         }
       )
     rescue StandardError
@@ -88,7 +90,8 @@ module InstagramProfileEvent::Broadcastable
           status: "skipped",
           message: message.to_s.presence || "Comment generation skipped",
           reason: reason.to_s.presence,
-          source: source.to_s.presence
+          source: source.to_s.presence,
+          stage_statuses: llm_stage_statuses_for_broadcast
         }.compact
       )
     rescue StandardError
@@ -107,7 +110,7 @@ module InstagramProfileEvent::Broadcastable
           message: message.to_s,
           progress: progress.to_i.clamp(0, 100),
           estimated_seconds: estimated_generation_seconds(queue_state: false),
-          stage_statuses: stage_statuses || (respond_to?(:llm_processing_stages) ? llm_processing_stages : {}),
+          stage_statuses: llm_stage_statuses_for_broadcast(override: stage_statuses),
           details: details
         }
       )
@@ -157,4 +160,35 @@ module InstagramProfileEvent::Broadcastable
     end
 
   end
+
+  def llm_stage_statuses_for_broadcast(override: nil)
+    current = if override.is_a?(Hash)
+      override
+    elsif respond_to?(:llm_processing_stages)
+      llm_processing_stages
+    else
+      {}
+    end
+
+    merge_stage_hashes(local_processing_stages_for_broadcast, current)
+  rescue StandardError
+    current.is_a?(Hash) ? current : {}
+  end
+
+  def local_processing_stages_for_broadcast
+    raw = metadata.is_a?(Hash) ? metadata : {}
+    stages = raw.dig("local_story_intelligence", "processing_stages")
+    stages.is_a?(Hash) ? stages : {}
+  rescue StandardError
+    {}
+  end
+
+  def merge_stage_hashes(primary, secondary)
+    base = primary.is_a?(Hash) ? primary.deep_dup : {}
+    overlay = secondary.is_a?(Hash) ? secondary.deep_dup : {}
+    base.deep_merge(overlay)
+  rescue StandardError
+    secondary.is_a?(Hash) ? secondary : {}
+  end
+  private :llm_stage_statuses_for_broadcast, :local_processing_stages_for_broadcast, :merge_stage_hashes
 end

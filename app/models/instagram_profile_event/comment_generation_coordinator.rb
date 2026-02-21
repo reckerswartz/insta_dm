@@ -3,6 +3,7 @@ require 'active_support/concern'
 module InstagramProfileEvent::CommentGenerationCoordinator
   extend ActiveSupport::Concern
   LLM_PROCESSING_STAGE_TEMPLATE = {
+    "queue_wait" => { "group" => "orchestration", "label" => "Queue Wait", "state" => "pending", "progress" => 0 },
     "ocr_analysis" => { "group" => "media_analysis", "label" => "OCR Analysis", "state" => "pending", "progress" => 0 },
     "vision_detection" => { "group" => "media_analysis", "label" => "Vision Detection", "state" => "pending", "progress" => 0 },
     "face_recognition" => { "group" => "media_analysis", "label" => "Face Recognition", "state" => "pending", "progress" => 0 },
@@ -21,18 +22,50 @@ module InstagramProfileEvent::CommentGenerationCoordinator
       %w[queued running].include?(llm_comment_status.to_s)
     end
     def queue_llm_comment_generation!(job_id: nil)
+      metadata = llm_comment_metadata.is_a?(Hash) ? llm_comment_metadata.deep_dup : {}
+      stages = initialized_processing_stages.deep_merge(
+        metadata["processing_stages"].is_a?(Hash) ? metadata["processing_stages"] : {}
+      )
+      now = Time.current.iso8601(3)
+      if stages["queue_wait"].is_a?(Hash)
+        stages["queue_wait"]["state"] = "queued"
+        stages["queue_wait"]["progress"] = 0
+        stages["queue_wait"]["message"] = "Queued and waiting for available LLM worker."
+        stages["queue_wait"]["updated_at"] = now
+      end
+      log = Array(metadata["processing_log"]).last(40)
+      log << {
+        "stage" => "queue_wait",
+        "state" => "queued",
+        "progress" => 0,
+        "message" => "Queued and waiting for available LLM worker.",
+        "at" => now
+      }
+      metadata["processing_stages"] = stages
+      metadata["processing_log"] = log.last(40)
+
       update!(
         llm_comment_status: "queued",
         llm_comment_job_id: job_id.to_s.presence || llm_comment_job_id,
-        llm_comment_last_error: nil
+        llm_comment_last_error: nil,
+        llm_comment_metadata: metadata
       )
 
       broadcast_llm_comment_generation_queued(job_id: job_id)
     end
     def mark_llm_comment_running!(job_id: nil)
       metadata = llm_comment_metadata.is_a?(Hash) ? llm_comment_metadata.deep_dup : {}
-      metadata["processing_stages"] = initialized_processing_stages
-      metadata["processing_log"] = []
+      stages = initialized_processing_stages.deep_merge(
+        metadata["processing_stages"].is_a?(Hash) ? metadata["processing_stages"] : {}
+      )
+      if stages["queue_wait"].is_a?(Hash)
+        stages["queue_wait"]["state"] = "completed"
+        stages["queue_wait"]["progress"] = 100
+        stages["queue_wait"]["message"] = "Worker claimed job and generation started."
+        stages["queue_wait"]["updated_at"] = Time.current.iso8601(3)
+      end
+      metadata["processing_stages"] = stages
+      metadata["processing_log"] = Array(metadata["processing_log"]).last(40)
       update!(
         llm_comment_status: "running",
         llm_comment_job_id: job_id.to_s.presence || llm_comment_job_id,

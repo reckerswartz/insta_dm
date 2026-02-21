@@ -1,6 +1,6 @@
 # Background Jobs and Schedules
 
-Last updated: 2026-02-20
+Last updated: 2026-02-21
 
 ## Queue Topology
 
@@ -31,6 +31,13 @@ Dedicated capsules (`config/initializers/sidekiq.rb`):
 - `bin/dev` validates local AI availability before worker startup when local AI is required.
 - Default mode is `START_LOCAL_AI=auto` with `USE_LOCAL_AI_MICROSERVICE=true`, so the dev supervisor will attempt `bin/local_ai_services start` and fail fast if health checks do not pass.
 - `bin/dev stop` / `bin/dev restart` only stop local AI services when they were started by that `bin/dev` session (ownership-safe shutdown).
+
+## Local Worker Capacity Baseline
+
+- Baseline Sidekiq concurrency defaults now target about **34 worker threads total** across the default pool and dedicated capsules.
+- This profile is tuned for a local machine with ~20+ CPU threads and ~16 GB RAM, while keeping headroom for Rails web, local AI microservice, and Ollama.
+- `bin/jobs` and the `worker` process in `Procfile.dev` now default `RAILS_MAX_THREADS=40` so Active Record pool capacity can keep pace with Sidekiq worker concurrency.
+- Override any lane with `SIDEKIQ_*_CONCURRENCY` env vars when your machine is smaller/larger.
 
 Useful checks:
 

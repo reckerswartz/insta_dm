@@ -1383,6 +1383,7 @@ module Instagram
         ep = endpoint.to_s
         return 0.7 if ep.include?("direct_v2")
         return 0.45 if ep.include?("feed/reels_media")
+        return 0.4 if ep.include?("feed/timeline")
         return 0.35 if ep.include?("users/web_profile_info")
 
         0.2

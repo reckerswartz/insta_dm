@@ -8,6 +8,8 @@ RSpec.describe Instagram::Client do
       client = described_class.new(account: account)
 
       expect(client.method(:auto_engage_first_story!).owner.name).to eq("Instagram::Client::AutoEngagementSupport")
+      expect(client.method(:ensure_profile_comment_generation_readiness).owner.name).to eq("Instagram::Client::AutoEngagementSupport")
+      expect(client.method(:log_automation_event).owner.name).to eq("Instagram::Client::AutoEngagementSupport")
       expect(client.method(:find_home_story_open_target).owner.name).to eq("Instagram::Client::StoryNavigationSupport")
       expect(client.method(:download_media_with_metadata).owner.name).to eq("Instagram::Client::MediaDownloadSupport")
       expect(client.method(:comment_on_story_via_api!).owner.name).to eq("Instagram::Client::StoryInteractionSupport")

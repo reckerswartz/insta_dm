@@ -127,6 +127,8 @@ RSpec.describe Instagram::Client do
     expect(result[:skipped_reasons]["profile_policy_non_personal_profile_page"]).to eq(1)
     expect(page_like.instagram_profile_posts.count).to eq(0)
     expect(unfollowed.instagram_profile_posts.count).to eq(0)
+    expect(DownloadInstagramPostMediaJob).not_to have_received(:perform_later)
+    expect(AnalyzeInstagramPostJob).not_to have_received(:perform_later)
     expect(WorkspaceProcessActionsTodoPostJob).not_to have_received(:enqueue_if_needed!)
   end
 
@@ -174,6 +176,8 @@ RSpec.describe Instagram::Client do
     expect(result[:skipped_posts]).to eq(1)
     expect(result[:skipped_reasons]["suggested_or_irrelevant"]).to eq(1)
     expect(profile.instagram_profile_posts.count).to eq(0)
+    expect(DownloadInstagramPostMediaJob).not_to have_received(:perform_later)
+    expect(AnalyzeInstagramPostJob).not_to have_received(:perform_later)
     expect(WorkspaceProcessActionsTodoPostJob).not_to have_received(:enqueue_if_needed!)
   end
 

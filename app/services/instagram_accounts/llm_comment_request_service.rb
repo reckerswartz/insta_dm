@@ -55,7 +55,9 @@ module InstagramAccounts
           llm_comment_relevance_score: event.llm_comment_relevance_score,
           llm_ranked_candidates: Array(llm_meta["ranked_candidates"]).first(8),
           llm_relevance_breakdown: llm_meta["selected_relevance_breakdown"].is_a?(Hash) ? llm_meta["selected_relevance_breakdown"] : {},
-          llm_processing_stages: llm_meta["processing_stages"].is_a?(Hash) ? llm_meta["processing_stages"] : {},
+          llm_processing_stages: merged_llm_processing_stages(event),
+          llm_processing_log: merged_llm_processing_log(event),
+          llm_last_stage: merged_llm_last_stage(event),
           llm_manual_review_reason: llm_meta["manual_review_reason"].to_s.presence,
           llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(llm_meta["auto_post_allowed"])
         },
@@ -114,6 +116,9 @@ module InstagramAccounts
             job_id: job.job_id,
             estimated_seconds: llm_comment_estimated_seconds(event: event, include_queue: true),
             queue_size: ai_queue_size,
+            llm_processing_stages: merged_llm_processing_stages(event),
+            llm_processing_log: merged_llm_processing_log(event),
+            llm_last_stage: merged_llm_last_stage(event),
             forced: force
           },
           status: :accepted
@@ -144,14 +149,16 @@ module InstagramAccounts
           event_id: event.id,
           job_id: event.llm_comment_job_id,
           estimated_seconds: llm_comment_estimated_seconds(event: event),
-          queue_size: ai_queue_size
+          queue_size: ai_queue_size,
+          llm_processing_stages: merged_llm_processing_stages(event),
+          llm_processing_log: merged_llm_processing_log(event),
+          llm_last_stage: merged_llm_last_stage(event)
         },
         status: :accepted
       )
     end
 
     def status_result(event)
-      llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       Result.new(
         payload: {
           success: true,
@@ -159,11 +166,60 @@ module InstagramAccounts
           event_id: event.id,
           estimated_seconds: llm_comment_estimated_seconds(event: event),
           queue_size: ai_queue_size,
-          llm_processing_stages: llm_meta["processing_stages"].is_a?(Hash) ? llm_meta["processing_stages"] : {},
-          llm_last_stage: Array(llm_meta["processing_log"]).last
+          llm_processing_stages: merged_llm_processing_stages(event),
+          llm_processing_log: merged_llm_processing_log(event),
+          llm_last_stage: merged_llm_last_stage(event)
         },
         status: :ok
       )
+    end
+
+    def merged_llm_processing_stages(event)
+      merge_stage_hashes(
+        local_processing_stages(event),
+        llm_processing_stages(event)
+      )
+    end
+
+    def merged_llm_processing_log(event)
+      (local_processing_log(event) + llm_processing_log(event)).last(40)
+    end
+
+    def merged_llm_last_stage(event)
+      merged_llm_processing_log(event).last
+    end
+
+    def llm_processing_stages(event)
+      llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
+      llm_meta["processing_stages"].is_a?(Hash) ? llm_meta["processing_stages"] : {}
+    end
+
+    def llm_processing_log(event)
+      llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
+      Array(llm_meta["processing_log"])
+    end
+
+    def local_processing_stages(event)
+      event_meta = event.metadata.is_a?(Hash) ? event.metadata : {}
+      local = event_meta.dig("local_story_intelligence", "processing_stages")
+      local.is_a?(Hash) ? local : {}
+    rescue StandardError
+      {}
+    end
+
+    def local_processing_log(event)
+      event_meta = event.metadata.is_a?(Hash) ? event.metadata : {}
+      Array(event_meta.dig("local_story_intelligence", "processing_log"))
+    rescue StandardError
+      []
+    end
+
+    def merge_stage_hashes(primary, secondary)
+      base = primary.is_a?(Hash) ? primary.deep_dup : {}
+      overlay = secondary.is_a?(Hash) ? secondary.deep_dup : {}
+      base.deep_merge(overlay)
+    rescue StandardError
+      secondary.is_a?(Hash) ? secondary : {}
     end
 
     def llm_comment_estimated_seconds(event:, include_queue: false)

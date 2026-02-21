@@ -33,16 +33,16 @@ Sidekiq.configure_server do |config|
 
   # Isolate local compute-heavy workloads from general queue throughput.
   if config.respond_to?(:capsule)
-    frame_concurrency = ENV.fetch("SIDEKIQ_FRAME_CONCURRENCY", 2).to_i.clamp(1, 4)
-    story_auto_reply_orchestration_concurrency = ENV.fetch("SIDEKIQ_STORY_AUTO_REPLY_ORCHESTRATION_CONCURRENCY", 2).to_i.clamp(1, 4)
-    profile_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_PROFILE_STORY_ORCHESTRATION_CONCURRENCY", 2).to_i.clamp(1, 4)
+    frame_concurrency = ENV.fetch("SIDEKIQ_FRAME_CONCURRENCY", 1).to_i.clamp(1, 4)
+    story_auto_reply_orchestration_concurrency = ENV.fetch("SIDEKIQ_STORY_AUTO_REPLY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 4)
+    profile_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_PROFILE_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 4)
     home_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 3)
-    home_story_sync_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_SYNC_CONCURRENCY", 2).to_i.clamp(1, 4)
-    story_processing_concurrency = ENV.fetch("SIDEKIQ_STORY_PROCESSING_CONCURRENCY", 2).to_i.clamp(1, 4)
-    story_preview_generation_concurrency = ENV.fetch("SIDEKIQ_STORY_PREVIEW_GENERATION_CONCURRENCY", 2).to_i.clamp(1, 4)
-    story_replies_concurrency = ENV.fetch("SIDEKIQ_STORY_REPLIES_CONCURRENCY", 2).to_i.clamp(1, 4)
+    home_story_sync_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_SYNC_CONCURRENCY", 1).to_i.clamp(1, 4)
+    story_processing_concurrency = ENV.fetch("SIDEKIQ_STORY_PROCESSING_CONCURRENCY", 1).to_i.clamp(1, 4)
+    story_preview_generation_concurrency = ENV.fetch("SIDEKIQ_STORY_PREVIEW_GENERATION_CONCURRENCY", 1).to_i.clamp(1, 4)
+    story_replies_concurrency = ENV.fetch("SIDEKIQ_STORY_REPLIES_CONCURRENCY", 1).to_i.clamp(1, 4)
     profile_reevaluation_concurrency = ENV.fetch("SIDEKIQ_PROFILE_REEVALUATION_CONCURRENCY", 1).to_i.clamp(1, 2)
-    story_validation_concurrency = ENV.fetch("SIDEKIQ_STORY_VALIDATION_CONCURRENCY", 2).to_i.clamp(1, 4)
+    story_validation_concurrency = ENV.fetch("SIDEKIQ_STORY_VALIDATION_CONCURRENCY", 1).to_i.clamp(1, 4)
     Ops::AiServiceQueueRegistry.sidekiq_capsules.each do |capsule|
       config.capsule(capsule[:capsule_name]) do |cap|
         cap.concurrency = capsule[:concurrency].to_i
