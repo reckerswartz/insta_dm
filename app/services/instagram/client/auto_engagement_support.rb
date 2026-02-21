@@ -334,6 +334,17 @@ module Instagram
       end
 
       def generate_comment_suggestions_from_analysis!(profile:, payload:, analysis:)
+        # Check if profile is ready for comment generation
+        readiness = ensure_profile_comment_generation_readiness(profile: profile)
+        unless readiness&.dig("ready_for_comment_generation")
+          log_automation_event(
+            event: "comment_generation_blocked",
+            reason_code: readiness&.dig("reason_code") || "unknown",
+            reason: readiness&.dig("reason") || "Profile not ready for comment generation"
+          )
+          return []
+        end
+
         suggestions = Array(analysis["comment_suggestions"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
         suggestions = ensure_story_comment_diversity(profile: profile, suggestions: suggestions)
         return suggestions if suggestions.present?

@@ -98,9 +98,26 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
   end
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, requested_by: "workspace")
-    account = InstagramAccount.find(instagram_account_id)
-    profile = account.instagram_profiles.find(instagram_profile_id)
-    post = profile.instagram_profile_posts.find(instagram_profile_post_id)
+    account = self.class.safe_find_record(InstagramAccount, instagram_account_id, { 
+      job_class: self.class.name, 
+      instagram_profile_id: instagram_profile_id, 
+      instagram_profile_post_id: instagram_profile_post_id 
+    })
+    return unless account
+
+    profile = self.class.safe_find_chain(account, :instagram_profiles, instagram_profile_id, {
+      job_class: self.class.name,
+      instagram_account_id: instagram_account_id,
+      instagram_profile_post_id: instagram_profile_post_id
+    })
+    return unless profile
+
+    post = self.class.safe_find_chain(profile, :instagram_profile_posts, instagram_profile_post_id, {
+      job_class: self.class.name,
+      instagram_account_id: instagram_account_id,
+      instagram_profile_id: instagram_profile_id
+    })
+    return unless post
 
     unless user_created_post?(post)
       persist_workspace_state!(post: post, status: "skipped_non_user_post", requested_by: requested_by, next_run_at: nil)

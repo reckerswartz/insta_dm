@@ -13,6 +13,14 @@ module Instagram
                 task_name: "home_story_sync_start",
                 meta: { story_limit: limit, auto_reply_only: tagged_only }
               ) do
+                if respond_to?(:use_api_story_sync_flow?) && use_api_story_sync_flow?
+                  next sync_home_story_carousel_via_api!(
+                    driver: driver,
+                    limit: limit,
+                    tagged_only: tagged_only
+                  )
+                end
+
                 driver.navigate.to(INSTAGRAM_BASE_URL)
                 wait_for(driver, css: "body", timeout: 12)
                 dismiss_common_overlays!(driver)

@@ -16,6 +16,11 @@ development:
     active_job: true
     queue: sync
     cron: "*/3 * * * *"
+  job_health_monitor:
+    class: JobHealthMonitorJob
+    active_job: true
+    queue: maintenance
+    cron: "*/5 * * * *"
   retry_failed_background_jobs:
     class: RetryFailedBackgroundJobsJob
     active_job: true
@@ -70,6 +75,11 @@ production:
     active_job: true
     queue: sync
     cron: "*/2 * * * *"
+  job_health_monitor:
+    class: JobHealthMonitorJob
+    active_job: true
+    queue: maintenance
+    cron: "*/5 * * * *"
   retry_failed_background_jobs:
     class: RetryFailedBackgroundJobsJob
     active_job: true

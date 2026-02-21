@@ -2,6 +2,9 @@ require "json"
 require_dependency "scheduled_account_batching"
 
 class ApplicationJob < ActiveJob::Base
+  include JobSafetyImprovements
+  include JobIdempotency
+  include EnhancedJobRetryStrategies
   # Automatically retry jobs that encountered a deadlock
   # retry_on ActiveRecord::Deadlocked
 
@@ -203,8 +206,8 @@ class ApplicationJob < ActiveJob::Base
 
   def safe_json(value)
     JSON.generate(value)
-  rescue StandardError
-    JSON.generate({ error: "unable_to_serialize_arguments" })
+  rescue StandardError => e
+    JSON.generate({ error: "unable_to_serialize_arguments", original_error: e.class.name })
   end
 
   def failure_kind_for(error)

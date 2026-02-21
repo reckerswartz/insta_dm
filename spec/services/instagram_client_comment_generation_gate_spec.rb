@@ -29,6 +29,6 @@ RSpec.describe "InstagramClientCommentGenerationGateTest" do
       analysis: { "comment_suggestions" => [ "Looks good" ] }
     )
 
-    assert_equal [], suggestions
+    expect(suggestions).to eq([])
   end
 end

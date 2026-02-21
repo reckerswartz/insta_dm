@@ -11,7 +11,19 @@ class SyncHomeStoryCarouselJob < ApplicationJob
 
   def perform(instagram_account_id:, story_limit: STORY_BATCH_LIMIT, auto_reply_only: false)
     lock_acquired = false
-    account = InstagramAccount.find(instagram_account_id)
+    account = InstagramAccount.find_by(id: instagram_account_id)
+    unless account
+      Ops::StructuredLogger.warn(
+        event: "job.account_not_found",
+        payload: {
+          active_job_id: job_id,
+          job_class: self.class.name,
+          instagram_account_id: instagram_account_id
+        }
+      )
+      return
+    end
+
     lock_acquired = claim_story_sync_lock!(account_id: account.id)
     unless lock_acquired
       Ops::StructuredLogger.info(
@@ -27,7 +39,23 @@ class SyncHomeStoryCarouselJob < ApplicationJob
     limit = story_limit.to_i.clamp(1, STORY_BATCH_LIMIT)
     tagged_only = ActiveModel::Type::Boolean.new.cast(auto_reply_only)
 
-    result = Instagram::Client.new(account: account).sync_home_story_carousel!(
+    client = Instagram::Client.new(account: account)
+    
+    # Check if the required method exists before calling
+    unless client.respond_to?(:sync_home_story_carousel!, true)
+      Ops::StructuredLogger.error(
+        event: "job.method_missing",
+        payload: {
+          active_job_id: job_id,
+          job_class: self.class.name,
+          instagram_account_id: account.id,
+          missing_method: "sync_home_story_carousel!"
+        }
+      )
+      raise NoMethodError, "private method 'sync_home_story_carousel!' called for an instance of Instagram::Client"
+    end
+
+    result = client.sync_home_story_carousel!(
       story_limit: limit,
       auto_reply_only: tagged_only
     )

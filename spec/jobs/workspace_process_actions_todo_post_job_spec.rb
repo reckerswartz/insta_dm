@@ -128,4 +128,73 @@ RSpec.describe "WorkspaceProcessActionsTodoPostJobTest" do
     enqueued = enqueued_jobs.map { |row| row[:job] }
     assert_includes enqueued, BuildInstagramProfileHistoryJob
   end
+
+it "enqueues when post is not ready" do
+  account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+  profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
+  post = profile.instagram_profile_posts.create!(
+    instagram_account: account,
+    shortcode: "post_#{SecureRandom.hex(3)}",
+    taken_at: Time.current,
+    ai_status: "pending",
+    metadata: { "post_kind" => "post" }
+  )
+
+  result = WorkspaceProcessActionsTodoPostJob.enqueue_if_needed!(
+    account: account,
+    profile: profile,
+    post: post,
+    requested_by: "rspec"
+  )
+
+  expect(result[:enqueued]).to eq(true)
+  post.reload
+  expect(post.metadata.dig("workspace_actions", "status")).to eq("queued")
+end
+
+it "returns already_ready when suggestions exist" do
+  account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+  profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
+  post = profile.instagram_profile_posts.create!(
+    instagram_account: account,
+    shortcode: "post_#{SecureRandom.hex(3)}",
+    taken_at: Time.current,
+    ai_status: "analyzed",
+    analyzed_at: Time.current,
+    analysis: { "comment_suggestions" => ["Nice shot"] },
+    metadata: { "post_kind" => "post" }
+  )
+
+  result = WorkspaceProcessActionsTodoPostJob.enqueue_if_needed!(
+    account: account,
+    profile: profile,
+    post: post,
+    requested_by: "rspec"
+  )
+
+  expect(result).to include(enqueued: false, reason: "already_ready")
+end
+
+it "marks story posts as skipped_non_user_post" do
+  account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+  profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
+  post = profile.instagram_profile_posts.create!(
+    instagram_account: account,
+    shortcode: "post_#{SecureRandom.hex(3)}",
+    taken_at: Time.current,
+    ai_status: "pending",
+    metadata: { "post_kind" => "story" }
+  )
+
+  WorkspaceProcessActionsTodoPostJob.perform_now(
+    instagram_account_id: account.id,
+    instagram_profile_id: profile.id,
+    instagram_profile_post_id: post.id,
+    requested_by: "rspec"
+  )
+
+  post.reload
+  expect(post.metadata.dig("workspace_actions", "status")).to eq("skipped_non_user_post")
+end
+
 end
