@@ -34,8 +34,9 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
 
     return unless acquire_finalizer_slot?(post: post, pipeline_run_id: pipeline_run_id, attempts: attempts)
 
-    maybe_enqueue_metadata_step!(context: context, pipeline_run_id: pipeline_run_id)
     mark_stalled_steps_failed!(context: context, pipeline_run_id: pipeline_run_id)
+    return if reinitialize_failed_core_steps!(context: context, pipeline_run_id: pipeline_run_id)
+    maybe_enqueue_metadata_step!(context: context, pipeline_run_id: pipeline_run_id)
 
     unless pipeline_state.all_required_steps_terminal?(run_id: pipeline_run_id)
       if attempts.to_i >= MAX_FINALIZE_ATTEMPTS
@@ -61,16 +62,11 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
 
     pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
     required_steps = Array(pipeline["required_steps"]).map(&:to_s)
-    visual_status = pipeline.dig("steps", "visual", "status").to_s
-    succeeded_steps = required_steps.select do |step|
-      pipeline.dig("steps", step, "status").to_s == "succeeded"
+    failed_steps = required_steps.select do |step|
+      pipeline.dig("steps", step, "status").to_s == "failed"
     end
-    overall_status =
-      if required_steps.include?("visual")
-        visual_status == "succeeded" ? "completed" : "failed"
-      else
-        succeeded_steps.any? ? "completed" : "failed"
-      end
+    succeeded_steps = required_steps.select { |step| pipeline.dig("steps", step, "status").to_s == "succeeded" }
+    overall_status = failed_steps.any? ? "failed" : (succeeded_steps.length == required_steps.length ? "completed" : "failed")
 
     finalize_post_record!(post: post, pipeline: pipeline, overall_status: overall_status)
 
@@ -81,7 +77,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
         finalized_by: self.class.name,
         finalized_at: Time.current.iso8601(3),
         attempts: attempts.to_i,
-        visual_status: visual_status
+        failed_steps: failed_steps
       }
     )
 
@@ -167,8 +163,23 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
   def maybe_enqueue_metadata_step!(context:, pipeline_run_id:)
     pipeline_state = context[:pipeline_state]
     return unless pipeline_state.required_step_pending?(run_id: pipeline_run_id, step: "metadata")
-    # Metadata tagging depends on outputs from core extraction steps.
-    return unless pipeline_state.core_steps_terminal?(run_id: pipeline_run_id)
+    # Metadata tagging depends on successful outputs from core extraction steps.
+    unless pipeline_state.core_steps_succeeded?(run_id: pipeline_run_id)
+      if pipeline_state.core_steps_terminal?(run_id: pipeline_run_id)
+        failed_core_steps = pipeline_state.failed_required_steps(run_id: pipeline_run_id, include_metadata: false)
+        pipeline_state.mark_step_completed!(
+          run_id: pipeline_run_id,
+          step: "metadata",
+          status: "failed",
+          error: "core_dependencies_failed: #{failed_core_steps.join(',')}",
+          result: {
+            reason: "core_dependencies_failed",
+            failed_core_steps: failed_core_steps
+          }
+        )
+      end
+      return
+    end
 
     job = ProcessPostMetadataTaggingJob.perform_later(
       instagram_account_id: context[:account].id,
@@ -197,6 +208,49 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
         reason: "metadata_enqueue_failed"
       }
     )
+  end
+
+  def reinitialize_failed_core_steps!(context:, pipeline_run_id:)
+    pipeline_state = context[:pipeline_state]
+    failed_steps = pipeline_state.failed_required_steps(run_id: pipeline_run_id, include_metadata: false)
+    return false if failed_steps.empty?
+
+    result = Ai::PostAnalysisStepReinitializer.reinitialize_failed_steps!(
+      account: context[:account],
+      profile: context[:profile],
+      post: context[:post],
+      pipeline_state: pipeline_state,
+      pipeline_run_id: pipeline_run_id,
+      steps: failed_steps,
+      source_job_id: job_id
+    )
+
+    enqueued = Array(result[:enqueued]).map(&:to_s)
+    return false if enqueued.empty?
+
+    Ops::StructuredLogger.info(
+      event: "ai.pipeline.steps_reinitialized",
+      payload: {
+        active_job_id: job_id,
+        instagram_account_id: context[:account].id,
+        instagram_profile_id: context[:profile].id,
+        instagram_profile_post_id: context[:post].id,
+        pipeline_run_id: pipeline_run_id,
+        reinitialized_steps: enqueued,
+        skipped_steps: Array(result[:skipped]).map(&:to_s)
+      }
+    )
+
+    enqueue_pipeline_finalizer(
+      account: context[:account],
+      profile: context[:profile],
+      post: context[:post],
+      pipeline_run_id: pipeline_run_id,
+      attempts: 0
+    )
+    true
+  rescue StandardError
+    false
   end
 
   def finalize_post_record!(post:, pipeline:, overall_status:)

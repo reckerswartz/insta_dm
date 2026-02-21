@@ -44,7 +44,7 @@ RSpec.describe "UI Story Archive Comment Workflow", :diagnostic, :slow, :externa
       wait_for_text(
         driver,
         css: ".story-modal-overlay .generate-comment-btn",
-        pattern: /(Queued|Generating|Completed|Generate Comment Locally)/i,
+        pattern: /(Queued|In Progress|Completed|Generate|Regenerate)/i,
         timeout: 12
       )
 
@@ -57,7 +57,7 @@ RSpec.describe "UI Story Archive Comment Workflow", :diagnostic, :slow, :externa
       expect(trigger_calls).to eq(1), "Expected one trigger call, got #{trigger_calls} (probe=#{probe.inspect})"
 
       # If the button re-enables quickly, the UI must provide an explicit state/error hint.
-      if !disabled && label.match?(/generate comment locally/i)
+      if !disabled && label.match?(/\Agenerate\z/i)
         hints = driver.find_elements(css: ".story-modal-overlay .llm-progress-hint, .story-modal-overlay .error-text").map { |node| node.text.to_s.strip }.reject(&:empty?)
         expect(hints).not_to be_empty, "Button reset to ready state without any progress/error hint."
       end

@@ -2,12 +2,13 @@ module InstagramAccounts
   class LlmCommentRequestService
     Result = Struct.new(:payload, :status, keyword_init: true)
 
-    def initialize(account:, event_id:, provider:, model:, status_only:, queue_inspector: LlmQueueInspector.new)
+    def initialize(account:, event_id:, provider:, model:, status_only:, force: false, queue_inspector: LlmQueueInspector.new)
       @account = account
       @event_id = event_id
       @provider = provider.to_s
       @model = model
       @status_only = ActiveModel::Type::Boolean.new.cast(status_only)
+      @force = ActiveModel::Type::Boolean.new.cast(force)
       @queue_inspector = queue_inspector
     end
 
@@ -16,21 +17,21 @@ module InstagramAccounts
       return not_found_result unless accessible_event?(event)
 
       completed = normalize_completed_event(event)
-      return completed if completed
+      return completed if completed && !force
 
       in_progress = normalize_in_progress_event(event)
       return in_progress if in_progress
 
       return status_result(event) if status_only
 
-      enqueue_comment_job(event)
+      enqueue_comment_job(event, force: force)
     rescue StandardError => e
       Result.new(payload: { error: e.message }, status: :unprocessable_entity)
     end
 
     private
 
-    attr_reader :account, :event_id, :provider, :model, :status_only, :queue_inspector
+    attr_reader :account, :event_id, :provider, :model, :status_only, :force, :queue_inspector
 
     def accessible_event?(event)
       event.story_archive_item? && event.instagram_profile&.instagram_account_id == account.id
@@ -85,15 +86,17 @@ module InstagramAccounts
       in_progress_result(event)
     end
 
-    def enqueue_comment_job(event)
+    def enqueue_comment_job(event, force: false)
       event.with_lock do
         event.reload
 
         completed = normalize_completed_event(event)
-        return completed if completed
+        return completed if completed && !force
 
         in_progress = normalize_in_progress_event(event)
         return in_progress if in_progress
+
+        reset_generation_state!(event) if force && event.has_llm_generated_comment?
 
         job = GenerateLlmCommentJob.perform_later(
           instagram_profile_event_id: event.id,
@@ -110,11 +113,27 @@ module InstagramAccounts
             event_id: event.id,
             job_id: job.job_id,
             estimated_seconds: llm_comment_estimated_seconds(event: event, include_queue: true),
-            queue_size: ai_queue_size
+            queue_size: ai_queue_size,
+            forced: force
           },
           status: :accepted
         )
       end
+    end
+
+    def reset_generation_state!(event)
+      event.update_columns(
+        llm_generated_comment: nil,
+        llm_comment_generated_at: nil,
+        llm_comment_model: nil,
+        llm_comment_provider: nil,
+        llm_comment_relevance_score: nil,
+        llm_comment_last_error: nil,
+        llm_comment_status: "not_requested",
+        llm_comment_metadata: {},
+        updated_at: Time.current
+      )
+      event.reload
     end
 
     def in_progress_result(event)

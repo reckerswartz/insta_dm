@@ -45,6 +45,34 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     expect(event.reload.llm_comment_status).to eq("completed")
   end
 
+  it "re-queues generation when force is true for an already completed comment" do
+    event = create_story_event(
+      profile: profile,
+      llm_generated_comment: "Old generated comment",
+      llm_comment_status: "completed",
+      llm_comment_generated_at: 1.hour.ago
+    )
+    job = instance_double(ActiveJob::Base, job_id: "job-force-1")
+    allow(GenerateLlmCommentJob).to receive(:perform_later).and_return(job)
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: false,
+      force: true,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:accepted)
+    expect(result.payload).to include(success: true, status: "queued", event_id: event.id, job_id: "job-force-1", forced: true)
+    event.reload
+    expect(event.llm_comment_status).to eq("queued")
+    expect(event.llm_generated_comment).to be_nil
+    expect(event.llm_comment_generated_at).to be_nil
+  end
+
   it "returns status-only payload without enqueuing when requested" do
     event = create_story_event(profile: profile)
     allow(GenerateLlmCommentJob).to receive(:perform_later)

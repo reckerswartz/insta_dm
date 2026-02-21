@@ -150,6 +150,24 @@ module Ai
       end
     end
 
+    def core_steps_succeeded?(run_id:)
+      required = required_steps(run_id: run_id)
+      core = required - [ "metadata" ]
+      return true if core.empty?
+
+      core.all? do |step|
+        step_state(run_id: run_id, step: step).to_h["status"].to_s == "succeeded"
+      end
+    end
+
+    def failed_required_steps(run_id:, include_metadata: true)
+      required = required_steps(run_id: run_id)
+      required = required - [ "metadata" ] unless include_metadata
+      required.select do |step|
+        step_state(run_id: run_id, step: step).to_h["status"].to_s == "failed"
+      end
+    end
+
     def mark_pipeline_finished!(run_id:, status:, details: nil)
       with_pipeline_update(run_id: run_id) do |pipeline, _metadata|
         pipeline["status"] = status.to_s

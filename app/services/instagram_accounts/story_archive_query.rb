@@ -6,11 +6,14 @@ module InstagramAccounts
 
     Result = Struct.new(:events, :page, :per_page, :total, :has_more, :on, keyword_init: true)
 
-    def initialize(account:, page:, per_page:, on: nil)
+    STALE_COMMENT_JOB_MESSAGE = "Previous generation job appears stalled. Please retry.".freeze
+
+    def initialize(account:, page:, per_page:, on: nil, queue_inspector: LlmQueueInspector.new)
       @account = account
       @page = page.to_i
       @per_page = per_page.to_i
       @raw_on = on
+      @queue_inspector = queue_inspector
     end
 
     def call
@@ -26,7 +29,8 @@ module InstagramAccounts
       scoped = scoped.order(detected_at: :desc, id: :desc)
 
       total = scoped.count
-      events = scoped.offset((normalized_page - 1) * normalized_per_page).limit(normalized_per_page)
+      events = scoped.offset((normalized_page - 1) * normalized_per_page).limit(normalized_per_page).to_a
+      normalize_stale_llm_comment_states!(events)
 
       Result.new(
         events: events,
@@ -40,7 +44,7 @@ module InstagramAccounts
 
     private
 
-    attr_reader :account, :page, :per_page, :raw_on
+    attr_reader :account, :page, :per_page, :raw_on, :queue_inspector
 
     def base_scope
       InstagramProfileEvent
@@ -68,6 +72,23 @@ module InstagramAccounts
       Date.iso8601(value)
     rescue StandardError
       nil
+    end
+
+    def normalize_stale_llm_comment_states!(events)
+      Array(events).each do |event|
+        next unless event.llm_comment_in_progress?
+        next unless queue_inspector.stale_comment_job?(event: event)
+
+        event.update_columns(
+          llm_comment_status: "failed",
+          llm_comment_last_error: STALE_COMMENT_JOB_MESSAGE,
+          updated_at: Time.current
+        )
+        event.llm_comment_status = "failed"
+        event.llm_comment_last_error = STALE_COMMENT_JOB_MESSAGE
+      rescue StandardError
+        next
+      end
     end
   end
 end

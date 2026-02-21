@@ -305,7 +305,8 @@ class InstagramAccountsController < ApplicationController
       event_id: params.require(:event_id),
       provider: params.fetch(:provider, :local),
       model: params[:model].presence,
-      status_only: params[:status_only]
+      status_only: params[:status_only],
+      force: params[:force]
     ).call
 
     render json: result.payload, status: result.status

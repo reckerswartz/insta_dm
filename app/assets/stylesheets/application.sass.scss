@@ -1364,16 +1364,78 @@ pre {
   margin: 0;
 }
 
-.llm-comment-section {
-  display: grid;
-  gap: 6px;
+.story-card-title {
+  margin: 0;
 }
 
-.llm-comment-section.success {
-  border: 1px solid rgba(46, 204, 143, 0.4);
-  background: rgba(46, 204, 143, 0.1);
-  border-radius: 8px;
-  padding: 8px;
+.llm-comment-section {
+  margin-top: 4px;
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(111, 146, 212, 0.24);
+  border-radius: 9px;
+  background: rgba(16, 28, 52, 0.42);
+}
+
+.llm-comment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.story-status-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.56rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+}
+
+.story-status-chip.idle {
+  color: #dbe8ff;
+  border-color: rgba(124, 158, 222, 0.32);
+  background: rgba(57, 87, 143, 0.16);
+}
+
+.story-status-chip.queued {
+  color: #fff2d5;
+  border-color: rgba(245, 185, 66, 0.44);
+  background: rgba(69, 45, 10, 0.56);
+}
+
+.story-status-chip.in-progress {
+  color: #d7ebff;
+  border-color: rgba(94, 158, 255, 0.48);
+  background: rgba(18, 48, 90, 0.56);
+}
+
+.story-status-chip.completed {
+  color: #d6ffe8;
+  border-color: rgba(46, 204, 143, 0.44);
+  background: rgba(13, 51, 33, 0.58);
+}
+
+.story-status-chip.failed,
+.story-status-chip.skipped {
+  color: #ffd7dd;
+  border-color: rgba(255, 95, 109, 0.42);
+  background: rgba(66, 19, 30, 0.58);
+}
+
+.llm-completion-row {
+  margin: 0;
+  font-size: 0.74rem;
+}
+
+.llm-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .llm-generated-comment {

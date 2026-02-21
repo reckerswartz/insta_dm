@@ -113,7 +113,7 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
     assert_operator delay_seconds, :<=, 18
   end
 
-  it "marks stalled queued steps as failed so pipeline can keep progressing" do
+  it "reinitializes stalled queued steps so pipeline can recover missing extraction outputs" do
     account, profile, post, run_id = build_pipeline_with_visual_status(status: "succeeded")
 
     metadata = post.metadata.deep_dup
@@ -145,9 +145,11 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
     )
 
     post.reload
-    assert_equal "failed", post.metadata.dig("ai_pipeline", "steps", "ocr", "status")
-    assert_includes post.metadata.dig("ai_pipeline", "steps", "ocr", "error").to_s, "step_stalled_timeout"
+    assert_equal "queued", post.metadata.dig("ai_pipeline", "steps", "ocr", "status")
+    assert_equal "step_reinitialized", post.metadata.dig("ai_pipeline", "steps", "ocr", "result", "reason")
+    assert_equal 1, post.metadata.dig("ai_pipeline", "steps", "ocr", "result", "reinitialize_attempts").to_i
     assert_enqueued_jobs 1, only: FinalizePostAnalysisPipelineJob
+    assert_enqueued_jobs 1, only: ProcessPostOcrAnalysisJob
   end
 
   it "ignores stale finalizer jobs after pipeline is already terminal" do
@@ -167,6 +169,88 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
     post.reload
     assert_equal before_metadata["ai_pipeline"]["status"], post.metadata.dig("ai_pipeline", "status")
     assert_equal before_metadata["ai_pipeline"]["steps"]["visual"]["status"], post.metadata.dig("ai_pipeline", "steps", "visual", "status")
+  end
+
+  it "reinitializes only failed core extraction steps before metadata tagging" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "succeeded")
+    metadata = post.metadata.deep_dup
+    metadata["ai_pipeline"]["required_steps"] = ["visual", "ocr", "metadata"]
+    metadata["ai_pipeline"]["steps"]["ocr"] = {
+      "status" => "failed",
+      "attempts" => 1,
+      "queue_name" => "ai_ocr_queue",
+      "active_job_id" => "failed-ocr-job",
+      "result" => { "reason" => "ocr_analysis_failed" },
+      "error" => "Timeout::Error",
+      "created_at" => 2.minutes.ago.iso8601(3),
+      "finished_at" => 2.minutes.ago.iso8601(3)
+    }
+    metadata["ai_pipeline"]["steps"]["metadata"] = {
+      "status" => "pending",
+      "attempts" => 0,
+      "result" => {},
+      "created_at" => Time.current.iso8601(3)
+    }
+    post.update!(metadata: metadata, ai_status: "running")
+
+    FinalizePostAnalysisPipelineJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id,
+      attempts: 2
+    )
+
+    enqueued = enqueued_jobs.map { |row| row[:job] }
+    assert_includes enqueued, ProcessPostOcrAnalysisJob
+    refute_includes enqueued, ProcessPostMetadataTaggingJob
+
+    post.reload
+    ocr_step = post.metadata.dig("ai_pipeline", "steps", "ocr")
+    assert_equal "queued", ocr_step["status"]
+    assert_equal 1, ocr_step.dig("result", "reinitialize_attempts").to_i
+    assert_equal "step_reinitialized", ocr_step.dig("result", "reason")
+  end
+
+  it "fails metadata dependency step when core extraction outputs cannot be recovered" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "succeeded")
+    metadata = post.metadata.deep_dup
+    metadata["ai_pipeline"]["required_steps"] = ["visual", "ocr", "metadata"]
+    metadata["ai_pipeline"]["steps"]["ocr"] = {
+      "status" => "failed",
+      "attempts" => 3,
+      "queue_name" => "ai_ocr_queue",
+      "active_job_id" => "failed-ocr-job",
+      "result" => {
+        "reason" => "ocr_analysis_failed",
+        "reinitialize_attempts" => 2
+      },
+      "error" => "Timeout::Error",
+      "created_at" => 6.minutes.ago.iso8601(3),
+      "finished_at" => 5.minutes.ago.iso8601(3)
+    }
+    metadata["ai_pipeline"]["steps"]["metadata"] = {
+      "status" => "pending",
+      "attempts" => 0,
+      "result" => {},
+      "created_at" => Time.current.iso8601(3)
+    }
+    post.update!(metadata: metadata, ai_status: "running")
+
+    assert_no_enqueued_jobs only: ProcessPostMetadataTaggingJob do
+      FinalizePostAnalysisPipelineJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        pipeline_run_id: run_id,
+        attempts: 25
+      )
+    end
+
+    post.reload
+    assert_equal "failed", post.ai_status
+    assert_equal "failed", post.metadata.dig("ai_pipeline", "steps", "metadata", "status")
+    assert_includes post.metadata.dig("ai_pipeline", "steps", "metadata", "error").to_s, "core_dependencies_failed"
   end
 
   def build_pipeline_with_visual_status(status:, pipeline_status: "running")

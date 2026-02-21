@@ -44,6 +44,10 @@ class GenerateLlmCommentJob < ApplicationJob
       ).call
     end
   rescue Timeout::Error
+    mark_timeout_failure!(
+      instagram_profile_event_id: instagram_profile_event_id,
+      timeout_seconds: timeout_seconds
+    )
     Ops::StructuredLogger.error(
       event: "llm_comment.timeout",
       payload: {
@@ -53,5 +57,23 @@ class GenerateLlmCommentJob < ApplicationJob
       }
     )
     raise
+  end
+
+  private
+
+  def mark_timeout_failure!(instagram_profile_event_id:, timeout_seconds:)
+    event = InstagramProfileEvent.find_by(id: instagram_profile_event_id)
+    return unless event
+
+    error = Timeout::Error.new("Comment generation timed out after #{timeout_seconds}s")
+    event.mark_llm_comment_failed!(error: error)
+    event.record_llm_processing_stage!(
+      stage: "llm_generation",
+      state: "failed",
+      progress: 68,
+      message: error.message
+    )
+  rescue StandardError
+    nil
   end
 end

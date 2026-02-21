@@ -30,17 +30,20 @@ export default class extends Controller {
     const eventId = button?.dataset?.eventId || button?.closest("[data-event-id]")?.dataset?.eventId
     if (!eventId) return
     const key = String(eventId)
+    const force = String(button?.dataset?.generateForce || "").toLowerCase() === "true"
     if (this.pendingEventIds.has(key)) return
 
     try {
       this.ensureSubscription()
       this.pendingEventIds.add(key)
-      this.updateButtonState(button, { disabled: true, label: "Queued...", loading: true, eta: null })
-      const result = await this.callGenerateCommentApi(eventId)
+      this.updateStatusDisplaysForEvent(eventId, { status: "queued" })
+      this.updateButtonsForEvent(eventId, { disabled: true, label: "Queued", loading: true, eta: null, force: false })
+      const result = await this.callGenerateCommentApi(eventId, { force })
       this.processImmediateResult(eventId, result)
     } catch (error) {
       this.pendingEventIds.delete(key)
-      this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
+      this.updateStatusDisplaysForEvent(eventId, { status: "failed" })
+      this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
       notifyApp(`Failed to generate comment: ${error.message}`, "error")
     }
   }
@@ -79,7 +82,7 @@ export default class extends Controller {
     }
   }
 
-  async callGenerateCommentApi(eventId) {
+  async callGenerateCommentApi(eventId, { force = false } = {}) {
     const response = await fetch(`/instagram_accounts/${this.accountIdValue}/generate_llm_comment`, {
       method: "POST",
       headers: {
@@ -90,6 +93,7 @@ export default class extends Controller {
       body: JSON.stringify({
         event_id: eventId,
         provider: "local",
+        force,
       }),
     })
 
@@ -129,13 +133,7 @@ export default class extends Controller {
     if (status === "completed") {
       this.stopStatusPolling(eventId)
       this.handleGenerationComplete(eventId, {
-        comment: result.llm_generated_comment,
         generated_at: result.llm_comment_generated_at,
-        provider: result.llm_comment_provider,
-        model: result.llm_comment_model,
-        relevance_score: result.llm_comment_relevance_score,
-        ranked_candidates: result.llm_ranked_candidates,
-        relevance_breakdown: result.llm_relevance_breakdown,
       })
       return
     }
@@ -143,11 +141,13 @@ export default class extends Controller {
     if (status === "queued") {
       this.startStatusPolling(eventId)
       this.updateProgressForEvent(eventId, result)
+      this.updateStatusDisplaysForEvent(eventId, { status: "queued" })
       this.updateButtonsForEvent(eventId, {
         disabled: true,
-        label: "Queued...",
+        label: "Queued",
         loading: true,
         eta: this.buildEtaText(result?.estimated_seconds, result?.queue_size),
+        force: false,
       })
       return
     }
@@ -155,11 +155,13 @@ export default class extends Controller {
     if (status === "running" || status === "started") {
       this.startStatusPolling(eventId)
       this.updateProgressForEvent(eventId, result)
+      this.updateStatusDisplaysForEvent(eventId, { status: "running" })
       this.updateButtonsForEvent(eventId, {
         disabled: true,
-        label: "Generating...",
+        label: "In Progress",
         loading: true,
         eta: this.buildEtaText(result?.estimated_seconds, result?.queue_size),
+        force: false,
       })
       return
     }
@@ -167,12 +169,15 @@ export default class extends Controller {
     if (status === "failed" || status === "error" || status === "skipped") {
       this.stopStatusPolling(eventId)
       this.pendingEventIds.delete(String(eventId))
-      this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
+      this.updateStatusDisplaysForEvent(eventId, { status })
+      this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
       return
     }
 
     this.stopStatusPolling(eventId)
     this.pendingEventIds.delete(String(eventId))
+    this.updateStatusDisplaysForEvent(eventId, { status: "not_requested" })
+    this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
   }
 
   handleReceived(data) {
@@ -184,22 +189,26 @@ export default class extends Controller {
       case "queued":
         this.startStatusPolling(eventId)
         this.updateProgressForEvent(eventId, data)
+        this.updateStatusDisplaysForEvent(eventId, { status: "queued" })
         this.updateButtonsForEvent(eventId, {
           disabled: true,
-          label: "Queued...",
+          label: "Queued",
           loading: true,
           eta: this.buildEtaText(data?.estimated_seconds, data?.queue_size),
+          force: false,
         })
         break
       case "running":
       case "started":
         this.startStatusPolling(eventId)
         this.updateProgressForEvent(eventId, data)
+        this.updateStatusDisplaysForEvent(eventId, { status: "running" })
         this.updateButtonsForEvent(eventId, {
           disabled: true,
-          label: data?.progress ? `Generating... ${Number(data.progress).toFixed(0)}%` : "Generating...",
+          label: "In Progress",
           loading: true,
           eta: this.buildEtaText(data?.estimated_seconds, data?.queue_size),
+          force: false,
         })
         break
       case "completed":
@@ -210,14 +219,16 @@ export default class extends Controller {
       case "skipped":
         this.stopStatusPolling(eventId)
         this.pendingEventIds.delete(eventId)
-        this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
+        this.updateStatusDisplaysForEvent(eventId, { status: "skipped" })
+        this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
         notifyApp(data?.message || "Comment generation skipped: no usable local context.", "notice")
         break
       case "error":
       case "failed":
         this.stopStatusPolling(eventId)
         this.pendingEventIds.delete(eventId)
-        this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
+        this.updateStatusDisplaysForEvent(eventId, { status: "failed" })
+        this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
         notifyApp(`Failed to generate comment: ${data?.error || data?.message || "Unknown error"}`, "error")
         break
       default:
@@ -228,40 +239,61 @@ export default class extends Controller {
   handleGenerationComplete(eventId, data) {
     this.stopStatusPolling(eventId)
     this.pendingEventIds.delete(String(eventId))
-    const storyCard = document.querySelector(`[data-event-id="${this.escapeSelector(eventId)}"]`)
-    if (storyCard) {
-      const commentSection = storyCard.querySelector(".llm-comment-section")
-      const generatedAt = this.formatDate(data.generated_at)
-      const commentText = data.comment || data.llm_generated_comment || ""
-
-      if (commentSection && commentText) {
-        const relevance = Number(data.relevance_score)
-        const relevanceText = Number.isFinite(relevance) ? ` | relevance ${this.esc(relevance.toFixed(2))}` : ""
-        commentSection.innerHTML = `
-          <div class="llm-comment-section success">
-            <p class="llm-generated-comment"><strong>AI Suggestion:</strong> ${this.esc(commentText)}</p>
-            <p class="meta llm-comment-meta">
-              Generated ${this.esc(generatedAt)}
-              ${data.provider ? ` via ${this.esc(data.provider)}` : ""}
-              ${data.model ? ` (${this.esc(data.model)})` : ""}
-              ${relevanceText}
-            </p>
-          </div>
-        `
-      }
-    }
-
-    this.updateButtonsForEvent(eventId, { disabled: true, label: "Completed", loading: false, eta: null })
+    const generatedAt = data?.generated_at || data?.llm_comment_generated_at
+    this.updateStatusDisplaysForEvent(eventId, { status: "completed", generatedAt })
+    this.updateButtonsForEvent(eventId, { disabled: false, label: "Regenerate", loading: false, eta: null, force: true })
     notifyApp("Comment generated successfully.", "success")
   }
 
   updateProgressForEvent(eventId, data) {
-    const stages = data?.stage_statuses || data?.llm_processing_stages
-    if (!stages || typeof stages !== "object") return
+    // Card view is summary-only; detailed stage rendering lives in the modal details flow.
+    return
+  }
 
+  updateStatusDisplaysForEvent(eventId, { status, generatedAt = null } = {}) {
+    const state = this.resolveUiState(status)
     document
       .querySelectorAll(`.llm-comment-section[data-event-id="${this.escapeSelector(String(eventId))}"]`)
-      .forEach((section) => this.renderStageProgress(section, stages))
+      .forEach((section) => {
+        section.dataset.llmStatus = state.code
+
+        const statusEl = section.querySelector("[data-role='llm-status']")
+        if (statusEl) {
+          statusEl.textContent = state.label
+          statusEl.classList.remove("queued", "in-progress", "completed", "failed", "skipped", "idle")
+          statusEl.classList.add(state.chipClass)
+        }
+
+        const completionEl = section.querySelector("[data-role='llm-completion']")
+        if (completionEl) {
+          if (state.code === "completed") {
+            completionEl.classList.remove("hidden")
+            completionEl.textContent = `Completed ${this.formatDate(generatedAt)}`
+          } else {
+            completionEl.classList.add("hidden")
+          }
+        }
+      })
+  }
+
+  resolveUiState(status) {
+    const normalizedStatus = String(status || "").toLowerCase()
+    if (normalizedStatus === "completed") {
+      return { code: "completed", label: "Completed", chipClass: "completed" }
+    }
+    if (normalizedStatus === "queued") {
+      return { code: "queued", label: "Queued", chipClass: "queued" }
+    }
+    if (normalizedStatus === "running" || normalizedStatus === "started") {
+      return { code: "in_progress", label: "In Progress", chipClass: "in-progress" }
+    }
+    if (normalizedStatus === "failed" || normalizedStatus === "error") {
+      return { code: "failed", label: "Failed", chipClass: "failed" }
+    }
+    if (normalizedStatus === "skipped") {
+      return { code: "skipped", label: "Skipped", chipClass: "skipped" }
+    }
+    return { code: "not_started", label: "Ready", chipClass: "idle" }
   }
 
   renderStageProgress(section, stages) {
@@ -274,7 +306,7 @@ export default class extends Controller {
         const state = String(row?.state || "pending")
         const label = String(row?.label || "Stage")
         const progress = Number(row?.progress)
-        const stateLabel = state === "completed" ? "Completed" : (state === "running" ? `Processing${Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""}` : "Pending")
+        const stateLabel = state === "completed" ? "Completed" : (state === "running" ? `In Progress${Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""}` : "Pending")
         const icon = state === "completed" ? "✓" : (state === "running" ? "…" : "○")
         return `<li><span>${icon}</span> ${this.esc(label)} - ${this.esc(stateLabel)}</li>`
       })
@@ -333,15 +365,18 @@ export default class extends Controller {
       .forEach((button) => this.updateButtonState(button, state))
   }
 
-  updateButtonState(button, { disabled, label, loading, eta = null }) {
+  updateButtonState(button, { disabled, label, loading, eta = null, force = null }) {
     if (!button) return
     button.disabled = Boolean(disabled)
     button.classList.toggle("loading", Boolean(loading))
     if (typeof label === "string" && label.length > 0) {
       button.textContent = label
     }
+    if (typeof force === "boolean") {
+      button.dataset.generateForce = force ? "true" : "false"
+    }
 
-    const container = button.closest(".llm-comment-section") || button.parentElement
+    const container = button.closest(".llm-comment-section, .story-modal-section") || button.parentElement
     if (!container) return
     const existing = container.querySelector(".llm-progress-hint")
     if (eta) {

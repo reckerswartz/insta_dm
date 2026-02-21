@@ -223,6 +223,8 @@ export default class extends Controller {
     const contentType = String(item.media_content_type || "")
     const isVideo = contentType.startsWith("video/")
     const videoStatic = this.videoIsStatic(item)
+    const storyIdentifier = item.story_id ? `Story #${item.story_id}` : `Story Event #${eventId}`
+    const postedAt = this.formatDate(item.story_posted_at || item.downloaded_at)
     const previewHtml = isVideo ?
       `
         <div class="story-media-preview story-video-player-shell ${videoStatic ? "story-video-static-preview" : ""}">
@@ -251,9 +253,6 @@ export default class extends Controller {
         </button>
       `
 
-    const bytes = Number(item.media_bytes || 0)
-    const sizeText = bytes > 0 ? `${(bytes / 1024).toFixed(1)} KB` : "-"
-    const dimensions = (item.media_width && item.media_height) ? `${item.media_width}x${item.media_height}` : "-"
     const profileName = item.profile_display_name || item.profile_username || "unknown"
     const profileHandle = item.profile_username ? `@${item.profile_username}` : "@unknown"
     const profileHtml = item.app_profile_url ?
@@ -269,14 +268,6 @@ export default class extends Controller {
     const igIcon = igStoryLink ?
       `<a class="story-open-instagram" href="${this.esc(igStoryLink)}" target="_blank" rel="noopener noreferrer" aria-label="Open original story on Instagram">${igIconSvg}</a>` :
       `<span class="story-open-instagram muted" aria-hidden="true">${igIconSvg}</span>`
-
-    const replyCommentBlock = item.reply_comment ?
-      `<p class="story-reply-comment"><strong>Reply sent:</strong> ${this.esc(item.reply_comment)}</p>` :
-      ""
-
-    const skippedBlock = (item.skipped && item.skip_reason) ?
-      `<p class="meta story-skipped-badge">Skipped: ${this.esc(item.skip_reason)}</p>` :
-      ""
 
     return `
       <article class="story-media-card" data-event-id="${this.esc(eventId)}">
@@ -294,75 +285,49 @@ export default class extends Controller {
         ${previewHtml}
 
         <div class="story-media-meta">
-          <p class="meta">Type: ${this.esc(contentType || "-")} | Size: ${this.esc(sizeText)} | Dim: ${this.esc(dimensions)}</p>
-          ${videoStatic ? `<p class="meta">Static visual video detected: image-first preview enabled.</p>` : ""}
-          ${skippedBlock}
-          ${replyCommentBlock}
+          <p class="story-card-title"><strong>${this.esc(storyIdentifier)}</strong></p>
+          <p class="meta">${this.esc(postedAt)}</p>
           ${this.buildLlmCommentSection(item)}
-
-          <div class="actions-row">
-            <a class="btn small secondary" href="${this.esc(item.media_download_url)}" target="_blank" rel="noreferrer">Download</a>
-            <button type="button" class="btn small primary" data-event-id="${this.esc(eventId)}" data-action="click->story-media-archive#openStoryModal">View</button>
-            <button type="button" class="btn small secondary" data-event-id="${this.esc(eventId)}" data-action="click->technical-details#showTechnicalDetails">Technical Details</button>
-          </div>
         </div>
       </article>
     `
   }
 
   buildLlmCommentSection(item) {
-    const status = String(item.llm_comment_status || "").toLowerCase()
-    const ownershipLabel = String(item.story_ownership_label || "").trim()
-    const ownershipSummary = String(item.story_ownership_summary || "").trim()
-    const ownershipConfidence = typeof item.story_ownership_confidence === "number" ? item.story_ownership_confidence.toFixed(2) : ""
-    const suggestions = Array.isArray(item.llm_ranked_candidates) ? item.llm_ranked_candidates : []
-    const breakdown = item.llm_relevance_breakdown && typeof item.llm_relevance_breakdown === "object" ? item.llm_relevance_breakdown : {}
-    const stageList = this.renderStageList(item.llm_processing_stages)
-    const manualReviewReason = String(item.llm_manual_review_reason || "").trim()
-
-    if (item.has_llm_comment && item.llm_generated_comment) {
-      const generatedAt = this.formatDate(item.llm_comment_generated_at)
-      const suggestionPreview = item.llm_generated_comment_preview || item.llm_generated_comment
-      return `
-        <div class="llm-comment-section success" data-event-id="${this.esc(String(item.id))}">
-          <p class="llm-generated-comment"><strong>AI Suggestion:</strong> ${this.esc(suggestionPreview)}</p>
-          <p class="meta llm-comment-meta">
-            Generated ${this.esc(generatedAt)}
-            ${item.llm_comment_provider ? ` via ${this.esc(item.llm_comment_provider)}` : ""}
-            ${item.llm_comment_model ? ` (${this.esc(item.llm_comment_model)})` : ""}
-            ${typeof item.llm_comment_relevance_score === "number" ? ` | relevance ${this.esc(item.llm_comment_relevance_score.toFixed(2))}` : ""}
-          </p>
-          ${manualReviewReason ? `<p class="meta">Manual review: ${this.esc(manualReviewReason.replaceAll("_", " "))}</p>` : ""}
-          ${this.renderRelevanceBreakdown(breakdown)}
-          ${this.renderSuggestionPreviewList(item, suggestions)}
-          ${stageList}
-        </div>
-      `
-    }
-
-    const inFlight = status === "queued" || status === "running"
-    const skipped = status === "skipped"
-    const skippedLabel = ownershipLabel ? `Skipped (${ownershipLabel.replaceAll("_", " ")})` : "Skipped (no usable verified context)"
-    const label = skipped ? skippedLabel : (status === "running" ? "Generating..." : (status === "queued" ? "Queued..." : "Not generated yet"))
-    const lastError = item.llm_comment_last_error_preview || item.llm_comment_last_error
-    const errorPrefix = skipped ? "Details" : "Last error"
-    const error = lastError ? `<p class="meta error-text">${this.esc(errorPrefix)}: ${this.esc(lastError)}</p>` : ""
-    const hint = inFlight
-      ? "Please wait..."
-      : (skipped ? (ownershipSummary || "Try again after verified story context is available.") : "Open View to generate a local comment.")
-    const classificationMeta = ownershipLabel ?
-      `<p class="meta">Classification: <strong>${this.esc(ownershipLabel.replaceAll("_", " "))}</strong>${ownershipConfidence ? ` (confidence ${this.esc(ownershipConfidence)})` : ""}</p>` :
-      ""
+    const state = this.resolveLlmCardState({
+      status: item.llm_comment_status,
+      hasComment: item.has_llm_comment,
+      generatedComment: item.llm_generated_comment,
+    })
+    const generatedAt = this.formatDate(item.llm_comment_generated_at)
+    const forceRegenerate = state.code === "completed"
 
     return `
-      <div class="llm-comment-section" data-event-id="${this.esc(String(item.id))}">
-        ${classificationMeta}
-        <p class="meta">${this.esc(label)}. ${this.esc(hint)}</p>
-        ${manualReviewReason ? `<p class="meta">Manual review: ${this.esc(manualReviewReason.replaceAll("_", " "))}</p>` : ""}
-        ${this.renderRelevanceBreakdown(breakdown)}
-        ${this.renderSuggestionPreviewList(item, suggestions)}
-        ${stageList}
-        ${error}
+      <div class="llm-comment-section" data-event-id="${this.esc(String(item.id))}" data-llm-status="${this.esc(state.code)}">
+        <div class="llm-comment-header">
+          <span class="story-status-chip ${this.esc(state.chipClass)}" data-role="llm-status">${this.esc(state.label)}</span>
+          <p class="meta llm-completion-row ${state.code === "completed" ? "" : "hidden"}" data-role="llm-completion">Completed ${this.esc(generatedAt)}</p>
+        </div>
+        <div class="llm-card-actions">
+          <button
+            type="button"
+            class="btn small secondary generate-comment-btn ${state.inFlight ? "loading" : ""}"
+            data-event-id="${this.esc(String(item.id))}"
+            data-generate-force="${forceRegenerate ? "true" : "false"}"
+            data-action="click->llm-comment#generateComment"
+            ${state.inFlight ? "disabled" : ""}
+          >
+            ${this.esc(state.buttonLabel)}
+          </button>
+          <button
+            type="button"
+            class="btn small secondary"
+            data-event-id="${this.esc(String(item.id))}"
+            data-action="click->story-media-archive#openStoryModal"
+          >
+            View Details
+          </button>
+        </div>
       </div>
     `
   }
@@ -413,6 +378,10 @@ export default class extends Controller {
     const videoStatic = this.videoIsStatic(item)
     const posterUrl = this.videoPosterUrl(item)
     const downloaded = this.formatDate(item.downloaded_at)
+    const posted = this.formatDate(item.story_posted_at || item.downloaded_at)
+    const mediaSize = this.formatBytes(item.media_bytes)
+    const dimensions = (item.media_width && item.media_height) ? `${item.media_width}x${item.media_height}` : "-"
+    const storyIdentifier = item.story_id ? `#${item.story_id}` : `event-${item.id}`
     const mediaHtml = isVideo ?
       `
         <div class="story-video-player-shell ${videoStatic ? "story-video-static-preview" : ""}">
@@ -432,16 +401,23 @@ export default class extends Controller {
       ` :
       `<img src="${this.esc(item.media_url)}" alt="Story media" />`
 
-    const llmStatus = String(item.llm_comment_status || "").toLowerCase()
-    const llmInFlight = llmStatus === "queued" || llmStatus === "running" || llmStatus === "started"
-    const llmFailed = llmStatus === "failed" || llmStatus === "error"
-    const llmSkipped = llmStatus === "skipped"
-    const llmLabel = llmInFlight ? (llmStatus === "queued" ? "Queued..." : "Generating...") : "Generate Comment Locally"
-    const llmHint = llmInFlight ? "Comment generation is processing in the background." : "Runs in background and updates this archive automatically."
+    const llmState = this.resolveLlmCardState({
+      status: item.llm_comment_status,
+      hasComment: item.has_llm_comment,
+      generatedComment: item.llm_generated_comment,
+    })
+    const llmFailed = llmState.code === "failed"
+    const llmSkipped = llmState.code === "skipped"
+    const llmLabel = llmState.code === "completed" ? "Regenerate" : (llmFailed || llmSkipped ? "Retry Generation" : llmState.buttonLabel)
+    const llmHint = llmState.inFlight ?
+      "Comment generation is processing in the background." :
+      (llmState.code === "completed" ? "Use regenerate to rerun analysis with latest context." : "Runs in background and updates this archive automatically.")
     const llmError = item.llm_comment_last_error_preview || item.llm_comment_last_error
     const suggestions = Array.isArray(item.llm_ranked_candidates) ? item.llm_ranked_candidates : []
     const breakdown = item.llm_relevance_breakdown && typeof item.llm_relevance_breakdown === "object" ? item.llm_relevance_breakdown : {}
     const stageList = this.renderStageList(item.llm_processing_stages)
+    const logList = this.renderProcessingLog(item.llm_processing_log)
+    const contextSummary = this.renderContextAndFaceSummary(item)
     const comment = item.llm_generated_comment ?
       `
         <section class="story-modal-section">
@@ -456,15 +432,15 @@ export default class extends Controller {
           <h4>Generate Suggestion</h4>
           <button
             type="button"
-            class="btn secondary generate-comment-btn ${llmInFlight ? "loading" : ""}"
+            class="btn secondary generate-comment-btn ${llmState.inFlight ? "loading" : ""}"
             data-event-id="${this.esc(String(item.id))}"
+            data-generate-force="${llmState.code === "completed" ? "true" : "false"}"
             data-action="click->llm-comment#generateComment"
-            ${llmInFlight ? "disabled" : ""}
+            ${llmState.inFlight ? "disabled" : ""}
           >
             ${this.esc(llmLabel)}
           </button>
           <p class="meta llm-progress-hint">${this.esc(llmHint)}</p>
-          ${stageList}
           ${this.renderSuggestionPreviewList(item, suggestions)}
           ${llmFailed && llmError ? `<p class="meta error-text">Last error: ${this.esc(llmError)}</p>` : ""}
           ${llmSkipped && llmError ? `<p class="meta">Skipped: ${this.esc(llmError)}</p>` : ""}
@@ -483,13 +459,34 @@ export default class extends Controller {
             <div class="story-detail-media">${mediaHtml}</div>
             <div class="story-detail-info">
               <p><strong>Profile:</strong> @${this.esc(item.profile_username || "unknown")}</p>
+              <p class="meta"><strong>Story ID:</strong> ${this.esc(storyIdentifier)}</p>
+              <p class="meta"><strong>Posted:</strong> ${this.esc(posted)}</p>
               <p class="meta"><strong>Downloaded:</strong> ${this.esc(downloaded)}</p>
-              <p class="meta"><strong>Type:</strong> ${this.esc(contentType || "-")}</p>
+              <section class="story-modal-section">
+                <h4>Image Metadata</h4>
+                <p class="meta"><strong>Type:</strong> ${this.esc(contentType || "-")}</p>
+                <p class="meta"><strong>Size:</strong> ${this.esc(mediaSize)}</p>
+                <p class="meta"><strong>Dimensions:</strong> ${this.esc(dimensions)}</p>
+              </section>
               ${videoStatic ? `<p class="meta"><strong>Playback mode:</strong> Static visual + optional audio/video playback.</p>` : ""}
               ${item.reply_comment ? `<p><strong>Reply sent:</strong> ${this.esc(item.reply_comment)}</p>` : ""}
+              ${item.skipped && item.skip_reason ? `<p class="meta story-skipped-badge">Skipped: ${this.esc(item.skip_reason)}</p>` : ""}
+              ${contextSummary}
               ${comment}
+              ${stageList}
+              ${logList}
               <div class="story-detail-actions">
                 <a class="btn secondary" href="${this.esc(item.media_download_url)}" target="_blank" rel="noreferrer">Download</a>
+                <button
+                  type="button"
+                  class="btn secondary generate-comment-btn ${llmState.inFlight ? "loading" : ""}"
+                  data-event-id="${this.esc(String(item.id))}"
+                  data-generate-force="${llmState.code === "completed" ? "true" : "false"}"
+                  data-action="click->llm-comment#generateComment"
+                  ${llmState.inFlight ? "disabled" : ""}
+                >
+                  ${this.esc(llmLabel)}
+                </button>
                 <button type="button" class="btn secondary" data-event-id="${this.esc(String(item.id))}" data-action="click->technical-details#showTechnicalDetails">Technical Details</button>
                 <button type="button" class="btn" data-modal-close="story">Close</button>
               </div>
@@ -609,12 +606,90 @@ export default class extends Controller {
         const label = String(row.label || "Stage")
         const state = String(row.state || "pending")
         const progress = Number(row.progress)
-        const stateLabel = state === "completed" ? "Completed" : (state === "running" ? `Processing${Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""}` : "Pending")
+        const stateLabel = state === "completed" ? "Completed" : (state === "running" ? `In Progress${Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""}` : "Pending")
         return `<li>${this.esc(label)} -> ${this.esc(stateLabel)}</li>`
       })
       .join("")
     if (!rows) return ""
-    return `<ul class="meta llm-progress-steps">${rows}</ul>`
+    return `
+      <section class="story-modal-section">
+        <h4>Context Matching & Face Recognition</h4>
+        <ul class="meta llm-progress-steps">${rows}</ul>
+      </section>
+    `
+  }
+
+  renderProcessingLog(logRows) {
+    const rows = Array.isArray(logRows) ? logRows.slice(-10) : []
+    if (rows.length === 0) return ""
+
+    const logHtml = rows
+      .map((row) => {
+        const stage = String(row?.stage || "stage")
+        const message = String(row?.message || "").trim()
+        const state = String(row?.state || "pending")
+        const at = this.formatDate(row?.at)
+        const messagePart = message ? `: ${message}` : ""
+        return `<li>${this.esc(stage)} (${this.esc(state)})${this.esc(messagePart)} - ${this.esc(at)}</li>`
+      })
+      .join("")
+
+    return `
+      <section class="story-modal-section">
+        <h4>Comment Output & Logs</h4>
+        <ul class="meta llm-progress-steps">${logHtml}</ul>
+      </section>
+    `
+  }
+
+  renderContextAndFaceSummary(item) {
+    const label = String(item.story_ownership_label || "").trim()
+    const summary = String(item.story_ownership_summary || "").trim()
+    const confidence = Number(item.story_ownership_confidence)
+    const confidenceText = Number.isFinite(confidence) ? confidence.toFixed(2) : "-"
+    const reviewReason = String(item.llm_manual_review_reason || "").trim()
+
+    if (!label && !summary && !reviewReason) return ""
+
+    return `
+      <section class="story-modal-section">
+        <h4>AI Analysis Summary</h4>
+        ${label ? `<p class="meta"><strong>Ownership:</strong> ${this.esc(label)}</p>` : ""}
+        ${summary ? `<p class="meta"><strong>Summary:</strong> ${this.esc(summary)}</p>` : ""}
+        ${label ? `<p class="meta"><strong>Confidence:</strong> ${this.esc(confidenceText)}</p>` : ""}
+        ${reviewReason ? `<p class="meta"><strong>Manual review:</strong> ${this.esc(reviewReason)}</p>` : ""}
+      </section>
+    `
+  }
+
+  resolveLlmCardState({ status, hasComment, generatedComment }) {
+    const normalizedStatus = String(status || "").toLowerCase()
+    const commentPresent = Boolean(hasComment || generatedComment)
+    if (commentPresent || normalizedStatus === "completed") {
+      return { code: "completed", label: "Completed", chipClass: "completed", buttonLabel: "Regenerate", inFlight: false }
+    }
+    if (normalizedStatus === "queued") {
+      return { code: "queued", label: "Queued", chipClass: "queued", buttonLabel: "Queued", inFlight: true }
+    }
+    if (normalizedStatus === "running" || normalizedStatus === "started") {
+      return { code: "in_progress", label: "In Progress", chipClass: "in-progress", buttonLabel: "In Progress", inFlight: true }
+    }
+    if (normalizedStatus === "failed" || normalizedStatus === "error") {
+      return { code: "failed", label: "Failed", chipClass: "failed", buttonLabel: "Generate", inFlight: false }
+    }
+    if (normalizedStatus === "skipped") {
+      return { code: "skipped", label: "Skipped", chipClass: "skipped", buttonLabel: "Generate", inFlight: false }
+    }
+    return { code: "not_started", label: "Ready", chipClass: "idle", buttonLabel: "Generate", inFlight: false }
+  }
+
+  formatBytes(value) {
+    const bytes = Number(value)
+    if (!Number.isFinite(bytes) || bytes <= 0) return "-"
+    if (bytes < 1024) return `${bytes} B`
+    const kb = bytes / 1024
+    if (kb < 1024) return `${kb.toFixed(1)} KB`
+    return `${(kb / 1024).toFixed(1)} MB`
   }
 
   videoElementHtml({

@@ -55,4 +55,31 @@ RSpec.describe InstagramAccounts::StoryArchiveQuery do
     expect(result.on).to be_nil
     expect(result.total).to eq(1)
   end
+
+  it "normalizes stale in-progress llm status to failed while loading archive items" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(3)}")
+    event = profile.instagram_profile_events.create!(
+      kind: "story_downloaded",
+      external_id: "evt_#{SecureRandom.hex(4)}",
+      detected_at: Time.current,
+      metadata: {},
+      llm_comment_status: "running",
+      llm_comment_job_id: "job-stale"
+    )
+    event.media.attach(io: StringIO.new("one"), filename: "one.jpg", content_type: "image/jpeg")
+
+    queue_inspector = instance_double(InstagramAccounts::LlmQueueInspector, stale_comment_job?: true)
+
+    result = described_class.new(
+      account: account,
+      page: 1,
+      per_page: 12,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.events.map(&:id)).to include(event.id)
+    expect(event.reload.llm_comment_status).to eq("failed")
+    expect(event.llm_comment_last_error).to eq("Previous generation job appears stalled. Please retry.")
+  end
 end

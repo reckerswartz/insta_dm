@@ -28,7 +28,7 @@ window.generateCommentFallback = function(eventId, accountId) {
 
   // Show loading state
   button.disabled = true
-  button.innerHTML = "Generating..."
+  button.innerHTML = "In Progress"
 
   // Make the API call
   fetch(`/instagram_accounts/${accountId}/generate_llm_comment`, {
@@ -60,7 +60,7 @@ window.generateCommentFallback = function(eventId, accountId) {
     .catch(error => {
       console.error("Error generating comment", error)
       button.disabled = false
-      button.innerHTML = "Generate Comment Locally"
+      button.innerHTML = "Generate"
       alert(`Failed to generate comment: ${error.message}`)
     })
 }
