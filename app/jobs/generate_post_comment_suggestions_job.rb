@@ -1,5 +1,5 @@
 class GeneratePostCommentSuggestionsJob < ApplicationJob
-  queue_as :ai_metadata_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:post_comment_generation)
 
   PROFILE_INCOMPLETE_REASON_CODES =
     if defined?(ProcessPostMetadataTaggingJob::PROFILE_INCOMPLETE_REASON_CODES)

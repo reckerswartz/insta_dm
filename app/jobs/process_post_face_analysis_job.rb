@@ -1,7 +1,7 @@
 require "timeout"
 
 class ProcessPostFaceAnalysisJob < PostAnalysisPipelineJob
-  queue_as :ai_face_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:face_analysis)
   MAX_DEFER_ATTEMPTS = ENV.fetch("AI_FACE_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3

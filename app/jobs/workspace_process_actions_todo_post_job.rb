@@ -1,5 +1,5 @@
 class WorkspaceProcessActionsTodoPostJob < ApplicationJob
-  queue_as :ai
+  queue_as :workspace_actions_queue
 
   PROFILE_INCOMPLETE_REASON_CODES =
     if defined?(ProcessPostMetadataTaggingJob::PROFILE_INCOMPLETE_REASON_CODES)

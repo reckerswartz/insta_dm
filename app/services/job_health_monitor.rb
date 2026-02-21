@@ -12,20 +12,14 @@ class JobHealthMonitor
       }
 
       # Check each queue
-      queue_names = %w[
-        ai ai_visual_queue ai_face_queue ai_face_refresh_queue ai_ocr_queue video_processing_queue ai_metadata_queue
-        frame_generation story_auto_reply_orchestration profile_story_orchestration home_story_orchestration
-        home_story_sync story_processing story_analysis story_preview_generation story_replies
-        profiles profile_reevaluation engagements sync story_validation avatars avatar_orchestration
-        post_downloads captured_posts messages
-      ]
-      
+      queue_names = monitored_queue_names
+
       queue_names.each do |queue_name|
         queue_health = analyze_queue_health(queue_name)
         health_report[:queues][queue_name] = queue_health
         health_report[:summary][:total_pending] += queue_health[:pending_jobs]
         health_report[:summary][:total_failed_recent] += queue_health[:recent_failures]
-        
+
         if queue_health[:health_score] < 50
           health_report[:summary][:critical_issues] << {
             queue: queue_name,
@@ -62,7 +56,7 @@ class JobHealthMonitor
       cleaned_failures = BackgroundJobFailure
         .where("occurred_at < ?", cutoff_date)
         .delete_all
-      
+
       cleanup_stats[:cleaned_failures] = cleaned_failures
 
       # Clean up orphaned job state in post metadata
@@ -107,7 +101,7 @@ class JobHealthMonitor
 
       # Get queue size from Sidekiq
       queue_size = get_queue_size(queue_name)
-      
+
       # Calculate health score (0-100)
       health_score = calculate_health_score(queue_size, recent_failures)
 
@@ -121,6 +115,20 @@ class JobHealthMonitor
       }
     end
 
+    def monitored_queue_names
+      non_ai_queues = %w[
+        frame_generation story_auto_reply_orchestration profile_story_orchestration home_story_orchestration
+        home_story_sync story_processing story_preview_generation story_replies
+        profiles profile_reevaluation engagements sync story_validation avatars avatar_orchestration
+        post_downloads captured_posts messages workspace_actions_queue
+      ]
+      ai_queues = Ops::AiServiceQueueRegistry.ai_queue_names
+
+      (ai_queues + non_ai_queues).map(&:to_s).reject(&:blank?).uniq
+    rescue StandardError
+      non_ai_queues
+    end
+
     def get_queue_size(queue_name)
       begin
         Sidekiq::Queue.new(queue_name).size
@@ -132,7 +140,7 @@ class JobHealthMonitor
 
     def calculate_health_score(queue_size, recent_failures)
       base_score = 100
-      
+
       # Deduct points for queue backlog
       if queue_size > 1000
         base_score -= 30
@@ -153,7 +161,7 @@ class JobHealthMonitor
         base_score -= 5
       end
 
-      [base_score, 0].max
+      [ base_score, 0 ].max
     end
 
     def determine_primary_issue(queue_size, recent_failures)
@@ -187,7 +195,7 @@ class JobHealthMonitor
 
     def cleanup_orphaned_job_metadata
       cleaned_count = 0
-      
+
       # Find posts with workspace_actions metadata pointing to non-existent jobs
       posts_with_orphaned_jobs = InstagramProfilePost.where(
         "metadata->'workspace_actions'->>'job_id' IS NOT NULL"
@@ -201,7 +209,7 @@ class JobHealthMonitor
         if job_id.present?
           # Check if job still exists or is recent
           job_exists = check_job_existence(job_id)
-          
+
           unless job_exists
             # Clean up orphaned job metadata
             workspace_actions.delete("job_id")
@@ -209,7 +217,7 @@ class JobHealthMonitor
             workspace_actions.delete("last_enqueued_at")
             workspace_actions["status"] = "orphaned_cleaned"
             metadata["workspace_actions"] = workspace_actions
-            
+
             post.update!(metadata: metadata)
             cleaned_count += 1
           end
@@ -224,7 +232,7 @@ class JobHealthMonitor
       recent_failure = BackgroundJobFailure.where(active_job_id: job_id)
         .where("occurred_at > ?", 1.hour.ago)
         .exists?
-      
+
       return true if recent_failure
 
       # Could also check Sidekiq API for active/recent jobs

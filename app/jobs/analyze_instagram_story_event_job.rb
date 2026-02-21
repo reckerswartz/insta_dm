@@ -2,7 +2,7 @@ require "net/http"
 require "timeout"
 
 class AnalyzeInstagramStoryEventJob < ApplicationJob
-  queue_as :story_analysis
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:story_analysis)
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3

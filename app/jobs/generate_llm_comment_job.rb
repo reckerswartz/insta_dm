@@ -1,7 +1,7 @@
 require "timeout"
 
 class GenerateLlmCommentJob < ApplicationJob
-  queue_as :ai
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:llm_comment_generation)
   MAX_RESOURCE_DEFER_ATTEMPTS = ENV.fetch("LLM_COMMENT_MAX_RESOURCE_DEFER_ATTEMPTS", "8").to_i.clamp(1, 24)
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3

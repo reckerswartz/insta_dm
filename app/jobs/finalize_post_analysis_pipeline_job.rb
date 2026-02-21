@@ -1,5 +1,5 @@
 class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
-  queue_as :ai_visual_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:pipeline_orchestration)
 
   MAX_FINALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_FINALIZE_ATTEMPTS", 30).to_i.clamp(5, 120)
   FINALIZER_LOCK_SECONDS = ENV.fetch("AI_PIPELINE_FINALIZER_LOCK_SECONDS", 4).to_i.clamp(2, 30)

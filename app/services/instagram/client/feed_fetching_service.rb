@@ -41,7 +41,7 @@ module Instagram
         break if max_id.present? && seen_max_ids.include?(max_id)
 
         seen_max_ids << max_id if max_id.present?
-        count = remaining.present? ? [remaining, PROFILE_FEED_PAGE_SIZE].min : PROFILE_FEED_PAGE_SIZE
+        count = remaining.present? ? [ remaining, PROFILE_FEED_PAGE_SIZE ].min : PROFILE_FEED_PAGE_SIZE
         feed = fetch_user_feed(user_id: user_id, referer_username: username, count: count, max_id: max_id)
         break unless feed.is_a?(Hash)
 
@@ -395,8 +395,10 @@ module Instagram
           shortcode: h["shortcode"],
           post_kind: h["post_kind"],
           author_username: normalize_username(h["author_username"].to_s),
+          author_ig_user_id: nil,
           media_url: h["media_url"].to_s,
           caption: h["caption"],
+          taken_at: nil,
           metadata: h["metadata"] || {}
         }
       end
@@ -494,13 +496,22 @@ module Instagram
       video_url = CGI.unescapeHTML(video_candidate&.dig("url").to_s).strip.presence
       width = image_candidate&.dig("width")
       height = image_candidate&.dig("height")
+      taken_at =
+        begin
+          ts = item["taken_at"] || item["taken_at_timestamp"] || item["device_timestamp"]
+          ts.present? ? Time.at(ts.to_i).utc : nil
+        rescue StandardError
+          nil
+        end
 
       {
         shortcode: shortcode,
         post_kind: post_kind,
         author_username: normalize_username(item.dig("user", "username").to_s),
+        author_ig_user_id: item.dig("user", "pk").to_s.presence || item.dig("user", "id").to_s.presence,
         media_url: (video_url.presence || image_url).to_s,
         caption: item.dig("caption", "text").to_s.presence,
+        taken_at: taken_at,
         metadata: {
           source: "api_timeline",
           media_id: (item["pk"] || item["id"]).to_s.presence,
@@ -508,6 +519,11 @@ module Instagram
           media_url_image: image_url.to_s.presence,
           media_url_video: video_url.to_s.presence,
           product_type: product_type,
+          ad_id: item["ad_id"].to_s.presence,
+          is_paid_partnership: ActiveModel::Type::Boolean.new.cast(item["is_paid_partnership"]),
+          like_count: item["like_count"],
+          comment_count: item["comment_count"],
+          author_ig_user_id: item.dig("user", "pk").to_s.presence || item.dig("user", "id").to_s.presence,
           natural_width: width,
           natural_height: height
         }

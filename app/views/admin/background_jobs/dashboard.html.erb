@@ -74,6 +74,66 @@
   </section>
 
   <section class="card">
+    <h2>AI Service Queue Metrics (24h)</h2>
+    <% ai_metrics = @ai_service_queue_metrics.is_a?(Hash) ? @ai_service_queue_metrics : {} %>
+    <% ai_services = Array(ai_metrics[:services]) %>
+    <p class="meta">
+      Captured at <%= ai_metrics[:captured_at].to_s.presence || "-" %>
+      | Queue pending total: <strong><%= ai_metrics[:queue_pending_total].to_i %></strong>
+      | API calls: <strong><%= ai_metrics[:api_calls_total_24h].to_i %></strong>
+      | API failures: <strong><%= ai_metrics[:api_failed_calls_total_24h].to_i %></strong>
+    </p>
+    <% if ai_services.any? %>
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-ai-service-metrics-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
+            <thead>
+              <tr>
+                <th>Service</th>
+                <th>Queue</th>
+                <th>Pending</th>
+                <th>Failures (24h)</th>
+                <th>API calls (24h)</th>
+                <th>API failed (24h)</th>
+                <th>Avg latency (ms)</th>
+                <th>Tokens (24h)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% ai_services.each do |row| %>
+                <tr>
+                  <td>
+                    <strong><%= row[:service_name] %></strong>
+                    <div class="meta"><%= row[:category].to_s.humanize %></div>
+                  </td>
+                  <td><code><%= row[:queue_name] %></code></td>
+                  <td><%= row[:queue_pending].to_i %></td>
+                  <td><%= row[:recent_failures_24h].to_i %></td>
+                  <td><%= row[:api_calls_24h].to_i %></td>
+                  <td><%= row[:api_failed_calls_24h].to_i %></td>
+                  <td><%= row[:api_avg_latency_ms_24h].present? ? row[:api_avg_latency_ms_24h] : "-" %></td>
+                  <td><%= row[:api_total_tokens_24h].to_i %></td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <% unmapped = Array(ai_metrics[:unmapped_ai_queue_jobs]) %>
+      <% if unmapped.any? %>
+        <p class="meta">
+          Unmapped sampled AI queue jobs:
+          <% unmapped.each do |entry| %>
+            <code><%= entry[:key] %>=<%= entry[:count] %></code>
+          <% end %>
+        </p>
+      <% end %>
+    <% else %>
+      <p class="meta">No AI service queue metrics available.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
     <h2>Recent Jobs (All)</h2>
     <% if @recent_jobs.any? %>
       <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-recent-jobs-table" data-table-standard-pagination-size-value="25">

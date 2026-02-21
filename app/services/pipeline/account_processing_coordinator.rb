@@ -36,7 +36,7 @@ module Pipeline
           enqueue_feed_engagement!(stats)
           @account.continuous_processing_next_feed_sync_at = next_time(FEED_SYNC_INTERVAL)
         else
-          stats[:skipped_jobs] << { job: "AutoEngageHomeFeedJob", reason: "local_ai_unhealthy" }
+          stats[:skipped_jobs] << { job: "CaptureHomeFeedJob", reason: "local_ai_unhealthy" }
         end
       end
 
@@ -110,22 +110,24 @@ module Pipeline
     end
 
     def enqueue_feed_engagement!(stats)
-      job = AutoEngageHomeFeedJob.perform_later(
+      job = CaptureHomeFeedJob.perform_later(
         instagram_account_id: @account.id,
-        max_posts: 2,
-        include_story: false,
-        story_hold_seconds: 18
+        rounds: 3,
+        delay_seconds: 20,
+        max_new: 15
       )
 
       stats[:enqueued_jobs] << {
-        job: "AutoEngageHomeFeedJob",
+        job: "CaptureHomeFeedJob",
         active_job_id: job.job_id,
         queue: job.queue_name,
-        max_posts: 2
+        rounds: 3,
+        delay_seconds: 20,
+        max_new: 15
       }
 
       Ops::StructuredLogger.info(
-        event: "continuous_processing.feed_engagement_enqueued",
+        event: "continuous_processing.feed_capture_enqueued",
         payload: {
           account_id: @account.id,
           active_job_id: job.job_id,

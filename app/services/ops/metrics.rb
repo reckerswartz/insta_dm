@@ -7,6 +7,7 @@ module Ops
 
       {
         queue: queue_counts,
+        ai_service_queues: Ops::AiServiceQueueMetrics.snapshot,
         app: {
           accounts: InstagramAccount.count,
           continuous_processing_enabled_accounts: InstagramAccount.where(continuous_processing_enabled: true).count,
@@ -64,6 +65,7 @@ module Ops
         sync_runs_by_status: account.sync_runs.group(:status).count,
         analyses_by_status: account.ai_analyses.group(:status).count,
         api_usage_24h: api_usage_summary(scope: usage_scope),
+        ai_service_queues: Ops::AiServiceQueueMetrics.snapshot(account_id: account.id),
         visual_failures_24h: visual_failure_summary(scope: BackgroundJobFailure.where(instagram_account_id: account.id, job_class: "ProcessPostVisualAnalysisJob")
           .where("occurred_at >= ?", 24.hours.ago)),
         queue: queue_counts

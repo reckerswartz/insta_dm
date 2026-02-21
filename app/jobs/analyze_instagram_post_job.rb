@@ -3,7 +3,7 @@ class AnalyzeInstagramPostJob < ApplicationJob
   require "digest"
   require "uri"
 
-  queue_as :ai
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:post_analysis_runner)
 
   MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
   MAX_INLINE_VIDEO_BYTES = 10 * 1024 * 1024

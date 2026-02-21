@@ -1,5 +1,5 @@
 class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
-  queue_as :ai_metadata_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:metadata_tagging)
 
   PROFILE_INCOMPLETE_REASON_CODES = %w[
     latest_posts_not_analyzed

@@ -1,7 +1,7 @@
 require "base64"
 
 class AnalyzeInstagramProfileJob < ApplicationJob
-  queue_as :ai
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:profile_analysis_runner)
   MAX_AI_IMAGE_COUNT = 5
   MAX_PROFILE_IMAGE_DESCRIPTION_COUNT = 5
   MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024

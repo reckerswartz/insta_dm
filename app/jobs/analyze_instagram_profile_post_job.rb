@@ -1,5 +1,5 @@
 class AnalyzeInstagramProfilePostJob < ApplicationJob
-  queue_as :ai_visual_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:pipeline_orchestration)
 
   PROFILE_INCOMPLETE_REASON_CODES =
     if defined?(ProcessPostMetadataTaggingJob::PROFILE_INCOMPLETE_REASON_CODES)

@@ -21,11 +21,11 @@ RSpec.describe Pipeline::AccountProcessingCoordinator do
       auto_reply_only: false
     ).and_return(JobResult.new("job-story", "home_story_sync"))
 
-    allow(AutoEngageHomeFeedJob).to receive(:perform_later).with(
+    allow(CaptureHomeFeedJob).to receive(:perform_later).with(
       instagram_account_id: account.id,
-      max_posts: 2,
-      include_story: false,
-      story_hold_seconds: 18
+      rounds: 3,
+      delay_seconds: 20,
+      max_new: 15
     ).and_return(JobResult.new("job-feed", "engagements"))
 
     allow(EnqueueRecentProfilePostScansForAccountJob).to receive(:perform_later).with(
@@ -64,7 +64,7 @@ RSpec.describe Pipeline::AccountProcessingCoordinator do
     enqueued_names = result[:enqueued_jobs].map { |row| row[:job] }
     expect(enqueued_names).to include(
       "SyncHomeStoryCarouselJob",
-      "AutoEngageHomeFeedJob",
+      "CaptureHomeFeedJob",
       "EnqueueRecentProfilePostScansForAccountJob",
       "Workspace::ActionsTodoQueueService"
     )
@@ -85,7 +85,7 @@ RSpec.describe Pipeline::AccountProcessingCoordinator do
     allow(Ops::LocalAiHealth).to receive(:check).and_return({ ok: false })
 
     expect(SyncHomeStoryCarouselJob).not_to receive(:perform_later)
-    expect(AutoEngageHomeFeedJob).not_to receive(:perform_later)
+    expect(CaptureHomeFeedJob).not_to receive(:perform_later)
     expect(EnqueueRecentProfilePostScansForAccountJob).not_to receive(:perform_later)
 
     allow(SyncNextProfilesForAccountJob).to receive(:perform_later).with(
@@ -106,7 +106,7 @@ RSpec.describe Pipeline::AccountProcessingCoordinator do
 
     expect(result[:skipped_jobs]).to include(
       include(job: "SyncHomeStoryCarouselJob", reason: "local_ai_unhealthy"),
-      include(job: "AutoEngageHomeFeedJob", reason: "local_ai_unhealthy")
+      include(job: "CaptureHomeFeedJob", reason: "local_ai_unhealthy")
     )
 
     enqueued_names = result[:enqueued_jobs].map { |row| row[:job] }
@@ -134,7 +134,7 @@ RSpec.describe Pipeline::AccountProcessingCoordinator do
     )
 
     expect(SyncHomeStoryCarouselJob).not_to receive(:perform_later)
-    expect(AutoEngageHomeFeedJob).not_to receive(:perform_later)
+    expect(CaptureHomeFeedJob).not_to receive(:perform_later)
     expect(EnqueueRecentProfilePostScansForAccountJob).not_to receive(:perform_later)
     expect(SyncNextProfilesForAccountJob).not_to receive(:perform_later)
 

@@ -33,58 +33,21 @@ Sidekiq.configure_server do |config|
 
   # Isolate local compute-heavy workloads from general queue throughput.
   if config.respond_to?(:capsule)
-    legacy_ai_concurrency = ENV.fetch("SIDEKIQ_AI_CONCURRENCY", 2).to_i.clamp(1, 4)
-    visual_concurrency = ENV.fetch("SIDEKIQ_AI_VISUAL_CONCURRENCY", 3).to_i.clamp(1, 5)
-    face_concurrency = ENV.fetch("SIDEKIQ_AI_FACE_CONCURRENCY", 3).to_i.clamp(1, 4)
-    face_refresh_concurrency = ENV.fetch("SIDEKIQ_AI_FACE_REFRESH_CONCURRENCY", 1).to_i.clamp(1, 3)
-    ocr_concurrency = ENV.fetch("SIDEKIQ_AI_OCR_CONCURRENCY", 2).to_i.clamp(1, 3)
-    video_concurrency = ENV.fetch("SIDEKIQ_AI_VIDEO_CONCURRENCY", 2).to_i.clamp(1, 3)
-    metadata_concurrency = ENV.fetch("SIDEKIQ_AI_METADATA_CONCURRENCY", 2).to_i.clamp(1, 4)
     frame_concurrency = ENV.fetch("SIDEKIQ_FRAME_CONCURRENCY", 2).to_i.clamp(1, 4)
     story_auto_reply_orchestration_concurrency = ENV.fetch("SIDEKIQ_STORY_AUTO_REPLY_ORCHESTRATION_CONCURRENCY", 2).to_i.clamp(1, 4)
     profile_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_PROFILE_STORY_ORCHESTRATION_CONCURRENCY", 2).to_i.clamp(1, 4)
     home_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 3)
     home_story_sync_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_SYNC_CONCURRENCY", 2).to_i.clamp(1, 4)
     story_processing_concurrency = ENV.fetch("SIDEKIQ_STORY_PROCESSING_CONCURRENCY", 2).to_i.clamp(1, 4)
-    story_analysis_concurrency = ENV.fetch("SIDEKIQ_STORY_ANALYSIS_CONCURRENCY", 2).to_i.clamp(1, 4)
     story_preview_generation_concurrency = ENV.fetch("SIDEKIQ_STORY_PREVIEW_GENERATION_CONCURRENCY", 2).to_i.clamp(1, 4)
     story_replies_concurrency = ENV.fetch("SIDEKIQ_STORY_REPLIES_CONCURRENCY", 2).to_i.clamp(1, 4)
     profile_reevaluation_concurrency = ENV.fetch("SIDEKIQ_PROFILE_REEVALUATION_CONCURRENCY", 1).to_i.clamp(1, 2)
     story_validation_concurrency = ENV.fetch("SIDEKIQ_STORY_VALIDATION_CONCURRENCY", 2).to_i.clamp(1, 4)
-
-    config.capsule("ai_legacy_lane") do |cap|
-      cap.concurrency = legacy_ai_concurrency
-      cap.queues = %w[ai]
-    end
-
-    config.capsule("ai_visual_lane") do |cap|
-      cap.concurrency = visual_concurrency
-      cap.queues = %w[ai_visual_queue]
-    end
-
-    config.capsule("ai_face_lane") do |cap|
-      cap.concurrency = face_concurrency
-      cap.queues = %w[ai_face_queue]
-    end
-
-    config.capsule("ai_face_refresh_lane") do |cap|
-      cap.concurrency = face_refresh_concurrency
-      cap.queues = %w[ai_face_refresh_queue]
-    end
-
-    config.capsule("ai_ocr_lane") do |cap|
-      cap.concurrency = ocr_concurrency
-      cap.queues = %w[ai_ocr_queue]
-    end
-
-    config.capsule("ai_video_lane") do |cap|
-      cap.concurrency = video_concurrency
-      cap.queues = %w[video_processing_queue]
-    end
-
-    config.capsule("ai_metadata_lane") do |cap|
-      cap.concurrency = metadata_concurrency
-      cap.queues = %w[ai_metadata_queue]
+    Ops::AiServiceQueueRegistry.sidekiq_capsules.each do |capsule|
+      config.capsule(capsule[:capsule_name]) do |cap|
+        cap.concurrency = capsule[:concurrency].to_i
+        cap.queues = [ capsule[:queue_name].to_s ]
+      end
     end
 
     config.capsule("frame_generation_lane") do |cap|
@@ -117,11 +80,6 @@ Sidekiq.configure_server do |config|
       cap.queues = %w[story_processing]
     end
 
-    config.capsule("story_analysis_lane") do |cap|
-      cap.concurrency = story_analysis_concurrency
-      cap.queues = %w[story_analysis]
-    end
-
     config.capsule("story_preview_generation_lane") do |cap|
       cap.concurrency = story_preview_generation_concurrency
       cap.queues = %w[story_preview_generation]
@@ -146,7 +104,7 @@ Sidekiq.configure_server do |config|
   # Enhanced error handling with better categorization
   config.error_handlers << proc do |error, context, _|
     error_category = categorize_error(error)
-    
+
     Ops::StructuredLogger.error(
       event: "sidekiq.error",
       payload: {
@@ -160,7 +118,7 @@ Sidekiq.configure_server do |config|
         created_at: context[:created_at]
       }
     )
-    
+
     # Alert on critical errors
     if error_category == "critical"
       alert_critical_error(error, context)
@@ -217,7 +175,7 @@ end
 def alert_critical_error(error, context)
   # This could integrate with external monitoring systems
   Rails.logger.error("[CRITICAL] Job failure: #{context[:class]} - #{error.class}: #{error.message}")
-  
+
   # Example: Send to external monitoring service
   # MonitoringService.alert_critical_job_error(error, context) if defined?(MonitoringService)
 end

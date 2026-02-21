@@ -3,7 +3,7 @@ require "json"
 require "set"
 
 class BuildInstagramProfileHistoryJob < ApplicationJob
-  queue_as :ai
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:profile_history_build)
 
   PROFILE_INCOMPLETE_REASON_CODES =
     if defined?(ProcessPostMetadataTaggingJob::PROFILE_INCOMPLETE_REASON_CODES)

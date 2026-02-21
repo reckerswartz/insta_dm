@@ -1,7 +1,7 @@
 require "timeout"
 
 class ProcessPostVisualAnalysisJob < PostAnalysisPipelineJob
-  queue_as :ai_visual_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:visual_analysis)
 
   MAX_VISUAL_ATTEMPTS = ENV.fetch("AI_VISUAL_MAX_ATTEMPTS", 6).to_i.clamp(1, 20)
   MAX_DEFER_ATTEMPTS = ENV.fetch("AI_VISUAL_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)

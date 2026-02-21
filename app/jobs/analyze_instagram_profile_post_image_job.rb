@@ -1,5 +1,5 @@
 class AnalyzeInstagramProfilePostImageJob < ApplicationJob
-  queue_as :ai_visual_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:profile_post_image_description)
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, source_job: nil)
     account = InstagramAccount.find_by(id: instagram_account_id)

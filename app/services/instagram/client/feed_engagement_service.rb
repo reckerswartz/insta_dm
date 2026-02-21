@@ -6,58 +6,132 @@ module Instagram
       # This does NOT auto-like or auto-comment. It only records posts, downloads media (temporarily),
       # and queues analysis. Interaction should remain a user-confirmed action in the UI.
       def capture_home_feed_posts!(rounds: 4, delay_seconds: 45, max_new: 20)
+        rounds_i = rounds.to_i.clamp(1, 25)
+        delay_i = delay_seconds.to_i.clamp(10, 120)
+        max_new_i = max_new.to_i.clamp(1, 200)
+
         with_recoverable_session(label: "feed_capture") do
           with_authenticated_driver do |driver|
-            with_task_capture(driver: driver, task_name: "feed_capture_home", meta: { rounds: rounds, delay_seconds: delay_seconds, max_new: max_new }) do
+            with_task_capture(driver: driver, task_name: "feed_capture_home", meta: { rounds: rounds_i, delay_seconds: delay_i, max_new: max_new_i }) do
               driver.navigate.to(INSTAGRAM_BASE_URL)
               wait_for(driver, css: "body", timeout: 12)
               dismiss_common_overlays!(driver)
 
               seen = 0
               new_posts = 0
+              updated_posts = 0
+              queued_actions = 0
+              skipped_posts = 0
+              skipped_reasons = Hash.new(0)
+              processed_shortcodes = Set.new
 
-              rounds.to_i.clamp(1, 25).times do |i|
+              rounds_i.times do |i|
                 dismiss_common_overlays!(driver)
 
                 items = extract_feed_items_from_dom(driver)
-                now = Time.current
+                round_num = i + 1
 
                 items.each do |it|
-                  sc = it[:shortcode].to_s.strip
-                  next if sc.blank?
+                  shortcode = it[:shortcode].to_s.strip
+                  next if shortcode.blank?
+                  next if processed_shortcodes.include?(shortcode)
+                  processed_shortcodes << shortcode
 
                   seen += 1
+                  now = Time.current
 
-                  post = @account.instagram_posts.find_or_initialize_by(shortcode: sc)
-                  is_new = post.new_record?
+                  profile_resolution = resolve_feed_profile_for_action(item: it)
+                  profile = profile_resolution[:profile]
+                  skip_reason = profile_resolution[:reason]
 
-                  post.detected_at ||= now
-                  post.post_kind = it[:post_kind].presence || post.post_kind.presence || "unknown"
-                  post.author_username = it[:author_username].presence || post.author_username
-                  post.media_url = it[:media_url].presence || post.media_url
-                  post.caption = it[:caption].presence || post.caption
-                  post.metadata = (post.metadata || {}).merge(it[:metadata] || {}).merge(round: i + 1)
-                  post.save! if post.changed?
+                  cache_post = persist_feed_cache_post!(item: it, profile: profile, round: round_num, captured_at: now)
 
-                  if is_new
-                    new_posts += 1
-
-                    # Download media and analyze (best effort).
-                    DownloadInstagramPostMediaJob.perform_later(instagram_post_id: post.id) if post.media_url.present?
-                    AnalyzeInstagramPostJob.perform_later(instagram_post_id: post.id)
+                  if profile.nil?
+                    skipped_posts += 1
+                    skipped_reasons[skip_reason.to_s.presence || "profile_missing"] += 1
+                    annotate_feed_cache_skip_reason!(post: cache_post, reason: skip_reason.to_s.presence || "profile_missing")
+                    next
                   end
 
-                  break if new_posts >= max_new.to_i.clamp(1, 200)
+                  item_skip_reason = feed_item_skip_reason(item: it)
+                  if item_skip_reason
+                    skipped_posts += 1
+                    skipped_reasons[item_skip_reason] += 1
+                    annotate_feed_cache_skip_reason!(post: cache_post, reason: item_skip_reason)
+                    next
+                  end
+
+                  policy = Instagram::ProfileScanPolicy.new(profile: profile).decision
+                  if ActiveModel::Type::Boolean.new.cast(policy[:skip_post_analysis])
+                    reason_code = policy[:reason_code].to_s.presence || "policy_blocked"
+                    reason = "profile_policy_#{reason_code}"
+                    skipped_posts += 1
+                    skipped_reasons[reason] += 1
+                    annotate_feed_cache_skip_reason!(post: cache_post, reason: reason)
+                    next
+                  end
+
+                  profile_post_result = persist_feed_profile_post!(
+                    profile: profile,
+                    item: it,
+                    round: round_num,
+                    captured_at: now
+                  )
+                  profile_post = profile_post_result[:post]
+
+                  if profile_post_result[:created]
+                    new_posts += 1
+                    record_feed_profile_capture_event!(profile: profile, post: profile_post, captured_at: now)
+                  elsif profile_post_result[:updated]
+                    updated_posts += 1
+                  end
+
+                  enqueue_result = enqueue_workspace_processing_for_feed_post!(profile: profile, post: profile_post)
+                  queued_actions += 1 if ActiveModel::Type::Boolean.new.cast(enqueue_result[:enqueued])
+
+                  break if new_posts >= max_new_i
+                rescue StandardError => e
+                  skipped_posts += 1
+                  skipped_reasons["item_processing_error"] += 1
+                  Ops::StructuredLogger.warn(
+                    event: "feed_capture_home.item_failed",
+                    payload: {
+                      instagram_account_id: @account.id,
+                      shortcode: it[:shortcode].to_s,
+                      author_username: it[:author_username].to_s,
+                      error_class: e.class.name,
+                      error_message: e.message.to_s.byteslice(0, 220)
+                    }
+                  )
+                  next
                 end
 
-                break if new_posts >= max_new.to_i.clamp(1, 200)
+                break if new_posts >= max_new_i
 
                 # Scroll down a bit.
                 driver.execute_script("window.scrollBy(0, Math.max(700, window.innerHeight * 0.85));")
-                sleep(delay_seconds.to_i.clamp(10, 120))
+                sleep(delay_i)
               end
 
-              { seen_posts: seen, new_posts: new_posts }
+              result = {
+                seen_posts: seen,
+                new_posts: new_posts,
+                updated_posts: updated_posts,
+                queued_actions: queued_actions,
+                skipped_posts: skipped_posts,
+                skipped_reasons: skipped_reasons.sort.to_h
+              }
+
+              Ops::StructuredLogger.info(
+                event: "feed_capture_home.completed",
+                payload: result.merge(
+                  instagram_account_id: @account.id,
+                  rounds: rounds_i,
+                  delay_seconds: delay_i,
+                  max_new: max_new_i
+                )
+              )
+              result
             end
           end
         end
@@ -142,6 +216,212 @@ module Instagram
         end
       end
 
+      private
+
+      def resolve_feed_profile_for_action(item:)
+        username = normalize_username(item[:author_username].to_s)
+        metadata = item[:metadata].is_a?(Hash) ? item[:metadata] : {}
+        author_ig_user_id =
+          item[:author_ig_user_id].to_s.strip.presence ||
+          metadata["author_ig_user_id"].to_s.strip.presence
+
+        profile = nil
+        profile = @account.instagram_profiles.find_by(ig_user_id: author_ig_user_id) if author_ig_user_id.present?
+        profile ||= @account.instagram_profiles.find_by(username: username) if username.present?
+        return { profile: nil, reason: "profile_missing" } unless profile
+        return { profile: nil, reason: "profile_not_in_follow_graph" } unless profile.following || profile.follows_you
+
+        { profile: profile, reason: nil }
+      rescue StandardError
+        { profile: nil, reason: "profile_lookup_failed" }
+      end
+
+      def feed_item_skip_reason(item:)
+        metadata = item[:metadata].is_a?(Hash) ? item[:metadata] : {}
+        post_kind = item[:post_kind].to_s.downcase
+        product_type = metadata["product_type"].to_s.downcase
+
+        return "missing_shortcode" if item[:shortcode].to_s.strip.blank?
+        return "missing_media_url" if item[:media_url].to_s.strip.blank?
+        return "story_content" if post_kind == "story" || product_type == "story" || ActiveModel::Type::Boolean.new.cast(metadata["is_story"])
+        return "sponsored_or_ad" if metadata["ad_id"].to_s.present? || ActiveModel::Type::Boolean.new.cast(metadata["is_paid_partnership"])
+
+        nil
+      rescue StandardError
+        "invalid_feed_item"
+      end
+
+      def persist_feed_cache_post!(item:, profile:, round:, captured_at:)
+        shortcode = item[:shortcode].to_s.strip
+        return nil if shortcode.blank?
+
+        post = @account.instagram_posts.find_or_initialize_by(shortcode: shortcode)
+        is_new = post.new_record?
+        metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+        incoming_metadata = item[:metadata].is_a?(Hash) ? item[:metadata] : {}
+
+        post.detected_at ||= captured_at
+        post.taken_at ||= item[:taken_at].presence || captured_at
+        post.post_kind = item[:post_kind].presence || post.post_kind.presence || "unknown"
+        post.author_username = item[:author_username].presence || post.author_username
+        post.author_ig_user_id = item[:author_ig_user_id].to_s.presence || metadata["author_ig_user_id"].to_s.presence || post.author_ig_user_id
+        post.instagram_profile = profile if profile
+        post.media_url = item[:media_url].presence || post.media_url
+        post.caption = item[:caption].presence || post.caption
+        post.metadata = metadata.merge(incoming_metadata).merge(
+          "source" => "feed_capture_home",
+          "round" => round.to_i,
+          "captured_at" => captured_at.utc.iso8601(3),
+          "author_ig_user_id" => post.author_ig_user_id.to_s.presence
+        )
+        post.save! if post.changed?
+
+        if is_new
+          DownloadInstagramPostMediaJob.perform_later(instagram_post_id: post.id) if post.media_url.present?
+          AnalyzeInstagramPostJob.perform_later(instagram_post_id: post.id)
+        end
+
+        post
+      rescue StandardError
+        nil
+      end
+
+      def annotate_feed_cache_skip_reason!(post:, reason:)
+        return unless post&.persisted?
+        return if reason.to_s.blank?
+
+        metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+        metadata["skip_reason"] = reason.to_s
+        metadata["skip_recorded_at"] = Time.current.utc.iso8601(3)
+        post.update!(metadata: metadata)
+      rescue StandardError
+        nil
+      end
+
+      def persist_feed_profile_post!(profile:, item:, round:, captured_at:)
+        shortcode = item[:shortcode].to_s.strip
+        raise "shortcode is required for feed profile post persist" if shortcode.blank?
+
+        post = profile.instagram_profile_posts.find_or_initialize_by(shortcode: shortcode)
+        was_new = post.new_record?
+        existing_metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+        incoming_metadata = item[:metadata].is_a?(Hash) ? item[:metadata] : {}
+
+        incoming_post_kind = item[:post_kind].to_s.presence || incoming_metadata["post_kind"].to_s.presence || "post"
+        incoming_media_url = item[:media_url].to_s.strip.presence
+        incoming_caption = item[:caption].to_s.presence
+        incoming_taken_at =
+          begin
+            raw = item[:taken_at]
+            raw.is_a?(Time) ? raw : raw.present? ? Time.zone.parse(raw.to_s) : nil
+          rescue StandardError
+            nil
+          end
+
+        analysis_refresh_needed =
+          was_new ||
+          (incoming_media_url.present? && incoming_media_url != post.source_media_url.to_s) ||
+          (incoming_caption.present? && incoming_caption != post.caption.to_s) ||
+          incoming_post_kind.to_s != existing_metadata["post_kind"].to_s
+
+        feed_state = existing_metadata["feed_capture_home"].is_a?(Hash) ? existing_metadata["feed_capture_home"].deep_dup : {}
+        feed_state["first_seen_at"] ||= captured_at.utc.iso8601(3)
+        feed_state["last_seen_at"] = captured_at.utc.iso8601(3)
+        feed_state["last_round"] = round.to_i
+        feed_state["author_username"] = item[:author_username].to_s.presence || profile.username
+        feed_state["author_ig_user_id"] = item[:author_ig_user_id].to_s.presence || incoming_metadata["author_ig_user_id"].to_s.presence
+
+        merged_metadata = existing_metadata.merge(incoming_metadata).merge(
+          "source" => "feed_capture_home",
+          "post_kind" => incoming_post_kind,
+          "media_url" => incoming_media_url,
+          "author_ig_user_id" => feed_state["author_ig_user_id"],
+          "feed_capture_home" => feed_state
+        )
+        merged_metadata.delete("deleted_from_source")
+        merged_metadata.delete("deleted_detected_at")
+        merged_metadata.delete("deleted_reason")
+
+        post.instagram_account = @account
+        post.taken_at = incoming_taken_at || post.taken_at || captured_at
+        post.caption = incoming_caption || post.caption
+        post.permalink = resolve_feed_permalink(shortcode: shortcode, item: item, current_permalink: post.permalink)
+        post.source_media_url = incoming_media_url || post.source_media_url
+        post.likes_count = [ post.likes_count.to_i, incoming_metadata["like_count"].to_i ].max
+        post.comments_count = [ post.comments_count.to_i, incoming_metadata["comment_count"].to_i ].max
+        post.last_synced_at = captured_at
+        post.metadata = merged_metadata
+
+        if analysis_refresh_needed && (post.ai_status.to_s != "pending" || post.analyzed_at.present?)
+          post.ai_status = "pending"
+          post.analyzed_at = nil
+        end
+
+        post.save! if post.changed?
+        { post: post, created: was_new, updated: (!was_new && post.previous_changes.present?) }
+      end
+
+      def resolve_feed_permalink(shortcode:, item:, current_permalink:)
+        metadata = item[:metadata].is_a?(Hash) ? item[:metadata] : {}
+        href = metadata["href"].to_s
+        return "#{INSTAGRAM_BASE_URL}#{href}" if href.start_with?("/p/", "/reel/")
+
+        kind = item[:post_kind].to_s.downcase
+        return current_permalink if current_permalink.to_s.present?
+        return "#{INSTAGRAM_BASE_URL}/reel/#{shortcode}/" if kind == "reel"
+
+        "#{INSTAGRAM_BASE_URL}/p/#{shortcode}/"
+      rescue StandardError
+        current_permalink.to_s.presence || "#{INSTAGRAM_BASE_URL}/p/#{shortcode}/"
+      end
+
+      def record_feed_profile_capture_event!(profile:, post:, captured_at:)
+        metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+        profile.record_event!(
+          kind: "profile_post_captured",
+          external_id: "profile_post_captured:#{post.shortcode}",
+          occurred_at: post.taken_at || captured_at,
+          metadata: {
+            source: "feed_capture_home",
+            reason: "new_capture",
+            shortcode: post.shortcode,
+            instagram_profile_post_id: post.id,
+            permalink: post.permalink_url,
+            media_type: metadata["media_type"],
+            media_id: metadata["media_id"],
+            deleted_from_source: false
+          }
+        )
+      rescue StandardError
+        nil
+      end
+
+      def enqueue_workspace_processing_for_feed_post!(profile:, post:)
+        return { enqueued: false, reason: "post_missing" } unless profile && post
+
+        if post.source_media_url.to_s.present? || post.media.attached?
+          DownloadInstagramProfilePostMediaJob.perform_later(
+            instagram_account_id: @account.id,
+            instagram_profile_id: profile.id,
+            instagram_profile_post_id: post.id,
+            trigger_analysis: false
+          )
+        end
+
+        WorkspaceProcessActionsTodoPostJob.enqueue_if_needed!(
+          account: @account,
+          profile: profile,
+          post: post,
+          requested_by: "feed_capture_home"
+        )
+      rescue StandardError => e
+        {
+          enqueued: false,
+          reason: "workspace_enqueue_failed",
+          error_class: e.class.name,
+          error_message: e.message.to_s
+        }
+      end
     end
   end
 end

@@ -1,7 +1,7 @@
 require "timeout"
 
 class ProcessPostVideoAnalysisJob < PostAnalysisPipelineJob
-  queue_as :video_processing_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:video_analysis)
 
   MAX_DEFER_ATTEMPTS = ENV.fetch("AI_VIDEO_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)
 

@@ -1,7 +1,7 @@
 require "timeout"
 
 class ProcessPostOcrAnalysisJob < PostAnalysisPipelineJob
-  queue_as :ai_ocr_queue
+  queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:ocr_analysis)
 
   MAX_DEFER_ATTEMPTS = ENV.fetch("AI_OCR_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)
 
