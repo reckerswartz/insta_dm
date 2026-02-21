@@ -7,6 +7,8 @@ class RefreshProfilePostFaceIdentityJob < ApplicationJob
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
 
+  FACE_REFRESH_DUPLICATE_SKIP_DAYS = ENV.fetch("PROFILE_HISTORY_FACE_REFRESH_DUPLICATE_SKIP_DAYS", "7").to_i.clamp(1, 14)
+
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, trigger_source: "profile_history_build")
     account = InstagramAccount.find_by(id: instagram_account_id)
     return unless account
@@ -16,6 +18,20 @@ class RefreshProfilePostFaceIdentityJob < ApplicationJob
 
     post = profile.instagram_profile_posts.find_by(id: instagram_profile_post_id)
     return unless post && post.media.attached?
+
+    if recent_face_refresh_completed?(post: post)
+      mark_face_refresh_state!(
+        post: post,
+        attributes: {
+          "status" => "skipped_recent_completion",
+          "finished_at" => Time.current.iso8601(3),
+          "trigger_source" => trigger_source.to_s.presence || "profile_history_build",
+          "active_job_id" => job_id,
+          "queue_name" => queue_name
+        }
+      )
+      return
+    end
 
     mark_face_refresh_state!(
       post: post,
@@ -79,6 +95,23 @@ class RefreshProfilePostFaceIdentityJob < ApplicationJob
       metadata["history_build"] = history
       post.update!(metadata: metadata)
     end
+  rescue StandardError
+    nil
+  end
+
+  def recent_face_refresh_completed?(post:)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    face_recognition = metadata["face_recognition"].is_a?(Hash) ? metadata["face_recognition"] : {}
+    updated_at = parse_time(face_recognition["updated_at"])
+    updated_at.present? && updated_at >= FACE_REFRESH_DUPLICATE_SKIP_DAYS.days.ago
+  rescue StandardError
+    false
+  end
+
+  def parse_time(value)
+    return nil if value.to_s.blank?
+
+    Time.zone.parse(value.to_s)
   rescue StandardError
     nil
   end

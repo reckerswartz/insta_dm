@@ -124,6 +124,10 @@ RSpec.describe Instagram::Client do
     captured = {}
     cache = {}
 
+    client.define_singleton_method(:fetch_story_tray_user_id_map_via_api) do |cache:, driver: nil|
+      captured[:tray] = { cache: cache, driver: driver }
+      {}
+    end
     client.define_singleton_method(:fetch_web_profile_info) do |username, driver: nil|
       captured[:web_info] = { username: username, driver: driver }
       { "data" => { "user" => { "id" => "777" } } }
@@ -144,10 +148,113 @@ RSpec.describe Instagram::Client do
 
     stories = client.send(:fetch_story_items_via_api, username: "Target.User", cache: cache, driver: driver)
 
+    expect(captured[:tray]).to eq(cache: cache, driver: driver)
     expect(captured[:web_info]).to eq(username: "target.user", driver: driver)
     expect(captured[:reel]).to eq(user_id: "777", referer_username: "target.user", driver: driver)
     expect(stories.first[:story_id]).to eq("9001")
     expect(cache.dig("stories:target.user", :items)).to eq(stories)
+  end
+
+  it "prefers reels tray user id mapping before web_profile_info fallback" do
+    driver = Object.new
+    captured = {}
+    cache = {}
+
+    client.define_singleton_method(:fetch_story_tray_user_id_map_via_api) do |cache:, driver: nil|
+      captured[:tray] = { cache: cache, driver: driver }
+      { "target.user" => "777" }
+    end
+    client.define_singleton_method(:fetch_web_profile_info) do |username, driver: nil|
+      captured[:web_info] = { username: username, driver: driver }
+      raise "web_profile_info fallback should not be used"
+    end
+    client.define_singleton_method(:fetch_story_reel) do |user_id:, referer_username:, driver: nil|
+      captured[:reel] = { user_id: user_id, referer_username: referer_username, driver: driver }
+      {
+        "items" => [
+          {
+            "id" => "9001_777",
+            "media_type" => 1,
+            "image_versions2" => { "candidates" => [ { "url" => "https://cdn.example/story.jpg" } ] },
+            "user" => { "id" => "777", "username" => "target.user" }
+          }
+        ]
+      }
+    end
+
+    stories = client.send(:fetch_story_items_via_api, username: "Target.User", cache: cache, driver: driver)
+
+    expect(captured[:tray]).to eq(cache: cache, driver: driver)
+    expect(captured[:web_info]).to be_nil
+    expect(captured[:reel]).to eq(user_id: "777", referer_username: "target.user", driver: driver)
+    expect(stories.first[:story_id]).to eq("9001")
+  end
+
+  it "selects a matching story item when story id is missing from URL context" do
+    driver = Object.new
+    items = [
+      {
+        story_id: "111",
+        media_url: "https://cdn.example/story_111.jpg",
+        image_url: "https://cdn.example/story_111.jpg",
+        video_url: nil,
+        media_variants: []
+      },
+      {
+        story_id: "222",
+        media_url: "https://cdn.example/story_222.jpg",
+        image_url: "https://cdn.example/story_222.jpg",
+        video_url: nil,
+        media_variants: []
+      }
+    ]
+
+    client.define_singleton_method(:fetch_story_items_via_api) do |username:, cache: nil, driver: nil|
+      items
+    end
+    client.define_singleton_method(:resolve_story_item_via_dom) do |driver:|
+      { media_url: "https://cdn.example/story_222.jpg", image_url: "https://cdn.example/story_222.jpg", video_url: nil }
+    end
+    client.define_singleton_method(:resolve_story_item_via_performance_logs) do |driver:|
+      nil
+    end
+
+    story = client.send(:resolve_story_item_via_api, username: "target.user", story_id: "", cache: {}, driver: driver)
+
+    expect(story[:story_id]).to eq("222")
+  end
+
+  it "falls back to the first story item when URL story id is missing and no media match is available" do
+    items = [
+      {
+        story_id: "111",
+        media_url: "https://cdn.example/story_111.jpg",
+        image_url: "https://cdn.example/story_111.jpg",
+        video_url: nil,
+        media_variants: []
+      },
+      {
+        story_id: "222",
+        media_url: "https://cdn.example/story_222.jpg",
+        image_url: "https://cdn.example/story_222.jpg",
+        video_url: nil,
+        media_variants: []
+      }
+    ]
+
+    client.define_singleton_method(:fetch_story_items_via_api) do |username:, cache: nil, driver: nil|
+      items
+    end
+    client.define_singleton_method(:resolve_story_item_via_dom) do |driver:|
+      nil
+    end
+    client.define_singleton_method(:resolve_story_item_via_performance_logs) do |driver:|
+      nil
+    end
+
+    story = client.send(:resolve_story_item_via_api, username: "target.user", story_id: "", cache: {}, driver: Object.new)
+
+    expect(story[:story_id]).to eq("111")
   end
 
   it "retries API GET requests before succeeding" do

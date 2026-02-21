@@ -59,6 +59,19 @@ class GenerateStoryPreviewImageJob < ApplicationJob
       stamp_preview_success_metadata!(event: event, source: "ffmpeg_first_frame")
       return
     end
+    if non_retryable_thumbnail_failure?(extracted)
+      detail = preview_failure_detail(extracted)
+      stamp_preview_failure_metadata!(
+        event: event,
+        reason: "invalid_video_stream",
+        detail: detail
+      )
+      Rails.logger.warn(
+        "[GenerateStoryPreviewImageJob] non-retryable thumbnail failure event_id=#{instagram_profile_event_id}: " \
+        "#{detail.to_s.byteslice(0, 500)}"
+      )
+      return
+    end
 
     attached = attach_preview_via_active_storage!(event: event)
     return if attached
@@ -235,7 +248,34 @@ class GenerateStoryPreviewImageJob < ApplicationJob
   end
 
   def non_retryable_preview_error?(error)
-    message = error.to_s.downcase
+    non_retryable_preview_message?(error.to_s)
+  end
+
+  def non_retryable_thumbnail_failure?(thumbnail_result)
+    metadata = thumbnail_result.is_a?(Hash) ? (thumbnail_result[:metadata] || thumbnail_result["metadata"]) : nil
+    return false unless metadata.is_a?(Hash)
+
+    reason = (metadata[:reason] || metadata["reason"]).to_s
+    return false unless reason.in?(%w[ffmpeg_extract_failed thumbnail_extraction_error])
+
+    stderr = metadata[:stderr] || metadata["stderr"]
+    non_retryable_preview_message?(stderr)
+  end
+
+  def preview_failure_detail(thumbnail_result)
+    metadata = thumbnail_result.is_a?(Hash) ? (thumbnail_result[:metadata] || thumbnail_result["metadata"]) : nil
+    return nil unless metadata.is_a?(Hash)
+
+    stderr = (metadata[:stderr] || metadata["stderr"]).to_s.presence
+    return stderr if stderr.present?
+
+    (metadata[:reason] || metadata["reason"]).to_s.presence
+  end
+
+  def non_retryable_preview_message?(raw_message)
+    message = raw_message.to_s.downcase
+    return false if message.blank?
+
     NON_RETRYABLE_PREVIEW_PATTERNS.any? { |pattern| message.include?(pattern) }
   end
 

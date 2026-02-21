@@ -51,4 +51,73 @@ RSpec.describe SendStoryReplyJob do
       )
     end.not_to change { account.instagram_messages.count }
   end
+
+  it "requeues delivery while validation is still pending" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_user_#{SecureRandom.hex(3)}")
+    profile.record_event!(
+      kind: "story_reply_queued",
+      external_id: "story_reply_queued:pending_1",
+      metadata: { source: "spec" }
+    )
+
+    messenger = instance_double(Messaging::IntegrationService)
+    allow(Messaging::IntegrationService).to receive(:new).and_return(messenger)
+    expect(messenger).not_to receive(:send_text!)
+
+    expect do
+      described_class.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        story_id: "pending_1",
+        reply_text: "Hold for validation",
+        validation_requested_at: Time.current.iso8601(3)
+      )
+    end.to have_enqueued_job(described_class).with(
+      hash_including(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        story_id: "pending_1",
+        validation_attempt: 1
+      )
+    )
+
+    queue_event = profile.instagram_profile_events.find_by!(kind: "story_reply_queued", external_id: "story_reply_queued:pending_1")
+    expect(queue_event.metadata["delivery_status"]).to eq("waiting_validation")
+    expect(account.instagram_messages.count).to eq(0)
+  end
+
+  it "blocks delivery when validation marks story replies unavailable" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "story_user_#{SecureRandom.hex(3)}",
+      story_interaction_state: "unavailable",
+      story_interaction_reason: "api_can_reply_false",
+      story_interaction_checked_at: Time.current,
+      story_interaction_retry_after_at: 2.hours.from_now
+    )
+    profile.record_event!(
+      kind: "story_reply_queued",
+      external_id: "story_reply_queued:blocked_1",
+      metadata: { source: "spec" }
+    )
+
+    messenger = instance_double(Messaging::IntegrationService)
+    allow(Messaging::IntegrationService).to receive(:new).and_return(messenger)
+    expect(messenger).not_to receive(:send_text!)
+
+    expect do
+      described_class.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        story_id: "blocked_1",
+        reply_text: "Should not send",
+        validation_requested_at: 1.minute.ago.iso8601(3)
+      )
+    end.not_to change { account.instagram_messages.count }
+
+    queue_event = profile.instagram_profile_events.find_by!(kind: "story_reply_queued", external_id: "story_reply_queued:blocked_1")
+    expect(queue_event.metadata["delivery_status"]).to eq("blocked_validation")
+    expect(queue_event.metadata["interaction_reason"]).to eq("api_can_reply_false")
+  end
 end

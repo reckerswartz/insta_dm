@@ -140,6 +140,8 @@ module Workspace
         "Preview media download is queued."
       when "waiting_post_analysis"
         "Post analysis is running in background."
+      when "waiting_comment_generation"
+        "Comment suggestions are generating in background."
       when "waiting_build_history", "waiting_profile_analysis"
         "Build History is running; comment generation will resume automatically."
       when "running"
@@ -170,6 +172,7 @@ module Workspace
         "queued" => 4,
         "waiting_build_history" => 4,
         "waiting_profile_analysis" => 4,
+        "waiting_comment_generation" => 4,
         "waiting_post_analysis" => 3,
         "waiting_media_download" => 3,
         "queued_for_processing" => 2,

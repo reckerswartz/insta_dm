@@ -1,15 +1,18 @@
-class AnalyzeInstagramProfileJob < ApplicationJob
 require "base64"
-require "digest"
 
+class AnalyzeInstagramProfileJob < ApplicationJob
   queue_as :ai
   MAX_AI_IMAGE_COUNT = 5
   MAX_PROFILE_IMAGE_DESCRIPTION_COUNT = 5
   MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
+  POST_IMAGE_FOLLOWUP_MAX_ATTEMPTS = ENV.fetch("PROFILE_IMAGE_DESCRIPTION_FOLLOWUP_MAX_ATTEMPTS", 6).to_i.clamp(1, 20)
+  POST_IMAGE_FOLLOWUP_WAIT_SECONDS = ENV.fetch("PROFILE_IMAGE_DESCRIPTION_FOLLOWUP_WAIT_SECONDS", 45).to_i.clamp(15, 300)
 
-  def perform(instagram_account_id:, instagram_profile_id:, profile_action_log_id: nil)
+  def perform(instagram_account_id:, instagram_profile_id:, profile_action_log_id: nil, phase: "primary", post_image_followup_attempt: 0)
     account = InstagramAccount.find(instagram_account_id)
     profile = account.instagram_profiles.find(instagram_profile_id)
+    phase_name = phase.to_s.presence || "primary"
+    followup_attempt = post_image_followup_attempt.to_i
     action_log = find_or_create_action_log(
       account: account,
       profile: profile,
@@ -42,7 +45,34 @@ require "digest"
       posts_limit: nil,
       comments_limit: 20
     )
-    described_posts = enrich_first_profile_images!(account: account, profile: profile, collected_posts: collected[:posts])
+    described_posts = select_profile_posts_for_payload(collected_posts: collected[:posts])
+    enqueue_result = { enqueued_count: 0 }
+    if profile_analysis_phase_primary?(phase_name)
+      enqueue_result = enqueue_profile_image_description_jobs!(account: account, profile: profile, posts: described_posts)
+    end
+    pending_post_image_jobs = pending_profile_image_description_jobs(posts: described_posts)
+    followup_result = { queued: false, reason: nil, job_id: nil, attempt: followup_attempt }
+    if profile_analysis_phase_followup?(phase_name) &&
+        pending_post_image_jobs.positive? &&
+        followup_attempt < POST_IMAGE_FOLLOWUP_MAX_ATTEMPTS
+      followup_result = schedule_post_image_followup!(
+        account: account,
+        profile: profile,
+        action_log: action_log,
+        attempt: followup_attempt,
+        pending_count: pending_post_image_jobs
+      )
+      return if ActiveModel::Type::Boolean.new.cast(followup_result[:queued]) || followup_result[:reason].to_s == "followup_already_queued"
+    elsif profile_analysis_phase_primary?(phase_name) && pending_post_image_jobs.positive?
+      followup_result = schedule_post_image_followup!(
+        account: account,
+        profile: profile,
+        action_log: action_log,
+        attempt: 0,
+        pending_count: pending_post_image_jobs
+      )
+    end
+
     accepted_media_context = build_accepted_media_context(profile: profile)
 
     payload = build_profile_payload(
@@ -74,15 +104,27 @@ require "digest"
       content_id: profile.id
     )
 
-    Turbo::StreamsChannel.broadcast_append_to(
-      account,
-      target: "notifications",
-      partial: "shared/notification",
-      locals: { kind: "notice", message: "AI analysis completed for #{profile.username} via #{run[:provider].display_name}." }
-    )
+    if profile_analysis_phase_primary?(phase_name)
+      Turbo::StreamsChannel.broadcast_append_to(
+        account,
+        target: "notifications",
+        partial: "shared/notification",
+        locals: { kind: "notice", message: "AI analysis completed for #{profile.username} via #{run[:provider].display_name}." }
+      )
+    end
+
     action_log.mark_succeeded!(
-      extra_metadata: { provider: run[:provider].key, provider_name: run[:provider].display_name },
-      log_text: "AI analysis completed via #{run[:provider].display_name}"
+      extra_metadata: {
+        provider: run[:provider].key,
+        provider_name: run[:provider].display_name,
+        phase: phase_name,
+        post_image_jobs_enqueued: enqueue_result[:enqueued_count].to_i,
+        post_image_jobs_pending: pending_post_image_jobs,
+        followup_queued: ActiveModel::Type::Boolean.new.cast(followup_result[:queued]),
+        followup_reason: followup_result[:reason].to_s.presence,
+        followup_attempt: followup_result[:attempt].to_i
+      },
+      log_text: "AI analysis completed via #{run[:provider].display_name} (phase=#{phase_name})"
     )
   rescue StandardError => e
     Turbo::StreamsChannel.broadcast_append_to(
@@ -226,122 +268,144 @@ require "digest"
     media
   end
 
-  def enrich_first_profile_images!(account:, profile:, collected_posts:)
-    selected = Array(collected_posts).select { |p| p.media.attached? }.first(MAX_PROFILE_IMAGE_DESCRIPTION_COUNT)
+  def select_profile_posts_for_payload(collected_posts:)
+    Array(collected_posts).select { |post| post.media.attached? }.first(MAX_PROFILE_IMAGE_DESCRIPTION_COUNT)
+  end
 
-    selected.each do |post|
-      analysis_data = run_post_image_description!(account: account, profile: profile, post: post)
-      next unless analysis_data.is_a?(Hash)
+  def enqueue_profile_image_description_jobs!(account:, profile:, posts:)
+    enqueued_count = 0
 
-      post.update!(
-        ai_status: "analyzed",
-        analyzed_at: Time.current,
-        ai_provider: analysis_data["provider"],
-        ai_model: analysis_data["model"],
-        analysis: analysis_data["analysis"],
-        metadata: (post.metadata || {}).merge(
-          "analysis_input" => {
-            "shortcode" => post.shortcode,
-            "taken_at" => post.taken_at&.iso8601,
-            "caption" => post.caption.to_s,
-            "image_description" => analysis_data.dig("analysis", "image_description"),
-            "topics" => Array(analysis_data.dig("analysis", "topics")).first(10),
-            "comment_suggestions" => Array(analysis_data.dig("analysis", "comment_suggestions")).first(5)
-          }
-        )
+    Array(posts).each do |post|
+      next if profile_image_description_available?(post)
+      next if profile_image_description_job_fresh?(post)
+
+      job = AnalyzeInstagramProfilePostImageJob.perform_later(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        source_job: self.class.name
       )
-      PostFaceRecognitionService.new.process!(post: post)
-      Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: analysis_data["analysis"])
+      stamp_profile_image_description_queue!(post: post, job: job)
+      enqueued_count += 1
     rescue StandardError
       next
     end
 
-    selected
+    { enqueued_count: enqueued_count }
   end
 
-  def run_post_image_description!(account:, profile:, post:)
-    history_narrative = profile.history_narrative_text(max_chunks: 3)
-    history_chunks = profile.history_narrative_chunks(max_chunks: 6)
+  def profile_image_description_available?(post)
+    analysis = post.analysis.is_a?(Hash) ? post.analysis : {}
+    analysis["image_description"].to_s.present?
+  rescue StandardError
+    false
+  end
 
-    payload = {
-      post: {
-        shortcode: post.shortcode,
-        caption: post.caption,
-        taken_at: post.taken_at&.iso8601,
-        permalink: post.permalink_url,
-        likes_count: post.likes_count,
-        comments_count: post.comments_count,
-        comments: post.instagram_profile_post_comments.recent_first.limit(25).map do |c|
-          {
-            author_username: c.author_username,
-            body: c.body,
-            commented_at: c.commented_at&.iso8601
-          }
-        end
-      },
-      author_profile: {
-        username: profile.username,
-        display_name: profile.display_name,
-        bio: profile.bio,
-        can_message: profile.can_message,
-        tags: profile.profile_tags.pluck(:name).sort
-      },
-      rules: {
-        require_manual_review: true,
-        style: "gen_z_light",
-        historical_narrative_text: history_narrative,
-        historical_narrative_chunks: history_chunks
+  def profile_image_description_job_fresh?(post)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    state = metadata["profile_image_description"]
+    return false unless state.is_a?(Hash)
+    return false unless state["status"].to_s == "queued"
+
+    queued_at = parse_timestamp(state["queued_at"])
+    queued_at.present? && queued_at > 45.minutes.ago
+  rescue StandardError
+    false
+  end
+
+  def stamp_profile_image_description_queue!(post:, job:)
+    post.with_lock do
+      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+      state = metadata["profile_image_description"].is_a?(Hash) ? metadata["profile_image_description"].deep_dup : {}
+      state["status"] = "queued"
+      state["job_id"] = job.job_id
+      state["queue_name"] = job.queue_name
+      state["queued_at"] = Time.current.iso8601(3)
+      state["updated_at"] = Time.current.iso8601(3)
+      metadata["profile_image_description"] = state
+      post.update!(metadata: metadata)
+    end
+  rescue StandardError
+    nil
+  end
+
+  def pending_profile_image_description_jobs(posts:)
+    Array(posts).count { |post| profile_image_description_pending?(post) }
+  end
+
+  def profile_image_description_pending?(post)
+    return false if profile_image_description_available?(post)
+
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    state = metadata["profile_image_description"]
+    return false unless state.is_a?(Hash)
+
+    status = state["status"].to_s
+    return false unless %w[queued running].include?(status)
+
+    updated_at = parse_timestamp(state["updated_at"]) || parse_timestamp(state["queued_at"]) || parse_timestamp(state["started_at"])
+    return true if updated_at.blank?
+
+    updated_at > 90.minutes.ago
+  rescue StandardError
+    false
+  end
+
+  def schedule_post_image_followup!(account:, profile:, action_log:, attempt:, pending_count:)
+    followup = action_log.metadata.is_a?(Hash) ? action_log.metadata["post_image_followup"] : nil
+    if followup.is_a?(Hash)
+      queued_at = parse_timestamp(followup["queued_at"])
+      existing_job_id = followup["job_id"].to_s
+      if existing_job_id.present? && queued_at.present? && queued_at > 1.minute.ago
+        return { queued: false, reason: "followup_already_queued", job_id: existing_job_id, attempt: attempt.to_i }
+      end
+    end
+
+    wait_seconds = [ POST_IMAGE_FOLLOWUP_WAIT_SECONDS * (attempt.to_i + 1), 300 ].min
+    job = self.class.set(wait: wait_seconds.seconds).perform_later(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      profile_action_log_id: action_log.id,
+      phase: "post_image_followup",
+      post_image_followup_attempt: attempt.to_i + 1
+    )
+
+    action_log.mark_running!(
+      extra_metadata: {
+        post_image_followup: {
+          queued: true,
+          queued_at: Time.current.iso8601(3),
+          job_id: job.job_id,
+          queue_name: job.queue_name,
+          wait_seconds: wait_seconds,
+          attempt: attempt.to_i + 1,
+          pending_count: pending_count.to_i
+        }
       }
-    }
-
-    run = Ai::Runner.new(account: account).analyze!(
-      purpose: "post",
-      analyzable: post,
-      payload: payload,
-      media: build_post_media_payload(post),
-      media_fingerprint: media_fingerprint_for(post)
     )
 
     {
-      "provider" => run[:provider].key,
-      "model" => run.dig(:result, :model),
-      "analysis" => run.dig(:result, :analysis)
+      queued: true,
+      reason: "followup_enqueued",
+      job_id: job.job_id,
+      attempt: attempt.to_i + 1
     }
-  end
-
-  def build_post_media_payload(post)
-    return { type: "none" } unless post.media.attached?
-
-    blob = post.media.blob
-    return { type: "none" } unless blob&.content_type.to_s.start_with?("image/")
-
-    if blob.byte_size.to_i > MAX_INLINE_IMAGE_BYTES
-      return { type: "image", content_type: blob.content_type, url: post.source_media_url.to_s }
-    end
-
-    data = blob.download
+  rescue StandardError => e
     {
-      type: "image",
-      content_type: blob.content_type,
-      bytes: data,
-      image_data_url: "data:#{blob.content_type};base64,#{Base64.strict_encode64(data)}"
+      queued: false,
+      reason: "followup_enqueue_failed",
+      attempt: attempt.to_i,
+      error_class: e.class.name,
+      error_message: e.message.to_s
     }
-  rescue StandardError
-    { type: "none" }
   end
 
-  def media_fingerprint_for(post)
-    return post.media_url_fingerprint.to_s if post.media_url_fingerprint.to_s.present?
+  def profile_analysis_phase_primary?(phase_name)
+    phase_name.to_s != "post_image_followup"
+  end
 
-    if post.media.attached?
-      checksum = post.media.blob&.checksum.to_s
-      return "blob:#{checksum}" if checksum.present?
-    end
-
-    url = post.source_media_url.to_s
-    return Digest::SHA256.hexdigest(url) if url.present?
-
-    nil
+  def profile_analysis_phase_followup?(phase_name)
+    phase_name.to_s == "post_image_followup"
   end
 
   def encode_blob_to_data_url(blob)
@@ -350,6 +414,14 @@ require "digest"
     return nil if blob.byte_size.to_i > MAX_INLINE_IMAGE_BYTES
 
     "data:#{blob.content_type};base64,#{Base64.strict_encode64(blob.download)}"
+  rescue StandardError
+    nil
+  end
+
+  def parse_timestamp(value)
+    return nil if value.to_s.blank?
+
+    Time.zone.parse(value.to_s)
   rescue StandardError
     nil
   end
@@ -658,7 +730,7 @@ require "digest"
       evidence: evidence.presence
     }.compact
 
-    demo_values = [out[:age], out[:gender], out[:location]].compact
+    demo_values = [ out[:age], out[:gender], out[:location] ].compact
     return {} if demo_values.empty?
 
     out

@@ -136,6 +136,7 @@ module InstagramAccounts
 
     def enqueue_story_preview_generation
       return if event.preview_image.attached?
+      return if preview_generation_permanently_failed?
 
       cache_key = "story_archive:preview_enqueue:#{event.id}"
       Rails.cache.fetch(cache_key, expires_in: preview_enqueue_ttl_seconds.seconds) do
@@ -144,6 +145,12 @@ module InstagramAccounts
       end
     rescue StandardError => e
       Rails.logger.warn("[story_media_archive] preview enqueue failed event_id=#{event.id}: #{e.class}: #{e.message}")
+    end
+
+    def preview_generation_permanently_failed?
+      metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
+      metadata["preview_image_status"].to_s == "failed" &&
+        metadata["preview_image_failure_reason"].to_s == "invalid_video_stream"
     end
 
     def text_preview(raw, max:)

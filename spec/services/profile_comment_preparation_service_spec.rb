@@ -188,4 +188,47 @@ RSpec.describe Ai::ProfileCommentPreparationService do
     assert_equal "primary_identity_not_linked_to_profile", summary["reason_code"]
     assert_equal false, summary.dig("identity_consistency", "consistent")
   end
+
+  it "queues missing post analysis asynchronously when analyze_missing_posts is enabled" do
+    account, profile = build_account_profile
+    pending_post = InstagramProfilePost.create!(
+      instagram_account: account,
+      instagram_profile: profile,
+      shortcode: "pending_#{SecureRandom.hex(4)}",
+      taken_at: Time.current,
+      ai_status: "failed",
+      analyzed_at: nil,
+      analysis: {},
+      metadata: {}
+    )
+
+    queued_job = instance_double(ActiveJob::Base, job_id: "job_123", queue_name: "ai_visual_queue")
+    allow(AnalyzeInstagramProfilePostJob).to receive(:perform_later).and_return(queued_job)
+
+    summary = Ai::ProfileCommentPreparationService.new(
+      account: account,
+      profile: profile,
+      collector: FakeCollector.new(posts: [ pending_post ]),
+      user_profile_builder_service: FakeUserProfileBuilder.new,
+      face_identity_resolution_service: FakeFaceIdentityResolver.new,
+      insight_store: FakeInsightStore.new
+    ).prepare!(force: true)
+
+    expect(AnalyzeInstagramProfilePostJob).to have_received(:perform_later).with(
+      hash_including(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: pending_post.id,
+        task_flags: hash_including(generate_comments: false)
+      )
+    )
+    expect(summary.dig("analysis", "pending_posts_count")).to eq(1)
+    expect(summary["ready_for_comment_generation"]).to eq(false)
+    expect(summary["reason_code"]).to eq("latest_posts_not_analyzed")
+
+    pending_post.reload
+    expect(pending_post.ai_status).to eq("pending")
+    expect(pending_post.metadata.dig("comment_preparation", "analysis_state")).to eq("queued")
+    expect(pending_post.metadata.dig("comment_preparation", "analysis_job_id")).to eq("job_123")
+  end
 end

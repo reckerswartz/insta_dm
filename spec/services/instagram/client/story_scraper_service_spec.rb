@@ -56,7 +56,7 @@ RSpec.describe Instagram::Client::StoryScraperService do
     expect(payload["failure_category"] || payload[:failure_category]).to eq("throttled")
   end
 
-  it "still downloads a story when reply is unavailable" do
+  it "still downloads a story when reply eligibility is pending async validation" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "story_user_#{SecureRandom.hex(3)}")
     client = Instagram::Client.new(account: account)
@@ -117,7 +117,7 @@ RSpec.describe Instagram::Client::StoryScraperService do
     expect(result[:skipped_unreplyable]).to eq(1)
     expect(profile.instagram_profile_events.where(kind: "story_downloaded").count).to eq(1)
     reply_skip = profile.instagram_profile_events.where(kind: "story_reply_skipped").order(id: :desc).find do |event|
-      event.metadata.is_a?(Hash) && event.metadata["reason"].to_s == "api_can_reply_false"
+      event.metadata.is_a?(Hash) && event.metadata["reason"].to_s == "eligibility_pending_async_validation"
     end
     expect(reply_skip).to be_present
   end
@@ -186,7 +186,7 @@ RSpec.describe Instagram::Client::StoryScraperService do
     result = client.sync_home_story_carousel!(story_limit: 1, auto_reply_only: false)
 
     expect(result[:stories_visited]).to eq(1)
-    expect(result[:failed]).to be >= 1
+    expect(result[:failed]).to eq(0)
     expect(profile.instagram_profile_events.where(kind: "story_downloaded").count).to eq(1)
     unresolved_failure = profile.instagram_profile_events.where(kind: "story_sync_failed").order(id: :desc).find do |event|
       event.metadata.is_a?(Hash) && event.metadata["reason"].to_s == "story_id_unresolved"
@@ -418,6 +418,134 @@ RSpec.describe Instagram::Client::StoryScraperService do
       event.metadata["reason"].to_s == "story_owner_username_conflict"
     end
     expect(failure).to be_present
+  end
+
+  it "skips non-api media when live story route does not match assignment" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "story_user_#{SecureRandom.hex(3)}")
+    client = Instagram::Client.new(account: account)
+    driver = build_story_driver(url: "https://www.instagram.com/")
+
+    stub_story_sync_environment(client: client, driver: driver, account_profile: profile)
+    allow(client).to receive(:find_story_network_profile).and_return(profile)
+    allow(client).to receive(:current_story_context).and_return(
+      {
+        ref: "#{profile.username}:123",
+        username: profile.username,
+        story_id: "123",
+        story_key: "#{profile.username}:123"
+      }
+    )
+    allow(client).to receive(:normalized_story_context_for_processing).and_wrap_original { |_m, **kwargs| kwargs[:context] }
+    allow(client).to receive(:resolve_story_media_with_retry).and_return(
+      {
+        media: {
+          url: "https://cdn.example/story_123.jpg",
+          media_type: "image",
+          source: "dom_visible_media",
+          image_url: "https://cdn.example/story_123.jpg",
+          video_url: nil,
+          width: 1080,
+          height: 1920,
+          media_variant_count: 1,
+          primary_media_source: "dom",
+          primary_media_index: 0,
+          carousel_media: []
+        },
+        attempts: [ { attempt: 1, source: "dom_visible_media", resolved: true } ]
+      }
+    )
+
+    result = client.sync_home_story_carousel!(story_limit: 1, auto_reply_only: false)
+
+    expect(result[:stories_visited]).to eq(0)
+    expect(result[:downloaded]).to eq(0)
+    failure = profile.instagram_profile_events.where(kind: "story_sync_failed").order(id: :desc).find do |event|
+      event.metadata["reason"].to_s == "story_live_context_unstable"
+    end
+    expect(failure).to be_present
+    expect(failure.metadata["media_source"]).to eq("dom_visible_media")
+  end
+
+  it "blocks assigning the same numeric story id to different usernames in one sync run" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile_a = InstagramProfile.create!(instagram_account: account, username: "story_user_a_#{SecureRandom.hex(3)}")
+    profile_b = InstagramProfile.create!(instagram_account: account, username: "story_user_b_#{SecureRandom.hex(3)}")
+    account_profile = InstagramProfile.create!(instagram_account: account, username: account.username)
+    client = Instagram::Client.new(account: account)
+    driver = build_story_driver(url: "https://www.instagram.com/")
+
+    stub_story_sync_environment(client: client, driver: driver, account_profile: account_profile)
+    allow(client).to receive(:find_story_network_profile) do |username:|
+      account.instagram_profiles.find_by(username: username)
+    end
+    allow(client).to receive(:find_or_create_profile_for_auto_engagement!) do |username:|
+      account.instagram_profiles.find_or_create_by!(username: username)
+    end
+    allow(client).to receive(:current_story_context).and_return(
+      {
+        ref: "#{profile_a.username}:123",
+        username: profile_a.username,
+        story_id: "123",
+        story_key: "#{profile_a.username}:123"
+      },
+      {
+        ref: "#{profile_b.username}:123",
+        username: profile_b.username,
+        story_id: "123",
+        story_key: "#{profile_b.username}:123"
+      }
+    )
+    allow(client).to receive(:normalized_story_context_for_processing).and_wrap_original { |_m, **kwargs| kwargs[:context] }
+    allow(client).to receive(:resolve_story_media_with_retry).and_return(
+      {
+        media: {
+          url: "https://cdn.example/story_123.jpg",
+          media_type: "image",
+          source: "api_reels_media",
+          image_url: "https://cdn.example/story_123.jpg",
+          video_url: nil,
+          width: 1080,
+          height: 1920,
+          media_variant_count: 1,
+          primary_media_source: "root",
+          primary_media_index: 0,
+          carousel_media: []
+        },
+        attempts: [ { attempt: 1, source: "api_reels_media", resolved: true } ]
+      }
+    )
+    allow(ValidateStoryReplyEligibilityJob).to receive(:perform_now).and_return(
+      {
+        eligible: false,
+        reason_code: "api_can_reply_false",
+        status: "Replies not allowed (API)",
+        retry_after_at: 3.days.from_now.iso8601,
+        interaction_retry_active: false,
+        interaction_state: "unavailable",
+        interaction_reason: "api_can_reply_false",
+        api_reply_gate: {
+          known: true,
+          reply_possible: false,
+          reason_code: "api_can_reply_false",
+          status: "Replies not allowed (API)"
+        }
+      }
+    )
+    allow(client).to receive(:click_next_story_in_carousel!).and_return(true, false)
+
+    result = client.sync_home_story_carousel!(story_limit: 2, auto_reply_only: false)
+
+    expect(result[:stories_visited]).to eq(1)
+    expect(result[:downloaded]).to eq(1)
+    expect(profile_a.instagram_profile_events.where(kind: "story_downloaded").count).to eq(1)
+    expect(profile_b.instagram_profile_events.where(kind: "story_downloaded").count).to eq(0)
+    failure = profile_b.instagram_profile_events.where(kind: "story_sync_failed").order(id: :desc).find do |event|
+      event.metadata["reason"].to_s == "story_id_username_conflict_in_run"
+    end
+    expect(failure).to be_present
+    expect(failure.metadata["existing_story_username"]).to eq(profile_a.username)
+    expect(failure.metadata["conflicting_story_username"]).to eq(profile_b.username)
   end
 
   def build_story_driver(url:)

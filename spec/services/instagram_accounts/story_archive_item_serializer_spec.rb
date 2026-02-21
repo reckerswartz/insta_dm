@@ -69,4 +69,24 @@ RSpec.describe InstagramAccounts::StoryArchiveItemSerializer do
     expect(payload[:media_preview_image_url]).to be_nil
     expect(GenerateStoryPreviewImageJob).to have_received(:perform_later).with(instagram_profile_event_id: event.id)
   end
+
+  it "does not enqueue preview generation for videos marked with permanent preview failure" do
+    _account, profile = create_account_profile
+    event = profile.instagram_profile_events.create!(
+      kind: "story_downloaded",
+      external_id: "evt_#{SecureRandom.hex(4)}",
+      detected_at: Time.current,
+      metadata: {
+        "preview_image_status" => "failed",
+        "preview_image_failure_reason" => "invalid_video_stream"
+      }
+    )
+    event.media.attach(io: File.open(video_fixture_path, "rb"), filename: "story_reference.mp4", content_type: "video/mp4")
+    allow(GenerateStoryPreviewImageJob).to receive(:perform_later)
+
+    payload = described_class.new(event: event, preview_enqueue_ttl_seconds: 1).call
+
+    expect(payload[:media_preview_image_url]).to be_nil
+    expect(GenerateStoryPreviewImageJob).not_to have_received(:perform_later)
+  end
 end

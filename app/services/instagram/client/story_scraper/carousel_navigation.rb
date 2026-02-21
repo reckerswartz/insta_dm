@@ -44,9 +44,12 @@ module Instagram
           sleep(1.0)
           gate_result = click_story_view_gate_if_present!(driver: driver)
           sleep(0.45) if gate_result[:clicked]
+          live_url = driver.current_url.to_s
           new_ref = current_story_reference(driver.current_url.to_s)
           new_signature = visible_story_media_signature(driver)
-          moved = (new_ref.present? && new_ref != current_ref) || (new_signature.present? && previous_signature.present? && new_signature != previous_signature)
+          signature_changed = new_signature.present? && previous_signature.present? && new_signature != previous_signature
+          signature_route_allowed = story_route_active_for_signature_navigation?(live_url)
+          moved = (new_ref.present? && new_ref != current_ref) || (signature_changed && signature_route_allowed)
 
           if !moved
             moved = recover_story_navigation_when_stalled!(
@@ -67,9 +70,12 @@ module Instagram
             meta: {
               previous_ref: current_ref,
               new_ref: new_ref,
+              current_url: driver.current_url.to_s,
               view_gate_clicked: gate_result[:clicked],
               previous_signature: previous_signature.to_s.byteslice(0, 120),
               new_signature: new_signature.to_s.byteslice(0, 120),
+              signature_changed: signature_changed,
+              signature_route_allowed: signature_route_allowed,
               moved: moved
             }
           )
@@ -147,9 +153,12 @@ module Instagram
           )
           click_story_view_gate_if_present!(driver: driver)
 
+          recovered_url = driver.current_url.to_s
           recovered_ref = current_story_reference(driver.current_url.to_s)
           recovered_signature = visible_story_media_signature(driver)
-          moved = (recovered_ref.present? && recovered_ref != current_ref) || (recovered_signature.present? && recovered_signature != previous_signature)
+          recovered_signature_changed = recovered_signature.present? && recovered_signature != previous_signature
+          recovered_signature_route_allowed = story_route_active_for_signature_navigation?(recovered_url)
+          moved = (recovered_ref.present? && recovered_ref != current_ref) || (recovered_signature_changed && recovered_signature_route_allowed)
 
           capture_task_html(
             driver: driver,
@@ -158,9 +167,12 @@ module Instagram
             meta: {
               previous_ref: current_ref,
               recovered_ref: recovered_ref,
+              recovered_url: recovered_url,
               excluded_username: excluded_username,
               previous_signature: previous_signature.to_s.byteslice(0, 120),
               recovered_signature: recovered_signature.to_s.byteslice(0, 120),
+              recovered_signature_changed: recovered_signature_changed,
+              recovered_signature_route_allowed: recovered_signature_route_allowed,
               moved: moved
             }
           )
@@ -177,6 +189,12 @@ module Instagram
               error_message: e.message.to_s.byteslice(0, 220)
             }
           )
+          false
+        end
+
+        def story_route_active_for_signature_navigation?(url)
+          story_url_identity(url.to_s)[:username].to_s.present?
+        rescue StandardError
           false
         end
       end

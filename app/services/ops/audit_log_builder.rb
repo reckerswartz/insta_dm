@@ -1,6 +1,6 @@
 module Ops
   class AuditLogBuilder
-    SKIP_EVENT_KINDS = %w[story_reply_skipped story_sync_failed story_ad_skipped].freeze
+    SKIP_EVENT_KINDS = %w[story_reply_skipped story_sync_failed story_sync_job_failed story_ad_skipped].freeze
 
     class << self
       def for_account(instagram_account:, limit: 120)
@@ -76,7 +76,7 @@ module Ops
       def build_event_detail(kind:, metadata:, skip_reason:)
         return metadata.to_s.byteslice(0, 180) if skip_reason.blank?
 
-        prefix = kind == "story_sync_failed" ? "Failure reason" : "Skip reason"
+        prefix = %w[story_sync_failed story_sync_job_failed].include?(kind.to_s) ? "Failure reason" : "Skip reason"
         details = [ skip_reason.to_s ]
         status = metadata["status"].to_s.presence
         details << status if status.present?
@@ -84,6 +84,8 @@ module Ops
         details << "submission=#{metadata["submission_reason"]}" if metadata["submission_reason"].present?
         details << "api_status=#{metadata["api_failure_status"]}" if metadata["api_failure_status"].present?
         details << "api_endpoint=#{metadata["api_failure_endpoint"]}" if metadata["api_failure_endpoint"].present?
+        details << "api_reason=#{metadata["api_failure_reason"]}" if metadata["api_failure_reason"].present?
+        details << "api_useragent_mismatch=true" if ActiveModel::Type::Boolean.new.cast(metadata["api_useragent_mismatch"])
         details << "retryable=#{metadata["retryable"]}" if metadata.key?("retryable")
         details << "story_ref=#{metadata["story_ref"]}" if metadata["story_ref"].to_s.present?
         details << "media_source=#{metadata["media_source"]}" if metadata["media_source"].to_s.present?

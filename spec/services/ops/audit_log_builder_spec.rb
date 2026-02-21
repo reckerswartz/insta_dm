@@ -17,7 +17,19 @@ RSpec.describe Ops::AuditLogBuilder do
         "story_url" => "https://www.instagram.com/stories/sample_user/123/",
         "api_failure_status" => 429,
         "api_failure_endpoint" => "web_profile_info",
+        "api_failure_reason" => "http_400",
+        "api_useragent_mismatch" => true,
         "retryable" => true
+      }
+    )
+
+    profile.instagram_profile_events.create!(
+      kind: "story_sync_job_failed",
+      external_id: "evt_#{SecureRandom.hex(4)}",
+      detected_at: Time.current + 0.5.seconds,
+      metadata: {
+        "reason" => "job_exception",
+        "error_class" => "Instagram::AuthenticationRequiredError"
       }
     )
 
@@ -34,15 +46,23 @@ RSpec.describe Ops::AuditLogBuilder do
 
     rows = described_class.for_account(instagram_account: account, limit: 20)
     failed = rows.find { |row| row[:kind] == "story_sync_failed" }
+    job_failed = rows.find { |row| row[:kind] == "story_sync_job_failed" }
     attached = rows.find { |row| row[:kind] == "story_reply_skipped" && row[:profile_id] == profile.id }
 
     expect(failed[:skip_event]).to eq(true)
     expect(failed[:skip_reason]).to eq("api_story_media_unavailable")
     expect(failed[:detail]).to include("Failure reason: api_story_media_unavailable")
+    expect(failed[:detail]).to include("api_reason=http_400")
+    expect(failed[:detail]).to include("api_useragent_mismatch=true")
     expect(failed[:media_url]).to eq("https://www.instagram.com/stories/sample_user/123/")
     expect(failed[:media_reference_url]).to eq("https://www.instagram.com/stories/sample_user/123/")
     expect(failed[:media_modal_supported]).to eq(false)
     expect(failed[:media_download_url]).to eq("https://www.instagram.com/stories/sample_user/123/")
+
+    expect(job_failed[:skip_event]).to eq(true)
+    expect(job_failed[:skip_reason]).to eq("job_exception")
+    expect(job_failed[:detail]).to include("Failure reason: job_exception")
+    expect(job_failed[:detail]).to include("error=Instagram::AuthenticationRequiredError")
 
     expect(attached[:media_attached]).to eq(true)
     expect(attached[:media_modal_supported]).to eq(true)

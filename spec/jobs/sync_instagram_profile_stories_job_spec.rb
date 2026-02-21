@@ -110,6 +110,38 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
     expect(downloaded_event.metadata["preview_image_queue_name"]).to eq("story_preview_generation")
   end
 
+  it "does not requeue preview generation after permanent invalid video stream failure" do
+    account = InstagramAccount.create!(username: "story_video_failed_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_video_failed_profile_#{SecureRandom.hex(4)}")
+    event = profile.instagram_profile_events.create!(
+      kind: "story_downloaded",
+      external_id: "story_downloaded:failed_#{SecureRandom.hex(3)}",
+      detected_at: Time.current,
+      metadata: {
+        "story_id" => "failed_preview_story",
+        "preview_image_status" => "failed",
+        "preview_image_failure_reason" => "invalid_video_stream"
+      }
+    )
+    event.media.attach(
+      io: StringIO.new("....ftypisom....video".b),
+      filename: "failed_story.mp4",
+      content_type: "video/mp4"
+    )
+
+    job = SyncInstagramProfileStoriesJob.new
+    expect(GenerateStoryPreviewImageJob).not_to receive(:perform_later)
+
+    result = job.send(
+      :enqueue_story_preview_generation!,
+      event: event,
+      story: { story_id: "failed_preview_story" },
+      user_agent: "spec-user-agent"
+    )
+
+    expect(result).to eq(false)
+  end
+
   it "reuses saved story media across accounts by story_id before downloading" do
     source_account = InstagramAccount.create!(username: "story_src_#{SecureRandom.hex(4)}")
     source_profile = source_account.instagram_profiles.create!(username: "story_src_profile_#{SecureRandom.hex(4)}")

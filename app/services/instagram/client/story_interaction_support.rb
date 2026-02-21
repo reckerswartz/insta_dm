@@ -319,7 +319,17 @@ module Instagram
         req["Accept"] = "application/json, text/plain, */*"
         req["Content-Type"] = "application/x-www-form-urlencoded; charset=UTF-8"
         req["X-Requested-With"] = "XMLHttpRequest"
-        req["X-IG-App-ID"] = (@account.auth_snapshot.dig("ig_app_id").presence || "936619743392459")
+        req["X-IG-App-ID"] =
+          if respond_to?(:ig_api_app_id_header_value, true)
+            ig_api_app_id_header_value
+          else
+            @account.auth_snapshot.dig("ig_app_id").presence || "936619743392459"
+          end
+        ig_www_claim =
+          if respond_to?(:ig_www_claim_header_value, true)
+            ig_www_claim_header_value
+          end
+        req["X-IG-WWW-Claim"] = ig_www_claim if ig_www_claim.present?
         req["Referer"] = referer.to_s
 
         csrf = @account.cookies.find { |c| c["name"].to_s == "csrftoken" }&.dig("value").to_s

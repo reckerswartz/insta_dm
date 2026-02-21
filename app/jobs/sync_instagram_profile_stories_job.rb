@@ -456,6 +456,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     return false unless event&.media&.attached?
     return false unless event.media.blob&.content_type.to_s.start_with?("video/")
     return false if event.preview_image.attached?
+    return false if preview_generation_permanently_failed?(metadata: event.metadata)
 
     job = GenerateStoryPreviewImageJob.perform_later(
       instagram_profile_event_id: event.id,
@@ -475,6 +476,12 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   rescue StandardError => e
     Rails.logger.warn("[SyncInstagramProfileStoriesJob] preview enqueue failed event_id=#{event&.id}: #{e.class}: #{e.message}")
     false
+  end
+
+  def preview_generation_permanently_failed?(metadata:)
+    data = metadata.is_a?(Hash) ? metadata : {}
+    data["preview_image_status"].to_s == "failed" &&
+      data["preview_image_failure_reason"].to_s == "invalid_video_stream"
   end
 
   def story_analysis_already_queued?(profile:, story_id:)

@@ -270,4 +270,66 @@ RSpec.describe Ai::ProfileHistoryBuildService do
     expect(result.dig(:history_state, "queue", "face_refresh_queued")).to eq(0)
     expect(post.reload.metadata.dig("history_build", "face_refresh")).to be_nil
   end
+
+  it "does not requeue face refresh while an older queued refresh is still in flight" do
+    account, profile = build_account_profile
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "post_#{SecureRandom.hex(4)}",
+      ai_status: "analyzed",
+      analyzed_at: Time.current,
+      metadata: {
+        "history_build" => {
+          "face_refresh" => {
+            "status" => "queued",
+            "queued_at" => 12.hours.ago.iso8601
+          }
+        }
+      }
+    )
+    post.media.attach(
+      io: StringIO.new("image-bytes"),
+      filename: "post.jpg",
+      content_type: "image/jpeg"
+    )
+
+    service = described_class.new(account: account, profile: profile)
+
+    allow_any_instance_of(Instagram::ProfileScanPolicy).to receive(:decision).and_return(
+      { skip_post_analysis: false }
+    )
+    allow(service).to receive(:collect_posts).and_return(summary: { feed_fetch: { source: "http_feed_api", pages_fetched: 1, more_available: false } })
+    allow(service).to receive(:build_capture_checks).and_return(
+      {
+        "all_posts_captured" => { "ready" => true },
+        "latest_50_captured" => { "ready" => true },
+        "latest_20_analyzed" => { "ready" => true }
+      }
+    )
+    allow(service).to receive(:queue_missing_media_downloads).and_return(queued_count: 0, pending_count: 0, skipped_count: 0, failures: [])
+    allow(service).to receive(:queue_missing_post_analysis).and_return(queued_count: 0, pending_count: 0, skipped_count: 0, failures: [])
+    allow(service).to receive(:prepare_history_summary).and_return(
+      {
+        "ready_for_comment_generation" => true,
+        "reason_code" => "profile_context_ready",
+        "reason" => "Profile context is ready."
+      }
+    )
+    allow(service).to receive(:build_conversation_state).and_return(
+      {
+        "can_generate_initial_message" => false,
+        "can_respond_to_existing_messages" => false,
+        "continue_natural_interaction" => false
+      }
+    )
+
+    result = service.execute!
+
+    enqueued = enqueued_jobs.select { |row| row[:job] == RefreshProfilePostFaceIdentityJob }
+    expect(enqueued).to be_empty
+    expect(result[:status]).to eq("pending")
+    expect(result[:reason_code]).to eq("waiting_for_face_refresh")
+    expect(result.dig(:history_state, "queue", "face_refresh_queued")).to eq(0)
+    expect(result.dig(:history_state, "queue", "face_refresh_pending")).to eq(1)
+  end
 end

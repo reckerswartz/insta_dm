@@ -18,8 +18,10 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
   PROFILE_RETRY_MAX_ATTEMPTS = ENV.fetch("WORKSPACE_ACTIONS_PROFILE_RETRY_MAX_ATTEMPTS", 4).to_i.clamp(1, 12)
   MEDIA_RETRY_MAX_ATTEMPTS = ENV.fetch("WORKSPACE_ACTIONS_MEDIA_RETRY_MAX_ATTEMPTS", 6).to_i.clamp(1, 20)
   POST_ANALYSIS_RETRY_MAX_ATTEMPTS = ENV.fetch("WORKSPACE_ACTIONS_POST_RETRY_MAX_ATTEMPTS", 8).to_i.clamp(1, 25)
+  COMMENT_GENERATION_RETRY_MAX_ATTEMPTS = ENV.fetch("WORKSPACE_ACTIONS_COMMENT_RETRY_MAX_ATTEMPTS", 8).to_i.clamp(1, 25)
   POST_RETRY_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_POST_RETRY_WAIT_MINUTES", 20).to_i.clamp(5, 180)
   MEDIA_RETRY_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_MEDIA_RETRY_WAIT_MINUTES", 10).to_i.clamp(2, 90)
+  COMMENT_RETRY_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_COMMENT_RETRY_WAIT_MINUTES", 5).to_i.clamp(1, 90)
   RETRY_BACKOFF_MAX_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_RETRY_BACKOFF_MAX_WAIT_MINUTES", 240).to_i.clamp(15, 1440)
   ENQUEUE_COOLDOWN_SECONDS = ENV.fetch("WORKSPACE_ACTIONS_ENQUEUE_COOLDOWN_SECONDS", 180).to_i.clamp(15, 1800)
   RUNNING_LOCK_SECONDS = ENV.fetch("WORKSPACE_ACTIONS_RUNNING_LOCK_SECONDS", 600).to_i.clamp(60, 3600)
@@ -101,10 +103,10 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
   end
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, requested_by: "workspace")
-    account = self.class.safe_find_record(InstagramAccount, instagram_account_id, { 
-      job_class: self.class.name, 
-      instagram_profile_id: instagram_profile_id, 
-      instagram_profile_post_id: instagram_profile_post_id 
+    account = self.class.safe_find_record(InstagramAccount, instagram_account_id, {
+      job_class: self.class.name,
+      instagram_profile_id: instagram_profile_id,
+      instagram_profile_post_id: instagram_profile_post_id
     })
     return unless account
 
@@ -200,60 +202,60 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       return
     end
 
-    comment_result = Ai::PostCommentGenerationService.new(
-      account: account,
-      profile: profile,
-      post: post,
-      enforce_required_evidence: true
-    ).run!
-
-    post.reload
-    history_retry_result = nil
+    policy = comment_generation_policy(post: post)
     if history_build_retry_needed_for_comment_generation?(post: post)
-      history_retry_result = schedule_build_history_retry!(
-        account: account,
-        profile: profile,
-        post: post,
-        requested_by: requested_by,
-        history_reason_code: post.metadata.dig("comment_generation_policy", "history_reason_code").to_s
-      )
-    end
+      retry_state = policy_retry_state_from_policy(policy)
+      history_retry_result = nil
+      if retry_state[:next_run_at].blank?
+        history_retry_result = schedule_build_history_retry!(
+          account: account,
+          profile: profile,
+          post: post,
+          requested_by: requested_by,
+          history_reason_code: policy["history_reason_code"].to_s
+        )
+      end
 
-    suggestions = self.class.normalized_suggestions(post)
-    if suggestions.any?
-      persist_workspace_state!(
-        post: post,
-        status: "ready",
-        requested_by: requested_by,
-        suggestions_count: suggestions.length,
-        next_run_at: nil
-      )
-      return
-    end
-
-    if history_build_retry_needed_for_comment_generation?(post: post)
-      retry_result = history_retry_result || {
-        queued: false,
-        reason: "build_history_retry_not_triggered"
-      }
+      next_run_at = retry_state[:next_run_at] || parse_time(history_retry_result&.dig(:next_run_at))
+      retry_reason = retry_state[:reason].presence || history_retry_result&.dig(:reason).to_s
       persist_workspace_state!(
         post: post,
         status: "waiting_build_history",
         requested_by: requested_by,
-        next_run_at: parse_time(retry_result[:next_run_at]),
-        last_error: retry_result[:queued] ? nil : retry_result[:reason].to_s
+        next_run_at: next_run_at,
+        last_error: retry_reason.to_s == "build_history_fallback_registered" ? nil : retry_reason.presence
       )
       return
     end
 
-    blocked_reason = post.metadata.dig("comment_generation_policy", "blocked_reason").to_s
-    reason_code = post.metadata.dig("comment_generation_policy", "blocked_reason_code").to_s
-    persist_workspace_state!(
+    if comment_generation_terminal_blocked?(post: post, policy: policy)
+      blocked_reason = policy["blocked_reason"].to_s
+      reason_code = policy["blocked_reason_code"].to_s
+      persist_workspace_state!(
+        post: post,
+        status: "failed",
+        requested_by: requested_by,
+        next_run_at: nil,
+        last_error: blocked_reason.presence || reason_code.presence || "comment_generation_failed"
+      )
+      return
+    end
+
+    enqueue_result =
+      if comment_generation_running?(post: post)
+        { queued: false, reason: "comment_generation_already_running" }
+      else
+        queue_comment_generation!(account: account, profile: profile, post: post)
+      end
+
+    schedule_retry!(
+      account: account,
+      profile: profile,
       post: post,
-      status: "failed",
       requested_by: requested_by,
-      next_run_at: nil,
-      last_error: blocked_reason.presence || reason_code.presence || "comment_generation_failed"
+      wait_until: Time.current + COMMENT_RETRY_WAIT_MINUTES.minutes,
+      status: "waiting_comment_generation",
+      last_error: enqueue_result[:queued] ? nil : enqueue_result[:reason].to_s
     )
   rescue StandardError => e
     post&.reload
@@ -288,6 +290,48 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     []
   end
 
+  def comment_generation_policy(post:)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    policy = metadata["comment_generation_policy"]
+    policy.is_a?(Hash) ? policy : {}
+  rescue StandardError
+    {}
+  end
+
+  def policy_retry_state_from_policy(policy)
+    row = policy.is_a?(Hash) ? policy["retry_state"] : nil
+    row = {} unless row.is_a?(Hash)
+    {
+      next_run_at: parse_time(row["next_run_at"]),
+      reason: row["last_reason_code"].to_s
+    }
+  rescue StandardError
+    { next_run_at: nil, reason: nil }
+  end
+
+  def comment_generation_terminal_blocked?(post:, policy:)
+    return false unless policy.is_a?(Hash)
+    return false unless policy["status"].to_s == "blocked"
+
+    history_reason = policy["history_reason_code"].to_s
+    return false if PROFILE_INCOMPLETE_REASON_CODES.include?(history_reason)
+
+    self.class.normalized_suggestions(post).empty?
+  rescue StandardError
+    false
+  end
+
+  def comment_generation_running?(post:)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    state = metadata["workspace_actions"].is_a?(Hash) ? metadata["workspace_actions"] : {}
+    queued_at = parse_time(state["comment_generation_queued_at"])
+    job_id = state["comment_generation_job_id"].to_s
+
+    job_id.present? && queued_at.present? && queued_at > 45.minutes.ago
+  rescue StandardError
+    false
+  end
+
   def persist_workspace_state!(post:, status:, requested_by:, next_run_at:, last_error: nil, suggestions_count: nil)
     post.with_lock do
       metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
@@ -305,6 +349,7 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       if terminal_workspace_status?(status)
         state["media_download_retry_attempts"] = 0
         state["post_analysis_retry_attempts"] = 0
+        state["comment_generation_retry_attempts"] = 0
         state["retry_exhausted"] = false
       end
 
@@ -443,6 +488,31 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     { queued: false, reason: "post_analysis_enqueue_failed", error_class: e.class.name, error_message: e.message.to_s }
   end
 
+  def queue_comment_generation!(account:, profile:, post:)
+    job = GeneratePostCommentSuggestionsJob.perform_later(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      enforce_comment_evidence_policy: true,
+      retry_on_incomplete_profile: true,
+      source_step: "workspace_actions"
+    )
+
+    post.with_lock do
+      updated_metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+      state = updated_metadata["workspace_actions"].is_a?(Hash) ? updated_metadata["workspace_actions"].deep_dup : {}
+      state["comment_generation_job_id"] = job.job_id
+      state["comment_generation_queue_name"] = job.queue_name
+      state["comment_generation_queued_at"] = Time.current.iso8601(3)
+      updated_metadata["workspace_actions"] = state
+      post.update!(metadata: updated_metadata)
+    end
+
+    { queued: true, job_id: job.job_id }
+  rescue StandardError => e
+    { queued: false, reason: "comment_generation_enqueue_failed", error_class: e.class.name, error_message: e.message.to_s }
+  end
+
   def schedule_build_history_retry!(account:, profile:, post:, requested_by:, history_reason_code:)
     post.with_lock do
       metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
@@ -577,6 +647,12 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
         attempt_key: "post_analysis_retry_attempts",
         max_attempts: POST_ANALYSIS_RETRY_MAX_ATTEMPTS,
         base_wait_minutes: POST_RETRY_WAIT_MINUTES
+      }
+    when "waiting_comment_generation"
+      {
+        attempt_key: "comment_generation_retry_attempts",
+        max_attempts: COMMENT_GENERATION_RETRY_MAX_ATTEMPTS,
+        base_wait_minutes: COMMENT_RETRY_WAIT_MINUTES
       }
     else
       nil

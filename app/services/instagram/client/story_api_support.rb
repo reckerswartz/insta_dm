@@ -117,7 +117,9 @@ module Instagram
         req["User-Agent"] = @account.user_agent.presence || "Mozilla/5.0"
         req["Accept"] = "application/json, text/plain, */*"
         req["X-Requested-With"] = "XMLHttpRequest"
-        req["X-IG-App-ID"] = (@account.auth_snapshot.dig("ig_app_id").presence || "936619743392459")
+        req["X-IG-App-ID"] = ig_api_app_id_header_value
+        ig_www_claim = ig_www_claim_header_value
+        req["X-IG-WWW-Claim"] = ig_www_claim if ig_www_claim.present?
         req["Referer"] = referer.to_s
 
         csrf = @account.cookies.find { |c| c["name"].to_s == "csrftoken" }&.dig("value").to_s
@@ -147,22 +149,66 @@ module Instagram
         nil
       end
 
+      def ig_api_app_id_header_value
+        @account.auth_snapshot.dig("ig_app_id").to_s.presence || "936619743392459"
+      rescue StandardError
+        "936619743392459"
+      end
+
+      def ig_www_claim_header_value
+        claim = read_stored_session_storage_value("www-claim-v2")
+        claim.to_s.strip.presence
+      rescue StandardError
+        nil
+      end
+
+      def read_stored_session_storage_value(key)
+        target = key.to_s
+        row = Array(@account.session_storage).find do |entry|
+          entry.is_a?(Hash) && entry["key"].to_s == target
+        end
+        row.is_a?(Hash) ? row["value"].to_s : ""
+      rescue StandardError
+        ""
+      end
+
       def ig_api_get_json_via_browser(driver:, path:)
-        payload = driver.execute_async_script(<<~JS, path.to_s)
+        payload = driver.execute_async_script(<<~JS, path.to_s, ig_api_app_id_header_value.to_s, ig_www_claim_header_value.to_s)
           const endpoint = String(arguments[0] || "");
+          const fallbackAppId = String(arguments[1] || "");
+          const fallbackClaim = String(arguments[2] || "");
           const done = arguments[arguments.length - 1];
           if (!endpoint) {
             done({ ok: false, status: 0, reason: "blank_endpoint", body_snippet: "" });
             return;
           }
 
+          const normalizeHeaderValue = (value) => String(value || "").trim();
+          const igAppId = normalizeHeaderValue(
+            document.documentElement?.getAttribute("data-app-id") ||
+            window._sharedData?.config?.app_id ||
+            window.__initialData?.config?.app_id ||
+            window.localStorage?.getItem("ig_app_id") ||
+            window.localStorage?.getItem("app_id") ||
+            window.sessionStorage?.getItem("ig_app_id") ||
+            fallbackAppId
+          );
+          const igWwwClaim = normalizeHeaderValue(
+            window.sessionStorage?.getItem("www-claim-v2") ||
+            fallbackClaim
+          );
+
+          const headers = {
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest"
+          };
+          if (igAppId) headers["X-IG-App-ID"] = igAppId;
+          if (igWwwClaim) headers["X-IG-WWW-Claim"] = igWwwClaim;
+
           const options = {
             method: "GET",
             credentials: "include",
-            headers: {
-              "Accept": "application/json, text/plain, */*",
-              "X-Requested-With": "XMLHttpRequest"
-            }
+            headers: headers
           };
 
           fetch(endpoint, options)
@@ -237,6 +283,7 @@ module Instagram
         retry_after_seconds = failure[:retry_after_seconds].to_i
         normalized_username = normalize_username(username)
         rate_limit_headers = failure[:headers].is_a?(Hash) ? failure[:headers] : {}
+        useragent_mismatch = ig_useragent_mismatch_failure?(reason: reason, response_snippet: response_snippet)
 
         if status.positive? && respond_to?(:remember_story_api_failure!, true)
           remember_story_api_failure!(
@@ -244,6 +291,7 @@ module Instagram
             url: uri.to_s,
             status: status,
             username: normalized_username,
+            reason: reason,
             response_snippet: response_snippet,
             retry_after_seconds: retry_after_seconds,
             headers: rate_limit_headers
@@ -262,6 +310,7 @@ module Instagram
             rate_limited: status == 429,
             retry_after_seconds: (retry_after_seconds.positive? ? retry_after_seconds : nil),
             browser_fallback_attempted: tried_browser_fallback,
+            useragent_mismatch: useragent_mismatch,
             rate_limit_headers: rate_limit_headers.presence,
             response_snippet: response_snippet
           }.compact
@@ -635,12 +684,83 @@ module Instagram
           return item if item
         end
 
-        # Only pick first item without story_id when unambiguous.
-        return items.first if sid.blank? && items.length == 1
+        if sid.blank?
+          visible_media_urls = resolve_visible_story_media_urls(driver: driver)
+          if visible_media_urls.any?
+            matched = items.find do |entry|
+              story_item_media_urls(entry).any? { |url| media_url_matches_any?(url: url, candidates: visible_media_urls) }
+            end
+            return matched if matched.is_a?(Hash)
+          end
+
+          # Keep progress deterministic when Instagram uses /stories/:username/ without an id in URL.
+          return items.first if items.first.is_a?(Hash)
+        end
 
         nil
       rescue StandardError
         nil
+      end
+
+      def resolve_visible_story_media_urls(driver:)
+        return [] unless driver
+
+        dom_story = resolve_story_item_via_dom(driver: driver)
+        perf_story = resolve_story_item_via_performance_logs(driver: driver)
+        [
+          dom_story.is_a?(Hash) ? dom_story[:media_url] : nil,
+          dom_story.is_a?(Hash) ? dom_story[:image_url] : nil,
+          dom_story.is_a?(Hash) ? dom_story[:video_url] : nil,
+          perf_story.is_a?(Hash) ? perf_story[:media_url] : nil,
+          perf_story.is_a?(Hash) ? perf_story[:image_url] : nil,
+          perf_story.is_a?(Hash) ? perf_story[:video_url] : nil
+        ].filter_map { |value| normalize_story_media_url(value.to_s) }.uniq
+      rescue StandardError
+        []
+      end
+
+      def story_item_media_urls(item)
+        entry = item.is_a?(Hash) ? item : {}
+        urls = [
+          entry[:media_url],
+          entry[:image_url],
+          entry[:video_url]
+        ]
+        Array(entry[:media_variants]).each do |variant|
+          next unless variant.is_a?(Hash)
+
+          urls << variant[:media_url]
+          urls << variant[:image_url]
+          urls << variant[:video_url]
+        end
+        urls.filter_map { |value| normalize_story_media_url(value.to_s) }.uniq
+      rescue StandardError
+        []
+      end
+
+      def media_url_matches_any?(url:, candidates:)
+        key = normalized_story_media_match_key(url)
+        return false if key.blank?
+
+        Array(candidates).any? do |candidate|
+          normalized_story_media_match_key(candidate) == key
+        end
+      rescue StandardError
+        false
+      end
+
+      def normalized_story_media_match_key(url)
+        value = url.to_s.strip
+        return "" if value.blank?
+
+        parsed = URI.parse(value)
+        host = parsed.host.to_s.downcase
+        path = parsed.path.to_s
+        return "" if host.blank? || path.blank?
+
+        "#{host}#{path}"
+      rescue StandardError
+        value.split("?").first.to_s
       end
 
       def fetch_story_items_via_api(username:, cache: nil, driver: nil)
@@ -653,12 +773,10 @@ module Instagram
           return cached if cached.is_a?(Array)
         end
 
-        web_info = fetch_web_profile_info(uname, driver: driver)
-        user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
-        user_id = user.is_a?(Hash) ? user["id"].to_s.strip : ""
+        user_id = resolve_story_reel_user_id_for_username(username: uname, cache: cache, driver: driver)
         if user_id.blank?
           if cache.is_a?(Hash)
-            cache[cache_key] = { user_id: nil, items: [], fetched_at: Time.current.utc.iso8601(3), error: "web_profile_info_unavailable" }
+            cache[cache_key] = { user_id: nil, items: [], fetched_at: Time.current.utc.iso8601(3), error: "story_user_id_unavailable" }
           end
           return []
         end
@@ -676,6 +794,78 @@ module Instagram
           cache[cache_key] = { user_id: nil, items: [], fetched_at: Time.current.utc.iso8601(3), error: "story_items_exception" }
         end
         []
+      end
+
+      def resolve_story_reel_user_id_for_username(username:, cache: nil, driver: nil)
+        uname = normalize_username(username)
+        return "" if uname.blank?
+
+        cache_key = "stories:#{uname}"
+        if cache.is_a?(Hash) && cache[cache_key].is_a?(Hash)
+          cached_user_id = cache[cache_key][:user_id].to_s.strip
+          return cached_user_id if cached_user_id.present?
+        end
+
+        tray_user_id = fetch_story_tray_user_id_map_via_api(cache: cache, driver: driver)[uname].to_s.strip
+        return tray_user_id if tray_user_id.present?
+
+        web_info = fetch_web_profile_info(uname, driver: driver)
+        user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
+        user.is_a?(Hash) ? user["id"].to_s.strip : ""
+      rescue StandardError
+        ""
+      end
+
+      def fetch_story_tray_user_id_map_via_api(cache: nil, driver: nil)
+        cache_key = "stories:tray_user_ids"
+        if cache.is_a?(Hash) && cache[cache_key].is_a?(Hash)
+          return cache[cache_key]
+        end
+
+        body = ig_api_get_json(
+          path: "/api/v1/feed/reels_tray/",
+          referer: INSTAGRAM_BASE_URL,
+          endpoint: "feed/reels_tray",
+          username: @account.username,
+          driver: driver,
+          retries: 1
+        )
+        return {} unless body.is_a?(Hash)
+
+        tray_items =
+          if body["tray"].is_a?(Array)
+            body["tray"]
+          elsif body["tray"].is_a?(Hash)
+            Array(body.dig("tray", "items"))
+          else
+            []
+          end
+
+        user_ids = {}
+        tray_items.each do |item|
+          next unless item.is_a?(Hash)
+
+          user = item["user"].is_a?(Hash) ? item["user"] : item
+          username = normalize_username(user["username"])
+          next if username.blank?
+
+          user_id = (
+            user["id"] ||
+            user["pk"] ||
+            user["pk_id"] ||
+            user["strong_id__"] ||
+            item["id"] ||
+            item["pk"]
+          ).to_s.strip
+          next if user_id.blank?
+
+          user_ids[username] = user_id
+        end
+
+        cache[cache_key] = user_ids if cache.is_a?(Hash)
+        user_ids
+      rescue StandardError
+        {}
       end
 
       def extract_story_item(item, username:, reel_owner_id: nil)
@@ -999,9 +1189,10 @@ module Instagram
         end
       end
 
-      def remember_story_api_failure!(endpoint:, url:, status:, username:, user_id: nil, response_snippet: nil, retry_after_seconds: nil, headers: nil)
+      def remember_story_api_failure!(endpoint:, url:, status:, username:, user_id: nil, reason: nil, response_snippet: nil, retry_after_seconds: nil, headers: nil)
         @story_api_recent_failures ||= {}
         retry_window = retry_after_seconds.to_i
+        reason_value = reason.to_s.strip
         payload = {
           endpoint: endpoint.to_s,
           url: url.to_s.presence,
@@ -1009,6 +1200,8 @@ module Instagram
           rate_limited: status.to_i == 429,
           username: normalize_username(username),
           user_id: user_id.to_s.presence,
+          reason: reason_value.presence,
+          useragent_mismatch: ig_useragent_mismatch_failure?(reason: reason_value, response_snippet: response_snippet),
           response_snippet: response_snippet.to_s.byteslice(0, 300),
           retry_after_seconds: retry_window.positive? ? retry_window : nil,
           rate_limit_headers: headers.is_a?(Hash) ? headers : nil,
@@ -1048,6 +1241,13 @@ module Instagram
       def story_api_rate_limited_for?(username:)
         payload = story_api_recent_failure_for(username: username)
         ActiveModel::Type::Boolean.new.cast(payload&.dig(:rate_limited))
+      rescue StandardError
+        false
+      end
+
+      def ig_useragent_mismatch_failure?(reason:, response_snippet:)
+        content = "#{reason} #{response_snippet}".downcase
+        content.include?("useragent mismatch") || content.include?("user agent mismatch")
       rescue StandardError
         false
       end
@@ -1374,7 +1574,9 @@ module Instagram
         req["User-Agent"] = @account.user_agent.presence || "Mozilla/5.0"
         req["Accept"] = "application/json, text/plain, */*"
         req["X-Requested-With"] = "XMLHttpRequest"
-        req["X-IG-App-ID"] = (@account.auth_snapshot.dig("ig_app_id").presence || "936619743392459")
+        req["X-IG-App-ID"] = ig_api_app_id_header_value
+        ig_www_claim = ig_www_claim_header_value
+        req["X-IG-WWW-Claim"] = ig_www_claim if ig_www_claim.present?
         req["Referer"] = "#{INSTAGRAM_BASE_URL}/#{referer_username}/"
 
         csrf = @account.cookies.find { |c| c["name"].to_s == "csrftoken" }&.dig("value").to_s

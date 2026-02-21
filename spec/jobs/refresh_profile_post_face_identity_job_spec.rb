@@ -53,4 +53,41 @@ RSpec.describe "RefreshProfilePostFaceIdentityJobTest" do
     expect(state.dig("result", "face_count")).to eq(2)
     expect(state.dig("result", "matched_people_count")).to eq(1)
   end
+
+  it "skips duplicate refresh execution when face recognition was updated recently" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "profile_#{SecureRandom.hex(4)}",
+      display_name: "Profile User"
+    )
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "post_#{SecureRandom.hex(4)}",
+      ai_status: "analyzed",
+      analyzed_at: Time.current,
+      metadata: {
+        "face_recognition" => {
+          "updated_at" => 2.hours.ago.iso8601,
+          "face_count" => 1
+        }
+      }
+    )
+    post.media.attach(
+      io: StringIO.new("image-bytes"),
+      filename: "post.jpg",
+      content_type: "image/jpeg"
+    )
+
+    expect_any_instance_of(PostFaceRecognitionService).not_to receive(:process!)
+
+    RefreshProfilePostFaceIdentityJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id
+    )
+
+    state = post.reload.metadata.dig("history_build", "face_refresh")
+    expect(state["status"]).to eq("skipped_recent_completion")
+    expect(state["finished_at"]).to be_present
+  end
 end

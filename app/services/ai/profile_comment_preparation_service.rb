@@ -149,19 +149,56 @@ module Ai
     end
 
     def analyze_post!(post)
-      AnalyzeInstagramProfilePostJob.perform_now(
+      return { queued: false, reason: "already_analyzed" } if post_analyzed?(post)
+      return { queued: false, reason: "analysis_in_flight" } if post_analysis_in_flight?(post)
+
+      job = AnalyzeInstagramProfilePostJob.perform_later(
         instagram_account_id: @account.id,
         instagram_profile_id: @profile.id,
         instagram_profile_post_id: post.id,
-        pipeline_mode: "inline",
         task_flags: {
           generate_comments: false
         }
       )
+
+      mark_post_analysis_pending!(post: post, job: job)
+
+      { queued: true, job_id: job.job_id, queue_name: job.queue_name }
     end
 
     def post_analyzed?(post)
       post.ai_status.to_s == "analyzed" && post.analyzed_at.present?
+    end
+
+    def post_analysis_in_flight?(post)
+      return true if post.ai_status.to_s.in?(%w[pending running])
+
+      metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+      pipeline = metadata["ai_pipeline"].is_a?(Hash) ? metadata["ai_pipeline"] : {}
+      pipeline["status"].to_s == "running"
+    rescue StandardError
+      false
+    end
+
+    def mark_post_analysis_pending!(post:, job:)
+      post.with_lock do
+        metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+        state = metadata["comment_preparation"].is_a?(Hash) ? metadata["comment_preparation"].deep_dup : {}
+        state["analysis_job_id"] = job.job_id
+        state["analysis_queue_name"] = job.queue_name
+        state["analysis_state"] = "queued"
+        state["analysis_queued_at"] = Time.current.iso8601(3)
+        state["updated_at"] = Time.current.iso8601(3)
+        metadata["comment_preparation"] = state
+
+        post.update!(
+          metadata: metadata,
+          ai_status: "pending",
+          analyzed_at: nil
+        )
+      end
+    rescue StandardError
+      nil
     end
 
     def ensure_post_face_recognition!(post:)

@@ -9,7 +9,6 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
     profile_preparation_failed
     profile_preparation_error
   ].freeze
-  COMMENT_RETRY_MAX_ATTEMPTS = ENV.fetch("POST_COMMENT_RETRY_MAX_ATTEMPTS", 3).to_i.clamp(1, 10)
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:)
     enqueue_finalizer = true
@@ -66,35 +65,13 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
 
     Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: analysis)
 
-    comment_result =
-      if comment_generation_enabled?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id)
-        Ai::PostCommentGenerationService.new(
-          account: account,
-          profile: profile,
-          post: post,
-          enforce_required_evidence: comment_evidence_policy_enforced?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id)
-        ).run!
-      else
-        {
-          blocked: true,
-          status: "disabled_by_task_flags",
-          source: "policy",
-          suggestions_count: 0,
-          reason_code: "comments_disabled"
-        }
-      end
-
-    retry_result =
-      if comment_retry_enabled?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id)
-        enqueue_comment_retry_if_needed!(
-          account: account,
-          profile: profile,
-          post: post,
-          comment_result: comment_result
-        )
-      else
-        { queued: false, reason: "retry_disabled" }
-      end
+    comment_enqueue_result = enqueue_comment_generation_job!(
+      account: account,
+      profile: profile,
+      post: post,
+      pipeline_state: pipeline_state,
+      pipeline_run_id: pipeline_run_id
+    )
 
     pipeline_state.mark_step_completed!(
       run_id: pipeline_run_id,
@@ -103,16 +80,11 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
       result: {
         face_count: face_meta["face_count"].to_i,
         participant_summary_present: face_meta["participant_summary"].to_s.present?,
-        comment_generation_status: comment_result[:status].to_s,
-        comment_generation_blocked: ActiveModel::Type::Boolean.new.cast(comment_result[:blocked]),
-        comment_generation_source: comment_result[:source].to_s,
-        comment_suggestions_count: comment_result[:suggestions_count].to_i,
-        comment_reason_code: comment_result[:reason_code].to_s.presence,
-        comment_history_reason_code: comment_result[:history_reason_code].to_s.presence,
-        comment_retry_queued: ActiveModel::Type::Boolean.new.cast(retry_result[:queued]),
-        comment_retry_reason: retry_result[:reason].to_s.presence,
-        comment_retry_job_id: retry_result[:job_id].to_s.presence,
-        comment_retry_next_run_at: retry_result[:next_run_at].to_s.presence
+        comment_generation_status: comment_enqueue_result[:status].to_s,
+        comment_enqueue_reason: comment_enqueue_result[:reason].to_s.presence,
+        comment_job_queued: ActiveModel::Type::Boolean.new.cast(comment_enqueue_result[:queued]),
+        comment_job_id: comment_enqueue_result[:job_id].to_s.presence,
+        comment_job_queue_name: comment_enqueue_result[:queue_name].to_s.presence
       }
     )
   rescue StandardError => e
@@ -181,72 +153,36 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
     true
   end
 
-  def enqueue_comment_retry_if_needed!(account:, profile:, post:, comment_result: nil)
-    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
-    policy = metadata["comment_generation_policy"]
-    return { queued: false, reason: "policy_missing" } unless policy.is_a?(Hash)
-    return { queued: false, reason: "history_ready" } if ActiveModel::Type::Boolean.new.cast(policy["history_ready"])
-
-    history_reason_code = policy["history_reason_code"].to_s
-    return { queued: false, reason: "history_reason_not_retryable" } unless PROFILE_INCOMPLETE_REASON_CODES.include?(history_reason_code)
-
-    retry_state = policy["retry_state"].is_a?(Hash) ? policy["retry_state"].deep_dup : {}
-    attempts = retry_state["attempts"].to_i
-    return { queued: false, reason: "retry_attempts_exhausted" } if attempts >= COMMENT_RETRY_MAX_ATTEMPTS
-
-    build_history_result = BuildInstagramProfileHistoryJob.enqueue_with_resume_if_needed!(
-      account: account,
-      profile: profile,
-      trigger_source: "post_metadata_comment_fallback",
-      requested_by: self.class.name,
-      resume_job: {
-        job_class: AnalyzeInstagramProfilePostJob,
-        job_kwargs: {
-          instagram_account_id: account.id,
-          instagram_profile_id: profile.id,
-          instagram_profile_post_id: post.id,
-          pipeline_mode: "inline",
-          task_flags: {
-            analyze_visual: false,
-            analyze_faces: false,
-            run_ocr: false,
-            run_video: false,
-            run_metadata: true,
-            generate_comments: true,
-            enforce_comment_evidence_policy: true,
-            retry_on_incomplete_profile: true
-          }
-        }
+  def enqueue_comment_generation_job!(account:, profile:, post:, pipeline_state:, pipeline_run_id:)
+    unless comment_generation_enabled?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id)
+      return {
+        queued: false,
+        status: "disabled_by_task_flags",
+        reason: "comments_disabled"
       }
+    end
+
+    job = GeneratePostCommentSuggestionsJob.perform_later(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      enforce_comment_evidence_policy: comment_evidence_policy_enforced?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id),
+      retry_on_incomplete_profile: comment_retry_enabled?(pipeline_state: pipeline_state, pipeline_run_id: pipeline_run_id),
+      source_step: "metadata"
     )
-    return { queued: false, reason: build_history_result[:reason] } unless ActiveModel::Type::Boolean.new.cast(build_history_result[:accepted])
-
-    retry_state["attempts"] = attempts + 1
-    retry_state["last_reason_code"] = history_reason_code
-    retry_state["last_blocked_at"] = Time.current.iso8601(3)
-    retry_state["last_enqueued_at"] = Time.current.iso8601(3)
-    retry_state["next_run_at"] = build_history_result[:next_run_at].to_s.presence
-    retry_state["job_id"] = build_history_result[:job_id].to_s.presence
-    retry_state["build_history_action_log_id"] = build_history_result[:action_log_id].to_i if build_history_result[:action_log_id].present?
-    retry_state["source"] = self.class.name
-    retry_state["mode"] = "build_history_fallback"
-
-    policy["retry_state"] = retry_state
-    policy["updated_at"] = Time.current.iso8601(3)
-    metadata["comment_generation_policy"] = policy
-    post.update!(metadata: metadata)
 
     {
       queued: true,
-      reason: "build_history_fallback_registered",
-      job_id: build_history_result[:job_id].to_s,
-      action_log_id: build_history_result[:action_log_id],
-      next_run_at: build_history_result[:next_run_at].to_s
+      status: "enqueued_async",
+      reason: "comment_generation_enqueued",
+      job_id: job.job_id,
+      queue_name: job.queue_name
     }
   rescue StandardError => e
     {
       queued: false,
-      reason: "retry_enqueue_failed",
+      status: "enqueue_failed",
+      reason: "comment_enqueue_failed",
       error_class: e.class.name,
       error_message: e.message.to_s
     }

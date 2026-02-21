@@ -5,7 +5,7 @@ module Ai
     COLLECTION_COMMENTS_LIMIT = 20
     FACE_RECENCY_REFRESH_DAYS = 7
     FACE_REFRESH_MAX_ENQUEUE_PER_RUN = ENV.fetch("PROFILE_HISTORY_FACE_REFRESH_MAX_ENQUEUE_PER_RUN", "6").to_i.clamp(1, 20)
-    FACE_REFRESH_PENDING_WINDOW_HOURS = ENV.fetch("PROFILE_HISTORY_FACE_REFRESH_PENDING_WINDOW_HOURS", "6").to_i.clamp(1, 24)
+    FACE_REFRESH_PENDING_WINDOW_HOURS = ENV.fetch("PROFILE_HISTORY_FACE_REFRESH_PENDING_WINDOW_HOURS", "72").to_i.clamp(24, 336)
     FACE_VERIFICATION_MIN_APPEARANCES = FaceIdentityResolutionService::MIN_PRIMARY_APPEARANCES
     FACE_VERIFICATION_MIN_RATIO = FaceIdentityResolutionService::MIN_PRIMARY_RATIO
 
@@ -764,7 +764,9 @@ module Ai
       return false unless status.in?(%w[queued running])
 
       reference_time = parse_time(state["started_at"]) || parse_time(state["queued_at"])
-      reference_time.present? && reference_time >= FACE_REFRESH_PENDING_WINDOW_HOURS.hours.ago
+      return true if reference_time.blank?
+
+      reference_time >= FACE_REFRESH_PENDING_WINDOW_HOURS.hours.ago
     rescue StandardError
       false
     end
