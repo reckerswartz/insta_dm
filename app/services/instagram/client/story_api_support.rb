@@ -3,9 +3,59 @@ module Instagram
     module StoryApiSupport
       private
 
-      def ig_api_get_json(path:, referer:)
+      def ig_api_get_json(path:, referer:, endpoint: nil, username: nil, driver: nil, retries: 2)
         uri = URI.parse(path.to_s.start_with?("http") ? path.to_s : "#{INSTAGRAM_BASE_URL}#{path}")
+        endpoint_name = endpoint.to_s.presence || infer_ig_api_endpoint(uri.path)
+        attempts = 0
+        max_attempts = retries.to_i.clamp(0, 4) + 1
+        failure = nil
 
+        while attempts < max_attempts
+          attempts += 1
+          response = perform_ig_api_get(uri: uri, referer: referer)
+          if response[:ok]
+            parsed = parse_ig_api_json(response[:body])
+            return parsed if parsed.is_a?(Hash) || parsed.is_a?(Array)
+
+            failure = response.merge(reason: "invalid_json_response")
+          else
+            failure = response
+          end
+
+          break unless retryable_ig_api_failure?(failure)
+          sleep([0.2 * attempts, 0.9].min)
+        end
+
+        browser_response = nil
+        if driver
+          browser_response = ig_api_get_json_via_browser(driver: driver, path: uri.to_s)
+          return browser_response[:payload] if browser_response[:ok]
+
+          failure = browser_response if browser_response.is_a?(Hash)
+        end
+
+        log_ig_api_get_failure(
+          endpoint: endpoint_name,
+          uri: uri,
+          username: username,
+          failure: failure || {},
+          attempts: attempts,
+          tried_browser_fallback: driver.present?
+        )
+        nil
+      rescue StandardError => e
+        log_ig_api_get_failure(
+          endpoint: endpoint.to_s.presence || "unknown",
+          uri: uri,
+          username: username,
+          failure: { status: 0, reason: "exception:#{e.class.name}", body: e.message.to_s },
+          attempts: 1,
+          tried_browser_fallback: driver.present?
+        )
+        nil
+      end
+
+      def perform_ig_api_get(uri:, referer:)
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = (uri.scheme == "https")
         http.open_timeout = 10
@@ -23,65 +73,175 @@ module Instagram
         req["Cookie"] = cookie_header_for(@account.cookies)
 
         res = http.request(req)
-        return nil unless res.is_a?(Net::HTTPSuccess)
-        return nil unless res["content-type"].to_s.include?("json")
+        status = res.code.to_i
+        {
+          ok: res.is_a?(Net::HTTPSuccess),
+          status: status,
+          reason: (res.is_a?(Net::HTTPSuccess) ? nil : "http_#{status}"),
+          body: res.body.to_s,
+          content_type: res["content-type"].to_s
+        }
+      rescue StandardError => e
+        { ok: false, status: 0, reason: "request_exception:#{e.class.name}", body: e.message.to_s, content_type: "" }
+      end
 
-        JSON.parse(res.body.to_s)
+      def parse_ig_api_json(raw_body)
+        body = raw_body.to_s
+        return nil if body.blank?
+
+        JSON.parse(body)
       rescue StandardError
         nil
       end
 
-      def fetch_story_reel(user_id:, referer_username:)
-        uri = URI.parse("#{INSTAGRAM_BASE_URL}/api/v1/feed/reels_media/?reel_ids=#{CGI.escape(user_id.to_s)}")
+      def ig_api_get_json_via_browser(driver:, path:)
+        payload = driver.execute_async_script(<<~JS, path.to_s)
+          const endpoint = String(arguments[0] || "");
+          const done = arguments[arguments.length - 1];
+          if (!endpoint) {
+            done({ ok: false, status: 0, reason: "blank_endpoint", body_snippet: "" });
+            return;
+          }
 
-        http = Net::HTTP.new(uri.host, uri.port)
-        http.use_ssl = (uri.scheme == "https")
-        http.open_timeout = 10
-        http.read_timeout = 20
+          const options = {
+            method: "GET",
+            credentials: "include",
+            headers: {
+              "Accept": "application/json, text/plain, */*",
+              "X-Requested-With": "XMLHttpRequest"
+            }
+          };
 
-        req = Net::HTTP::Get.new(uri.request_uri)
-        req["User-Agent"] = @account.user_agent.presence || "Mozilla/5.0"
-        req["Accept"] = "application/json, text/plain, */*"
-        req["X-Requested-With"] = "XMLHttpRequest"
-        req["X-IG-App-ID"] = (@account.auth_snapshot.dig("ig_app_id").presence || "936619743392459")
-        req["Referer"] = "#{INSTAGRAM_BASE_URL}/#{referer_username}/"
+          fetch(endpoint, options)
+            .then(async (resp) => {
+              const text = await resp.text();
+              let parsed = null;
+              let parseError = null;
+              try { parsed = JSON.parse(text); } catch (e) { parseError = "invalid_json_response"; }
 
-        csrf = @account.cookies.find { |c| c["name"].to_s == "csrftoken" }&.dig("value").to_s
-        req["X-CSRFToken"] = csrf if csrf.present?
-        req["Cookie"] = cookie_header_for(@account.cookies)
+              done({
+                ok: Boolean(resp.ok && parsed && (typeof parsed === "object")),
+                status: Number(resp.status || 0),
+                reason: (!resp.ok ? `http_${resp.status}` : parseError),
+                payload: parsed,
+                body_snippet: String(text || "").slice(0, 320)
+              });
+            })
+            .catch((error) => {
+              done({
+                ok: false,
+                status: 0,
+                reason: `browser_fetch_exception:${String((error && error.message) || error || "unknown")}`,
+                payload: null,
+                body_snippet: ""
+              });
+            });
+        JS
 
-        res = http.request(req)
-        unless res.is_a?(Net::HTTPSuccess)
-          log_story_api_http_failure(
-            endpoint: "feed_reels_media",
-            url: uri.to_s,
-            status: res.code.to_i,
-            body: res.body,
-            username: referer_username,
-            user_id: user_id
-          )
-          return nil
+        result = payload.is_a?(Hash) ? payload : {}
+        status = result["status"].to_i
+        data = result["payload"]
+        {
+          ok: result["ok"] == true && (data.is_a?(Hash) || data.is_a?(Array)),
+          status: status,
+          reason: result["reason"].to_s.presence || "browser_fetch_failed",
+          payload: data,
+          body: result["body_snippet"].to_s
+        }
+      rescue StandardError => e
+        { ok: false, status: 0, reason: "browser_fetch_exception:#{e.class.name}", payload: nil, body: e.message.to_s }
+      end
+
+      def retryable_ig_api_failure?(failure)
+        status = failure[:status].to_i
+        return true if status == 429
+        return true if status >= 500
+        return true if status <= 0
+
+        false
+      rescue StandardError
+        false
+      end
+
+      def infer_ig_api_endpoint(path)
+        value = path.to_s
+        return "unknown" if value.blank?
+
+        if (match = value.match(%r{/api/v1/([^?]+)}))
+          return match[1].to_s.gsub(%r{/$}, "")
         end
 
-        body = JSON.parse(res.body.to_s)
+        value.gsub(%r{\A/}, "")
+      rescue StandardError
+        "unknown"
+      end
+
+      def log_ig_api_get_failure(endpoint:, uri:, username:, failure:, attempts:, tried_browser_fallback:)
+        status = failure[:status].to_i
+        reason = failure[:reason].to_s.presence || "request_failed"
+        response_snippet = failure[:body].to_s.byteslice(0, 300)
+        normalized_username = normalize_username(username)
+
+        if status.positive? && respond_to?(:remember_story_api_failure!, true)
+          remember_story_api_failure!(
+            endpoint: endpoint.to_s.presence || "unknown",
+            url: uri.to_s,
+            status: status,
+            username: normalized_username,
+            response_snippet: response_snippet
+          )
+        end
+
+        Ops::StructuredLogger.warn(
+          event: "instagram.api_get_json.failure",
+          payload: {
+            endpoint: endpoint.to_s.presence || "unknown",
+            url: uri.to_s,
+            status: (status.positive? ? status : nil),
+            username: normalized_username.presence,
+            reason: reason,
+            attempts: attempts.to_i,
+            rate_limited: status == 429,
+            browser_fallback_attempted: tried_browser_fallback,
+            response_snippet: response_snippet
+          }.compact
+        )
+      rescue StandardError
+        nil
+      end
+
+      def fetch_story_reel(user_id:, referer_username:, driver: nil)
+        uid = user_id.to_s.strip
+        uname = normalize_username(referer_username)
+        return nil if uid.blank? || uname.blank?
+
+        body = ig_api_get_json(
+          path: "/api/v1/feed/reels_media/?reel_ids=#{CGI.escape(uid)}",
+          referer: "#{INSTAGRAM_BASE_URL}/#{uname}/",
+          endpoint: "feed/reels_media",
+          username: uname,
+          driver: driver,
+          retries: 2
+        )
+        return nil unless body.is_a?(Hash)
       
         # Debug: Capture raw story reel data
-        debug_story_reel_data(referer_username: referer_username, user_id: user_id, body: body)
+        debug_story_reel_data(referer_username: uname, user_id: uid, body: body)
       
         reels = body["reels"]
         if reels.is_a?(Hash)
-          direct = reels[user_id.to_s]
+          direct = reels[uid]
           return direct if direct.is_a?(Hash)
 
-          by_owner = reels.values.find { |entry| reel_entry_owner_id(entry) == user_id.to_s }
+          by_owner = reels.values.find { |entry| reel_entry_owner_id(entry) == uid }
           return by_owner if by_owner.is_a?(Hash)
 
           if reels.size == 1
             Ops::StructuredLogger.warn(
               event: "instagram.story_reel.single_reel_without_key_match",
               payload: {
-                requested_user_id: user_id.to_s,
-                referer_username: referer_username.to_s,
+                requested_user_id: uid,
+                referer_username: uname,
                 available_reel_keys: reels.keys.first(6)
               }
             )
@@ -91,8 +251,8 @@ module Instagram
           Ops::StructuredLogger.warn(
             event: "instagram.story_reel.requested_reel_missing",
             payload: {
-              requested_user_id: user_id.to_s,
-              referer_username: referer_username.to_s,
+              requested_user_id: uid,
+              referer_username: uname,
               available_reel_keys: reels.keys.first(10),
               reels_count: reels.size
             }
@@ -102,15 +262,15 @@ module Instagram
 
         reels_media = body["reels_media"]
         if reels_media.is_a?(Array)
-          by_owner = reels_media.find { |entry| reel_entry_owner_id(entry) == user_id.to_s }
+          by_owner = reels_media.find { |entry| reel_entry_owner_id(entry) == uid }
           return by_owner if by_owner.is_a?(Hash)
 
           if reels_media.length == 1
             Ops::StructuredLogger.warn(
               event: "instagram.story_reel.single_reel_media_without_owner_match",
               payload: {
-                requested_user_id: user_id.to_s,
-                referer_username: referer_username.to_s
+                requested_user_id: uid,
+                referer_username: uname
               }
             )
             return reels_media.first
@@ -119,8 +279,8 @@ module Instagram
           Ops::StructuredLogger.warn(
             event: "instagram.story_reel.reels_media_owner_missing",
             payload: {
-              requested_user_id: user_id.to_s,
-              referer_username: referer_username.to_s,
+              requested_user_id: uid,
+              referer_username: uname,
               reels_media_count: reels_media.length
             }
           )
@@ -137,7 +297,7 @@ module Instagram
         sid = story_id.to_s.strip
         sid = "" if sid.casecmp("unknown").zero?
 
-        api_story = resolve_story_item_via_api(username: uname, story_id: sid, cache: cache)
+        api_story = resolve_story_item_via_api(username: uname, story_id: sid, cache: cache, driver: driver)
         if api_story.is_a?(Hash)
           url = api_story[:media_url].to_s
           if downloadable_story_media_url?(url)
@@ -423,11 +583,11 @@ module Instagram
         nil
       end
 
-      def resolve_story_item_via_api(username:, story_id:, cache: nil)
+      def resolve_story_item_via_api(username:, story_id:, cache: nil, driver: nil)
         uname = normalize_username(username)
         return nil if uname.blank?
 
-        items = fetch_story_items_via_api(username: uname, cache: cache)
+        items = fetch_story_items_via_api(username: uname, cache: cache, driver: driver)
         return nil unless items.is_a?(Array)
         return nil if items.empty?
 
@@ -445,7 +605,7 @@ module Instagram
         nil
       end
 
-      def fetch_story_items_via_api(username:, cache: nil)
+      def fetch_story_items_via_api(username:, cache: nil, driver: nil)
         uname = normalize_username(username)
         return [] if uname.blank?
 
@@ -455,7 +615,7 @@ module Instagram
           return cached if cached.is_a?(Array)
         end
 
-        web_info = fetch_web_profile_info(uname)
+        web_info = fetch_web_profile_info(uname, driver: driver)
         user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
         user_id = user.is_a?(Hash) ? user["id"].to_s.strip : ""
         if user_id.blank?
@@ -465,7 +625,7 @@ module Instagram
           return []
         end
 
-        reel = fetch_story_reel(user_id: user_id, referer_username: uname)
+        reel = fetch_story_reel(user_id: user_id, referer_username: uname, driver: driver)
         raw_items = reel.is_a?(Hash) ? Array(reel["items"]) : []
         stories = raw_items.filter_map { |item| extract_story_item(item, username: uname, reel_owner_id: user_id) }
 
@@ -799,32 +959,6 @@ module Instagram
         when 2 then "video"
         else "image"
         end
-      end
-
-      def log_story_api_http_failure(endpoint:, url:, status:, body:, username:, user_id: nil)
-        remember_story_api_failure!(
-          endpoint: endpoint,
-          url: url,
-          status: status,
-          username: username,
-          user_id: user_id,
-          response_snippet: body
-        )
-
-        Ops::StructuredLogger.warn(
-          event: "instagram.story_api.http_failure",
-          payload: {
-            endpoint: endpoint.to_s,
-            url: url.to_s,
-            status: status.to_i,
-            username: username.to_s,
-            user_id: user_id.to_s.presence,
-            rate_limited: status.to_i == 429,
-            response_snippet: body.to_s.byteslice(0, 300)
-          }.compact
-        )
-      rescue StandardError
-        nil
       end
 
       def remember_story_api_failure!(endpoint:, url:, status:, username:, user_id: nil, response_snippet: nil)

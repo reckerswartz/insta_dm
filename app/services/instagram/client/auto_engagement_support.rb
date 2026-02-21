@@ -30,7 +30,7 @@ module Instagram
           return result
         end
 
-        story_items = fetch_story_items_via_api(username: username)
+        story_items = fetch_story_items_via_api(username: username, driver: driver)
         if story_items.blank?
           result[:reply_skipped] = true
           result[:reply_skip_reason] = "no_story_items"

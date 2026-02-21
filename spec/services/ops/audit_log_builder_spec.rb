@@ -40,8 +40,9 @@ RSpec.describe Ops::AuditLogBuilder do
     expect(failed[:skip_reason]).to eq("api_story_media_unavailable")
     expect(failed[:detail]).to include("Failure reason: api_story_media_unavailable")
     expect(failed[:media_url]).to eq("https://www.instagram.com/stories/sample_user/123/")
+    expect(failed[:media_reference_url]).to eq("https://www.instagram.com/stories/sample_user/123/")
     expect(failed[:media_modal_supported]).to eq(false)
-    expect(failed[:media_download_url]).to be_nil
+    expect(failed[:media_download_url]).to eq("https://www.instagram.com/stories/sample_user/123/")
 
     expect(attached[:media_attached]).to eq(true)
     expect(attached[:media_modal_supported]).to eq(true)

@@ -34,7 +34,7 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
   it "resolve_story_media_for_current_context is api only when story cannot be resolved" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
-    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:| nil }
+    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:, driver: nil| nil }
 
     media = client.send(
       :resolve_story_media_for_current_context,
@@ -53,7 +53,7 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
   it "resolve_story_media_for_current_context ignores non-http dom media urls" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
-    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:| nil }
+    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:, driver: nil| nil }
     client.define_singleton_method(:resolve_story_item_via_dom) do |driver:|
       {
         media_url: "blob:https://www.instagram.com/823994bd-fce1-483b-9eba-694351816693",
@@ -82,7 +82,7 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
   it "resolve_story_media_for_current_context falls back to performance logs when api and dom fail" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
-    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:| nil }
+    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:, driver: nil| nil }
     client.define_singleton_method(:resolve_story_item_via_dom) { |driver:| nil }
 
     perf_payload = {
@@ -184,13 +184,16 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
       detected_at: Time.current,
       metadata: { "story_id" => "123456" }
     )
-    profile.instagram_profile_events.create!(
+    canonical.media.attach(io: StringIO.new("canonical"), filename: "canonical.jpg", content_type: "image/jpeg")
+
+    legacy = profile.instagram_profile_events.create!(
       kind: "story_downloaded",
       external_id: "story_downloaded:789012:2026-02-20T00:00:00Z",
       occurred_at: Time.current,
       detected_at: Time.current,
       metadata: {}
     )
+    legacy.media.attach(io: StringIO.new("legacy"), filename: "legacy.jpg", content_type: "image/jpeg")
 
     found_canonical = client.send(:find_existing_story_download_for_profile, profile: profile, story_id: "123456")
     found_legacy = client.send(:find_existing_story_download_for_profile, profile: profile, story_id: "789012")

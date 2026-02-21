@@ -27,7 +27,7 @@ module Instagram
                 stats = SyncStats.new
                 visited_refs = {}
                 story_api_cache = {}
-                safety_limit = limit * 5
+                safety_limit = [ limit * 12, 80 ].max
                 exit_reason = "safety_limit_exhausted"
                 account_profile = find_or_create_profile_for_auto_engagement!(username: @account.username)
                 started_at = Time.current
@@ -52,7 +52,20 @@ module Instagram
                       status: "ok",
                       meta: {
                         current_url: driver.current_url.to_s,
-                        gate_label: gate[:label]
+                        gate_label: gate[:label],
+                        gate_reason: gate[:reason],
+                        gate_prompt_text: gate[:prompt_text]
+                      }
+                    )
+                  elsif gate[:present]
+                    capture_task_html(
+                      driver: driver,
+                      task_name: "home_story_sync_view_gate_blocked",
+                      status: "error",
+                      meta: {
+                        current_url: driver.current_url.to_s,
+                        gate_reason: gate[:reason],
+                        gate_prompt_text: gate[:prompt_text]
                       }
                     )
                   end
@@ -64,6 +77,39 @@ module Instagram
                   end
 
                   ref = context[:ref].presence || context[:story_key].to_s
+                  gate_retry = nil
+                  if ref.blank?
+                    gate_retry = click_story_view_gate_if_present!(driver: driver)
+                    if gate_retry[:clicked]
+                      capture_task_html(
+                        driver: driver,
+                        task_name: "home_story_sync_view_gate_acknowledged_retry",
+                        status: "ok",
+                        meta: {
+                          current_url: driver.current_url.to_s,
+                          gate_label: gate_retry[:label],
+                          gate_reason: gate_retry[:reason],
+                          gate_prompt_text: gate_retry[:prompt_text]
+                        }
+                      )
+                    elsif gate_retry[:present]
+                      capture_task_html(
+                        driver: driver,
+                        task_name: "home_story_sync_view_gate_retry_blocked",
+                        status: "error",
+                        meta: {
+                          current_url: driver.current_url.to_s,
+                          gate_reason: gate_retry[:reason],
+                          gate_prompt_text: gate_retry[:prompt_text]
+                        }
+                      )
+                    end
+                    if gate_retry[:clicked] || gate_retry[:present]
+                      freeze_story_progress!(driver)
+                      context = normalized_story_context_for_processing(driver: driver, context: current_story_context(driver))
+                      ref = context[:ref].presence || context[:story_key].to_s
+                    end
+                  end
                   if ref.blank?
                     capture_task_html(
                       driver: driver,
@@ -73,14 +119,36 @@ module Instagram
                         current_url: driver.current_url.to_s,
                         page_title: driver.title.to_s,
                         resolved_username: context[:username],
-                        resolved_story_id: context[:story_id]
+                        resolved_story_id: context[:story_id],
+                        gate_present: ActiveModel::Type::Boolean.new.cast(gate_retry&.dig(:present)),
+                        gate_reason: gate_retry&.dig(:reason),
+                        gate_prompt_text: gate_retry&.dig(:prompt_text)
                       }
                     )
                     fallback_username = context[:username].presence || @account.username.to_s
                     if fallback_username.present?
                       fallback_profile = find_or_create_profile_for_auto_engagement!(username: fallback_username)
-                      reason = story_page_unavailable?(driver) ? "story_page_unavailable" : "story_context_missing"
-                      status = reason == "story_page_unavailable" ? "Story unavailable or expired" : "Story context missing"
+                      reason =
+                        if story_page_unavailable?(driver)
+                          "story_page_unavailable"
+                        elsif gate_retry&.dig(:present) && !gate_retry&.dig(:cleared)
+                          "story_view_gate_not_cleared"
+                        elsif gate_retry&.dig(:present)
+                          "story_context_missing_after_view_gate"
+                        else
+                          "story_context_missing"
+                        end
+                      status =
+                        case reason
+                        when "story_page_unavailable"
+                          "Story unavailable or expired"
+                        when "story_view_gate_not_cleared"
+                          "Story blocked by view confirmation gate"
+                        when "story_context_missing_after_view_gate"
+                          "Story context missing after view gate"
+                        else
+                          "Story context missing"
+                        end
                       fallback_profile.record_event!(
                         kind: "story_sync_failed",
                         external_id: "story_sync_failed:context_missing:#{Time.current.utc.iso8601(6)}",
@@ -93,7 +161,11 @@ module Instagram
                           story_url: driver.current_url.to_s,
                           current_url: driver.current_url.to_s,
                           page_title: driver.title.to_s,
-                          status: status
+                          status: status,
+                          reference_url: driver.current_url.to_s,
+                          gate_reason: gate_retry&.dig(:reason),
+                          gate_prompt_text: gate_retry&.dig(:prompt_text),
+                          gate_present: ActiveModel::Type::Boolean.new.cast(gate_retry&.dig(:present))
                         )
                       )
                     end
@@ -149,7 +221,6 @@ module Instagram
                     fallback_url: driver.current_url.to_s
                   )
 
-                  stats[:stories_visited] += 1
                   freeze_story_progress!(driver)
                   capture_task_html(
                     driver: driver,
@@ -183,116 +254,6 @@ module Instagram
                     next
                   end
 
-                  profile = find_story_network_profile(username: context[:username])
-                  if profile.nil?
-                    stats[:skipped_out_of_network] += 1
-                    account_profile.record_event!(
-                      kind: "story_reply_skipped",
-                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                      occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
-                        story_id: story_id,
-                        story_ref: ref,
-                        story_url: story_url,
-                        reason: "profile_not_in_network",
-                        status: "Out of network",
-                        username: context[:username].to_s
-                      }
-                    )
-                    capture_task_html(
-                      driver: driver,
-                      task_name: "home_story_sync_out_of_network_skipped",
-                      status: "ok",
-                      meta: {
-                        story_id: story_id,
-                        story_ref: ref,
-                        username: context[:username].to_s,
-                        reason: "profile_not_in_network"
-                      }
-                    )
-                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                    unless moved
-                      exit_reason = "next_navigation_failed"
-                      break
-                    end
-                    next
-                  end
-
-                  if profile_interaction_retry_pending?(profile)
-                    stats[:skipped_interaction_retry] += 1
-                    stats[:skipped_unreplyable] += 1
-                    profile.record_event!(
-                      kind: "story_reply_skipped",
-                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                      occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
-                        story_id: story_id,
-                        story_ref: ref,
-                        story_url: story_url,
-                        reason: "interaction_retry_window_active",
-                        status: "Interaction unavailable (retry pending)",
-                        retry_after_at: profile.story_interaction_retry_after_at&.iso8601,
-                        interaction_state: profile.story_interaction_state.to_s,
-                        interaction_reason: profile.story_interaction_reason.to_s
-                      }
-                    )
-                    capture_task_html(
-                      driver: driver,
-                      task_name: "home_story_sync_interaction_retry_skipped",
-                      status: "ok",
-                      meta: {
-                        story_id: story_id,
-                        story_ref: ref,
-                        retry_after_at: profile.story_interaction_retry_after_at&.iso8601,
-                        interaction_state: profile.story_interaction_state.to_s,
-                        interaction_reason: profile.story_interaction_reason.to_s
-                      }
-                    )
-                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                    unless moved
-                      exit_reason = "next_navigation_failed"
-                      break
-                    end
-                    next
-                  end
-
-                  existing_story_download = find_existing_story_download_for_profile(profile: profile, story_id: story_id)
-                  if existing_story_download
-                    profile.record_event!(
-                      kind: "story_reply_skipped",
-                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                      occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
-                        story_id: story_id,
-                        story_ref: ref,
-                        story_url: story_url,
-                        reason: "duplicate_story_already_downloaded",
-                        matched_event_external_id: existing_story_download.external_id.to_s,
-                        matched_event_id: existing_story_download.id
-                      }
-                    )
-                    capture_task_html(
-                      driver: driver,
-                      task_name: "home_story_sync_duplicate_story_download_skipped",
-                      status: "ok",
-                      meta: {
-                        story_id: story_id,
-                        story_ref: ref,
-                        matched_event_external_id: existing_story_download.external_id.to_s,
-                        matched_event_id: existing_story_download.id
-                      }
-                    )
-                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                    unless moved
-                      exit_reason = "next_navigation_failed"
-                      break
-                    end
-                    next
-                  end
-
                   if media_probe.blank? || media_probe.dig(:media, :url).to_s.blank?
                     media_probe = resolve_story_media_with_retry(
                       driver: driver,
@@ -305,7 +266,8 @@ module Instagram
                   media = media_probe[:media].is_a?(Hash) ? media_probe[:media] : {}
                   if media[:url].to_s.blank?
                     stats[:failed] += 1
-                    profile.record_event!(
+                    failure_profile = find_story_network_profile(username: context[:username]) || account_profile
+                    failure_profile.record_event!(
                       kind: "story_sync_failed",
                       external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
                       occurred_at: Time.current,
@@ -350,6 +312,10 @@ module Instagram
                       fallback_url: driver.current_url.to_s
                     )
                   end
+
+                  stats[:stories_visited] += 1
+                  profile = find_story_network_profile(username: context[:username])
+
                   ad_context = detect_story_ad_context(driver: driver, media: media)
                   capture_task_html(
                     driver: driver,
@@ -379,7 +345,7 @@ module Instagram
                   )
                   if ad_context[:ad_detected]
                     stats[:skipped_ads] += 1
-                    profile.record_event!(
+                    (profile || account_profile).record_event!(
                       kind: "story_ad_skipped",
                       external_id: "story_ad_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
                       occurred_at: Time.current,
@@ -388,6 +354,8 @@ module Instagram
                         story_id: story_id,
                         story_ref: ref,
                         story_url: story_url,
+                        media_url: media[:url],
+                        media_source: media[:source],
                         reason: ad_context[:reason],
                         marker_text: ad_context[:marker_text]
                       }
@@ -411,191 +379,96 @@ module Instagram
                     next
                   end
 
+                  if profile.nil?
+                    stats[:skipped_out_of_network] += 1
+                    account_profile.record_event!(
+                      kind: "story_reply_skipped",
+                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                      occurred_at: Time.current,
+                      metadata: {
+                        source: "home_story_carousel",
+                        story_id: story_id,
+                        story_ref: ref,
+                        story_url: story_url,
+                        reason: "profile_not_in_network",
+                        status: "Out of network",
+                        username: context[:username].to_s,
+                        media_url: media[:url],
+                        media_source: media[:source]
+                      }
+                    )
+                    capture_task_html(
+                      driver: driver,
+                      task_name: "home_story_sync_out_of_network_skipped",
+                      status: "ok",
+                      meta: {
+                        story_id: story_id,
+                        story_ref: ref,
+                        username: context[:username].to_s,
+                        reason: "profile_not_in_network",
+                        media_url: media[:url].to_s.byteslice(0, 220)
+                      }
+                    )
+                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                    unless moved
+                      exit_reason = "next_navigation_failed"
+                      break
+                    end
+                    next
+                  end
+
+                  existing_story_download = find_existing_story_download_for_profile(profile: profile, story_id: story_id)
+                  if existing_story_download
+                    profile.record_event!(
+                      kind: "story_reply_skipped",
+                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                      occurred_at: Time.current,
+                      metadata: {
+                        source: "home_story_carousel",
+                        story_id: story_id,
+                        story_ref: ref,
+                        story_url: story_url,
+                        media_url: media[:url],
+                        media_source: media[:source],
+                        reason: "duplicate_story_already_downloaded",
+                        matched_event_external_id: existing_story_download.external_id.to_s,
+                        matched_event_id: existing_story_download.id
+                      }
+                    )
+                    capture_task_html(
+                      driver: driver,
+                      task_name: "home_story_sync_duplicate_story_download_skipped",
+                      status: "ok",
+                      meta: {
+                        story_id: story_id,
+                        story_ref: ref,
+                        matched_event_external_id: existing_story_download.external_id.to_s,
+                        matched_event_id: existing_story_download.id
+                      }
+                    )
+                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                    unless moved
+                      exit_reason = "next_navigation_failed"
+                      break
+                    end
+                    next
+                  end
+
+                  interaction_retry_active = profile_interaction_retry_pending?(profile)
+                  interaction_retry_after_at = profile.story_interaction_retry_after_at&.iso8601
+                  interaction_state = profile.story_interaction_state.to_s
+                  interaction_reason = profile.story_interaction_reason.to_s
                   api_external_context = story_external_profile_link_context_from_api(
                     username: context[:username],
                     story_id: story_id,
-                    cache: story_api_cache
+                    cache: story_api_cache,
+                    driver: driver
                   )
-                  if api_external_context[:known] && api_external_context[:has_external_profile_link]
-                    stats[:skipped_reshared_external_link] += 1
-                    profile.record_event!(
-                      kind: "story_reply_skipped",
-                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                      occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
-                        story_id: story_id,
-                        story_ref: ref,
-                        story_url: story_url,
-                        reason: api_external_context[:reason_code].to_s.presence || "api_external_profile_indicator",
-                        status: "External attribution detected (API)",
-                        linked_username: api_external_context[:linked_username],
-                        linked_profile_url: api_external_context[:linked_profile_url],
-                        marker_text: api_external_context[:marker_text],
-                        linked_targets: Array(api_external_context[:linked_targets])
-                      }
-                    )
-                    capture_task_html(
-                      driver: driver,
-                      task_name: "home_story_sync_external_profile_link_skipped",
-                      status: "ok",
-                      meta: {
-                        story_id: story_id,
-                        story_ref: ref,
-                        linked_username: api_external_context[:linked_username],
-                        linked_profile_url: api_external_context[:linked_profile_url],
-                        marker_text: api_external_context[:marker_text],
-                        linked_targets: Array(api_external_context[:linked_targets]),
-                        reason_code: api_external_context[:reason_code]
-                      }
-                    )
-                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                    unless moved
-                      exit_reason = "next_navigation_failed"
-                      break
-                    end
-                    next
-                  end
-
-                  api_reply_gate = story_reply_capability_from_api(username: context[:username], story_id: story_id)
-                  if api_reply_gate[:known] && api_reply_gate[:reply_possible] == false
-                    stats[:skipped_unreplyable] += 1
-                    retry_after = Time.current + STORY_INTERACTION_RETRY_DAYS.days
-                    mark_profile_interaction_state!(
-                      profile: profile,
-                      state: "unavailable",
-                      reason: api_reply_gate[:reason_code].to_s.presence || "api_can_reply_false",
-                      reaction_available: false,
-                      retry_after_at: retry_after
-                    )
-                    profile.record_event!(
-                      kind: "story_reply_skipped",
-                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                      occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
-                        story_id: story_id,
-                        story_ref: ref,
-                        story_url: story_url,
-                        reason: api_reply_gate[:reason_code],
-                        status: api_reply_gate[:status],
-                        retry_after_at: retry_after.iso8601
-                      }
-                    )
-                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                    unless moved
-                      exit_reason = "next_navigation_failed"
-                      break
-                    end
-                    next
-                  end
-
-                  reply_gate =
-                    if api_reply_gate[:known] && api_reply_gate[:reply_possible] == true
-                      { reply_possible: true, reason_code: nil, status: api_reply_gate[:status], marker_text: "", submission_reason: "api_can_reply_true" }
-                    else
-                      check_story_reply_capability(driver: driver)
-                    end
-                  unless reply_gate[:reply_possible]
-                    reaction_result = react_to_story_if_available!(driver: driver)
-                    if reaction_result[:reacted]
-                      stats[:reacted] += 1
-                      mark_profile_interaction_state!(
-                        profile: profile,
-                        state: "reaction_only",
-                        reason: reply_gate[:reason_code].to_s.presence || "reply_unavailable_reaction_available",
-                        reaction_available: true
-                      )
-                      profile.record_event!(
-                        kind: "story_reaction_sent",
-                        external_id: "story_reaction_sent:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                        occurred_at: Time.current,
-                        metadata: {
-                          source: "home_story_carousel",
-                          story_id: story_id,
-                          story_ref: ref,
-                          story_url: story_url,
-                          reaction_reason: reaction_result[:reason],
-                          reaction_marker_text: reaction_result[:marker_text],
-                          reply_gate_reason: reply_gate[:reason_code]
-                        }
-                      )
-                      capture_task_html(
-                        driver: driver,
-                        task_name: "home_story_sync_reaction_fallback_sent",
-                        status: "ok",
-                        meta: {
-                          story_id: story_id,
-                          story_ref: ref,
-                          reaction_reason: reaction_result[:reason],
-                          reaction_marker_text: reaction_result[:marker_text],
-                          reply_gate_reason: reply_gate[:reason_code]
-                        }
-                      )
-                      moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                      unless moved
-                        exit_reason = "next_navigation_failed"
-                        break
-                      end
-                      next
-                    end
-
-                    stats[:skipped_unreplyable] += 1
-                    retry_after = Time.current + STORY_INTERACTION_RETRY_DAYS.days
-                    mark_profile_interaction_state!(
-                      profile: profile,
-                      state: "unavailable",
-                      reason: reply_gate[:reason_code].to_s.presence || "reply_unavailable",
-                      reaction_available: false,
-                      retry_after_at: retry_after
-                    )
-                    profile.record_event!(
-                      kind: "story_reply_skipped",
-                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                      occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
-                        story_id: story_id,
-                        story_ref: ref,
-                        story_url: story_url,
-                        reason: reply_gate[:reason_code],
-                        status: reply_gate[:status],
-                        submission_reason: reply_gate[:submission_reason],
-                        submission_marker_text: reply_gate[:marker_text],
-                        retry_after_at: retry_after.iso8601,
-                        reaction_fallback_attempted: true,
-                        reaction_fallback_reason: reaction_result[:reason],
-                        reaction_fallback_marker_text: reaction_result[:marker_text]
-                      }
-                    )
-                    capture_task_html(
-                      driver: driver,
-                      task_name: "home_story_sync_reply_precheck_skipped",
-                      status: "ok",
-                      meta: {
-                        story_id: story_id,
-                        story_ref: ref,
-                        reason: reply_gate[:reason_code],
-                        status_text: reply_gate[:status],
-                        marker_text: reply_gate[:marker_text],
-                        retry_after_at: retry_after.iso8601,
-                        reaction_fallback_reason: reaction_result[:reason],
-                        reaction_fallback_marker_text: reaction_result[:marker_text]
-                      }
-                    )
-                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                    unless moved
-                      exit_reason = "next_navigation_failed"
-                      break
-                    end
-                    next
-                  end
-                  mark_profile_interaction_state!(
-                    profile: profile,
-                    state: "reply_available",
-                    reason: "reply_box_found",
-                    reaction_available: nil,
-                    retry_after_at: nil
+                  api_reply_gate = story_reply_capability_from_api(
+                    username: context[:username],
+                    story_id: story_id,
+                    driver: driver,
+                    cache: story_api_cache
                   )
 
                   story_time = Time.current
@@ -714,6 +587,8 @@ module Instagram
                         story_id: story_id,
                         story_ref: ref,
                         story_url: story_url,
+                        media_url: media[:url],
+                        media_source: media[:source],
                         reason: "duplicate_story_already_replied",
                         matched_by: duplicate_reply[:matched_by],
                         matched_event_external_id: duplicate_reply[:matched_external_id]
@@ -755,6 +630,8 @@ module Instagram
                           story_id: story_id,
                           story_ref: ref,
                           story_url: story_url,
+                          media_url: media[:url],
+                          media_source: media[:source],
                           reason: "invalid_story_media",
                           quality_reason: quality[:reason],
                           quality_entropy: quality[:entropy],
@@ -847,80 +724,240 @@ module Instagram
                         kind: "story_reply_skipped",
                         external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
                         occurred_at: Time.current,
-                        metadata: { source: "home_story_carousel", story_id: story_id, story_ref: ref, story_url: story_url, reason: "missing_auto_reply_tag" }
+                        metadata: {
+                          source: "home_story_carousel",
+                          story_id: story_id,
+                          story_ref: ref,
+                          story_url: story_url,
+                          media_url: media[:url],
+                          media_source: media[:source],
+                          reason: "missing_auto_reply_tag"
+                        }
                       )
                     elsif comment_text.blank?
                       profile.record_event!(
                         kind: "story_reply_skipped",
                         external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
                         occurred_at: Time.current,
-                        metadata: { source: "home_story_carousel", story_id: story_id, story_ref: ref, story_url: story_url, reason: "no_comment_generated" }
-                      )
-                    else
-                      comment_result = comment_on_story_via_api!(
-                        story_id: story_id,
-                        story_username: context[:username],
-                        comment_text: comment_text
-                      )
-                      if !comment_result[:posted]
-                        comment_result = comment_on_story_via_ui!(driver: driver, comment_text: comment_text)
-                      end
-                      posted = comment_result[:posted]
-                      skip_status = story_reply_skip_status_for(comment_result)
-                      capture_task_html(
-                        driver: driver,
-                        task_name: "home_story_sync_comment_submission",
-                        status: posted ? "ok" : "error",
-                        meta: {
+                        metadata: {
+                          source: "home_story_carousel",
+                          story_id: story_id,
                           story_ref: ref,
-                          comment_preview: comment_text.byteslice(0, 120),
-                          posted: posted,
-                          submission_method: comment_result[:method],
-                          failure_reason: comment_result[:reason],
-                          skip_status: skip_status[:status],
-                          skip_reason_code: skip_status[:reason_code]
+                          story_url: story_url,
+                          media_url: media[:url],
+                          media_source: media[:source],
+                          reason: "no_comment_generated"
                         }
                       )
-                      if posted
-                        stats[:commented] += 1
+                    elsif interaction_retry_active
+                      stats[:skipped_interaction_retry] += 1
+                      stats[:skipped_unreplyable] += 1
+                      profile.record_event!(
+                        kind: "story_reply_skipped",
+                        external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                        occurred_at: Time.current,
+                        metadata: {
+                          source: "home_story_carousel",
+                          story_id: story_id,
+                          story_ref: ref,
+                          story_url: story_url,
+                          media_url: media[:url],
+                          media_source: media[:source],
+                          reason: "interaction_retry_window_active",
+                          status: "Interaction unavailable (retry pending)",
+                          retry_after_at: interaction_retry_after_at,
+                          interaction_state: interaction_state,
+                          interaction_reason: interaction_reason
+                        }
+                      )
+                    elsif api_external_context[:known] && api_external_context[:has_external_profile_link]
+                      stats[:skipped_reshared_external_link] += 1
+                      profile.record_event!(
+                        kind: "story_reply_skipped",
+                        external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                        occurred_at: Time.current,
+                        metadata: {
+                          source: "home_story_carousel",
+                          story_id: story_id,
+                          story_ref: ref,
+                          story_url: story_url,
+                          media_url: media[:url],
+                          media_source: media[:source],
+                          reason: api_external_context[:reason_code].to_s.presence || "api_external_profile_indicator",
+                          status: "External attribution detected (API)",
+                          linked_username: api_external_context[:linked_username],
+                          linked_profile_url: api_external_context[:linked_profile_url],
+                          marker_text: api_external_context[:marker_text],
+                          linked_targets: Array(api_external_context[:linked_targets])
+                        }
+                      )
+                    elsif api_reply_gate[:known] && api_reply_gate[:reply_possible] == false
+                      stats[:skipped_unreplyable] += 1
+                      retry_after = Time.current + STORY_INTERACTION_RETRY_DAYS.days
+                      mark_profile_interaction_state!(
+                        profile: profile,
+                        state: "unavailable",
+                        reason: api_reply_gate[:reason_code].to_s.presence || "api_can_reply_false",
+                        reaction_available: false,
+                        retry_after_at: retry_after
+                      )
+                      profile.record_event!(
+                        kind: "story_reply_skipped",
+                        external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                        occurred_at: Time.current,
+                        metadata: {
+                          source: "home_story_carousel",
+                          story_id: story_id,
+                          story_ref: ref,
+                          story_url: story_url,
+                          media_url: media[:url],
+                          media_source: media[:source],
+                          reason: api_reply_gate[:reason_code],
+                          status: api_reply_gate[:status],
+                          retry_after_at: retry_after.iso8601
+                        }
+                      )
+                    else
+                      reply_gate =
+                        if api_reply_gate[:known] && api_reply_gate[:reply_possible] == true
+                          { reply_possible: true, reason_code: nil, status: api_reply_gate[:status], marker_text: "", submission_reason: "api_can_reply_true" }
+                        else
+                          check_story_reply_capability(driver: driver)
+                        end
+
+                      if !reply_gate[:reply_possible]
+                        reaction_result = react_to_story_if_available!(driver: driver)
+                        if reaction_result[:reacted]
+                          stats[:reacted] += 1
+                          mark_profile_interaction_state!(
+                            profile: profile,
+                            state: "reaction_only",
+                            reason: reply_gate[:reason_code].to_s.presence || "reply_unavailable_reaction_available",
+                            reaction_available: true
+                          )
+                          profile.record_event!(
+                            kind: "story_reaction_sent",
+                            external_id: "story_reaction_sent:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                            occurred_at: Time.current,
+                            metadata: {
+                              source: "home_story_carousel",
+                              story_id: story_id,
+                              story_ref: ref,
+                              story_url: story_url,
+                              media_url: media[:url],
+                              reaction_reason: reaction_result[:reason],
+                              reaction_marker_text: reaction_result[:marker_text],
+                              reply_gate_reason: reply_gate[:reason_code]
+                            }
+                          )
+                        else
+                          stats[:skipped_unreplyable] += 1
+                          retry_after = Time.current + STORY_INTERACTION_RETRY_DAYS.days
+                          mark_profile_interaction_state!(
+                            profile: profile,
+                            state: "unavailable",
+                            reason: reply_gate[:reason_code].to_s.presence || "reply_unavailable",
+                            reaction_available: false,
+                            retry_after_at: retry_after
+                          )
+                          profile.record_event!(
+                            kind: "story_reply_skipped",
+                            external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                            occurred_at: Time.current,
+                            metadata: {
+                              source: "home_story_carousel",
+                              story_id: story_id,
+                              story_ref: ref,
+                              story_url: story_url,
+                              media_url: media[:url],
+                              media_source: media[:source],
+                              reason: reply_gate[:reason_code],
+                              status: reply_gate[:status],
+                              submission_reason: reply_gate[:submission_reason],
+                              submission_marker_text: reply_gate[:marker_text],
+                              retry_after_at: retry_after.iso8601,
+                              reaction_fallback_attempted: true,
+                              reaction_fallback_reason: reaction_result[:reason],
+                              reaction_fallback_marker_text: reaction_result[:marker_text]
+                            }
+                          )
+                        end
+                      else
                         mark_profile_interaction_state!(
                           profile: profile,
                           state: "reply_available",
-                          reason: "comment_sent",
+                          reason: "reply_box_found",
                           reaction_available: nil,
                           retry_after_at: nil
                         )
-                        profile.record_event!(
-                          kind: "story_reply_sent",
-                          external_id: "story_reply_sent:#{story_id}",
-                          occurred_at: Time.current,
-                          metadata: {
-                            source: "home_story_carousel",
-                            story_id: story_id,
+
+                        comment_result = comment_on_story_via_api!(
+                          story_id: story_id,
+                          story_username: context[:username],
+                          comment_text: comment_text
+                        )
+                        if !comment_result[:posted]
+                          comment_result = comment_on_story_via_ui!(driver: driver, comment_text: comment_text)
+                        end
+                        posted = comment_result[:posted]
+                        skip_status = story_reply_skip_status_for(comment_result)
+                        capture_task_html(
+                          driver: driver,
+                          task_name: "home_story_sync_comment_submission",
+                          status: posted ? "ok" : "error",
+                          meta: {
                             story_ref: ref,
-                            story_url: story_url,
-                            media_url: media[:url],
-                            comment_text: comment_text,
-                            submission_method: comment_result[:method]
+                            comment_preview: comment_text.byteslice(0, 120),
+                            posted: posted,
+                            submission_method: comment_result[:method],
+                            failure_reason: comment_result[:reason],
+                            skip_status: skip_status[:status],
+                            skip_reason_code: skip_status[:reason_code]
                           }
                         )
-                        attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: comment_text)
-                      else
-                        profile.record_event!(
-                          kind: "story_reply_skipped",
-                          external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                          occurred_at: Time.current,
-                          metadata: {
-                            source: "home_story_carousel",
-                            story_id: story_id,
-                            story_ref: ref,
-                            story_url: story_url,
-                            reason: skip_status[:reason_code],
-                            status: skip_status[:status],
-                            submission_reason: comment_result[:reason],
-                            submission_marker_text: comment_result[:marker_text]
-                          }
-                        )
+                        if posted
+                          stats[:commented] += 1
+                          mark_profile_interaction_state!(
+                            profile: profile,
+                            state: "reply_available",
+                            reason: "comment_sent",
+                            reaction_available: nil,
+                            retry_after_at: nil
+                          )
+                          profile.record_event!(
+                            kind: "story_reply_sent",
+                            external_id: "story_reply_sent:#{story_id}",
+                            occurred_at: Time.current,
+                            metadata: {
+                              source: "home_story_carousel",
+                              story_id: story_id,
+                              story_ref: ref,
+                              story_url: story_url,
+                              media_url: media[:url],
+                              comment_text: comment_text,
+                              submission_method: comment_result[:method]
+                            }
+                          )
+                          attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: comment_text)
+                        else
+                          profile.record_event!(
+                            kind: "story_reply_skipped",
+                            external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                            occurred_at: Time.current,
+                            metadata: {
+                              source: "home_story_carousel",
+                              story_id: story_id,
+                              story_ref: ref,
+                              story_url: story_url,
+                              media_url: media[:url],
+                              media_source: media[:source],
+                              reason: skip_status[:reason_code],
+                              status: skip_status[:status],
+                              submission_reason: comment_result[:reason],
+                              submission_marker_text: comment_result[:marker_text]
+                            }
+                          )
+                        end
                       end
                     end
                   rescue StandardError => e
@@ -1162,6 +1199,7 @@ module Instagram
           return "navigation" if normalized_reason.include?("next_navigation_failed") || normalized_reason.include?("duplicate_story_key")
           return "parsing" if normalized_reason.include?("story_id_unresolved") || normalized_reason.include?("context_missing")
           return "navigation" if normalized_reason.include?("story_page_unavailable")
+          return "navigation" if normalized_reason.include?("story_view_gate")
           return "storage" if message.include?("attach_failed") || message.include?("active storage")
           return "media_fetch" if normalized_reason.include?("api_story_media_unavailable")
           return "media_fetch" if message.include?("media") || message.include?("invalid media url") || message.include?("http")
@@ -1183,6 +1221,7 @@ module Instagram
           return true if normalized_reason.include?("next_navigation_failed")
           return true if normalized_reason.include?("loop_exited_without_story_processing")
           return true if normalized_reason.include?("story_page_unavailable")
+          return true if normalized_reason.include?("story_view_gate")
 
           false
         end

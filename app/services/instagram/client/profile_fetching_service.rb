@@ -36,85 +36,30 @@ module Instagram
           }
         end
 
-        driver.navigate.to("#{INSTAGRAM_BASE_URL}/#{username}/")
-        wait_for(driver, css: "body", timeout: 8)
-
-        page = driver.page_source.to_s
-        page_down = page.downcase
-
-        # If we hit a generic error page or an interstitial, eligibility is unknown.
-        if page_down.include?("something went wrong") ||
-           page_down.include?("unexpected error") ||
-           page_down.include?("polarishttp500") ||
-           page_down.include?("try again later")
-          return { can_message: false, restriction_reason: "Unable to verify messaging availability (profile load error)" }
-        end
-
-        # "Message" often renders as <div role="button"> on modern IG builds (not only <button>).
-        message_cta =
-          driver.find_elements(xpath: "//*[self::button or (self::div and @role='button')][normalize-space()='Message']").first ||
-          driver.find_elements(xpath: "//*[self::a and @role='link' and normalize-space()='Message']").first
-
-        follow_cta =
-          driver.find_elements(xpath: "//*[self::button or (self::div and @role='button')][normalize-space()='Follow']").first ||
-          driver.find_elements(xpath: "//*[self::button or (self::div and @role='button')][normalize-space()='Requested']").first
-
-        if message_cta
-          { can_message: true, restriction_reason: nil }
-        elsif follow_cta
-          { can_message: false, restriction_reason: "User is not currently messageable from this account" }
-        elsif page_down.include?("private")
-          { can_message: false, restriction_reason: "Private or restricted profile" }
-        else
-          { can_message: false, restriction_reason: "Unable to verify messaging availability" }
-        end
+        ui_result = verify_messageability_from_driver(driver, username: username)
+        {
+          can_message: ui_result[:can_message],
+          restriction_reason: ui_result[:restriction_reason],
+          source: ui_result[:source].to_s.presence || "ui",
+          dm_state: ui_result[:dm_state],
+          dm_reason: ui_result[:dm_reason],
+          dm_retry_after_at: ui_result[:dm_retry_after_at]
+        }
       end
     end
 
-    def fetch_web_profile_info(username)
-      # Unofficial endpoint used by the Instagram web app; requires authenticated cookies.
-      uri = URI.parse("#{INSTAGRAM_BASE_URL}/api/v1/users/web_profile_info/?username=#{username}")
+    def fetch_web_profile_info(username, driver: nil)
+      uname = normalize_username(username)
+      return nil if uname.blank?
 
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = (uri.scheme == "https")
-      http.open_timeout = 10
-      http.read_timeout = 20
-
-      req = Net::HTTP::Get.new(uri.request_uri)
-      req["User-Agent"] = @account.user_agent.presence || "Mozilla/5.0"
-      req["Accept"] = "application/json, text/plain, */*"
-      req["X-Requested-With"] = "XMLHttpRequest"
-      req["X-IG-App-ID"] = (@account.auth_snapshot.dig("ig_app_id").presence || "936619743392459")
-      req["Referer"] = "#{INSTAGRAM_BASE_URL}/#{username}/"
-
-      csrf = @account.cookies.find { |c| c["name"].to_s == "csrftoken" }&.dig("value").to_s
-      req["X-CSRFToken"] = csrf if csrf.present?
-      req["Cookie"] = cookie_header_for(@account.cookies)
-
-      res = http.request(req)
-      unless res.is_a?(Net::HTTPSuccess)
-        remember_story_api_failure!(
-          endpoint: "web_profile_info",
-          url: uri.to_s,
-          status: res.code.to_i,
-          username: username,
-          response_snippet: res.body
-        ) if respond_to?(:remember_story_api_failure!, true)
-
-        Ops::StructuredLogger.warn(
-          event: "instagram.web_profile_info.http_failure",
-          payload: {
-            endpoint: "web_profile_info",
-            username: username.to_s,
-            status: res.code.to_i,
-            rate_limited: res.code.to_i == 429,
-            response_snippet: res.body.to_s.byteslice(0, 300)
-          }
-        )
-        return nil
-      end
-
-      JSON.parse(res.body.to_s)
+      ig_api_get_json(
+        path: "/api/v1/users/web_profile_info/?username=#{CGI.escape(uname)}",
+        referer: "#{INSTAGRAM_BASE_URL}/#{uname}/",
+        endpoint: "users/web_profile_info",
+        username: uname,
+        driver: driver,
+        retries: 2
+      )
     rescue StandardError
       nil
     end
@@ -124,44 +69,25 @@ module Instagram
       raise "Username cannot be blank" if username.blank?
 
       with_task_capture(driver: driver, task_name: "profile_fetch_details", meta: { username: username }) do
-        api_details = fetch_profile_details_via_api(username)
+        api_details = fetch_profile_details_via_api(username, driver: driver)
         return api_details if api_details.present?
 
         driver.navigate.to("#{INSTAGRAM_BASE_URL}/#{username}/")
         wait_for(driver, css: "body", timeout: 10)
         dismiss_common_overlays!(driver)
 
-        html = driver.page_source.to_s
-
-        display_name = nil
-        if (og = html.match(/property=\"og:title\" content=\"([^\"]+)\"/))
-          og_title = CGI.unescapeHTML(og[1].to_s)
-          # Examples: "Name (@username) • Instagram photos and videos"
-          if (m = og_title.match(/\A(.+?)\s*\(@#{Regexp.escape(username)}\)\b/))
-            display_name = m[1].to_s.strip
-          end
-        end
-
-        pic = nil
-        if (img = html.match(/property=\"og:image\" content=\"([^\"]+)\"/))
-          pic = CGI.unescapeHTML(img[1].to_s).strip
-        end
-
-        web_info = fetch_web_profile_info(username)
+        web_info = fetch_web_profile_info(username, driver: driver)
         web_user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
         ig_user_id = web_user.is_a?(Hash) ? web_user["id"].to_s.strip.presence : nil
         bio = web_user.is_a?(Hash) ? web_user["biography"].to_s.presence : nil
-        full_name = web_user.is_a?(Hash) ? web_user["full_name"].to_s.strip.presence : nil
+        display_name = web_user.is_a?(Hash) ? web_user["full_name"].to_s.strip.presence : nil
+        pic = web_user.is_a?(Hash) ? CGI.unescapeHTML(web_user["profile_pic_url_hd"].to_s).strip.presence || CGI.unescapeHTML(web_user["profile_pic_url"].to_s).strip.presence : nil
         followers_count = web_user.is_a?(Hash) ? normalize_count(web_user["follower_count"]) : nil
-        followers_count ||= extract_profile_follow_counts(html)&.dig(:followers)
         category_name = web_user.is_a?(Hash) ? web_user["category_name"].to_s.strip.presence : nil
         is_business_account = web_user.is_a?(Hash) ? ActiveModel::Type::Boolean.new.cast(web_user["is_business_account"]) : nil
 
-        display_name ||= full_name
-
-        post = extract_latest_post_from_profile_dom(driver)
-        post = extract_latest_post_from_profile_html(html) if post[:taken_at].blank? && post[:shortcode].blank?
-        post = extract_latest_post_from_profile_http(username) if post[:taken_at].blank? && post[:shortcode].blank?
+        post = extract_latest_post_from_profile_http(username, web_info: web_info, driver: driver)
+        post = extract_latest_post_from_profile_dom(driver) if post[:taken_at].blank? && post[:shortcode].blank?
 
         {
           username: username,
@@ -178,15 +104,16 @@ module Instagram
       end
     end
 
-    def fetch_profile_details_via_api(username)
+    def fetch_profile_details_via_api(username, driver: nil)
       uname = normalize_username(username)
       return nil if uname.blank?
 
-      web_info = fetch_web_profile_info(uname)
+      web_info = fetch_web_profile_info(uname, driver: driver)
       user = web_info.is_a?(Hash) ? web_info.dig("data", "user") : nil
       return nil unless user.is_a?(Hash)
 
-      latest = extract_latest_post_from_profile_http(uname)
+      latest = extract_latest_post_from_profile_http(uname, web_info: web_info, driver: driver)
+      latest = extract_latest_post_from_profile_dom(driver) if driver && latest[:taken_at].blank? && latest[:shortcode].blank?
 
       {
         username: uname,

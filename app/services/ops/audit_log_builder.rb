@@ -70,7 +70,7 @@ module Ops
       def extract_skip_reason(kind:, metadata:)
         return nil unless SKIP_EVENT_KINDS.include?(kind.to_s)
 
-        metadata["reason"].to_s.presence || kind.to_s
+        metadata["reason"].to_s.presence || metadata["skip_reason"].to_s.presence || kind.to_s
       end
 
       def build_event_detail(kind:, metadata:, skip_reason:)
@@ -80,10 +80,13 @@ module Ops
         details = [ skip_reason.to_s ]
         status = metadata["status"].to_s.presence
         details << status if status.present?
+        details << "quality=#{metadata["quality_reason"]}" if metadata["quality_reason"].present?
+        details << "submission=#{metadata["submission_reason"]}" if metadata["submission_reason"].present?
         details << "api_status=#{metadata["api_failure_status"]}" if metadata["api_failure_status"].present?
         details << "api_endpoint=#{metadata["api_failure_endpoint"]}" if metadata["api_failure_endpoint"].present?
         details << "retryable=#{metadata["retryable"]}" if metadata.key?("retryable")
         details << "story_ref=#{metadata["story_ref"]}" if metadata["story_ref"].to_s.present?
+        details << "media_source=#{metadata["media_source"]}" if metadata["media_source"].to_s.present?
         details << "error=#{metadata["error_class"]}" if metadata["error_class"].to_s.present?
 
         "#{prefix}: #{details.join(' | ')}".byteslice(0, 320)
@@ -111,12 +114,14 @@ module Ops
           metadata["image_url"],
           metadata["video_url"],
           metadata["story_url"],
-          metadata["permalink"]
+          metadata["permalink"],
+          metadata["linked_profile_url"]
         )
         download_url = first_present(
           metadata["media_url"],
           metadata["video_url"],
-          metadata["image_url"]
+          metadata["image_url"],
+          reference_url
         )
         content_type = infer_content_type(url: first_present(metadata["media_url"], reference_url), metadata: metadata)
         modal_supported = media_modal_supported?(url: reference_url, content_type: content_type)

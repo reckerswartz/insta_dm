@@ -1,6 +1,9 @@
 # Story Intelligence Pipeline
 
-Last updated: 2026-02-20
+Last updated: 2026-02-21
+
+Related reference:
+- `docs/workflows/story-sync-api-reference.md`
 
 ## Story Processing Entry Paths
 

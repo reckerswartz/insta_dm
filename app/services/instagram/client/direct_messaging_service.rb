@@ -756,60 +756,6 @@ module Instagram
 	      { clicked: false, reason: "send_click_exception #{e.class}: #{e.message}" }
 	    end
 
-    def extract_conversation_users_from_inbox_html(html)
-      users = {}
-      verify_segments = 0
-
-      return [users, verify_segments] if html.blank?
-
-      # Extract from the Lightspeed payload embedded in the inbox page. Example structure:
-      #   ... "verifyContactRowExists", ... , "Display Name", ... , "username", [9], [9]]]
-      #
-      # We avoid DOM selectors here because the inbox is frequently rendered as role="button" rows
-      # and the username often only appears inside embedded payloads.
-      # In many builds the payload is itself a JSON-encoded string, so quotes appear as \"...\".
-      segments = html.scan(/\\\"verifyContactRowExists\\\"[\s\S]{0,4000}?\[9\],\s*\[9\]\]\]/)
-      segments = html.scan(/"verifyContactRowExists"[\s\S]{0,4000}?\[9\],\s*\[9\]\]\]/) if segments.empty?
-      verify_segments += segments.length
-
-      segments.each do |segment|
-        # Candidate usernames appear lowercase in this payload (usernames are case-insensitive but stored normalized).
-        token_re =
-          if segment.include?("\\\"")
-            /\\\"([A-Za-z0-9._]{1,30})\\\"/
-          else
-            /"([A-Za-z0-9._]{1,30})"/
-          end
-
-        tokens = segment.scan(token_re).flatten
-        candidate_usernames = tokens.select { |t| t == t.downcase && t.match?(/\A[a-z0-9._]{1,30}\z/) }
-        username = candidate_usernames.last.to_s
-        next if username.blank?
-
-        display_re =
-          if segment.include?("\\\"")
-            /\\\"([^\\\"]{1,80})\\\"/
-          else
-            /"([^"]{1,80})"/
-          end
-
-        display_candidates = segment.scan(display_re).flatten
-        display = display_candidates.reverse.find do |t|
-          next false if t.blank?
-          next false if t.include?("/") || t.match?(%r{\Ahttps?://}i)
-          next false if t.match?(/\A[a-z0-9._]{1,30}\z/) # likely a username token
-          next false if t.match?(/\Amessaging\b/i) || t.match?(/\blightspeed\b/i) || t.match?(/\bmedia_fallback\b/i)
-          true
-        end
-
-        users[normalize_username(username)] ||= { display_name: display.presence || username }
-      end
-
-      [users, verify_segments]
-    rescue StandardError
-      [users, verify_segments]
-    end
-
     def mark_profile_dm_state!(profile:, state:, reason:, retry_after_at: nil)
       return unless profile
 

@@ -42,7 +42,7 @@
                 <td class="meta">
                   <%= entry[:detail].to_s.truncate(220) %>
                   <% if entry[:skip_reason].present? %>
-                    <div><code><%= entry[:skip_reason] %></code></div>
+                    <div>Exact reason: <code><%= entry[:skip_reason] %></code></div>
                   <% end %>
                   <% if entry[:comment_text].present? %>
                     <details>
@@ -82,6 +82,12 @@
                       <a class="btn small secondary" href="<%= entry[:media_download_url] %>" target="_blank" rel="noopener noreferrer">Download</a>
                     <% elsif entry[:skip_event] %>
                       <button type="button" class="btn small secondary" disabled>Download</button>
+                    <% end %>
+
+                    <% if entry[:media_reference_url].present? %>
+                      <a class="btn small secondary" href="<%= entry[:media_reference_url] %>" target="_blank" rel="noopener noreferrer">Reference</a>
+                    <% elsif entry[:skip_event] %>
+                      <button type="button" class="btn small secondary" disabled>Reference</button>
                     <% end %>
                   </div>
                 </td>

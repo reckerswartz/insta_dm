@@ -287,8 +287,8 @@ module Instagram
         end
       end
 
-      def story_reply_capability_from_api(username:, story_id:)
-        item = resolve_story_item_via_api(username: username, story_id: story_id)
+      def story_reply_capability_from_api(username:, story_id:, driver: nil, cache: nil)
+        item = resolve_story_item_via_api(username: username, story_id: story_id, driver: driver, cache: cache)
         return { known: false, reply_possible: nil, reason_code: "api_story_not_found", status: "Unknown" } unless item.is_a?(Hash)
 
         can_reply = item[:can_reply]
@@ -303,8 +303,8 @@ module Instagram
         { known: false, reply_possible: nil, reason_code: "api_capability_error", status: "Unknown" }
       end
 
-      def story_external_profile_link_context_from_api(username:, story_id:, cache: nil)
-        item = resolve_story_item_via_api(username: username, story_id: story_id, cache: cache)
+      def story_external_profile_link_context_from_api(username:, story_id:, cache: nil, driver: nil)
+        item = resolve_story_item_via_api(username: username, story_id: story_id, cache: cache, driver: driver)
         return { known: false, has_external_profile_link: false, reason_code: "api_story_not_found", linked_username: "", linked_profile_url: "", marker_text: "", linked_targets: [] } unless item.is_a?(Hash)
 
         has_external = ActiveModel::Type::Boolean.new.cast(item[:api_has_external_profile_indicator])

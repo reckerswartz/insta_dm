@@ -25,6 +25,8 @@ module InstagramAccounts
       transient_network_error
       media_download_failed
       story_context_missing
+      story_context_missing_after_view_gate
+      story_view_gate_not_cleared
       story_processing_failed
     ].freeze
 

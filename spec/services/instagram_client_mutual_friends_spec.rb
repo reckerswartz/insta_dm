@@ -13,7 +13,7 @@ RSpec.describe "InstagramClientMutualFriendsTest" do
       { "data" => { "user" => { "id" => "12345" } } }
     end
 
-    client.define_singleton_method(:ig_api_get_json) do |path:, referer:|
+    client.define_singleton_method(:ig_api_get_json) do |path:, referer:, **_|
       requested_paths << path
       requested_referers << referer
       {

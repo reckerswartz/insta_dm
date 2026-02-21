@@ -204,31 +204,6 @@ module Instagram
       }
     end
 
-    def extract_latest_post_from_profile_html(html)
-      return { taken_at: nil, shortcode: nil } if html.blank?
-
-      # Prefer restricting our search to a window around the timeline media payload to avoid
-      # grabbing unrelated timestamps elsewhere in the page.
-      idx = html.index("edge_owner_to_timeline_media") || html.index("timeline_media")
-      window = idx ? (html.byteslice(idx, 250_000) || "") : html
-
-      taken_at = nil
-      shortcode = nil
-
-      if (m = window.match(/\"taken_at_timestamp\":(\d{9,})/))
-        ts = m[1].to_i
-        taken_at = Time.at(ts).utc rescue nil
-      end
-
-      if (m = window.match(/\"shortcode\":\"([A-Za-z0-9_-]{5,})\"/))
-        shortcode = m[1].to_s
-      end
-
-      { taken_at: taken_at, shortcode: shortcode }
-    rescue StandardError
-      { taken_at: nil, shortcode: nil }
-    end
-
     def extract_latest_post_from_profile_dom(driver)
       with_task_capture(driver: driver, task_name: "profile_latest_post_dom") do
         begin
@@ -290,11 +265,11 @@ module Instagram
       end
     end
 
-    def extract_latest_post_from_profile_http(username)
+    def extract_latest_post_from_profile_http(username, web_info: nil, driver: nil)
       username = normalize_username(username)
       return { taken_at: nil, shortcode: nil } if username.blank?
 
-      data = fetch_web_profile_info(username)
+      data = web_info.is_a?(Hash) ? web_info : fetch_web_profile_info(username, driver: driver)
       return { taken_at: nil, shortcode: nil } unless data.is_a?(Hash)
 
       user = data.dig("data", "user")
@@ -320,7 +295,7 @@ module Instagram
       user_id = user["id"].to_s.strip
       return { taken_at: nil, shortcode: nil } if user_id.blank?
 
-      feed = fetch_user_feed(user_id: user_id, referer_username: username, count: 6)
+      feed = fetch_user_feed(user_id: user_id, referer_username: username, count: 6, driver: driver)
       item = feed.is_a?(Hash) ? Array(feed["items"]).first : nil
       return { taken_at: nil, shortcode: nil } unless item.is_a?(Hash)
 
@@ -449,31 +424,21 @@ module Instagram
       out
     end
 
-    def fetch_user_feed(user_id:, referer_username:, count:, max_id: nil)
+    def fetch_user_feed(user_id:, referer_username:, count:, max_id: nil, driver: nil)
+      normalized_user_id = user_id.to_s.strip
+      return nil if normalized_user_id.blank?
+
+      referer_user = normalize_username(referer_username)
       q = [ "count=#{count.to_i.clamp(1, 30)}" ]
       q << "max_id=#{CGI.escape(max_id.to_s)}" if max_id.present?
-      uri = URI.parse("#{INSTAGRAM_BASE_URL}/api/v1/feed/user/#{user_id}/?#{q.join('&')}")
-
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = (uri.scheme == "https")
-      http.open_timeout = 10
-      http.read_timeout = 20
-
-      req = Net::HTTP::Get.new(uri.request_uri)
-      req["User-Agent"] = @account.user_agent.presence || "Mozilla/5.0"
-      req["Accept"] = "application/json, text/plain, */*"
-      req["X-Requested-With"] = "XMLHttpRequest"
-      req["X-IG-App-ID"] = (@account.auth_snapshot.dig("ig_app_id").presence || "936619743392459")
-      req["Referer"] = "#{INSTAGRAM_BASE_URL}/#{referer_username}/"
-
-      csrf = @account.cookies.find { |c| c["name"].to_s == "csrftoken" }&.dig("value").to_s
-      req["X-CSRFToken"] = csrf if csrf.present?
-      req["Cookie"] = cookie_header_for(@account.cookies)
-
-      res = http.request(req)
-      return nil unless res.is_a?(Net::HTTPSuccess)
-
-      JSON.parse(res.body.to_s)
+      ig_api_get_json(
+        path: "/api/v1/feed/user/#{CGI.escape(normalized_user_id)}/?#{q.join('&')}",
+        referer: "#{INSTAGRAM_BASE_URL}/#{referer_user.presence || referer_username.to_s}/",
+        endpoint: "feed/user",
+        username: referer_user.presence || referer_username.to_s,
+        driver: driver,
+        retries: 2
+      )
     rescue StandardError
       nil
     end

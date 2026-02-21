@@ -136,9 +136,7 @@ module Instagram
         visible_anchor = anchors.find { |el| el.displayed? rescue false } || anchors.first
         target = find_home_story_open_target(driver, excluded_usernames: excluded_usernames)
 
-        html = driver.page_source.to_s
-        Rails.logger.info "HTML length: #{html.length}, contains stories pattern: #{html.include?('stories')}" if defined?(Rails)
-        prefetch_users = extract_story_users_from_home_html(html)
+        prefetch_users = cached_story_prefetch_usernames(driver: driver)
 
         result = {
           anchor: visible_anchor,
@@ -157,6 +155,24 @@ module Instagram
       rescue StandardError => e
         Rails.logger.error "Carousel probe error: #{e.message}" if defined?(Rails)
         { anchor: nil, target: nil, target_count: 0, target_strategy: "none", anchor_count: 0, prefetch_count: 0, prefetch_usernames: [], debug: { error: e.message } }
+      end
+
+      def cached_story_prefetch_usernames(driver:)
+        cache = @story_prefetch_usernames_cache
+        if cache.is_a?(Hash)
+          fetched_at = cache[:fetched_at]
+          cached_usernames = Array(cache[:usernames]).reject(&:blank?)
+          if fetched_at.is_a?(Time) && fetched_at >= 20.seconds.ago && cached_usernames.present?
+            return cached_usernames
+          end
+        end
+
+        usernames = fetch_story_users_via_api(driver: driver).keys.map { |u| normalize_username(u) }.reject(&:blank?).uniq.take(24)
+        @story_prefetch_usernames_cache = { fetched_at: Time.current, usernames: usernames } if usernames.present?
+        usernames
+      rescue StandardError
+        cache = @story_prefetch_usernames_cache
+        Array(cache.is_a?(Hash) ? cache[:usernames] : []).reject(&:blank?)
       end
 
       def click_home_story_open_target_via_js(driver, excluded_usernames: [])
@@ -270,6 +286,54 @@ module Instagram
       end
 
       def click_story_view_gate_if_present!(driver:)
+        gate_state = detect_story_view_gate_state(driver)
+        unless gate_state[:present]
+          return {
+            clicked: false,
+            label: "",
+            present: false,
+            cleared: true,
+            reason: "view_gate_not_present",
+            prompt_text: ""
+          }
+        end
+
+        click_result = click_story_view_gate_target(driver)
+        unless click_result[:clicked]
+          return {
+            clicked: false,
+            label: "",
+            present: true,
+            cleared: false,
+            reason: "view_gate_detected_no_click_target",
+            prompt_text: gate_state[:prompt_text]
+          }
+        end
+
+        sleep(0.45)
+        after_click = detect_story_view_gate_state(driver)
+        {
+          clicked: true,
+          label: click_result[:label],
+          present: after_click[:present],
+          cleared: !after_click[:present],
+          reason: after_click[:present] ? "view_gate_still_visible_after_click" : "view_gate_cleared",
+          prompt_text: after_click[:prompt_text].presence || gate_state[:prompt_text]
+        }
+      rescue StandardError => e
+        {
+          clicked: false,
+          label: "",
+          present: false,
+          cleared: false,
+          reason: "view_gate_probe_error",
+          prompt_text: "",
+          error_class: e.class.name,
+          error_message: e.message.to_s.byteslice(0, 220)
+        }
+      end
+
+      def detect_story_view_gate_state(driver)
         payload = driver.execute_script(<<~JS)
           const normalize = (value) => (value || "").toString().replace(/\\s+/g, " ").trim().toLowerCase();
           const isVisible = (el) => {
@@ -280,17 +344,44 @@ module Instagram
             return rect.width > 14 && rect.height > 14;
           };
 
-          const matchesLabel = (el) => {
-            const aria = normalize(el.getAttribute("aria-label"));
-            const text = normalize(el.innerText || el.textContent);
-            return (
-              aria === "view story" ||
-              text === "view story" ||
-              text === "view stories" ||
-              text.includes("view as")
-            );
-          };
+          const bodyText = normalize(document.body && document.body.innerText ? document.body.innerText.slice(0, 1500) : "");
+          const buttons = Array.from(document.querySelectorAll("button, [role='button'], a")).filter((el) => isVisible(el));
+          const labels = buttons.map((el) => normalize(el.innerText || el.textContent || el.getAttribute("aria-label") || ""));
+          const hasViewStoryButton = labels.some((label) => label === "view story" || label === "view stories");
+          const promptNode = Array.from(document.querySelectorAll("h1,h2,h3,p,span,div")).find((el) => {
+            if (!isVisible(el)) return false;
+            const text = normalize(el.textContent || "");
+            return text.startsWith("view as ") || text.includes("will be able to see that you viewed");
+          });
+          const promptText = promptNode ? normalize(promptNode.textContent || "") : "";
+          const present = Boolean(
+            hasViewStoryButton ||
+            promptText.includes("view as") ||
+            bodyText.includes("will be able to see that you viewed")
+          );
+          return { present, prompt_text: promptText };
+        JS
 
+        return { present: false, prompt_text: "" } unless payload.is_a?(Hash)
+
+        {
+          present: ActiveModel::Type::Boolean.new.cast(payload["present"]),
+          prompt_text: payload["prompt_text"].to_s
+        }
+      rescue StandardError
+        { present: false, prompt_text: "" }
+      end
+
+      def click_story_view_gate_target(driver)
+        payload = driver.execute_script(<<~JS)
+          const normalize = (value) => (value || "").toString().replace(/\\s+/g, " ").trim().toLowerCase();
+          const isVisible = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (!style || style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") return false;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 14 && rect.height > 14;
+          };
           const clickEl = (el) => {
             try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
             const evt = { view: window, bubbles: true, cancelable: true, composed: true, button: 0 };
@@ -300,23 +391,25 @@ module Instagram
             try { el.click(); } catch (e) {}
           };
 
-          const candidates = Array.from(document.querySelectorAll("button, [role='button'], a")).filter((el) => isVisible(el) && matchesLabel(el));
-          const target = candidates[0];
+          const candidates = Array.from(document.querySelectorAll("button, [role='button'], a")).filter((el) => isVisible(el));
+          const labeled = candidates.map((el) => ({
+            el,
+            label: normalize(el.innerText || el.textContent || el.getAttribute("aria-label") || "")
+          }));
+          const target =
+            labeled.find((row) => row.label === "view story" || row.label === "view stories") ||
+            labeled.find((row) => row.label.includes("view story")) ||
+            null;
           if (!target) return { clicked: false, label: "" };
 
-          clickEl(target);
-          return {
-            clicked: true,
-            label: normalize(target.innerText || target.textContent || target.getAttribute("aria-label") || "")
-          };
+          clickEl(target.el);
+          return { clicked: true, label: target.label };
         JS
 
-        clicked = payload.is_a?(Hash) && payload["clicked"] == true
-        return { clicked: false, label: "" } unless clicked
+        return { clicked: false, label: "" } unless payload.is_a?(Hash)
 
-        sleep(0.45)
         {
-          clicked: true,
+          clicked: payload["clicked"] == true,
           label: payload["label"].to_s
         }
       rescue StandardError
