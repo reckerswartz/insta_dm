@@ -70,4 +70,22 @@ RSpec.describe "VideoFrameChangeDetectorServiceTest" do
     assert_equal "dynamic_video", result[:processing_mode]
     assert_equal "jpeg-bytes", result[:frame_bytes]
   end
+
+  it "handles binary grayscale samples without UTF-8 errors" do
+    detector = StubDetector.new(
+      video_metadata_service: StubVideoMetadataService.new(duration_seconds: 3.0)
+    )
+    invalid_utf8 = ([ 255 ].pack("C") * 1024).force_encoding("UTF-8")
+    detector.gray_frames = [
+      invalid_utf8,
+      ([ 0 ].pack("C") * 1024).force_encoding("UTF-8"),
+      invalid_utf8
+    ]
+    detector.jpeg_frame = "jpeg-bytes"
+
+    result = detector.classify(video_bytes: "video", reference_id: "binary", content_type: "video/mp4")
+
+    expect(result[:processing_mode]).to be_in(%w[static_image dynamic_video])
+    expect(result[:frame_bytes]).to eq("jpeg-bytes")
+  end
 end

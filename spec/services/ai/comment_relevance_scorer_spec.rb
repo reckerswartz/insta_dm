@@ -14,13 +14,13 @@ RSpec.describe Ai::CommentRelevanceScorer do
         prioritized_signals: [ { value: "fitness lifestyle", score: 1.8 } ],
         engagement_memory: { relationship_familiarity: "familiar" }
       },
-      verified_story_facts: { ocr_text: "Morning run" }
+      verified_story_facts: { ocr_text: "Morning run", transcript: "Morning run by the beach" }
     )
 
     expect(result).to be_an(Array)
     expect(result.first).to include(:comment, :score, :factors, :auto_post_eligible, :confidence_level)
     expect(result.first[:score]).to be_between(0.0, 3.0)
-    expect(result.first[:factors]).to include(:visual_context, :ocr_text, :user_context_match, :engagement_relevance)
+    expect(result.first[:factors]).to include(:visual_context, :ocr_text, :transcript, :user_context_match, :engagement_relevance)
   end
 
   it "keeps sparse context comments reviewable but not auto-post eligible" do

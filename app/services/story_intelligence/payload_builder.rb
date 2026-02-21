@@ -195,6 +195,24 @@ module StoryIntelligence
     end
 
     def merge_extracted_intelligence(payload, extracted)
+      payload[:ocr_text] = first_present(payload[:ocr_text], extracted[:ocr_text])
+      payload[:transcript] = first_present(payload[:transcript], extracted[:transcript])
+      payload[:objects] = merge_unique_values(
+        payload[:objects],
+        extracted[:objects],
+        extract_object_labels(Array(extracted[:object_detections]))
+      )
+      payload[:hashtags] = merge_unique_values(payload[:hashtags], extracted[:hashtags])
+      payload[:mentions] = merge_unique_values(payload[:mentions], extracted[:mentions])
+      payload[:profile_handles] = merge_unique_values(payload[:profile_handles], extracted[:profile_handles])
+      payload[:topics] = merge_unique_values(
+        payload[:topics],
+        extracted[:topics],
+        payload[:objects],
+        Array(payload[:hashtags]).map { |tag| tag.to_s.delete_prefix("#") }
+      )
+      payload[:face_count] = [ payload[:face_count].to_i, extracted[:face_count].to_i ].max
+      payload[:people] = normalize_people_rows(payload[:people], extracted[:people]).first(12)
       payload[:scenes] = normalize_hash_array(payload[:scenes], extracted[:scenes]).first(80)
       payload[:ocr_blocks] = normalize_hash_array(payload[:ocr_blocks], extracted[:ocr_blocks]).first(120)
       payload[:object_detections] = normalize_object_detections(payload[:object_detections], extracted[:object_detections], limit: 120)
@@ -204,12 +222,23 @@ module StoryIntelligence
 
     def update_source_if_enriched(payload, extracted)
       if enriched?(extracted)
-        payload[:source] = "live_local_enrichment"
+        payload[:source] = extracted[:source].to_s.presence || "live_local_enrichment"
       end
     end
 
     def enriched?(extracted)
-      extracted[:scenes].any? || extracted[:ocr_blocks].any? || extracted[:object_detections].any?
+      extracted[:ocr_text].to_s.present? ||
+        extracted[:transcript].to_s.present? ||
+        Array(extracted[:scenes]).any? ||
+        Array(extracted[:ocr_blocks]).any? ||
+        Array(extracted[:object_detections]).any? ||
+        Array(extracted[:objects]).any? ||
+        Array(extracted[:topics]).any? ||
+        Array(extracted[:hashtags]).any? ||
+        Array(extracted[:mentions]).any? ||
+        Array(extracted[:profile_handles]).any? ||
+        extracted[:face_count].to_i.positive? ||
+        Array(extracted[:people]).any?
     end
 
     def payload_blank?(payload)
@@ -343,9 +372,121 @@ module StoryIntelligence
 
     def extract_video_intelligence(story_id, content_type)
       video_bytes = event.media.download
-      # Implementation would follow the video extraction logic
-      # This is simplified for the refactoring example
-      {}
+      extraction = PostVideoContextExtractionService.new.extract(
+        video_bytes: video_bytes,
+        reference_id: story_id.to_s,
+        content_type: content_type
+      )
+      return {} unless extraction.is_a?(Hash)
+
+      payload = {
+        ocr_text: extraction[:ocr_text].to_s.presence,
+        transcript: extraction[:transcript].to_s.presence,
+        objects: merge_unique_values(extraction[:objects]),
+        hashtags: merge_unique_values(extraction[:hashtags]),
+        mentions: merge_unique_values(extraction[:mentions]),
+        profile_handles: merge_unique_values(extraction[:profile_handles]),
+        topics: merge_unique_values(
+          extraction[:topics],
+          extraction[:objects],
+          Array(extraction[:hashtags]).map { |tag| tag.to_s.delete_prefix("#") }
+        ),
+        scenes: normalize_hash_array(extraction[:scenes]).first(80),
+        ocr_blocks: normalize_hash_array(extraction[:ocr_blocks]).first(120),
+        object_detections: normalize_object_detections(extraction[:object_detections], limit: 120),
+        face_count: extraction[:face_count].to_i,
+        people: normalize_people_rows(extraction[:people]).first(12),
+        media_type: "video",
+        source: "live_local_video_context",
+        reason: extraction_reason_from_metadata(extraction),
+        processing_stages: video_processing_stages(extraction),
+        processing_log: video_processing_log(extraction)
+      }
+
+      if payload_blank?(payload)
+        return {
+          source: "unavailable",
+          reason: payload[:reason].to_s.presence || "video_context_extraction_empty",
+          processing_stages: payload[:processing_stages],
+          processing_log: payload[:processing_log]
+        }
+      end
+
+      payload.delete(:reason) if payload[:reason].to_s.blank?
+      payload
+    end
+
+    def video_processing_stages(extraction)
+      ocr_available = extraction[:ocr_text].to_s.present? || Array(extraction[:ocr_blocks]).any?
+      visual_available = Array(extraction[:objects]).any? || Array(extraction[:topics]).any? || Array(extraction[:scenes]).any?
+      faces_available = extraction[:face_count].to_i.positive? || Array(extraction[:people]).any?
+
+      {
+        ocr_analysis: stage_row(
+          state: "completed",
+          progress: 100,
+          message: ocr_available ? "Video OCR extraction completed." : "Video OCR returned no reliable text."
+        ),
+        vision_detection: stage_row(
+          state: "completed",
+          progress: 100,
+          message: visual_available ? "Video context extraction completed." : "Video context extraction returned limited visual signals."
+        ),
+        face_recognition: stage_row(
+          state: "completed",
+          progress: 100,
+          message: faces_available ? "Face signals extracted from video context." : "No usable face evidence detected."
+        ),
+        metadata_extraction: stage_row(
+          state: "completed",
+          progress: 100,
+          message: "Video processing metadata captured."
+        )
+      }
+    end
+
+    def video_processing_log(extraction)
+      metadata = extraction[:metadata].is_a?(Hash) ? extraction[:metadata].deep_stringify_keys : {}
+      [ {
+        stage: "video_context_extraction",
+        state: ActiveModel::Type::Boolean.new.cast(extraction[:skipped]) ? "completed_with_warnings" : "completed",
+        progress: 100,
+        message: extraction[:context_summary].to_s.presence || "Video context extracted without frame-by-frame processing.",
+        details: {
+          processing_mode: extraction[:processing_mode].to_s.presence || "dynamic_video",
+          semantic_route: extraction[:semantic_route].to_s.presence || "video",
+          static: ActiveModel::Type::Boolean.new.cast(extraction[:static]),
+          duration_seconds: extraction[:duration_seconds],
+          has_audio: extraction[:has_audio],
+          metadata_reason: metadata["reason"].to_s.presence,
+          audio_reason: metadata.dig("audio_extraction", "reason").to_s.presence,
+          transcription_reason: metadata.dig("transcription", "reason").to_s.presence,
+          static_frame_reason: metadata.dig("static_frame_intelligence", "reason").to_s.presence,
+          local_video_reason: metadata.dig("local_video_intelligence", "reason").to_s.presence
+        }.compact
+      } ]
+    end
+
+    def extraction_reason_from_metadata(extraction)
+      metadata = extraction[:metadata].is_a?(Hash) ? extraction[:metadata].deep_stringify_keys : {}
+      skipped = ActiveModel::Type::Boolean.new.cast(extraction[:skipped])
+      ignore_reasons = %w[
+        audio_unavailable
+        no_audio_stream
+        static_video_routed_to_image
+        dynamic_video_no_static_frame_analysis
+      ]
+      candidates = [
+        metadata["reason"],
+        metadata.dig("local_video_intelligence", "reason"),
+        metadata.dig("static_frame_intelligence", "reason"),
+        metadata.dig("transcription", "reason"),
+        metadata.dig("audio_extraction", "reason")
+      ]
+      reasons = candidates.map(&:to_s).select(&:present?)
+      return reasons.first if skipped
+
+      reasons.find { |value| !ignore_reasons.include?(value) }
     end
 
     def stage_row(state:, progress:, message:)

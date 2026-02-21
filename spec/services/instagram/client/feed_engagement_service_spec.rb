@@ -129,4 +129,110 @@ RSpec.describe Instagram::Client do
     expect(unfollowed.instagram_profile_posts.count).to eq(0)
     expect(WorkspaceProcessActionsTodoPostJob).not_to have_received(:enqueue_if_needed!)
   end
+
+  it "skips suggested feed items as irrelevant content" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "friend_#{SecureRandom.hex(3)}",
+      following: true,
+      follows_you: true
+    )
+
+    client = described_class.new(account: account)
+    driver = instance_double("SeleniumDriver")
+    stub_feed_capture_environment(client: client, driver: driver)
+
+    allow(client).to receive(:extract_feed_items_from_dom).and_return(
+      [
+        {
+          shortcode: "skip_suggested_#{SecureRandom.hex(2)}",
+          post_kind: "post",
+          author_username: profile.username,
+          media_url: "https://cdn.example.com/suggested.jpg",
+          caption: "suggested",
+          metadata: { "source" => "api_timeline", "is_suggested" => true }
+        }
+      ]
+    )
+
+    allow(Instagram::ProfileScanPolicy).to receive(:new).with(profile: profile).and_return(
+      instance_double(
+        Instagram::ProfileScanPolicy,
+        decision: { skip_post_analysis: false, reason_code: "scan_allowed" }
+      )
+    )
+    allow(DownloadInstagramPostMediaJob).to receive(:perform_later).and_return(double(job_id: "job-cache-dl"))
+    allow(AnalyzeInstagramPostJob).to receive(:perform_later).and_return(double(job_id: "job-cache-ai"))
+    allow(WorkspaceProcessActionsTodoPostJob).to receive(:enqueue_if_needed!)
+    allow(Ops::StructuredLogger).to receive(:info)
+    allow(Ops::StructuredLogger).to receive(:warn)
+
+    result = client.capture_home_feed_posts!(rounds: 1, delay_seconds: 10, max_new: 10)
+
+    expect(result[:new_posts]).to eq(0)
+    expect(result[:queued_actions]).to eq(0)
+    expect(result[:skipped_posts]).to eq(1)
+    expect(result[:skipped_reasons]["suggested_or_irrelevant"]).to eq(1)
+    expect(profile.instagram_profile_posts.count).to eq(0)
+    expect(WorkspaceProcessActionsTodoPostJob).not_to have_received(:enqueue_if_needed!)
+  end
+
+  it "allows feed capture when follow graph relationship data is unavailable for the account" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    26.times do |index|
+      account.instagram_profiles.create!(username: "known_#{index}_#{SecureRandom.hex(2)}", following: false, follows_you: false)
+    end
+    profile = account.instagram_profiles.create!(
+      username: "fallback_friend_#{SecureRandom.hex(3)}",
+      following: false,
+      follows_you: false
+    )
+
+    client = described_class.new(account: account)
+    driver = instance_double("SeleniumDriver")
+    stub_feed_capture_environment(client: client, driver: driver)
+
+    shortcode = "fallback_#{SecureRandom.hex(3)}"
+    allow(client).to receive(:extract_feed_items_from_dom).and_return(
+      [
+        {
+          shortcode: shortcode,
+          post_kind: "post",
+          author_username: profile.username,
+          media_url: "https://cdn.example.com/fallback.jpg",
+          caption: "Fallback relationship",
+          metadata: { "source" => "api_timeline" }
+        }
+      ]
+    )
+
+    allow(Instagram::ProfileScanPolicy).to receive(:new).with(profile: profile).and_return(
+      instance_double(
+        Instagram::ProfileScanPolicy,
+        decision: { skip_post_analysis: false, reason_code: "scan_allowed" }
+      )
+    )
+    allow(DownloadInstagramPostMediaJob).to receive(:perform_later).and_return(double(job_id: "job-cache-dl"))
+    allow(AnalyzeInstagramPostJob).to receive(:perform_later).and_return(double(job_id: "job-cache-ai"))
+    allow(DownloadInstagramProfilePostMediaJob).to receive(:perform_later).and_return(double(job_id: "job-profile-dl"))
+    allow(WorkspaceProcessActionsTodoPostJob).to receive(:enqueue_if_needed!).and_return({ enqueued: true, reason: "queued" })
+    allow(Ops::StructuredLogger).to receive(:info)
+    allow(Ops::StructuredLogger).to receive(:warn)
+
+    result = client.capture_home_feed_posts!(rounds: 1, delay_seconds: 10, max_new: 10)
+
+    expect(result[:new_posts]).to eq(1)
+    expect(result[:queued_actions]).to eq(1)
+    expect(result[:skipped_posts]).to eq(0)
+    expect(result[:skipped_reasons]).to eq({})
+
+    post = profile.instagram_profile_posts.find_by(shortcode: shortcode)
+    expect(post).to be_present
+    expect(WorkspaceProcessActionsTodoPostJob).to have_received(:enqueue_if_needed!).with(
+      account: account,
+      profile: profile,
+      post: post,
+      requested_by: "feed_capture_home"
+    )
+  end
 end

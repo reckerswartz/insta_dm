@@ -40,7 +40,7 @@ class VideoFrameChangeDetectorService
 
       samples = timestamps.filter_map do |timestamp|
         gray = extract_grayscale_frame(video_path: video_file.path, timestamp_seconds: timestamp)
-        next if gray.blank?
+        next if gray.nil? || gray.bytesize.zero?
 
         {
           timestamp_seconds: timestamp,
@@ -130,6 +130,7 @@ class VideoFrameChangeDetectorService
       "pipe:1"
     ]
     stdout, _stderr, status = Open3.capture3(*cmd)
+    stdout = stdout.to_s.b
     return nil unless status.success?
     return nil unless stdout.bytesize == (GRAYSCALE_WIDTH * GRAYSCALE_HEIGHT)
 
@@ -159,8 +160,9 @@ class VideoFrameChangeDetectorService
       "pipe:1"
     ]
     stdout, _stderr, status = Open3.capture3(*cmd)
+    stdout = stdout.to_s.b
     return nil unless status.success?
-    return nil if stdout.blank?
+    return nil if stdout.bytesize.zero?
 
     stdout
   rescue StandardError

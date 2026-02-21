@@ -228,8 +228,21 @@ module Instagram
         profile = nil
         profile = @account.instagram_profiles.find_by(ig_user_id: author_ig_user_id) if author_ig_user_id.present?
         profile ||= @account.instagram_profiles.find_by(username: username) if username.present?
+
+        if profile.nil? && relationship_fallback_allowed?(metadata: metadata)
+          profile = build_fallback_profile_for_feed_item(username: username, author_ig_user_id: author_ig_user_id)
+        end
+
         return { profile: nil, reason: "profile_missing" } unless profile
-        return { profile: nil, reason: "profile_not_in_follow_graph" } unless profile.following || profile.follows_you
+
+        sync_profile_relationship_hints!(profile: profile, metadata: metadata, author_ig_user_id: author_ig_user_id)
+
+        relationship_known =
+          profile.following || profile.follows_you ||
+            relationship_hint_positive?(metadata: metadata)
+        unless relationship_known
+          return { profile: nil, reason: "profile_not_in_follow_graph" } unless relationship_fallback_allowed?(metadata: metadata)
+        end
 
         { profile: profile, reason: nil }
       rescue StandardError
@@ -245,10 +258,88 @@ module Instagram
         return "missing_media_url" if item[:media_url].to_s.strip.blank?
         return "story_content" if post_kind == "story" || product_type == "story" || ActiveModel::Type::Boolean.new.cast(metadata["is_story"])
         return "sponsored_or_ad" if metadata["ad_id"].to_s.present? || ActiveModel::Type::Boolean.new.cast(metadata["is_paid_partnership"])
+        if ActiveModel::Type::Boolean.new.cast(metadata["is_suggested"]) ||
+            ActiveModel::Type::Boolean.new.cast(metadata["has_suggestion_context"]) ||
+            metadata["suggestion_context"].to_s.present?
+          return "suggested_or_irrelevant"
+        end
 
         nil
       rescue StandardError
         "invalid_feed_item"
+      end
+
+      def relationship_hint_positive?(metadata:)
+        return true if ActiveModel::Type::Boolean.new.cast(metadata["author_following"])
+        return true if ActiveModel::Type::Boolean.new.cast(metadata["author_followed_by"])
+
+        false
+      rescue StandardError
+        false
+      end
+
+      def relationship_fallback_allowed?(metadata:)
+        return false unless metadata.to_h["source"].to_s == "api_timeline"
+        return false if ActiveModel::Type::Boolean.new.cast(ENV.fetch("FEED_CAPTURE_REQUIRE_FOLLOW_GRAPH", "false"))
+        return false unless follow_graph_unavailable_for_account?
+
+        true
+      rescue StandardError
+        false
+      end
+
+      def follow_graph_unavailable_for_account?
+        return @follow_graph_unavailable_for_account unless @follow_graph_unavailable_for_account.nil?
+
+        total_profiles = @account.instagram_profiles.count
+        if total_profiles < 25
+          @follow_graph_unavailable_for_account = false
+          return false
+        end
+
+        has_relationships =
+          @account.instagram_profiles
+            .where("following = ? OR follows_you = ?", true, true)
+            .limit(1)
+            .exists?
+        @follow_graph_unavailable_for_account = !has_relationships
+      rescue StandardError
+        @follow_graph_unavailable_for_account = false
+      end
+
+      def build_fallback_profile_for_feed_item(username:, author_ig_user_id:)
+        uname = normalize_username(username.to_s)
+        return nil if uname.blank?
+
+        profile = @account.instagram_profiles.find_or_initialize_by(username: uname)
+        return profile if profile.persisted? && (profile.following || profile.follows_you)
+
+        attrs = { last_synced_at: Time.current }
+        attrs[:ig_user_id] = author_ig_user_id if author_ig_user_id.to_s.present? && profile.ig_user_id.to_s.blank?
+        profile.assign_attributes(attrs)
+        profile.save! if profile.new_record? || profile.changed?
+        profile
+      rescue StandardError
+        nil
+      end
+
+      def sync_profile_relationship_hints!(profile:, metadata:, author_ig_user_id:)
+        return unless profile
+
+        attrs = {}
+        if author_ig_user_id.to_s.present? && profile.ig_user_id.to_s.blank?
+          attrs[:ig_user_id] = author_ig_user_id
+        end
+        if ActiveModel::Type::Boolean.new.cast(metadata["author_following"]) && !profile.following
+          attrs[:following] = true
+        end
+        if ActiveModel::Type::Boolean.new.cast(metadata["author_followed_by"]) && !profile.follows_you
+          attrs[:follows_you] = true
+        end
+        attrs[:last_synced_at] = Time.current if attrs.any?
+        profile.update!(attrs) if attrs.any?
+      rescue StandardError
+        nil
       end
 
       def persist_feed_cache_post!(item:, profile:, round:, captured_at:)

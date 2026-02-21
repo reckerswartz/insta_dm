@@ -65,6 +65,7 @@ class InstagramAccountsController < ApplicationController
   def manual_login
     Instagram::Client.new(account: @account).manual_login!(timeout_seconds: timeout_seconds)
     @account.update!(login_state: "authenticated")
+    clear_continuous_processing_auth_backoff!(account: @account)
 
     redirect_to instagram_account_path(@account), notice: "Manual login completed and session bundle saved."
   rescue StandardError => e
@@ -78,6 +79,7 @@ class InstagramAccountsController < ApplicationController
     @account.cookies = parsed
     @account.login_state = "authenticated"
     @account.save!
+    clear_continuous_processing_auth_backoff!(account: @account)
 
     redirect_to instagram_account_path(@account), notice: "Cookies imported successfully."
   rescue JSON::ParserError
@@ -97,6 +99,10 @@ class InstagramAccountsController < ApplicationController
   def validate_session
     client = Instagram::Client.new(account: @account)
     validation_result = client.validate_session!
+    if ActiveModel::Type::Boolean.new.cast(validation_result[:valid])
+      @account.update!(login_state: "authenticated")
+      clear_continuous_processing_auth_backoff!(account: @account)
+    end
 
     respond_to do |format|
       format.html { redirect_to instagram_account_path(@account), notice: validation_result[:message] }
@@ -363,6 +369,17 @@ class InstagramAccountsController < ApplicationController
 
   def normalize_navigation_format
     request.format = :html if request.format.turbo_stream?
+  end
+
+  def clear_continuous_processing_auth_backoff!(account:)
+    account.update!(
+      continuous_processing_state: "idle",
+      continuous_processing_retry_after_at: nil,
+      continuous_processing_failure_count: 0,
+      continuous_processing_last_error: nil
+    )
+  rescue StandardError
+    nil
   end
 
 end

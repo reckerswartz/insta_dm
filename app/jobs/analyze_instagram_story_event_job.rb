@@ -3,6 +3,7 @@ require "timeout"
 
 class AnalyzeInstagramStoryEventJob < ApplicationJob
   queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:story_analysis)
+  AUTO_QUEUE_LLM_COMMENT_ENV_KEY = "STORY_AUTO_QUEUE_LLM_COMMENT".freeze
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3
@@ -53,6 +54,10 @@ class AnalyzeInstagramStoryEventJob < ApplicationJob
     end
 
     base_metadata = analysis_queue_metadata(profile: profile, story_id: sid)
+    llm_comment_queue = queue_story_comment_generation_if_eligible!(
+      event: downloaded_event,
+      analysis: analysis
+    )
 
     ingested_story = InstagramStory.find_by(id: ingested_story_id, instagram_profile_id: profile.id) if ingested_story_id.present?
     analyzed_at = Time.current
@@ -68,7 +73,11 @@ class AnalyzeInstagramStoryEventJob < ApplicationJob
         ai_comment_suggestions: analysis[:comment_suggestions],
         story_generation_policy: analysis[:generation_policy],
         story_ownership_classification: analysis[:ownership_classification],
-        instagram_story_id: ingested_story&.id
+        instagram_story_id: ingested_story&.id,
+        llm_comment_auto_queued: llm_comment_queue[:queued],
+        llm_comment_queue_reason: llm_comment_queue[:reason],
+        llm_comment_job_id: llm_comment_queue[:job_id],
+        llm_comment_queue_name: llm_comment_queue[:queue_name]
       )
     )
 
@@ -116,6 +125,10 @@ class AnalyzeInstagramStoryEventJob < ApplicationJob
         "completed_at" => Time.current.iso8601(3),
         "ai_provider" => analysis[:provider].to_s,
         "ai_model" => analysis[:model].to_s,
+        "llm_comment_auto_queued" => llm_comment_queue[:queued],
+        "llm_comment_queue_reason" => llm_comment_queue[:reason],
+        "llm_comment_job_id" => llm_comment_queue[:job_id],
+        "llm_comment_queue_name" => llm_comment_queue[:queue_name],
         "reply_queued" => reply_queued,
         "reply_decision_reason" => reply_reason.to_s.presence
       }.compact
@@ -141,6 +154,81 @@ class AnalyzeInstagramStoryEventJob < ApplicationJob
 
   def analysis_service(account:, profile:)
     StoryIntelligence::AnalysisService.new(account: account, profile: profile)
+  end
+
+  def queue_story_comment_generation_if_eligible!(event:, analysis:)
+    return queue_skip(reason: "llm_auto_queue_disabled") unless auto_queue_llm_comment_enabled?
+    return queue_skip(reason: "story_archive_item_required") unless event&.story_archive_item?
+
+    policy = analysis[:generation_policy].is_a?(Hash) ? analysis[:generation_policy] : {}
+    if allow_comment_present?(policy) && !allow_comment?(policy)
+      return queue_skip(
+        reason: policy[:reason_code].to_s.presence ||
+          policy["reason_code"].to_s.presence ||
+          "verified_policy_blocked"
+      )
+    end
+
+    return queue_skip(reason: "already_completed") if event.has_llm_generated_comment?
+    return queue_skip(reason: "already_in_progress") if event.llm_comment_in_progress?
+
+    requested_provider = normalize_requested_provider(analysis[:provider])
+    requested_model = analysis[:model].to_s.presence
+
+    job = GenerateLlmCommentJob.perform_later(
+      instagram_profile_event_id: event.id,
+      provider: requested_provider,
+      model: requested_model,
+      requested_by: "story_analysis_auto_queue"
+    )
+    event.queue_llm_comment_generation!(job_id: job.job_id)
+
+    {
+      queued: true,
+      reason: "queued",
+      job_id: job.job_id,
+      queue_name: job.queue_name
+    }
+  rescue StandardError => e
+    queue_skip(
+      reason: "enqueue_failed",
+      error_class: e.class.name,
+      error_message: e.message.to_s.byteslice(0, 260)
+    )
+  end
+
+  def auto_queue_llm_comment_enabled?
+    ActiveModel::Type::Boolean.new.cast(ENV.fetch(AUTO_QUEUE_LLM_COMMENT_ENV_KEY, "true"))
+  end
+
+  def allow_comment_present?(policy)
+    policy.key?(:allow_comment) || policy.key?("allow_comment")
+  end
+
+  def allow_comment?(policy)
+    raw = if policy.key?(:allow_comment)
+      policy[:allow_comment]
+    else
+      policy["allow_comment"]
+    end
+    ActiveModel::Type::Boolean.new.cast(raw)
+  end
+
+  def normalize_requested_provider(provider)
+    value = provider.to_s
+    return "local" if value.blank?
+    return value if %w[local ollama].include?(value)
+
+    "local"
+  end
+
+  def queue_skip(reason:, error_class: nil, error_message: nil)
+    {
+      queued: false,
+      reason: reason.to_s,
+      error_class: error_class.to_s.presence,
+      error_message: error_message.to_s.presence
+    }.compact
   end
 
   def analysis_queue_metadata(profile:, story_id:)

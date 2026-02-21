@@ -20,10 +20,14 @@ export default class extends Controller {
   }
 
   connect() {
+    this._autoResetAttempts = 0
+    this._autoResetTimers = []
     this.mountTabulator()
   }
 
   disconnect() {
+    this._autoResetTimers.forEach((timerId) => window.clearTimeout(timerId))
+    this._autoResetTimers = []
     runTableCleanups(this)
     if (this.tableInstance) {
       this.tableInstance.destroy()
@@ -81,13 +85,18 @@ export default class extends Controller {
     }
 
     this.tableInstance = new Tabulator(host, options)
-    this.tableInstance.on("tableBuilt", () => {
-      this.autoResetIfPersistedStateHidesRows(parsed.rows)
-    })
+    const attemptAutoReset = () => this.autoResetIfPersistedStateHidesRows(parsed.rows)
+    this.tableInstance.on("tableBuilt", attemptAutoReset)
+    this.tableInstance.on("dataProcessed", attemptAutoReset)
     attachTabulatorBehaviors(this, this.tableInstance, {
       storageKey,
       paginationSize: this.paginationSizeValue,
     })
+
+    // Some persisted states can hide all rows before `tableBuilt` listeners run.
+    queueMicrotask(attemptAutoReset)
+    this._autoResetTimers.push(window.setTimeout(attemptAutoReset, 0))
+    this._autoResetTimers.push(window.setTimeout(attemptAutoReset, 120))
 
     registerCleanup(this, () => {
       host.remove()
@@ -140,20 +149,46 @@ export default class extends Controller {
     const rows = Array.isArray(sourceRows) ? sourceRows : []
     if (rows.length === 0) return
     if (!this.tableInstance) return
+    if (!this.tableInstance.element?.isConnected) return
+    if ((this._autoResetAttempts || 0) >= 3) return
 
     let activeCount = 0
+    let displayCount = 0
+    let hasVisibleColumns = true
     try {
       activeCount = Number(this.tableInstance.getDataCount("active") || 0)
     } catch (_error) {
       activeCount = 0
     }
-    if (activeCount > 0) return
+    try {
+      displayCount = Number(this.tableInstance.getDataCount("display") || 0)
+    } catch (_error) {
+      displayCount = 0
+    }
+    try {
+      const columns = this.tableInstance.getColumns?.() || []
+      if (columns.length > 0) {
+        hasVisibleColumns = columns.some((column) => {
+          if (typeof column?.isVisible === "function") return column.isVisible()
+          return true
+        })
+      }
+    } catch (_error) {
+      hasVisibleColumns = true
+    }
 
+    const needsReset = activeCount === 0 || displayCount === 0 || hasVisibleColumns === false
+    if (!needsReset) return
+
+    this._autoResetAttempts = (this._autoResetAttempts || 0) + 1
     try {
       this.tableInstance.clearHeaderFilter?.()
       this.tableInstance.clearFilter?.(true)
       this.tableInstance.clearSort?.()
-      this.tableInstance.replaceData?.(rows)
+      if (this.paginationValue) this.tableInstance.setPage?.(1)
+      this.tableInstance.getColumns?.().forEach((column) => column?.show?.())
+      // Avoid async reload during teardown; it can race with destroy in Turbo navigation.
+      this.tableInstance.redraw?.(true)
     } catch (_error) {
       // Keep original rendered state if reset fails.
     }

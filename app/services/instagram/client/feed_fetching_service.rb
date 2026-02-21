@@ -504,6 +504,32 @@ module Instagram
           nil
         end
 
+      friendship_status = item.dig("user", "friendship_status")
+      author_following = extract_friendship_flag(friendship_status: friendship_status, key: "following")
+      author_followed_by = extract_friendship_flag(friendship_status: friendship_status, key: "followed_by")
+      suggested_context = suggestion_context_for_feed_item(item)
+
+      metadata = {
+        source: "api_timeline",
+        media_id: (item["pk"] || item["id"]).to_s.presence,
+        media_type: media_type,
+        media_url_image: image_url.to_s.presence,
+        media_url_video: video_url.to_s.presence,
+        product_type: product_type,
+        ad_id: item["ad_id"].to_s.presence,
+        is_paid_partnership: ActiveModel::Type::Boolean.new.cast(item["is_paid_partnership"]),
+        like_count: item["like_count"],
+        comment_count: item["comment_count"],
+        author_ig_user_id: item.dig("user", "pk").to_s.presence || item.dig("user", "id").to_s.presence,
+        natural_width: width,
+        natural_height: height,
+        is_suggested: ActiveModel::Type::Boolean.new.cast(item["is_suggested"]),
+        has_suggestion_context: suggested_context.present?,
+        suggestion_context: suggested_context
+      }
+      metadata[:author_following] = author_following unless author_following.nil?
+      metadata[:author_followed_by] = author_followed_by unless author_followed_by.nil?
+
       {
         shortcode: shortcode,
         post_kind: post_kind,
@@ -512,22 +538,34 @@ module Instagram
         media_url: (video_url.presence || image_url).to_s,
         caption: item.dig("caption", "text").to_s.presence,
         taken_at: taken_at,
-        metadata: {
-          source: "api_timeline",
-          media_id: (item["pk"] || item["id"]).to_s.presence,
-          media_type: media_type,
-          media_url_image: image_url.to_s.presence,
-          media_url_video: video_url.to_s.presence,
-          product_type: product_type,
-          ad_id: item["ad_id"].to_s.presence,
-          is_paid_partnership: ActiveModel::Type::Boolean.new.cast(item["is_paid_partnership"]),
-          like_count: item["like_count"],
-          comment_count: item["comment_count"],
-          author_ig_user_id: item.dig("user", "pk").to_s.presence || item.dig("user", "id").to_s.presence,
-          natural_width: width,
-          natural_height: height
-        }
+        metadata: metadata
       }
+    rescue StandardError
+      nil
+    end
+
+    def extract_friendship_flag(friendship_status:, key:)
+      return nil unless friendship_status.is_a?(Hash)
+      return nil unless friendship_status.key?(key) || friendship_status.key?(key.to_sym)
+
+      value =
+        if friendship_status.key?(key)
+          friendship_status[key]
+        else
+          friendship_status[key.to_sym]
+        end
+      ActiveModel::Type::Boolean.new.cast(value)
+    rescue StandardError
+      nil
+    end
+
+    def suggestion_context_for_feed_item(item)
+      return "suggested_users" if Array(item["suggested_users"]).any?
+      return "suggestion_social_context" if item["suggestion_social_context"].to_s.present?
+      return "social_context" if item["social_context"].to_s.present?
+      return "suggested_position" if item["suggested_position"].present?
+
+      nil
     rescue StandardError
       nil
     end

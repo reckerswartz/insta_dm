@@ -56,6 +56,7 @@ module Ai
         visual_tokens = normalize_tokens(image_description)
         history_tokens = Array(historical_comments).flat_map { |value| normalize_tokens(value) }
         ocr_tokens = normalize_tokens(verified_story_facts.to_h["ocr_text"] || verified_story_facts.to_h[:ocr_text])
+        transcript_tokens = normalize_tokens(verified_story_facts.to_h["transcript"] || verified_story_facts.to_h[:transcript])
 
         context_tokens = Array(scored_context.to_h[:prioritized_signals] || scored_context.to_h["prioritized_signals"])
           .first(10)
@@ -70,6 +71,7 @@ module Ai
 
         visual_context = overlap_ratio(tokens, visual_tokens)
         ocr_context = overlap_ratio(tokens, ocr_tokens)
+        transcript_context = overlap_ratio(tokens, transcript_tokens)
         user_context_match = overlap_ratio(tokens, signal_tokens + context_tokens)
         engagement_relevance = engagement_component(relationship: relationship, context_overlap: user_context_match)
         novelty = 1.0 - overlap_ratio(tokens, history_tokens)
@@ -86,6 +88,7 @@ module Ai
         score = 0.8 +
           (visual_context * 0.8) +
           (ocr_context * 0.35) +
+          (transcript_context * 0.35) +
           (user_context_match * 0.55) +
           (engagement_relevance * 0.35) +
           (novelty * 0.15) +
@@ -99,6 +102,7 @@ module Ai
           factors: {
             visual_context: factor_payload(visual_context),
             ocr_text: factor_payload(ocr_context),
+            transcript: factor_payload(transcript_context),
             user_context_match: factor_payload(user_context_match),
             engagement_relevance: factor_payload(engagement_relevance),
             novelty: factor_payload(novelty),
@@ -120,6 +124,7 @@ module Ai
           factors: {
             visual_context: factor_payload(0.0),
             ocr_text: factor_payload(0.0),
+            transcript: factor_payload(0.0),
             user_context_match: factor_payload(0.0),
             engagement_relevance: factor_payload(0.0),
             novelty: factor_payload(0.0),

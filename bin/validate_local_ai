@@ -7,6 +7,7 @@ require 'net/http'
 require 'json'
 require 'base64'
 require 'tempfile'
+require 'securerandom'
 
 class LocalAIValidator
   def initialize
@@ -191,6 +192,7 @@ class LocalAIValidator
         { success: false, error: "Rails not loaded or LocalProvider not available" }
       end
     end
+  end
 
   def create_test_image
     # Create a simple 1x1 red pixel PNG
