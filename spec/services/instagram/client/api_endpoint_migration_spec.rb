@@ -190,4 +190,68 @@ RSpec.describe Instagram::Client do
     expect(attempts).to eq(2)
     expect(logged).to eq(false)
   end
+
+  it "respects local endpoint pause windows before issuing API GET requests" do
+    called = false
+
+    client.define_singleton_method(:ig_api_endpoint_paused?) do |endpoint:, username:|
+      { reason: "local_rate_limit_pause", retry_after_seconds: 9, headers: { "retry-after" => "9" } }
+    end
+    client.define_singleton_method(:perform_ig_api_get) do |uri:, referer:|
+      called = true
+      { ok: true, status: 200, body: "{\"ok\":true}", headers: {} }
+    end
+
+    result = client.send(
+      :ig_api_get_json,
+      path: "/api/v1/test_endpoint/",
+      referer: "https://www.instagram.com/",
+      endpoint: "test_endpoint",
+      username: "demo_user",
+      retries: 1
+    )
+
+    expect(result).to be_nil
+    expect(called).to eq(false)
+  end
+
+  it "retries API POST requests with rate-aware delay and succeeds on next attempt" do
+    attempts = 0
+    allow(client).to receive(:sleep)
+    client.define_singleton_method(:perform_ig_api_post) do |uri:, referer:, form:|
+      attempts += 1
+      if attempts == 1
+        {
+          status: 429,
+          reason: "http_429",
+          content_type: "application/json",
+          body: "{\"status\":\"fail\",\"message\":\"rate_limited\"}",
+          headers: { "retry-after" => "1" },
+          retry_after_seconds: 1
+        }
+      else
+        {
+          status: 200,
+          reason: nil,
+          content_type: "application/json",
+          body: "{\"status\":\"ok\"}",
+          headers: {},
+          retry_after_seconds: 0
+        }
+      end
+    end
+
+    payload = client.send(
+      :ig_api_post_form_json,
+      path: "/api/v1/direct_v2/test_endpoint/",
+      referer: "https://www.instagram.com/",
+      endpoint: "direct_v2/test_endpoint",
+      username: "demo_user",
+      form: { sample: "1" },
+      retries: 1
+    )
+
+    expect(attempts).to eq(2)
+    expect(payload["status"]).to eq("ok")
+  end
 end

@@ -52,7 +52,10 @@ module Instagram
           client_context: story_api_client_context,
           thread_id: thread_id,
           text: text
-        }
+        },
+        endpoint: "direct_v2/threads/broadcast/text",
+        username: uname,
+        retries: 2
       )
       return { sent: false, method: "api", reason: "empty_api_response" } unless body.is_a?(Hash)
 

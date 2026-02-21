@@ -1,18 +1,56 @@
 module Instagram
   class Client
     module StoryApiSupport
+      IG_API_RATE_LIMIT_CACHE_PREFIX = "instagram:api:rate_limit".freeze
+      IG_API_USAGE_CACHE_PREFIX = "instagram:api:usage".freeze
+
       private
 
       def ig_api_get_json(path:, referer:, endpoint: nil, username: nil, driver: nil, retries: 2)
         uri = URI.parse(path.to_s.start_with?("http") ? path.to_s : "#{INSTAGRAM_BASE_URL}#{path}")
         endpoint_name = endpoint.to_s.presence || infer_ig_api_endpoint(uri.path)
+        normalized_username = normalize_username(username)
+        paused = ig_api_endpoint_paused?(endpoint: endpoint_name, username: normalized_username)
+        if paused
+          log_ig_api_get_failure(
+            endpoint: endpoint_name,
+            uri: uri,
+            username: normalized_username,
+            failure: {
+              status: 429,
+              reason: paused[:reason].to_s.presence || "local_rate_limit_pause",
+              body: "blocked by local rate limiter",
+              retry_after_seconds: paused[:retry_after_seconds].to_i,
+              headers: paused[:headers].is_a?(Hash) ? paused[:headers] : {}
+            },
+            attempts: 0,
+            tried_browser_fallback: false
+          )
+          return nil
+        end
+
         attempts = 0
         max_attempts = retries.to_i.clamp(0, 4) + 1
         failure = nil
 
         while attempts < max_attempts
           attempts += 1
+          apply_ig_api_request_spacing!(endpoint: endpoint_name, username: normalized_username)
           response = perform_ig_api_get(uri: uri, referer: referer)
+          record_ig_api_usage!(
+            endpoint: endpoint_name,
+            username: normalized_username,
+            method: "GET",
+            status: response[:status].to_i
+          )
+          apply_ig_api_rate_limit_state!(
+            endpoint: endpoint_name,
+            uri: uri,
+            username: normalized_username,
+            status: response[:status].to_i,
+            headers: response[:headers],
+            reason: response[:reason]
+          )
           if response[:ok]
             parsed = parse_ig_api_json(response[:body])
             return parsed if parsed.is_a?(Hash) || parsed.is_a?(Array)
@@ -23,12 +61,26 @@ module Instagram
           end
 
           break unless retryable_ig_api_failure?(failure)
-          sleep([0.2 * attempts, 0.9].min)
+          sleep(resolve_ig_api_retry_delay_seconds(failure: failure, attempt: attempts))
         end
 
         browser_response = nil
         if driver
           browser_response = ig_api_get_json_via_browser(driver: driver, path: uri.to_s)
+          record_ig_api_usage!(
+            endpoint: endpoint_name,
+            username: normalized_username,
+            method: "GET(browser)",
+            status: browser_response[:status].to_i
+          )
+          apply_ig_api_rate_limit_state!(
+            endpoint: endpoint_name,
+            uri: uri,
+            username: normalized_username,
+            status: browser_response[:status].to_i,
+            headers: browser_response[:headers],
+            reason: browser_response[:reason]
+          )
           return browser_response[:payload] if browser_response[:ok]
 
           failure = browser_response if browser_response.is_a?(Hash)
@@ -37,7 +89,7 @@ module Instagram
         log_ig_api_get_failure(
           endpoint: endpoint_name,
           uri: uri,
-          username: username,
+          username: normalized_username,
           failure: failure || {},
           attempts: attempts,
           tried_browser_fallback: driver.present?
@@ -47,7 +99,7 @@ module Instagram
         log_ig_api_get_failure(
           endpoint: endpoint.to_s.presence || "unknown",
           uri: uri,
-          username: username,
+          username: normalized_username,
           failure: { status: 0, reason: "exception:#{e.class.name}", body: e.message.to_s },
           attempts: 1,
           tried_browser_fallback: driver.present?
@@ -79,10 +131,11 @@ module Instagram
           status: status,
           reason: (res.is_a?(Net::HTTPSuccess) ? nil : "http_#{status}"),
           body: res.body.to_s,
-          content_type: res["content-type"].to_s
+          content_type: res["content-type"].to_s,
+          headers: extract_ig_rate_limit_headers(res)
         }
       rescue StandardError => e
-        { ok: false, status: 0, reason: "request_exception:#{e.class.name}", body: e.message.to_s, content_type: "" }
+        { ok: false, status: 0, reason: "request_exception:#{e.class.name}", body: e.message.to_s, content_type: "", headers: {} }
       end
 
       def parse_ig_api_json(raw_body)
@@ -146,10 +199,11 @@ module Instagram
           status: status,
           reason: result["reason"].to_s.presence || "browser_fetch_failed",
           payload: data,
-          body: result["body_snippet"].to_s
+          body: result["body_snippet"].to_s,
+          headers: {}
         }
       rescue StandardError => e
-        { ok: false, status: 0, reason: "browser_fetch_exception:#{e.class.name}", payload: nil, body: e.message.to_s }
+        { ok: false, status: 0, reason: "browser_fetch_exception:#{e.class.name}", payload: nil, body: e.message.to_s, headers: {} }
       end
 
       def retryable_ig_api_failure?(failure)
@@ -180,7 +234,9 @@ module Instagram
         status = failure[:status].to_i
         reason = failure[:reason].to_s.presence || "request_failed"
         response_snippet = failure[:body].to_s.byteslice(0, 300)
+        retry_after_seconds = failure[:retry_after_seconds].to_i
         normalized_username = normalize_username(username)
+        rate_limit_headers = failure[:headers].is_a?(Hash) ? failure[:headers] : {}
 
         if status.positive? && respond_to?(:remember_story_api_failure!, true)
           remember_story_api_failure!(
@@ -188,7 +244,9 @@ module Instagram
             url: uri.to_s,
             status: status,
             username: normalized_username,
-            response_snippet: response_snippet
+            response_snippet: response_snippet,
+            retry_after_seconds: retry_after_seconds,
+            headers: rate_limit_headers
           )
         end
 
@@ -202,7 +260,9 @@ module Instagram
             reason: reason,
             attempts: attempts.to_i,
             rate_limited: status == 429,
+            retry_after_seconds: (retry_after_seconds.positive? ? retry_after_seconds : nil),
             browser_fallback_attempted: tried_browser_fallback,
+            rate_limit_headers: rate_limit_headers.presence,
             response_snippet: response_snippet
           }.compact
         )
@@ -961,8 +1021,9 @@ module Instagram
         end
       end
 
-      def remember_story_api_failure!(endpoint:, url:, status:, username:, user_id: nil, response_snippet: nil)
+      def remember_story_api_failure!(endpoint:, url:, status:, username:, user_id: nil, response_snippet: nil, retry_after_seconds: nil, headers: nil)
         @story_api_recent_failures ||= {}
+        retry_window = retry_after_seconds.to_i
         payload = {
           endpoint: endpoint.to_s,
           url: url.to_s.presence,
@@ -971,6 +1032,8 @@ module Instagram
           username: normalize_username(username),
           user_id: user_id.to_s.presence,
           response_snippet: response_snippet.to_s.byteslice(0, 300),
+          retry_after_seconds: retry_window.positive? ? retry_window : nil,
+          rate_limit_headers: headers.is_a?(Hash) ? headers : nil,
           occurred_at_epoch: Time.current.to_i
         }.compact
         return if payload[:status].to_i <= 0
@@ -992,7 +1055,12 @@ module Instagram
 
         occurred_at_epoch = payload[:occurred_at_epoch].to_i
         return nil if occurred_at_epoch <= 0
-        return nil if Time.at(occurred_at_epoch) < 10.minutes.ago
+        retry_after_seconds = payload[:retry_after_seconds].to_i
+        if retry_after_seconds.positive?
+          return nil if Time.at(occurred_at_epoch) + retry_after_seconds.seconds < Time.current
+        else
+          return nil if Time.at(occurred_at_epoch) < 10.minutes.ago
+        end
 
         payload
       rescue StandardError
@@ -1004,6 +1072,171 @@ module Instagram
         ActiveModel::Type::Boolean.new.cast(payload&.dig(:rate_limited))
       rescue StandardError
         false
+      end
+
+      def extract_ig_rate_limit_headers(response)
+        return {} unless response.respond_to?(:each_header)
+
+        keys = %w[
+          retry-after
+          x-ratelimit-limit
+          x-ratelimit-remaining
+          x-ratelimit-reset
+          x-ig-ratelimit-limit
+          x-ig-ratelimit-remaining
+          x-ig-ratelimit-reset
+        ]
+        result = {}
+        response.each_header do |name, value|
+          key = name.to_s.downcase
+          next unless keys.include?(key)
+
+          result[key] = value.to_s
+        end
+        result
+      rescue StandardError
+        {}
+      end
+
+      def resolve_ig_api_retry_delay_seconds(failure:, attempt:)
+        retry_after_header = failure.dig(:headers, "retry-after").to_s
+        retry_after_seconds = parse_retry_after_seconds(retry_after_header)
+        return retry_after_seconds if retry_after_seconds.positive?
+
+        status = failure[:status].to_i
+        base = status == 429 ? 2.0 : 0.6
+        jitter = rand * 0.4
+        exponent = [ [ attempt.to_i - 1, 0 ].max, 4 ].min
+        [ (base * (2 ** exponent)) + jitter, 45.0 ].min
+      rescue StandardError
+        1.0
+      end
+
+      def parse_retry_after_seconds(raw)
+        value = raw.to_s.strip
+        return 0 if value.blank?
+
+        numeric = Integer(value, exception: false)
+        return numeric.to_i.clamp(0, 7200) if numeric
+
+        parsed = Time.httpdate(value) rescue nil
+        return 0 unless parsed
+
+        [ (parsed - Time.now).ceil, 0 ].max.clamp(0, 7200)
+      rescue StandardError
+        0
+      end
+
+      def ig_api_endpoint_pause_key(endpoint:, username:)
+        uname = normalize_username(username).presence || "global"
+        ep = endpoint.to_s.presence || "unknown"
+        "#{IG_API_RATE_LIMIT_CACHE_PREFIX}:account:#{@account.id}:#{uname}:#{ep}"
+      end
+
+      def ig_api_endpoint_paused?(endpoint:, username:)
+        key = ig_api_endpoint_pause_key(endpoint: endpoint, username: username)
+        payload = Rails.cache.read(key)
+        return nil unless payload.is_a?(Hash)
+
+        unblock_at = Time.zone.parse(payload["unblock_at"].to_s) rescue nil
+        return nil if unblock_at.blank? || unblock_at <= Time.current
+
+        {
+          reason: payload["reason"].to_s.presence || "local_rate_limit_pause",
+          retry_after_seconds: [ (unblock_at - Time.current).ceil, 0 ].max,
+          headers: payload["headers"].is_a?(Hash) ? payload["headers"] : {}
+        }
+      rescue StandardError
+        nil
+      end
+
+      def apply_ig_api_rate_limit_state!(endpoint:, uri:, username:, status:, headers:, reason:)
+        status_i = status.to_i
+        return if status_i <= 0
+
+        headers_hash = headers.is_a?(Hash) ? headers : {}
+        retry_after_seconds = parse_retry_after_seconds(headers_hash["retry-after"].to_s)
+        if status_i == 429 && retry_after_seconds <= 0
+          retry_after_seconds = 30
+        elsif status_i >= 500 && retry_after_seconds <= 0
+          retry_after_seconds = 5
+        end
+        return if retry_after_seconds <= 0
+
+        unblock_at = Time.current + retry_after_seconds.seconds
+        key = ig_api_endpoint_pause_key(endpoint: endpoint, username: username)
+        Rails.cache.write(
+          key,
+          {
+            "unblock_at" => unblock_at.iso8601,
+            "reason" => reason.to_s.presence || "http_#{status_i}",
+            "status" => status_i,
+            "headers" => headers_hash
+          },
+          expires_in: [ retry_after_seconds + 15, 90.minutes ].min.seconds
+        )
+
+        remember_story_api_failure!(
+          endpoint: endpoint.to_s.presence || "unknown",
+          url: uri.to_s,
+          status: status_i,
+          username: username,
+          response_snippet: nil,
+          retry_after_seconds: retry_after_seconds,
+          headers: headers_hash
+        )
+
+        Ops::StructuredLogger.warn(
+          event: "instagram.api.rate_limit_pause",
+          payload: {
+            endpoint: endpoint.to_s.presence || "unknown",
+            url: uri.to_s,
+            status: status_i,
+            username: normalize_username(username).presence,
+            retry_after_seconds: retry_after_seconds,
+            headers: headers_hash.presence
+          }.compact
+        )
+      rescue StandardError
+        nil
+      end
+
+      def endpoint_request_spacing_seconds(endpoint)
+        ep = endpoint.to_s
+        return 0.7 if ep.include?("direct_v2")
+        return 0.45 if ep.include?("feed/reels_media")
+        return 0.35 if ep.include?("users/web_profile_info")
+
+        0.2
+      end
+
+      def apply_ig_api_request_spacing!(endpoint:, username:)
+        spacing = endpoint_request_spacing_seconds(endpoint)
+        return if spacing <= 0
+
+        uname = normalize_username(username).presence || "global"
+        ep = endpoint.to_s.presence || "unknown"
+        key = "#{IG_API_RATE_LIMIT_CACHE_PREFIX}:spacing:account:#{@account.id}:#{uname}:#{ep}"
+        now = Time.current.to_f
+        next_allowed = Rails.cache.read(key).to_f
+        if next_allowed > now
+          sleep([next_allowed - now, 1.2].min)
+        end
+
+        Rails.cache.write(key, Time.current.to_f + spacing, expires_in: 90.seconds)
+      rescue StandardError
+        nil
+      end
+
+      def record_ig_api_usage!(endpoint:, username:, method:, status:)
+        minute_bucket = Time.current.utc.strftime("%Y%m%d%H%M")
+        uname = normalize_username(username).presence || "global"
+        ep = endpoint.to_s.presence || "unknown"
+        key = "#{IG_API_USAGE_CACHE_PREFIX}:#{minute_bucket}:account:#{@account.id}:#{uname}:#{method}:#{ep}:#{status.to_i}"
+        current = Rails.cache.read(key).to_i
+        Rails.cache.write(key, current + 1, expires_in: 90.minutes)
+      rescue StandardError
+        nil
       end
 
       def debug_story_reel_data(referer_username:, user_id:, body:)

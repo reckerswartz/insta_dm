@@ -48,11 +48,17 @@ module Instagram
       end
     end
 
-    def fetch_web_profile_info(username, driver: nil)
+    def fetch_web_profile_info(username, driver: nil, force_refresh: false)
       uname = normalize_username(username)
       return nil if uname.blank?
 
-      ig_api_get_json(
+      cache_key = "instagram:web_profile_info:account:#{@account.id}:#{uname}"
+      unless force_refresh
+        cached = Rails.cache.read(cache_key)
+        return cached if cached.is_a?(Hash)
+      end
+
+      result = ig_api_get_json(
         path: "/api/v1/users/web_profile_info/?username=#{CGI.escape(uname)}",
         referer: "#{INSTAGRAM_BASE_URL}/#{uname}/",
         endpoint: "users/web_profile_info",
@@ -60,6 +66,8 @@ module Instagram
         driver: driver,
         retries: 2
       )
+      Rails.cache.write(cache_key, result, expires_in: 2.minutes) if result.is_a?(Hash)
+      result
     rescue StandardError
       nil
     end

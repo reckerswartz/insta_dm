@@ -83,7 +83,10 @@ module Instagram
         body = ig_api_post_form_json(
           path: "/api/v1/direct_v2/threads/broadcast/reel_share/",
           referer: "#{INSTAGRAM_BASE_URL}/stories/#{username}/#{sid}/",
-          form: payload
+          form: payload,
+          endpoint: "direct_v2/threads/broadcast/reel_share",
+          username: username,
+          retries: 2
         )
         return { posted: false, method: "api", reason: "empty_api_response" } unless body.is_a?(Hash)
 
@@ -146,7 +149,9 @@ module Instagram
         body = ig_api_post_form_json(
           path: "/api/v1/direct_v2/create_group_thread/",
           referer: "#{INSTAGRAM_BASE_URL}/direct/new/",
-          form: { recipient_users: [ uid ].to_json }
+          form: { recipient_users: [ uid ].to_json },
+          endpoint: "direct_v2/create_group_thread",
+          retries: 2
         )
         return { thread_id: "", reason: "empty_api_response" } unless body.is_a?(Hash)
 
@@ -180,8 +185,129 @@ module Instagram
         "#{(Time.current.to_f * 1000).to_i}#{rand(1_000_000..9_999_999)}"
       end
 
-      def ig_api_post_form_json(path:, referer:, form:)
+      def ig_api_post_form_json(path:, referer:, form:, endpoint: nil, username: nil, retries: 2)
         uri = URI.parse(path.to_s.start_with?("http") ? path.to_s : "#{INSTAGRAM_BASE_URL}#{path}")
+        endpoint_name = endpoint.to_s.presence || (respond_to?(:infer_ig_api_endpoint, true) ? infer_ig_api_endpoint(uri.path) : uri.path.to_s)
+        normalized_username = normalize_username(username)
+        paused = if respond_to?(:ig_api_endpoint_paused?, true)
+          ig_api_endpoint_paused?(endpoint: endpoint_name, username: normalized_username)
+        end
+        if paused
+          Ops::StructuredLogger.warn(
+            event: "instagram.api_post_json.paused",
+            payload: {
+              endpoint: endpoint_name,
+              username: normalized_username.presence,
+              retry_after_seconds: paused[:retry_after_seconds].to_i
+            }.compact
+          )
+          return {
+            "status" => "fail",
+            "message" => paused[:reason].to_s.presence || "local_rate_limit_pause",
+            "_http_status" => 429,
+            "_rate_limited" => true,
+            "_retry_after_seconds" => paused[:retry_after_seconds].to_i
+          }
+        end
+
+        attempts = 0
+        max_attempts = retries.to_i.clamp(0, 4) + 1
+        last_failure = nil
+
+        while attempts < max_attempts
+          attempts += 1
+          apply_ig_api_request_spacing!(endpoint: endpoint_name, username: normalized_username) if respond_to?(:apply_ig_api_request_spacing!, true)
+
+          response = perform_ig_api_post(uri: uri, referer: referer, form: form)
+          status = response[:status].to_i
+          headers = response[:headers].is_a?(Hash) ? response[:headers] : {}
+
+          record_ig_api_usage!(
+            endpoint: endpoint_name,
+            username: normalized_username,
+            method: "POST",
+            status: status
+          ) if respond_to?(:record_ig_api_usage!, true)
+          if respond_to?(:apply_ig_api_rate_limit_state!, true)
+            apply_ig_api_rate_limit_state!(
+              endpoint: endpoint_name,
+              uri: uri,
+              username: normalized_username,
+              status: status,
+              headers: headers,
+              reason: response[:reason].to_s
+            )
+          end
+
+          body =
+            if response[:content_type].to_s.include?("json")
+              JSON.parse(response[:body].to_s) rescue {}
+            else
+              {}
+            end
+          body = {} unless body.is_a?(Hash)
+          body["_http_status"] = status
+          body["_retry_after_seconds"] = response[:retry_after_seconds].to_i if response[:retry_after_seconds].to_i.positive?
+          body["_rate_limited"] = true if status == 429
+          body["_endpoint"] = endpoint_name
+          return body if status.between?(200, 299)
+
+          last_failure = {
+            status: status,
+            reason: response[:reason].to_s.presence || "http_#{status}",
+            body: response[:body].to_s,
+            headers: headers
+          }
+          break unless status == 429 || status >= 500 || status <= 0
+
+          delay =
+            if respond_to?(:resolve_ig_api_retry_delay_seconds, true)
+              resolve_ig_api_retry_delay_seconds(failure: last_failure, attempt: attempts)
+            else
+              [0.5 * attempts, 3.0].min
+            end
+          sleep(delay)
+        end
+
+        Ops::StructuredLogger.warn(
+          event: "instagram.api_post_json.failure",
+          payload: {
+            endpoint: endpoint_name,
+            username: normalized_username.presence,
+            attempts: attempts,
+            status: last_failure&.dig(:status),
+            reason: last_failure&.dig(:reason),
+            response_snippet: last_failure&.dig(:body).to_s.byteslice(0, 280)
+          }.compact
+        )
+
+        body = {}
+        if last_failure.is_a?(Hash)
+          body["status"] = "fail"
+          body["message"] = last_failure[:reason].to_s
+          body["_http_status"] = last_failure[:status].to_i
+          body["_rate_limited"] = true if last_failure[:status].to_i == 429
+        end
+        body
+      rescue StandardError => e
+        Ops::StructuredLogger.warn(
+          event: "instagram.api_post_json.exception",
+          payload: {
+            endpoint: endpoint_name.to_s.presence || path.to_s,
+            username: normalize_username(username).presence,
+            error_class: e.class.name,
+            error_message: e.message.to_s
+          }.compact
+        )
+        {
+          "status" => "fail",
+          "message" => "request_exception:#{e.class.name}",
+          "_http_status" => 0
+        }
+      end
+
+      def perform_ig_api_post(uri:, referer:, form:)
+        endpoint_name = respond_to?(:infer_ig_api_endpoint, true) ? infer_ig_api_endpoint(uri.path) : uri.path.to_s
 
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = (uri.scheme == "https")
@@ -202,13 +328,26 @@ module Instagram
         req.set_form_data(form.transform_values { |v| v.to_s })
 
         res = http.request(req)
-        return nil unless res["content-type"].to_s.include?("json")
-
-        body = JSON.parse(res.body.to_s)
-        body["_http_status"] = res.code.to_i
-        body
-      rescue StandardError
-        nil
+        headers = respond_to?(:extract_ig_rate_limit_headers, true) ? extract_ig_rate_limit_headers(res) : {}
+        {
+          status: res.code.to_i,
+          reason: "http_#{res.code}",
+          content_type: res["content-type"].to_s,
+          body: res.body.to_s,
+          headers: headers,
+          retry_after_seconds: respond_to?(:parse_retry_after_seconds, true) ? parse_retry_after_seconds(headers["retry-after"].to_s) : 0,
+          endpoint: endpoint_name
+        }
+      rescue StandardError => e
+        {
+          status: 0,
+          reason: "request_exception:#{e.class.name}",
+          content_type: "",
+          body: e.message.to_s,
+          headers: {},
+          retry_after_seconds: 0,
+          endpoint: endpoint_name
+        }
       end
 
       def detect_story_reply_availability(driver)
