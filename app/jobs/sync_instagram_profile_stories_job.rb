@@ -1,4 +1,3 @@
-require "base64"
 require "net/http"
 require "digest"
 require "stringio"
@@ -7,10 +6,7 @@ require "timeout"
 class SyncInstagramProfileStoriesJob < ApplicationJob
   queue_as :story_processing
 
-  MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
-  MAX_INLINE_VIDEO_BYTES = 10 * 1024 * 1024
   MAX_STORIES = 10
-  MAX_PREVIEW_IMAGE_BYTES = 3 * 1024 * 1024
   MEDIA_DOWNLOAD_ATTEMPTS = 3
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3
@@ -64,8 +60,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     stories = Array(dataset[:stories]).first(max_stories_i)
     downloaded_count = 0
     reused_download_count = 0
-    analyzed_count = 0
-    reply_queued_count = 0
+    analysis_queued_count = 0
     story_failures = []
 
     stories.each do |story|
@@ -209,11 +204,9 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       end
 
       attach_media_to_event(upload_event, bytes: bytes, filename: filename, content_type: content_type)
-      ensure_story_preview_image!(
+      enqueue_story_preview_generation!(
         event: downloaded_event,
         story: story,
-        media_bytes: bytes,
-        media_content_type: content_type,
         user_agent: account.user_agent
       )
       ingested_story = ingest_story_for_processing(
@@ -227,70 +220,15 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         force_reprocess: force
       )
 
-      analysis = analyze_story_for_comments(
+      queued = enqueue_story_analysis!(
         account: account,
         profile: profile,
         story: story,
-        analyzable: downloaded_event,
-        media_fingerprint: media_fingerprint_for_story(story: story, bytes: bytes, content_type: content_type),
-        bytes: bytes,
-        content_type: content_type
+        downloaded_event: downloaded_event,
+        ingested_story: ingested_story,
+        auto_reply: auto_reply_enabled
       )
-
-      next unless analysis[:ok]
-
-      analyzed_at = Time.current
-      profile.record_event!(
-        kind: "story_analyzed",
-        external_id: "story_analyzed:#{story_id}:#{analyzed_at.utc.iso8601(6)}",
-        occurred_at: analyzed_at,
-        metadata: base_story_metadata(profile: profile, story: story).merge(
-          analyzed_at: analyzed_at.iso8601,
-          ai_provider: analysis[:provider],
-          ai_model: analysis[:model],
-          ai_image_description: analysis[:image_description],
-          ai_comment_suggestions: analysis[:comment_suggestions],
-          story_generation_policy: analysis[:generation_policy],
-          story_ownership_classification: analysis[:ownership_classification],
-          instagram_story_id: ingested_story&.id
-        )
-      )
-      analyzed_count += 1
-
-      # Run profile re-evaluation independently to keep story processing throughput high.
-      ReevaluateProfileContentJob.perform_later(
-        instagram_account_id: account.id,
-        instagram_profile_id: profile.id,
-        content_type: "story",
-        content_id: story_id
-      )
-
-      if auto_reply_enabled
-        decision = story_reply_decision(analysis: analysis, profile: profile, story_id: story_id)
-
-        if decision[:queue]
-          queued = queue_story_reply!(
-            account: account,
-            profile: profile,
-            story: story,
-            analysis: analysis,
-            downloaded_event: downloaded_event
-          )
-          reply_queued_count += 1 if queued
-        else
-          profile.record_event!(
-            kind: "story_reply_skipped",
-            external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-            occurred_at: Time.current,
-            metadata: base_story_metadata(profile: profile, story: story).merge(
-              skip_reason: decision[:reason],
-              relevant: analysis[:relevant],
-              author_type: analysis[:author_type],
-              suggestions_count: Array(analysis[:comment_suggestions]).length
-            )
-          )
-        end
-      end
+      analysis_queued_count += 1 if queued
     rescue StandardError => e
       failure = classify_story_failure(error: e).merge(
         error_class: e.class.name,
@@ -335,8 +273,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         stories_found: stories.size,
         downloaded: downloaded_count,
         reused_downloads: reused_download_count,
-        analyzed: analyzed_count,
-        replies_queued: reply_queued_count,
+        analysis_jobs_queued: analysis_queued_count,
         failed_story_count: story_failures.length,
         failed_by_category: story_failures.each_with_object(Hash.new(0)) { |row, memo| memo[row[:category].to_s] += 1 },
         failed_retryable_count: story_failures.count { |row| row[:retryable] == true },
@@ -348,7 +285,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       account,
       target: "notifications",
       partial: "shared/notification",
-      locals: { kind: "notice", message: "Story sync completed for #{profile.username}. Stories: #{stories.size}, downloaded: #{downloaded_count}, reused: #{reused_download_count}, analyzed: #{analyzed_count}, replies queued: #{reply_queued_count}, failed: #{story_failures.length}." }
+      locals: { kind: "notice", message: "Story sync completed for #{profile.username}. Stories: #{stories.size}, downloaded: #{downloaded_count}, reused: #{reused_download_count}, analysis jobs queued: #{analysis_queued_count}, failed: #{story_failures.length}." }
     )
 
     action_log.mark_succeeded!(
@@ -356,12 +293,11 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         stories_found: stories.size,
         downloaded: downloaded_count,
         reused_downloads: reused_download_count,
-        analyzed: analyzed_count,
-        replies_queued: reply_queued_count,
+        analysis_jobs_queued: analysis_queued_count,
         failed_story_count: story_failures.length,
         failed_stories: story_failures.first(15)
       },
-      log_text: "Synced #{stories.size} stories (downloaded: #{downloaded_count}, reused: #{reused_download_count}, analyzed: #{analyzed_count}, replies queued: #{reply_queued_count}, failed: #{story_failures.length})"
+      log_text: "Synced #{stories.size} stories (downloaded: #{downloaded_count}, reused: #{reused_download_count}, analysis jobs queued: #{analysis_queued_count}, failed: #{story_failures.length})"
     )
   rescue StandardError => e
     Ops::StructuredLogger.error(
@@ -516,322 +452,74 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     nil
   end
 
-  def analyze_story_for_comments(account:, profile:, story:, analyzable:, media_fingerprint:, bytes:, content_type:)
-    media_payload = build_media_payload(story: story, bytes: bytes, content_type: content_type)
-    payload = build_story_payload(profile: profile, story: story)
-
-    run = Ai::Runner.new(account: account).analyze!(
-      purpose: "post",
-      analyzable: analyzable,
-      payload: payload,
-      media: media_payload,
-      media_fingerprint: media_fingerprint
-    )
-
-    analysis = run.dig(:result, :analysis)
-    return { ok: false } unless analysis.is_a?(Hash)
-
-    raw_metadata = analyzable.metadata.is_a?(Hash) ? analyzable.metadata : {}
-    local_story_intelligence = analyzable.respond_to?(:local_story_intelligence_payload) ? analyzable.local_story_intelligence_payload : {}
-    validated_story_insights = Ai::VerifiedStoryInsightBuilder.new(
-      profile: profile,
-      local_story_intelligence: local_story_intelligence,
-      metadata: raw_metadata
-    ).build
-    generation_policy = validated_story_insights[:generation_policy].is_a?(Hash) ? validated_story_insights[:generation_policy] : {}
-    ownership_classification = validated_story_insights[:ownership_classification].is_a?(Hash) ? validated_story_insights[:ownership_classification] : {}
-
-    {
-      ok: true,
-      provider: run[:provider].key,
-      model: run.dig(:result, :model),
-      relevant: analysis["relevant"],
-      author_type: analysis["author_type"],
-      image_description: analysis["image_description"].to_s.presence,
-      comment_suggestions: Array(analysis["comment_suggestions"]).first(8),
-      generation_policy: generation_policy,
-      ownership_classification: ownership_classification
-    }
-  rescue StandardError
-    { ok: false }
-  end
-
-  def media_fingerprint_for_story(story:, bytes:, content_type:)
-    return Digest::SHA256.hexdigest(bytes) if bytes.present?
-
-    fallback = [
-      story[:media_url].to_s,
-      story[:image_url].to_s,
-      story[:video_url].to_s,
-      content_type.to_s
-    ].find(&:present?)
-    return nil if fallback.blank?
-
-    Digest::SHA256.hexdigest(fallback)
-  end
-
-  def ensure_story_preview_image!(event:, story:, media_bytes:, media_content_type:, user_agent:)
+  def enqueue_story_preview_generation!(event:, story:, user_agent:)
     return false unless event&.media&.attached?
     return false unless event.media.blob&.content_type.to_s.start_with?("video/")
-    return true if event.preview_image.attached?
+    return false if event.preview_image.attached?
 
-    preview_url = preferred_story_preview_url(story: story)
-    if preview_url.present?
-      downloaded = download_preview_image(url: preview_url, user_agent: user_agent)
-      if downloaded
-        attach_preview_image_bytes!(
-          event: event,
-          image_bytes: downloaded[:bytes],
-          content_type: downloaded[:content_type],
-          filename: downloaded[:filename]
-        )
-        stamp_story_preview_metadata!(event: event, source: "remote_image_url")
-        return true
-      end
-    end
-
-    extracted = VideoThumbnailService.new.extract_first_frame(
-      video_bytes: media_bytes.to_s.b,
-      reference_id: "story_event_#{event.id}",
-      content_type: media_content_type
+    job = GenerateStoryPreviewImageJob.perform_later(
+      instagram_profile_event_id: event.id,
+      story_payload: story_payload_for_job(story: story),
+      user_agent: user_agent.to_s
     )
-    return false unless extracted[:ok]
 
-    attach_preview_image_bytes!(
-      event: event,
-      image_bytes: extracted[:image_bytes],
-      content_type: extracted[:content_type],
-      filename: extracted[:filename]
-    )
-    stamp_story_preview_metadata!(event: event, source: "ffmpeg_first_frame")
+    metadata = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
+    metadata["preview_image_status"] = "queued"
+    metadata["preview_image_source"] = "story_preview_generation_job"
+    metadata["preview_image_queued_at"] = Time.current.utc.iso8601(3)
+    metadata["preview_image_job_id"] = job.job_id
+    metadata["preview_image_queue_name"] = job.queue_name
+    event.update!(metadata: metadata)
+
     true
   rescue StandardError => e
-    Rails.logger.warn("[SyncInstagramProfileStoriesJob] preview attach failed event_id=#{event&.id}: #{e.class}: #{e.message}")
+    Rails.logger.warn("[SyncInstagramProfileStoriesJob] preview enqueue failed event_id=#{event&.id}: #{e.class}: #{e.message}")
     false
   end
 
-  def preferred_story_preview_url(story:)
-    candidates = [
-      story[:image_url].to_s,
-      story[:thumbnail_url].to_s,
-      story[:preview_image_url].to_s
-    ]
-
-    Array(story[:carousel_media]).each do |entry|
-      data = entry.is_a?(Hash) ? entry : {}
-      candidates << data[:image_url].to_s
-      candidates << data["image_url"].to_s
-    end
-
-    candidates.map(&:strip).find(&:present?)
-  rescue StandardError
-    nil
-  end
-
-  def download_preview_image(url:, user_agent:, redirects_left: 3)
-    uri = URI.parse(url)
-    return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
-
-    http = Net::HTTP.new(uri.host, uri.port)
-    http.use_ssl = (uri.scheme == "https")
-    http.open_timeout = 8
-    http.read_timeout = 20
-
-    req = Net::HTTP::Get.new(uri.request_uri)
-    req["Accept"] = "image/*,*/*;q=0.8"
-    req["User-Agent"] = user_agent.to_s.presence || "Mozilla/5.0"
-    req["Referer"] = Instagram::Client::INSTAGRAM_BASE_URL
-    res = http.request(req)
-
-    if res.is_a?(Net::HTTPRedirection) && res["location"].present?
-      return nil if redirects_left.to_i <= 0
-
-      redirected_url = normalize_redirect_url(base_uri: uri, location: res["location"])
-      return nil if redirected_url.blank?
-
-      return download_preview_image(url: redirected_url, user_agent: user_agent, redirects_left: redirects_left.to_i - 1)
-    end
-
-    return nil unless res.is_a?(Net::HTTPSuccess)
-
-    body = res.body.to_s.b
-    return nil if body.bytesize <= 0 || body.bytesize > MAX_PREVIEW_IMAGE_BYTES
-    return nil if html_payload?(body)
-
-    content_type = res["content-type"].to_s.split(";").first.to_s
-    return nil unless content_type.start_with?("image/")
-
-    validate_known_signature!(body: body, content_type: content_type)
-    ext = extension_for_content_type(content_type: content_type)
-
-    {
-      bytes: body,
-      content_type: content_type,
-      filename: "story_preview_#{Digest::SHA256.hexdigest(url)[0, 12]}.#{ext}"
-    }
-  rescue StandardError
-    nil
-  end
-
-  def attach_preview_image_bytes!(event:, image_bytes:, content_type:, filename:)
-    blob = ActiveStorage::Blob.create_and_upload!(
-      io: StringIO.new(image_bytes),
-      filename: filename,
-      content_type: content_type.to_s.presence || "image/jpeg",
-      identify: false
-    )
-    attach_preview_blob_to_event!(event: event, blob: blob)
-  end
-
-  def attach_preview_blob_to_event!(event:, blob:)
-    return unless blob
-
-    if event.preview_image.attached? && event.preview_image.attachment.present?
-      attachment = event.preview_image.attachment
-      attachment.update!(blob: blob) if attachment.blob_id != blob.id
-      return
-    end
-
-    event.preview_image.attach(blob)
-  end
-
-  def stamp_story_preview_metadata!(event:, source:)
-    metadata = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
-    metadata["preview_image_status"] = "attached"
-    metadata["preview_image_source"] = source.to_s
-    metadata["preview_image_attached_at"] = Time.current.utc.iso8601(3)
-    event.update!(metadata: metadata)
-  rescue StandardError
-    nil
-  end
-
-  def build_story_payload(profile:, story:)
-    story_history = recent_story_history_context(profile: profile)
-    history_narrative = profile.history_narrative_text(max_chunks: 3)
-    history_chunks = profile.history_narrative_chunks(max_chunks: 6)
-    recent_post_context = profile.instagram_profile_posts.recent_first.limit(5).map do |p|
-      {
-        shortcode: p.shortcode,
-        caption: p.caption.to_s,
-        taken_at: p.taken_at&.iso8601,
-        image_description: p.analysis.is_a?(Hash) ? p.analysis["image_description"] : nil,
-        topics: p.analysis.is_a?(Hash) ? Array(p.analysis["topics"]).first(6) : []
-      }
-    end
-    recent_event_context = profile.instagram_profile_events.order(detected_at: :desc).limit(20).pluck(:kind, :occurred_at).map do |kind, occurred_at|
-      { kind: kind, occurred_at: occurred_at&.iso8601 }
-    end
-
-    {
-      post: {
-        shortcode: story[:story_id],
-        caption: story[:caption],
-        taken_at: story[:taken_at]&.iso8601,
-        permalink: story[:permalink],
-        likes_count: nil,
-        comments_count: nil,
-        comments: []
-      },
-      author_profile: {
-        username: profile.username,
-        display_name: profile.display_name,
-        bio: profile.bio,
-        can_message: profile.can_message,
-        tags: profile.profile_tags.pluck(:name).sort,
-        recent_posts: recent_post_context,
-        recent_profile_events: recent_event_context,
-        recent_story_history: story_history,
-        historical_narrative_text: history_narrative,
-        historical_narrative_chunks: history_chunks
-      },
-      rules: {
-        require_manual_review: true,
-        style: "gen_z_light",
-        context: "story_reply_suggestion",
-        only_if_relevant: true,
-        diversity_requirement: "Prefer novel comments and avoid repeating previous story replies."
-      }
-    }
-  end
-
-  def story_reply_decision(analysis:, profile:, story_id:)
-    return { queue: false, reason: "already_sent" } if story_reply_already_sent?(profile: profile, story_id: story_id)
-    return { queue: false, reason: "already_queued" } if story_reply_already_queued?(profile: profile, story_id: story_id)
-    return { queue: false, reason: "official_messaging_not_configured" } unless official_messaging_service.configured?
-
-    relevant = analysis[:relevant]
-    author_type = analysis[:author_type].to_s
-    suggestions = Array(analysis[:comment_suggestions]).map(&:to_s).reject(&:blank?)
-    generation_policy = analysis[:generation_policy].is_a?(Hash) ? analysis[:generation_policy] : {}
-
-    return { queue: false, reason: "no_comment_suggestions" } if suggestions.empty?
-    allow_comment_present = generation_policy.key?(:allow_comment) || generation_policy.key?("allow_comment")
-    allow_comment_value = generation_policy[:allow_comment] || generation_policy["allow_comment"]
-    if allow_comment_present && !ActiveModel::Type::Boolean.new.cast(allow_comment_value)
-      return { queue: false, reason: generation_policy[:reason_code].to_s.presence || generation_policy["reason_code"].to_s.presence || "verified_policy_blocked" }
-    end
-    return { queue: false, reason: "not_relevant" } unless relevant == true
-
-    allowed_types = %w[personal_user friend relative unknown]
-    return { queue: false, reason: "author_type_#{author_type.presence || 'missing'}_not_allowed" } unless allowed_types.include?(author_type)
-
-    { queue: true, reason: "eligible_for_reply" }
-  end
-
-  def story_reply_already_sent?(profile:, story_id:)
-    profile.instagram_profile_events.where(kind: "story_reply_sent", external_id: "story_reply_sent:#{story_id}").exists?
-  end
-
-  def story_reply_already_queued?(profile:, story_id:)
-    event = profile.instagram_profile_events.find_by(kind: "story_reply_queued", external_id: "story_reply_queued:#{story_id}")
+  def story_analysis_already_queued?(profile:, story_id:)
+    event = profile.instagram_profile_events.find_by(kind: "story_analysis_queued", external_id: "story_analysis_queued:#{story_id}")
     return false unless event
 
     metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
-    status = metadata["delivery_status"].to_s
-    return false if %w[sent failed].include?(status)
+    status = metadata["status"].to_s
+    return false if %w[completed failed].include?(status)
 
     event.detected_at.present? && event.detected_at > 12.hours.ago
   rescue StandardError
     false
   end
 
-  def queue_story_reply!(account:, profile:, story:, analysis:, downloaded_event: nil)
-    story_id = story[:story_id].to_s
-    return false if story_reply_already_sent?(profile: profile, story_id: story_id)
-    return false if story_reply_already_queued?(profile: profile, story_id: story_id)
+  def enqueue_story_analysis!(account:, profile:, story:, downloaded_event:, ingested_story:, auto_reply:)
+    story_id = story[:story_id].to_s.strip
+    return false if story_id.blank? || downloaded_event.blank?
+    return false if story_analysis_already_queued?(profile: profile, story_id: story_id)
 
-    suggestion = select_unique_story_comment(
-      profile: profile,
-      suggestions: Array(analysis[:comment_suggestions]),
-      analysis: analysis
-    )
-    return false if suggestion.blank?
-
-    base_metadata = base_story_metadata(profile: profile, story: story).merge(
-      ai_reply_text: suggestion,
-      auto_reply: true
-    )
-    enqueue_event = profile.record_event!(
-      kind: "story_reply_queued",
-      external_id: "story_reply_queued:#{story_id}",
+    queue_event = profile.record_event!(
+      kind: "story_analysis_queued",
+      external_id: "story_analysis_queued:#{story_id}",
       occurred_at: Time.current,
-      metadata: base_metadata.merge(
-        delivery_status: "queued",
-        queued_at: Time.current.iso8601(3)
+      metadata: base_story_metadata(profile: profile, story: story).merge(
+        status: "queued",
+        queued_at: Time.current.iso8601(3),
+        auto_reply: ActiveModel::Type::Boolean.new.cast(auto_reply),
+        downloaded_event_id: downloaded_event.id,
+        instagram_story_id: ingested_story&.id
       )
     )
 
-    job = SendStoryReplyJob.perform_later(
+    job = AnalyzeInstagramStoryEventJob.perform_later(
       instagram_account_id: account.id,
       instagram_profile_id: profile.id,
       story_id: story_id,
-      reply_text: suggestion,
-      story_metadata: base_metadata,
-      downloaded_event_id: downloaded_event&.id
+      story_payload: story_payload_for_job(story: story),
+      downloaded_event_id: downloaded_event.id,
+      ingested_story_id: ingested_story&.id,
+      auto_reply: auto_reply
     )
 
-    enqueue_event.update!(
-      metadata: enqueue_event.metadata.merge(
+    queue_event.update!(
+      metadata: queue_event.metadata.merge(
         "active_job_id" => job.job_id,
         "queue_name" => job.queue_name
       )
@@ -841,26 +529,20 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   rescue StandardError => e
     return false if e.is_a?(ActiveRecord::RecordNotUnique)
 
-    account.instagram_messages.create!(
-      instagram_profile: profile,
-      direction: "outgoing",
-      body: suggestion.to_s,
-      status: "failed",
-      error_message: "story_reply_enqueue_failed: #{e.message}"
-    ) if suggestion.present?
+    Rails.logger.warn("[SyncInstagramProfileStoriesJob] story analysis enqueue failed story_id=#{story_id}: #{e.class}: #{e.message}")
     false
   end
 
-  def official_messaging_service
-    @official_messaging_service ||= Messaging::IntegrationService.new
-  end
-
-  def attach_reply_comment_to_downloaded_event!(downloaded_event:, comment_text:)
-    return if downloaded_event.blank? || comment_text.blank?
-
-    meta = downloaded_event.metadata.is_a?(Hash) ? downloaded_event.metadata.deep_dup : {}
-    meta["reply_comment"] = comment_text.to_s
-    downloaded_event.update!(metadata: meta)
+  def story_payload_for_job(story:)
+    payload = story.is_a?(Hash) ? story.deep_dup : {}
+    normalized = payload.deep_stringify_keys
+    %w[taken_at expiring_at].each do |key|
+      value = normalized[key]
+      normalized[key] = value.iso8601 if value.respond_to?(:iso8601)
+    end
+    normalized
+  rescue StandardError
+    {}
   end
 
   def download_skipped_story!(account:, profile:, story:, skip_reason:)
@@ -1025,93 +707,6 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     end
   end
 
-  def recent_story_history_context(profile:)
-    profile.instagram_profile_events
-      .where(kind: [ "story_analyzed", "story_reply_sent", "story_comment_posted_via_feed" ])
-      .order(detected_at: :desc, id: :desc)
-      .limit(25)
-      .map do |event|
-        metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
-        {
-          kind: event.kind,
-          occurred_at: event.occurred_at&.iso8601 || event.detected_at&.iso8601,
-          story_id: metadata["story_id"].to_s.presence,
-          image_description: metadata["ai_image_description"].to_s.presence,
-          posted_comment: metadata["ai_reply_text"].to_s.presence || metadata["comment_text"].to_s.presence
-        }.compact
-      end
-  end
-
-  def select_unique_story_comment(profile:, suggestions:, analysis: nil)
-    candidates = Array(suggestions).map(&:to_s).map(&:strip).reject(&:blank?)
-    return nil if candidates.empty?
-
-    history = profile.instagram_profile_events
-      .where(kind: [ "story_reply_sent", "story_comment_posted_via_feed" ])
-      .order(detected_at: :desc, id: :desc)
-      .limit(40)
-      .map { |e| e.metadata.is_a?(Hash) ? (e.metadata["ai_reply_text"].to_s.presence || e.metadata["comment_text"].to_s) : "" }
-      .reject(&:blank?)
-
-    analysis_hash = analysis.is_a?(Hash) ? analysis : {}
-    context_keywords = []
-    context_keywords.concat(Array(analysis_hash[:topics] || analysis_hash["topics"]).map(&:to_s))
-    context_keywords.concat(Array(analysis_hash[:image_description] || analysis_hash["image_description"]).map(&:to_s))
-    engine = Ai::CommentPolicyEngine.new
-    filtered = engine.evaluate(
-      suggestions: candidates,
-      historical_comments: history,
-      context_keywords: context_keywords,
-      max_suggestions: 8
-    )[:accepted]
-    candidates = Array(filtered).presence || candidates
-
-    return candidates.first if history.empty?
-
-    ranked = candidates.sort_by do |candidate|
-      max_similarity = history.map { |past| text_similarity(candidate, past) }.max.to_f
-      max_similarity
-    end
-    ranked.find { |c| history.all? { |past| text_similarity(c, past) < 0.72 } } || ranked.first
-  end
-
-  def text_similarity(a, b)
-    left = tokenize(a)
-    right = tokenize(b)
-    return 0.0 if left.empty? || right.empty?
-
-    overlap = (left & right).length.to_f
-    overlap / [ left.length, right.length ].max.to_f
-  end
-
-  def tokenize(text)
-    text.to_s.downcase.scan(/[a-z0-9]+/).uniq
-  end
-
-  def build_media_payload(story:, bytes:, content_type:)
-    media_type = story[:media_type].to_s
-
-    if media_type == "video"
-      {
-        type: "video",
-        content_type: content_type,
-        bytes: bytes.bytesize <= MAX_INLINE_VIDEO_BYTES ? bytes : nil
-      }
-    else
-      payload = {
-        type: "image",
-        content_type: content_type,
-        bytes: bytes
-      }
-
-      if bytes.bytesize <= MAX_INLINE_IMAGE_BYTES
-        payload[:image_data_url] = "data:#{content_type};base64,#{Base64.strict_encode64(bytes)}"
-      end
-
-      payload
-    end
-  end
-
   def download_story_media(url:, user_agent:)
     uri = URI.parse(url)
     raise "Invalid story media URL" unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
@@ -1153,40 +748,6 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     return "mov" if content_type.include?("quicktime")
 
     "bin"
-  end
-
-  def normalize_redirect_url(base_uri:, location:)
-    target = URI.join(base_uri.to_s, location.to_s).to_s
-    parsed = URI.parse(target)
-    return nil unless parsed.is_a?(URI::HTTP) || parsed.is_a?(URI::HTTPS)
-
-    parsed.to_s
-  rescue URI::InvalidURIError, ArgumentError
-    nil
-  end
-
-  def html_payload?(body)
-    sample = body.to_s.byteslice(0, 4096).to_s.downcase
-    sample.include?("<html") || sample.start_with?("<!doctype html")
-  end
-
-  def validate_known_signature!(body:, content_type:)
-    type = content_type.to_s.downcase
-    return if type.blank?
-    return if type.include?("octet-stream")
-
-    case
-    when type.include?("jpeg")
-      raise "invalid jpeg signature" unless body.start_with?("\xFF\xD8".b)
-    when type.include?("png")
-      raise "invalid png signature" unless body.start_with?("\x89PNG\r\n\x1A\n".b)
-    when type.include?("gif")
-      raise "invalid gif signature" unless body.start_with?("GIF87a".b) || body.start_with?("GIF89a".b)
-    when type.include?("webp")
-      raise "invalid webp signature" unless body.bytesize >= 12 && body.byteslice(0, 4) == "RIFF" && body.byteslice(8, 4) == "WEBP"
-    when type.start_with?("video/")
-      raise "invalid video signature" unless body.bytesize >= 12 && body.byteslice(4, 4) == "ftyp"
-    end
   end
 
   def ingest_story_for_processing(account:, profile:, story:, downloaded_event:, bytes:, content_type:, filename:, force_reprocess:)

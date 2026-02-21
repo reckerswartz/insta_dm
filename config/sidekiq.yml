@@ -5,7 +5,8 @@
   # AI/story isolated queues (`ai`, `ai_visual_queue`, `ai_face_queue`, `ai_face_refresh_queue`,
   # `ai_ocr_queue`, `video_processing_queue`, `ai_metadata_queue`, `frame_generation`,
   # `story_auto_reply_orchestration`, `profile_story_orchestration`, `home_story_orchestration`,
-  # `home_story_sync`, `story_processing`, `story_replies`, `profile_reevaluation`,
+  # `home_story_sync`, `story_processing`, `story_analysis`, `story_preview_generation`, `story_replies`,
+  # `profile_reevaluation`,
   # `story_validation`) are
   # handled by dedicated Sidekiq capsules in `config/initializers/sidekiq.rb`.
   - [sync, 4]

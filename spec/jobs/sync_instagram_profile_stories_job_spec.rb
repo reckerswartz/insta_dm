@@ -39,19 +39,75 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
     client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
 
     allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
-    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:analyze_story_for_comments).and_return({ ok: false })
     allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:download_story_media).and_return([ "bytes", "image/jpeg", "story.jpg" ])
 
-    with_client_stub(client_stub) do
-      SyncInstagramProfileStoriesJob.perform_now(
-        instagram_account_id: account.id,
-        instagram_profile_id: profile.id,
-        max_stories: 1
-      )
+    assert_enqueued_with(job: AnalyzeInstagramStoryEventJob) do
+      with_client_stub(client_stub) do
+        SyncInstagramProfileStoriesJob.perform_now(
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          max_stories: 1
+        )
+      end
     end
 
     event = profile.instagram_profile_events.where(kind: "story_downloaded").order(id: :desc).first
     expect(event.external_id).to eq("story_downloaded:#{story_id}")
+  end
+
+  it "queues story preview generation for downloaded video stories" do
+    account = InstagramAccount.create!(username: "story_video_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_video_profile_#{SecureRandom.hex(4)}")
+    story_id = "video_story_#{SecureRandom.hex(3)}"
+    dataset = {
+      profile: { display_name: profile.username, profile_pic_url: nil, ig_user_id: nil, bio: nil, last_post_at: nil },
+      stories: [
+        {
+          story_id: story_id,
+          media_type: "video",
+          media_url: "https://cdn.example.com/story.mp4",
+          image_url: "https://cdn.example.com/story_preview.jpg",
+          video_url: "https://cdn.example.com/story.mp4",
+          primary_media_source: "api_video_versions",
+          primary_media_index: 0,
+          media_variants: [],
+          carousel_media: [],
+          can_reply: true,
+          can_reshare: true,
+          owner_user_id: nil,
+          owner_username: profile.username,
+          api_has_external_profile_indicator: false,
+          api_external_profile_reason: nil,
+          api_external_profile_targets: [],
+          api_should_skip: false,
+          caption: nil,
+          permalink: "https://www.instagram.com/stories/#{profile.username}/#{story_id}/",
+          taken_at: Time.current,
+          expiring_at: 12.hours.from_now
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
+
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:download_story_media).and_return([ "video-bytes", "video/mp4", "story.mp4" ])
+
+    assert_enqueued_with(job: GenerateStoryPreviewImageJob) do
+      with_client_stub(client_stub) do
+        SyncInstagramProfileStoriesJob.perform_now(
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          max_stories: 1
+        )
+      end
+    end
+
+    downloaded_event = profile.instagram_profile_events.where(kind: "story_downloaded").order(id: :desc).first
+    expect(downloaded_event).to be_present
+    expect(downloaded_event.metadata["preview_image_status"]).to eq("queued")
+    expect(downloaded_event.metadata["preview_image_queue_name"]).to eq("story_preview_generation")
   end
 
   it "reuses saved story media across accounts by story_id before downloading" do
@@ -106,7 +162,6 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
     client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
 
     allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
-    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:analyze_story_for_comments).and_return({ ok: false })
     expect_any_instance_of(SyncInstagramProfileStoriesJob).not_to receive(:download_story_media)
 
     with_client_stub(client_stub) do
@@ -173,7 +228,6 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
     client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
 
     allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
-    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:analyze_story_for_comments).and_return({ ok: false })
     expect_any_instance_of(SyncInstagramProfileStoriesJob).not_to receive(:download_story_media)
 
     with_client_stub(client_stub) do
@@ -238,7 +292,6 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
     client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
 
     allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
-    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:analyze_story_for_comments).and_return({ ok: false })
     allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:download_story_media).and_return([ "bytes", "image/jpeg", "story.jpg" ])
 
     with_client_stub(client_stub) do

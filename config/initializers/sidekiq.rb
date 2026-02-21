@@ -46,6 +46,8 @@ Sidekiq.configure_server do |config|
     home_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 3)
     home_story_sync_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_SYNC_CONCURRENCY", 2).to_i.clamp(1, 4)
     story_processing_concurrency = ENV.fetch("SIDEKIQ_STORY_PROCESSING_CONCURRENCY", 2).to_i.clamp(1, 4)
+    story_analysis_concurrency = ENV.fetch("SIDEKIQ_STORY_ANALYSIS_CONCURRENCY", 2).to_i.clamp(1, 4)
+    story_preview_generation_concurrency = ENV.fetch("SIDEKIQ_STORY_PREVIEW_GENERATION_CONCURRENCY", 2).to_i.clamp(1, 4)
     story_replies_concurrency = ENV.fetch("SIDEKIQ_STORY_REPLIES_CONCURRENCY", 2).to_i.clamp(1, 4)
     profile_reevaluation_concurrency = ENV.fetch("SIDEKIQ_PROFILE_REEVALUATION_CONCURRENCY", 1).to_i.clamp(1, 2)
     story_validation_concurrency = ENV.fetch("SIDEKIQ_STORY_VALIDATION_CONCURRENCY", 2).to_i.clamp(1, 4)
@@ -113,6 +115,16 @@ Sidekiq.configure_server do |config|
     config.capsule("story_processing_lane") do |cap|
       cap.concurrency = story_processing_concurrency
       cap.queues = %w[story_processing]
+    end
+
+    config.capsule("story_analysis_lane") do |cap|
+      cap.concurrency = story_analysis_concurrency
+      cap.queues = %w[story_analysis]
+    end
+
+    config.capsule("story_preview_generation_lane") do |cap|
+      cap.concurrency = story_preview_generation_concurrency
+      cap.queues = %w[story_preview_generation]
     end
 
     config.capsule("story_replies_lane") do |cap|

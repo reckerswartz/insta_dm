@@ -17,7 +17,7 @@ default: &default
       processes: <%= ENV.fetch("MESSAGE_JOB_CONCURRENCY", 1) %>
       polling_interval: 0.1
 
-    - queues: [profiles, profile_reevaluation, avatars, avatar_orchestration, story_auto_reply_orchestration, profile_story_orchestration, home_story_orchestration, home_story_sync, story_processing, story_replies, post_downloads, captured_posts, frame_generation, maintenance, ai]
+    - queues: [profiles, profile_reevaluation, avatars, avatar_orchestration, story_auto_reply_orchestration, profile_story_orchestration, home_story_orchestration, home_story_sync, story_processing, story_analysis, story_preview_generation, story_replies, post_downloads, captured_posts, frame_generation, maintenance, ai]
       threads: <%= ENV.fetch("PROFILE_JOB_THREADS", 2) %>
       processes: <%= ENV.fetch("PROFILE_JOB_CONCURRENCY", 1) %>
       polling_interval: 0.15
