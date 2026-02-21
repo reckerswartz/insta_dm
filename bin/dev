@@ -24,6 +24,11 @@ WEB_HEALTHCHECK_ENABLED = ENV.fetch("DEV_WEB_HEALTHCHECK_ENABLED", "true") == "t
 WEB_HEALTHCHECK_INTERVAL_SECONDS = ENV.fetch("DEV_WEB_HEALTHCHECK_INTERVAL_SECONDS", "5").to_f.clamp(1.0, 30.0)
 WEB_HEALTHCHECK_TIMEOUT_SECONDS = ENV.fetch("DEV_WEB_HEALTHCHECK_TIMEOUT_SECONDS", "1.5").to_f.clamp(0.2, 10.0)
 WEB_HEALTHCHECK_FAILURE_THRESHOLD = Integer(ENV.fetch("DEV_WEB_HEALTHCHECK_FAILURE_THRESHOLD", "3")).clamp(1, 10)
+LOCAL_AI_READY_TIMEOUT_SECONDS = Integer(ENV.fetch("DEV_LOCAL_AI_READY_TIMEOUT_SECONDS", "90")).clamp(5, 600)
+LOCAL_AI_HTTP_OPEN_TIMEOUT_SECONDS = ENV.fetch("DEV_LOCAL_AI_HTTP_OPEN_TIMEOUT_SECONDS", "1.5").to_f.clamp(0.2, 10.0)
+LOCAL_AI_HTTP_READ_TIMEOUT_SECONDS = ENV.fetch("DEV_LOCAL_AI_HTTP_READ_TIMEOUT_SECONDS", "2.5").to_f.clamp(0.2, 15.0)
+LOCAL_AI_SERVICE_URL = ENV.fetch("LOCAL_AI_SERVICE_URL", "http://localhost:8000")
+OLLAMA_URL = ENV.fetch("OLLAMA_URL", "http://localhost:11434")
 
 Service = Struct.new(:name, :cmd, :match_token, :pid, :pgid, keyword_init: true)
 
@@ -37,6 +42,32 @@ end
 
 def error_log(message)
   warn("[dev][error] #{message}")
+end
+
+def bool_env(value, default: false)
+  text = value.to_s.strip.downcase
+  return default if text.empty?
+
+  return true if %w[1 true yes on].include?(text)
+  return false if %w[0 false no off].include?(text)
+
+  default
+end
+
+def local_ai_mode
+  raw = ENV.fetch("START_LOCAL_AI", "auto").to_s.strip.downcase
+  return "enabled" if %w[1 true yes on].include?(raw)
+  return "disabled" if %w[0 false no off].include?(raw)
+
+  "auto"
+end
+
+def local_ai_required?
+  mode = local_ai_mode
+  return false if mode == "disabled"
+  return true if mode == "enabled"
+
+  bool_env(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "true"), default: true)
 end
 
 def process_alive?(pid)
@@ -280,6 +311,137 @@ rescue StandardError
   false
 end
 
+def parse_port_from_url(url, default_port)
+  uri = URI.parse(url.to_s)
+  Integer(uri.port || default_port)
+rescue StandardError
+  Integer(default_port)
+end
+
+def port_listener_hint(port)
+  return nil if port.to_i <= 0
+
+  row = `ss -ltnp 'sport = :#{port.to_i}' 2>/dev/null | tail -n +2 | head -n 1`.to_s.strip
+  row.empty? ? nil : row
+rescue StandardError
+  nil
+end
+
+def fetch_json(url, path:, open_timeout:, read_timeout:)
+  uri = URI.parse(url.to_s)
+  uri.path = path
+  uri.query = nil
+
+  http = Net::HTTP.new(uri.host, uri.port)
+  http.use_ssl = uri.scheme == "https"
+  http.open_timeout = open_timeout
+  http.read_timeout = read_timeout
+
+  request = Net::HTTP::Get.new(uri.request_uri)
+  response = http.request(request)
+  body = response.body.to_s
+  data = body.empty? ? {} : JSON.parse(body)
+  { status_code: response.code.to_i, data: data }
+rescue StandardError => e
+  { error: "#{e.class}: #{e.message}" }
+end
+
+def local_ai_health_snapshot
+  micro = fetch_json(
+    LOCAL_AI_SERVICE_URL,
+    path: "/health",
+    open_timeout: LOCAL_AI_HTTP_OPEN_TIMEOUT_SECONDS,
+    read_timeout: LOCAL_AI_HTTP_READ_TIMEOUT_SECONDS
+  )
+  ollama = fetch_json(
+    OLLAMA_URL,
+    path: "/api/tags",
+    open_timeout: LOCAL_AI_HTTP_OPEN_TIMEOUT_SECONDS,
+    read_timeout: LOCAL_AI_HTTP_READ_TIMEOUT_SECONDS
+  )
+
+  micro_ok = micro[:status_code] == 200 && micro.dig(:data, "status").to_s == "healthy"
+  ollama_ok = ollama[:status_code] == 200 && ollama.dig(:data, "models").is_a?(Array)
+
+  {
+    ok: micro_ok && ollama_ok,
+    microservice_ok: micro_ok,
+    ollama_ok: ollama_ok,
+    microservice_error: micro[:error],
+    ollama_error: ollama[:error],
+    microservice_status_code: micro[:status_code],
+    ollama_status_code: ollama[:status_code],
+    microservice_url: LOCAL_AI_SERVICE_URL,
+    ollama_url: OLLAMA_URL
+  }
+end
+
+def wait_for_local_ai_ready(timeout_seconds:)
+  latest = nil
+  ready = wait_until(timeout_seconds: timeout_seconds) do
+    latest = local_ai_health_snapshot
+    latest[:ok]
+  end
+  [ready, latest || local_ai_health_snapshot]
+end
+
+def ensure_local_ai_before_jobs
+  required = local_ai_required?
+  mode = local_ai_mode
+  initial = local_ai_health_snapshot
+
+  if initial[:ok]
+    log("Local AI ready (mode=#{mode}, ownership=external)")
+    return {
+      "mode" => mode,
+      "required" => required,
+      "owned" => false,
+      "ready" => true,
+      "preexisting" => true,
+      "snapshot" => initial
+    }
+  end
+
+  if required
+    log("Local AI not ready; attempting startup via bin/local_ai_services")
+    started = system("bin/local_ai_services", "start", chdir: ROOT)
+    ready, snapshot = wait_for_local_ai_ready(timeout_seconds: LOCAL_AI_READY_TIMEOUT_SECONDS)
+    unless started && ready
+      micro_port = parse_port_from_url(LOCAL_AI_SERVICE_URL, 8000)
+      ollama_port = parse_port_from_url(OLLAMA_URL, 11434)
+      warn_log("Microservice listener hint (port #{micro_port}): #{port_listener_hint(micro_port) || 'none'}")
+      warn_log("Ollama listener hint (port #{ollama_port}): #{port_listener_hint(ollama_port) || 'none'}")
+      error_log(
+        "Local AI is required but not healthy. " \
+        "microservice_ok=#{snapshot[:microservice_ok]} ollama_ok=#{snapshot[:ollama_ok]} " \
+        "microservice_error=#{snapshot[:microservice_error] || 'none'} " \
+        "ollama_error=#{snapshot[:ollama_error] || 'none'}"
+      )
+      raise "Local AI services failed readiness checks"
+    end
+
+    log("Local AI ready (mode=#{mode}, ownership=managed)")
+    return {
+      "mode" => mode,
+      "required" => required,
+      "owned" => true,
+      "ready" => true,
+      "preexisting" => false,
+      "snapshot" => snapshot
+    }
+  end
+
+  warn_log("Local AI not ready, continuing (mode=#{mode}, required=false)")
+  {
+    "mode" => mode,
+    "required" => required,
+    "owned" => false,
+    "ready" => false,
+    "preexisting" => false,
+    "snapshot" => initial
+  }
+end
+
 def build_services(rails_args)
   env_path = ENV.fetch("PATH", "")
   ffmpeg_bin = ENV.fetch("FFMPEG_BIN", "$HOME/.local/bin/ffmpeg")
@@ -318,11 +480,14 @@ def build_services(rails_args)
   ]
 end
 
-def write_state(supervisor_pid:, services:, local_ai_started: false)
+def write_state(supervisor_pid:, services:, local_ai: nil)
   FileUtils.mkdir_p(PID_DIR)
+  local_ai_payload = local_ai.is_a?(Hash) ? local_ai : {}
+  local_ai_owned = bool_env(local_ai_payload["owned"], default: false)
   payload = {
     "supervisor_pid" => supervisor_pid,
-    "local_ai_started" => local_ai_started,
+    "local_ai_started" => local_ai_owned,
+    "local_ai" => local_ai_payload,
     "started_at" => Time.now.utc.iso8601,
     "services" => services.to_h do |service|
       [
@@ -372,20 +537,16 @@ end
 
 def stop_local_ai_if_started(state)
   return unless state.is_a?(Hash)
-  return unless state["local_ai_started"]
+  local_ai_state = state["local_ai"].is_a?(Hash) ? state["local_ai"] : {}
+  local_ai_owned = if state.key?("local_ai_started")
+    bool_env(state["local_ai_started"], default: false)
+  else
+    bool_env(local_ai_state["owned"], default: false)
+  end
+  return unless local_ai_owned
 
   log("Stopping local AI services")
   system("bin/local_ai_services", "stop", chdir: ROOT)
-end
-
-def start_local_ai_if_enabled
-  enabled = ENV.fetch("START_LOCAL_AI", "false") == "true"
-  return false unless enabled
-
-  log("Starting local AI services")
-  ok = system("bin/local_ai_services", "start", chdir: ROOT)
-  warn_log("Local AI services failed to start") unless ok
-  ok
 end
 
 def signalable_service?(service, strict_match:)
@@ -493,7 +654,7 @@ def start_stack(rails_args)
   stop_from_state if File.exist?(STATE_FILE)
   ensure_rails_pidfile_consistency!
 
-  local_ai_started = start_local_ai_if_enabled
+  local_ai_state = ensure_local_ai_before_jobs
 
   log("Building assets")
   system("yarn", "build", chdir: ROOT) || warn_log("JavaScript build failed")
@@ -502,7 +663,7 @@ def start_stack(rails_args)
   services = build_services(rails_args)
   services.each { |service| spawn_service(service) }
 
-  write_state(supervisor_pid: Process.pid, services: services, local_ai_started: local_ai_started)
+  write_state(supervisor_pid: Process.pid, services: services, local_ai: local_ai_state)
 
   shutdown_signal = nil
   Signal.trap("INT") { shutdown_signal ||= "INT" }
@@ -513,7 +674,7 @@ def start_stack(rails_args)
   loop do
     if shutdown_signal
       graceful_stop_services(services, reason: "signal #{shutdown_signal}")
-      stop_local_ai_if_started({ "local_ai_started" => local_ai_started })
+      stop_local_ai_if_started({ "local_ai" => local_ai_state })
       remove_state
       exit(0)
     end
@@ -543,7 +704,7 @@ def start_stack(rails_args)
         warn_log("#{service_name} exited (pid=#{pid}, status=#{status.inspect}). Shutting down remaining services.")
 
         graceful_stop_services(services.reject { |entry| entry.pid.to_i == pid.to_i }, reason: "#{service_name} exited")
-        stop_local_ai_if_started({ "local_ai_started" => local_ai_started })
+        stop_local_ai_if_started({ "local_ai" => local_ai_state })
         remove_state
 
         exit_code = status.exitstatus
@@ -552,7 +713,7 @@ def start_stack(rails_args)
       end
     rescue Errno::ECHILD
       warn_log("No child processes left. Exiting supervisor.")
-      stop_local_ai_if_started({ "local_ai_started" => local_ai_started })
+      stop_local_ai_if_started({ "local_ai" => local_ai_state })
       remove_state
       exit(0)
     end
@@ -579,7 +740,33 @@ def ensure_rails_pidfile_consistency!
   end
 end
 
-COMMANDS = %w[start stop restart status].freeze
+def health_check
+  state = read_state
+  if state
+    supervisor_pid = state["supervisor_pid"].to_i
+    log("Supervisor PID #{supervisor_pid}: #{process_alive?(supervisor_pid) ? 'running' : 'not-running'}")
+  else
+    log("No dev state file found")
+  end
+
+  web_ok = port_open?(WEB_PORT)
+  log("Web port #{WEB_PORT}: #{web_ok ? 'open' : 'closed'}")
+
+  snapshot = local_ai_health_snapshot
+  log(
+    "Local AI: #{snapshot[:ok] ? 'healthy' : 'unhealthy'} " \
+    "(microservice=#{snapshot[:microservice_ok] ? 'ok' : 'down'}, " \
+    "ollama=#{snapshot[:ollama_ok] ? 'ok' : 'down'})"
+  )
+  unless snapshot[:ok]
+    warn_log("Local AI details: microservice_error=#{snapshot[:microservice_error] || 'none'} ollama_error=#{snapshot[:ollama_error] || 'none'}")
+  end
+
+  local_ai_ok = snapshot[:ok] || !local_ai_required?
+  exit(web_ok && local_ai_ok ? 0 : 1)
+end
+
+COMMANDS = %w[start stop restart status health].freeze
 
 command = if COMMANDS.include?(ARGV.first.to_s)
   ARGV.shift
@@ -598,6 +785,8 @@ begin
     start_stack(ARGV)
   when "status"
     status_from_state
+  when "health"
+    health_check
   end
 rescue StandardError => e
   error_log("#{e.class}: #{e.message}")

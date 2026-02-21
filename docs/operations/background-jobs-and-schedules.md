@@ -26,6 +26,18 @@ Dedicated capsules (`config/initializers/sidekiq.rb`):
 - `ai_metadata_queue`
 - `frame_generation`
 
+## Development Startup Guardrails
+
+- `bin/dev` validates local AI availability before worker startup when local AI is required.
+- Default mode is `START_LOCAL_AI=auto` with `USE_LOCAL_AI_MICROSERVICE=true`, so the dev supervisor will attempt `bin/local_ai_services start` and fail fast if health checks do not pass.
+- `bin/dev stop` / `bin/dev restart` only stop local AI services when they were started by that `bin/dev` session (ownership-safe shutdown).
+
+Useful checks:
+
+- `bin/dev health` for combined supervisor/web/local-AI readiness.
+- `bin/local_ai_services status` for AI-only health.
+- `bin/local_ai_services restart` to restart AI independently without restarting web workers.
+
 ## Recurring Schedule Source
 
 - Cron schedule is loaded from `config/sidekiq_schedule.yml` via sidekiq-cron.

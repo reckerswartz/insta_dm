@@ -79,7 +79,26 @@ Common keys:
 - `admin.password`
 
 ### Local AI Microservice
-Start local AI services:
+`bin/dev` now verifies local AI readiness before workers start when local AI is required.
+
+Default behavior:
+- `START_LOCAL_AI=auto` (default): if `USE_LOCAL_AI_MICROSERVICE=true` (default), `bin/dev` will attempt to start local AI services and fail fast if they are not healthy.
+- `START_LOCAL_AI=true`: always require and auto-start local AI services.
+- `START_LOCAL_AI=false`: skip auto-start and continue without local AI readiness gating.
+
+Health and lifecycle commands:
+
+```bash
+# Combined dev health (web + local AI)
+bin/dev health
+
+# Local AI stack only
+bin/local_ai_services status
+bin/local_ai_services restart
+bin/local_ai_services logs
+```
+
+Manual local AI setup:
 
 ```bash
 cd ai_microservice
@@ -88,8 +107,9 @@ cd ai_microservice
 ```
 
 Useful env vars:
-- `LOCAL_AI_MICROSERVICE_URL` (default `http://127.0.0.1:5001`)
-- `OLLAMA_URL` (default `http://127.0.0.1:11434`)
+- `LOCAL_AI_SERVICE_URL` (default `http://localhost:8000`)
+- `OLLAMA_URL` (default `http://localhost:11434`)
+- `OLLAMA_MODEL` (default `mistral:7b`)
 
 ### Active Record Encryption Bootstrap
 

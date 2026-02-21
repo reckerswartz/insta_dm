@@ -73,7 +73,7 @@ HTTP client wrapping the local Python AI microservice (`ai_microservice/`).
 
 ### Base URL
 
-Configured via `LOCAL_AI_MICROSERVICE_URL` env var, defaults to `http://127.0.0.1:5001`.
+Configured via `LOCAL_AI_SERVICE_URL` env var, defaults to `http://localhost:8000`.
 
 ### Supported Operations
 
