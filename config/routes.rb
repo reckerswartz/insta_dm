@@ -32,6 +32,7 @@ Rails.application.routes.draw do
       post :sync_all_stories_continuous
       get :story_media_archive
       post :generate_llm_comment
+      post :resend_story_reply
       get :technical_details
       post :run_continuous_processing
     end

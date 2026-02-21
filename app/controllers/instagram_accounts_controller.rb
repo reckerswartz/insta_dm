@@ -6,7 +6,7 @@ class InstagramAccountsController < ApplicationController
   before_action :set_account, only: %i[
     show update destroy select manual_login import_cookies export_cookies validate_session
     sync_next_profiles sync_profile_stories sync_stories_with_comments
-    sync_all_stories_continuous story_media_archive generate_llm_comment technical_details
+    sync_all_stories_continuous story_media_archive generate_llm_comment resend_story_reply technical_details
     run_continuous_processing
   ]
   before_action :normalize_navigation_format, only: %i[show]
@@ -306,6 +306,16 @@ class InstagramAccountsController < ApplicationController
       provider: params.fetch(:provider, :local),
       model: params[:model].presence,
       status_only: params[:status_only]
+    ).call
+
+    render json: result.payload, status: result.status
+  end
+
+  def resend_story_reply
+    result = InstagramAccounts::StoryReplyResendService.new(
+      account: @account,
+      event_id: params.require(:event_id),
+      comment_text: params[:comment_text]
     ).call
 
     render json: result.payload, status: result.status

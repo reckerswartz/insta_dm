@@ -322,7 +322,9 @@ module Instagram
                   end
 
                   stats[:stories_visited] += 1
-                  profile = find_story_network_profile(username: context[:username])
+                  network_profile = find_story_network_profile(username: context[:username])
+                  profile = network_profile || find_or_create_profile_for_auto_engagement!(username: context[:username])
+                  out_of_network_profile = network_profile.nil?
 
                   ad_context = detect_story_ad_context(driver: driver, media: media)
                   capture_task_html(
@@ -377,44 +379,6 @@ module Instagram
                         story_ref: ref,
                         reason: ad_context[:reason],
                         marker_text: ad_context[:marker_text]
-                      }
-                    )
-                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                    unless moved
-                      exit_reason = "next_navigation_failed"
-                      break
-                    end
-                    next
-                  end
-
-                  if profile.nil?
-                    stats[:skipped_out_of_network] += 1
-                    account_profile.record_event!(
-                      kind: "story_reply_skipped",
-                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                      occurred_at: Time.current,
-                      metadata: {
-                        source: "home_story_carousel",
-                        story_id: story_id,
-                        story_ref: ref,
-                        story_url: story_url,
-                        reason: "profile_not_in_network",
-                        status: "Out of network",
-                        username: context[:username].to_s,
-                        media_url: media[:url],
-                        media_source: media[:source]
-                      }
-                    )
-                    capture_task_html(
-                      driver: driver,
-                      task_name: "home_story_sync_out_of_network_skipped",
-                      status: "ok",
-                      meta: {
-                        story_id: story_id,
-                        story_ref: ref,
-                        username: context[:username].to_s,
-                        reason: "profile_not_in_network",
-                        media_url: media[:url].to_s.byteslice(0, 220)
                       }
                     )
                     moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
@@ -700,6 +664,46 @@ module Instagram
                     attached = attach_download_to_event(event: downloaded_event, download: download)
                     raise "story_media_attach_failed" unless attached
                     InstagramProfileEvent.broadcast_story_archive_refresh!(account: @account)
+                    archive_link = archive_link_metadata(downloaded_event: downloaded_event)
+
+                    if out_of_network_profile
+                      stats[:skipped_out_of_network] += 1
+                      profile.record_event!(
+                        kind: "story_reply_skipped",
+                        external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                        occurred_at: Time.current,
+                        metadata: {
+                          source: "home_story_carousel",
+                          story_id: story_id,
+                          story_ref: ref,
+                          story_url: story_url,
+                          media_url: media[:url],
+                          media_source: media[:source],
+                          reason: "profile_not_in_network",
+                          status: "Out of network",
+                          username: context[:username].to_s
+                        }.merge(archive_link)
+                      )
+                      capture_task_html(
+                        driver: driver,
+                        task_name: "home_story_sync_out_of_network_archived",
+                        status: "ok",
+                        meta: {
+                          story_id: story_id,
+                          story_ref: ref,
+                          username: context[:username].to_s,
+                          reason: "profile_not_in_network",
+                          media_url: media[:url].to_s.byteslice(0, 220),
+                          archive_event_id: downloaded_event.id
+                        }
+                      )
+                      moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                      unless moved
+                        exit_reason = "next_navigation_failed"
+                        break
+                      end
+                      next
+                    end
 
                     payload = build_auto_engagement_post_payload(
                       profile: profile,
@@ -740,7 +744,7 @@ module Instagram
                           media_url: media[:url],
                           media_source: media[:source],
                           reason: "missing_auto_reply_tag"
-                        }
+                        }.merge(archive_link)
                       )
                     elsif comment_text.blank?
                       profile.record_event!(
@@ -755,7 +759,7 @@ module Instagram
                           media_url: media[:url],
                           media_source: media[:source],
                           reason: "no_comment_generated"
-                        }
+                        }.merge(archive_link)
                       )
                     elsif interaction_retry_active
                       stats[:skipped_interaction_retry] += 1
@@ -776,7 +780,7 @@ module Instagram
                           retry_after_at: interaction_retry_after_at,
                           interaction_state: interaction_state,
                           interaction_reason: interaction_reason
-                        }
+                        }.merge(archive_link)
                       )
                     elsif api_external_context[:known] && api_external_context[:has_external_profile_link]
                       stats[:skipped_reshared_external_link] += 1
@@ -797,7 +801,7 @@ module Instagram
                           linked_profile_url: api_external_context[:linked_profile_url],
                           marker_text: api_external_context[:marker_text],
                           linked_targets: Array(api_external_context[:linked_targets])
-                        }
+                        }.merge(archive_link)
                       )
                     elsif api_reply_gate[:known] && api_reply_gate[:reply_possible] == false
                       stats[:skipped_unreplyable] += 1
@@ -823,7 +827,7 @@ module Instagram
                           reason: api_reply_gate[:reason_code],
                           status: api_reply_gate[:status],
                           retry_after_at: retry_after.iso8601
-                        }
+                        }.merge(archive_link)
                       )
                     else
                       reply_gate =
@@ -856,7 +860,7 @@ module Instagram
                               reaction_reason: reaction_result[:reason],
                               reaction_marker_text: reaction_result[:marker_text],
                               reply_gate_reason: reply_gate[:reason_code]
-                            }
+                            }.merge(archive_link)
                           )
                         else
                           stats[:skipped_unreplyable] += 1
@@ -887,7 +891,7 @@ module Instagram
                               reaction_fallback_attempted: true,
                               reaction_fallback_reason: reaction_result[:reason],
                               reaction_fallback_marker_text: reaction_result[:marker_text]
-                            }
+                            }.merge(archive_link)
                           )
                         end
                       else
@@ -944,7 +948,7 @@ module Instagram
                               media_url: media[:url],
                               comment_text: comment_text,
                               submission_method: comment_result[:method]
-                            }
+                            }.merge(archive_link)
                           )
                           attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: comment_text)
                         else
@@ -963,7 +967,7 @@ module Instagram
                               status: skip_status[:status],
                               submission_reason: comment_result[:reason],
                               submission_marker_text: comment_result[:marker_text]
-                            }
+                            }.merge(archive_link)
                           )
                         end
                       end
@@ -1275,6 +1279,15 @@ module Instagram
         rescue StandardError => e
           Rails.logger.warn("[HomeCarouselSync] media attach from download failed event_id=#{event&.id}: #{e.class}: #{e.message}")
           false
+        end
+
+        def archive_link_metadata(downloaded_event:)
+          return {} if downloaded_event.blank?
+
+          {
+            archive_event_id: downloaded_event.id,
+            archive_event_external_id: downloaded_event.external_id.to_s
+          }
         end
 
         def load_story_download_media_for_profile(profile:, story_id:)
