@@ -82,5 +82,39 @@ module Instagram
         normalize_username: method(:normalize_username)
       ).call(username: username, stories_limit: stories_limit)
     end
+
+    def story_reply_eligibility(username:, story_id:)
+      uname = normalize_username(username)
+      sid = story_id.to_s.strip
+      return { eligible: false, reason_code: "missing_story_username", status: "failed", story_item: nil } if uname.blank?
+      return { eligible: false, reason_code: "missing_story_id", status: "failed", story_item: nil } if sid.blank?
+
+      item = resolve_story_item_via_api(username: uname, story_id: sid, cache: {})
+      return { eligible: false, reason_code: "story_unavailable", status: "expired_removed", story_item: nil } unless item.is_a?(Hash)
+
+      if item[:can_reply] == false
+        return { eligible: false, reason_code: "commenting_not_allowed", status: "failed", story_item: item }
+      end
+
+      { eligible: true, reason_code: nil, status: "eligible", story_item: item }
+    rescue StandardError => e
+      {
+        eligible: false,
+        reason_code: "eligibility_check_error:#{e.class.name}",
+        status: "failed",
+        story_item: nil
+      }
+    end
+
+    def send_story_reply_via_api!(story_id:, story_username:, comment_text:)
+      result = comment_on_story_via_api!(
+        story_id: story_id,
+        story_username: story_username,
+        comment_text: comment_text
+      )
+      result.is_a?(Hash) ? result : { posted: false, method: "api", reason: "invalid_api_result" }
+    rescue StandardError => e
+      { posted: false, method: "api", reason: "api_exception:#{e.class.name}" }
+    end
   end
 end

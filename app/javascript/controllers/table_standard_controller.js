@@ -16,6 +16,7 @@ export default class extends Controller {
     storageKey: String,
     paginationSize: { type: Number, default: 25 },
     pagination: { type: Boolean, default: true },
+    autoResetEmpty: { type: Boolean, default: false },
   }
 
   connect() {
@@ -80,6 +81,9 @@ export default class extends Controller {
     }
 
     this.tableInstance = new Tabulator(host, options)
+    this.tableInstance.on("tableBuilt", () => {
+      this.autoResetIfPersistedStateHidesRows(parsed.rows)
+    })
     attachTabulatorBehaviors(this, this.tableInstance, {
       storageKey,
       paginationSize: this.paginationSizeValue,
@@ -129,5 +133,29 @@ export default class extends Controller {
     })
 
     return { columns, rows }
+  }
+
+  autoResetIfPersistedStateHidesRows(sourceRows) {
+    if (!this.autoResetEmptyValue) return
+    const rows = Array.isArray(sourceRows) ? sourceRows : []
+    if (rows.length === 0) return
+    if (!this.tableInstance) return
+
+    let activeCount = 0
+    try {
+      activeCount = Number(this.tableInstance.getDataCount("active") || 0)
+    } catch (_error) {
+      activeCount = 0
+    }
+    if (activeCount > 0) return
+
+    try {
+      this.tableInstance.clearHeaderFilter?.()
+      this.tableInstance.clearFilter?.(true)
+      this.tableInstance.clearSort?.()
+      this.tableInstance.replaceData?.(rows)
+    } catch (_error) {
+      // Keep original rendered state if reset fails.
+    }
   }
 }

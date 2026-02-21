@@ -85,6 +85,12 @@ class SyncHomeStoryCarouselJob < ApplicationJob
       partial: "shared/notification",
       locals: { kind: "alert", message: "Home story sync failed: #{e.message}" }
     ) if account
+    record_job_failure_event(
+      account: account,
+      error: e,
+      story_limit: story_limit,
+      auto_reply_only: auto_reply_only
+    )
     raise
   ensure
     release_story_sync_lock!(account_id: account.id) if lock_acquired && account
@@ -121,5 +127,27 @@ class SyncHomeStoryCarouselJob < ApplicationJob
     ActiveRecord::Base.connection.adapter_name.to_s.downcase.include?("postgres")
   rescue StandardError
     false
+  end
+
+  def record_job_failure_event(account:, error:, story_limit:, auto_reply_only:)
+    return unless account
+
+    profile = account.instagram_profiles.find_or_create_by!(username: account.username)
+    profile.record_event!(
+      kind: "story_sync_job_failed",
+      external_id: "story_sync_job_failed:home_carousel:#{Time.current.utc.iso8601(6)}",
+      occurred_at: Time.current,
+      metadata: {
+        source: "home_story_carousel",
+        reason: "job_exception",
+        story_limit: story_limit.to_i,
+        auto_reply_only: ActiveModel::Type::Boolean.new.cast(auto_reply_only),
+        active_job_id: job_id,
+        error_class: error.class.name,
+        error_message: error.message.to_s.byteslice(0, 500)
+      }
+    )
+  rescue StandardError
+    nil
   end
 end

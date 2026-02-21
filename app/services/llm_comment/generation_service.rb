@@ -95,7 +95,10 @@ module LlmComment
           next
         end
 
-        if event.llm_comment_in_progress? && event.llm_comment_job_id.to_s.present? && event.llm_comment_job_id.to_s != active_job
+        # Allow queued jobs to be claimed by a newer job id (for deferred/re-enqueued runs).
+        if event.llm_comment_status.to_s == "running" &&
+            event.llm_comment_job_id.to_s.present? &&
+            event.llm_comment_job_id.to_s != active_job
           Ops::StructuredLogger.info(
             event: "llm_comment.duplicate_job_skipped",
             payload: {

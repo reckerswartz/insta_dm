@@ -45,4 +45,21 @@ RSpec.describe LlmComment::GenerationService do
       Current.set(active_job_id: "job-9") { service.call }
     end.to raise_error(ActiveRecord::StatementInvalid)
   end
+
+  it "claims queued events even when a newer deferred job id is running" do
+    event = build_story_event(status: "queued", job_id: "job-old")
+    service = described_class.new(instagram_profile_event_id: event.id)
+
+    allow(service).to receive(:prepare_profile_context)
+    allow(service).to receive(:persist_profile_preparation_snapshot)
+    allow(service).to receive(:generate_comment) do
+      service.instance_variable_set(:@result, { source: "spec" })
+    end
+
+    Current.set(active_job_id: "job-new") { service.call }
+
+    expect(service).to have_received(:generate_comment)
+    expect(event.reload.llm_comment_status).to eq("running")
+    expect(event.llm_comment_job_id).to eq("job-new")
+  end
 end

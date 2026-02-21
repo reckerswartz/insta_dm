@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { getCableConsumer } from "../lib/cable_consumer"
 import { notifyApp } from "../lib/notifications"
 
 const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,[role='button'],video,.plyr"
@@ -20,12 +21,16 @@ export default class extends Controller {
     this.minRefreshIntervalMs = 1200
     this.lastRefreshSignalValue = ""
     this.itemsById = new Map()
+    this.storyReplyConsumer = null
+    this.storyReplySubscription = null
+    this.storyReplyWsConnected = false
     this.modalEl = null
     this.bootstrapped = false
     this.boundHandleModalKeydown = this.handleModalKeydown.bind(this)
     this.lastRefreshSignalValue = this.readRefreshSignalValue()
     this.installRefreshSignalObserver()
     this.installScrollEnhancements()
+    this.ensureStoryReplySubscription()
 
     this.loaderTarget.hidden = false
     this.loaderTarget.textContent = "Archive idle. Click Load Archive to fetch media."
@@ -37,6 +42,7 @@ export default class extends Controller {
 
   disconnect() {
     this.closeStoryModal()
+    this.teardownStoryReplySubscription()
     if (this.refreshObserver) this.refreshObserver.disconnect()
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
     if (this.initialRefreshTimer) clearTimeout(this.initialRefreshTimer)
@@ -299,6 +305,8 @@ export default class extends Controller {
       hasComment: item.has_llm_comment,
       generatedComment: item.llm_generated_comment,
     })
+    const manual = this.resolveManualSendState(item.manual_send_status)
+    const manualMessage = this.manualSendMessageForItem(item, manual)
     const generatedAt = this.formatDate(item.llm_comment_generated_at)
     const forceRegenerate = state.code === "completed"
 
@@ -307,6 +315,10 @@ export default class extends Controller {
         <div class="llm-comment-header">
           <span class="story-status-chip ${this.esc(state.chipClass)}" data-role="llm-status">${this.esc(state.label)}</span>
           <p class="meta llm-completion-row ${state.code === "completed" ? "" : "hidden"}" data-role="llm-completion">Completed ${this.esc(generatedAt)}</p>
+        </div>
+        <div class="manual-send-state" data-event-id="${this.esc(String(item.id))}" data-manual-status="${this.esc(manual.code)}">
+          <span class="story-status-chip ${this.esc(manual.chipClass)}" data-role="manual-send-status">${this.esc(manual.label)}</span>
+          <p class="meta ${manualMessage ? "" : "hidden"}" data-role="manual-send-message">${this.esc(manualMessage || "")}</p>
         </div>
         <div class="llm-card-actions">
           <button
@@ -406,6 +418,8 @@ export default class extends Controller {
       hasComment: item.has_llm_comment,
       generatedComment: item.llm_generated_comment,
     })
+    const manual = this.resolveManualSendState(item.manual_send_status)
+    const manualMessage = this.manualSendMessageForItem(item, manual)
     const llmFailed = llmState.code === "failed"
     const llmSkipped = llmState.code === "skipped"
     const llmLabel = llmState.code === "completed" ? "Regenerate" : (llmFailed || llmSkipped ? "Retry Generation" : llmState.buttonLabel)
@@ -462,6 +476,10 @@ export default class extends Controller {
               <p class="meta"><strong>Story ID:</strong> ${this.esc(storyIdentifier)}</p>
               <p class="meta"><strong>Posted:</strong> ${this.esc(posted)}</p>
               <p class="meta"><strong>Downloaded:</strong> ${this.esc(downloaded)}</p>
+              <div class="manual-send-state" data-event-id="${this.esc(String(item.id))}" data-manual-status="${this.esc(manual.code)}">
+                <p class="meta"><strong>Manual send:</strong> <span class="story-status-chip ${this.esc(manual.chipClass)}" data-role="manual-send-status">${this.esc(manual.label)}</span></p>
+                <p class="meta ${manualMessage ? "" : "hidden"}" data-role="manual-send-message">${this.esc(manualMessage || "")}</p>
+              </div>
               <section class="story-modal-section">
                 <h4>Image Metadata</h4>
                 <p class="meta"><strong>Type:</strong> ${this.esc(contentType || "-")}</p>
@@ -508,7 +526,13 @@ export default class extends Controller {
     const text = String(button?.dataset?.commentText || "").trim()
     if (!eventId || !text) return
 
-    button.disabled = true
+    this.updateManualSendState(eventId, {
+      status: "sending",
+      message: "Sending comment...",
+      reason: "manual_send_requested",
+      comment_text: text,
+    })
+
     try {
       const response = await fetch(`/instagram_accounts/${this.accountIdValue}/resend_story_reply`, {
         method: "POST",
@@ -523,13 +547,29 @@ export default class extends Controller {
         }),
       })
       const payload = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`)
-      notifyApp("Comment sent manually.", "success")
-      this.scheduleRefresh()
+      const status = String(payload?.status || "").toLowerCase()
+      this.updateManualSendState(eventId, payload)
+
+      if (!response.ok) {
+        if (!status || status === "sending") {
+          this.updateManualSendState(eventId, {
+            status: "failed",
+            error: payload?.error || `Request failed (${response.status})`,
+            message: payload?.error || "Manual send failed.",
+          })
+        }
+        throw new Error(payload.error || `Request failed (${response.status})`)
+      }
+
+      if (status === "sent") {
+        notifyApp(payload?.already_posted ? "Comment already posted for this story." : "Comment sent manually.", "success")
+      } else if (status === "expired_removed") {
+        notifyApp("Story is unavailable (expired or removed).", "notice")
+      } else if (status === "failed") {
+        notifyApp(`Manual send failed: ${payload?.error || payload?.reason || "Unknown error"}`, "error")
+      }
     } catch (error) {
       notifyApp(`Manual send failed: ${error.message}`, "error")
-    } finally {
-      button.disabled = false
     }
   }
 
@@ -537,11 +577,182 @@ export default class extends Controller {
     return document.querySelector("meta[name='csrf-token']")?.content || ""
   }
 
+  ensureStoryReplySubscription() {
+    if (!Number.isFinite(this.accountIdValue) || this.accountIdValue <= 0) return
+    if (this.storyReplySubscription) return
+
+    try {
+      this.storyReplyConsumer = getCableConsumer()
+      if (!this.storyReplyConsumer?.subscriptions || typeof this.storyReplyConsumer.subscriptions.create !== "function") return
+
+      this.storyReplySubscription = this.storyReplyConsumer.subscriptions.create(
+        {
+          channel: "StoryReplyStatusChannel",
+          account_id: this.accountIdValue,
+        },
+        {
+          connected: () => {
+            this.storyReplyWsConnected = true
+          },
+          disconnected: () => {
+            this.storyReplyWsConnected = false
+          },
+          rejected: () => {
+            this.storyReplyWsConnected = false
+          },
+          received: (data) => this.updateManualSendState(data?.event_id, data),
+        },
+      )
+    } catch (_error) {
+      this.storyReplyWsConnected = false
+      this.storyReplySubscription = null
+      this.storyReplyConsumer = null
+    }
+  }
+
+  teardownStoryReplySubscription() {
+    if (!this.storyReplyConsumer || !this.storyReplySubscription) return
+    try {
+      this.storyReplyConsumer.subscriptions.remove(this.storyReplySubscription)
+    } catch (_error) {
+      // no-op
+    }
+    this.storyReplySubscription = null
+    this.storyReplyConsumer = null
+    this.storyReplyWsConnected = false
+  }
+
+  updateManualSendState(eventId, payload = {}) {
+    const key = String(eventId || "").trim()
+    if (!key) return
+
+    const state = this.resolveManualSendState(payload?.status)
+    const message = this.manualSendMessageForPayload(payload, state)
+    const reason = String(payload?.reason || "").trim()
+    const error = String(payload?.error || "").trim()
+    const updatedAt = payload?.updated_at || payload?.manual_send_updated_at || null
+    const commentText = payload?.comment_text || payload?.manual_send_last_comment || null
+
+    const item = this.itemsById.get(key)
+    if (item) {
+      item.manual_send_status = state.code
+      item.manual_send_reason = reason || item.manual_send_reason
+      item.manual_send_message = message || item.manual_send_message
+      item.manual_send_last_error = error || (state.code === "failed" ? item.manual_send_last_error : null)
+      item.manual_send_updated_at = updatedAt || item.manual_send_updated_at
+      if (state.code === "sent") {
+        item.manual_send_last_sent_at = updatedAt || item.manual_send_last_sent_at
+        if (commentText) item.reply_comment = commentText
+      }
+      if (commentText) item.manual_send_last_comment = commentText
+    }
+
+    document
+      .querySelectorAll(`.manual-send-state[data-event-id="${this.escapeSelector(key)}"]`)
+      .forEach((section) => {
+        section.dataset.manualStatus = state.code
+
+        const statusEl = section.querySelector("[data-role='manual-send-status']")
+        if (statusEl) {
+          statusEl.textContent = state.label
+          statusEl.classList.remove("idle", "queued", "in-progress", "completed", "failed", "skipped")
+          statusEl.classList.add(state.chipClass)
+        }
+
+        const messageEl = section.querySelector("[data-role='manual-send-message']")
+        if (messageEl) {
+          if (message) {
+            messageEl.textContent = message
+            messageEl.classList.remove("hidden")
+          } else {
+            messageEl.textContent = ""
+            messageEl.classList.add("hidden")
+          }
+        }
+      })
+
+    this.updateManualSendButtonsForEvent(key, state)
+  }
+
+  resolveManualSendState(status) {
+    const normalized = String(status || "").toLowerCase().trim()
+    if (normalized === "sending" || normalized === "queued" || normalized === "running") {
+      return { code: "sending", label: "Sending", chipClass: "in-progress", sending: true }
+    }
+    if (normalized === "sent") {
+      return { code: "sent", label: "Sent", chipClass: "completed", sending: false }
+    }
+    if (normalized === "failed" || normalized === "error") {
+      return { code: "failed", label: "Failed", chipClass: "failed", sending: false }
+    }
+    if (normalized === "expired_removed" || normalized === "expired" || normalized === "removed") {
+      return { code: "expired_removed", label: "Expired / Removed", chipClass: "skipped", sending: false }
+    }
+    return { code: "ready", label: "Ready", chipClass: "idle", sending: false }
+  }
+
+  manualSendMessageForPayload(payload, state) {
+    const explicitMessage = String(payload?.message || "").trim()
+    const error = String(payload?.error || "").trim()
+    if (error) return error
+    if (explicitMessage) return explicitMessage
+    if (state.code === "sending") return "Sending comment..."
+    if (state.code === "expired_removed") return "Story expired or removed."
+    if (state.code === "failed") return "Manual send failed. Retry is available."
+    return ""
+  }
+
+  manualSendMessageForItem(item, manualState) {
+    const explicitMessage = String(item?.manual_send_message || "").trim()
+    const explicitError = String(item?.manual_send_last_error || "").trim()
+    if (explicitError) return explicitError
+    if (explicitMessage) return explicitMessage
+
+    if (manualState.code === "sent") {
+      const sentAt = this.formatDate(item?.manual_send_last_sent_at || item?.manual_send_updated_at)
+      return sentAt !== "-" ? `Sent ${sentAt}` : "Comment sent."
+    }
+    if (manualState.code === "sending") return "Sending comment..."
+    if (manualState.code === "expired_removed") return "Story expired or removed."
+    if (manualState.code === "failed") return "Manual send failed. Retry is available."
+    return ""
+  }
+
+  updateManualSendButtonsForEvent(eventId, state) {
+    const key = String(eventId)
+    document
+      .querySelectorAll(`.manual-send-btn[data-event-id="${this.escapeSelector(key)}"]`)
+      .forEach((button) => {
+        const baseLabel = String(button.dataset.baseLabel || "Send manually")
+        if (state.code === "sending") {
+          button.disabled = true
+          button.textContent = "Sending..."
+          return
+        }
+        if (state.code === "sent") {
+          button.disabled = true
+          button.textContent = "Sent"
+          return
+        }
+        if (state.code === "expired_removed") {
+          button.disabled = true
+          button.textContent = "Expired"
+          return
+        }
+
+        button.disabled = false
+        button.textContent = baseLabel
+      })
+  }
+
   renderSuggestionPreviewList(item, suggestions) {
     const rows = Array.isArray(suggestions) ? suggestions : []
     if (rows.length === 0) return ""
 
     const eventId = String(item.id)
+    const manual = this.resolveManualSendState(item.manual_send_status)
+    const sendDisabled = manual.sending || manual.code === "sent" || manual.code === "expired_removed"
+    const sendLabel = manual.sending ? "Sending..." : (manual.code === "sent" ? "Sent" : (manual.code === "expired_removed" ? "Expired" : "Send manually"))
     const html = rows
       .slice(0, 5)
       .map((row) => {
@@ -554,12 +765,14 @@ export default class extends Controller {
             <span>${this.esc(comment)}${this.esc(scoreText)}</span>
             <button
               type="button"
-              class="btn small secondary"
+              class="btn small secondary manual-send-btn"
               data-event-id="${this.esc(eventId)}"
               data-comment-text="${this.esc(comment)}"
+              data-base-label="Send manually"
               data-action="click->story-media-archive#sendSuggestion"
+              ${sendDisabled ? "disabled" : ""}
             >
-              Send manually
+              ${this.esc(sendLabel)}
             </button>
           </li>
         `
@@ -836,6 +1049,13 @@ export default class extends Controller {
     if (!value) return "-"
     const date = new Date(value)
     return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString()
+  }
+
+  escapeSelector(value) {
+    if (typeof window.CSS !== "undefined" && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(String(value))
+    }
+    return String(value).replaceAll('"', '\\"')
   }
 
   esc(value) {

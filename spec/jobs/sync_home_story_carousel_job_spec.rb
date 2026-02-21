@@ -45,4 +45,28 @@ RSpec.describe SyncHomeStoryCarouselJob do
 
     described_class.perform_now(instagram_account_id: account.id, story_limit: 1)
   end
+
+  it "records a sync failure event for audit visibility when the job errors early" do
+    account = InstagramAccount.create!(username: "story_sync_fail_#{SecureRandom.hex(4)}")
+    client = instance_double(Instagram::Client)
+    allow(Instagram::Client).to receive(:new).with(account: account).and_return(client)
+    allow(client).to receive(:sync_home_story_carousel!).and_raise(
+      Instagram::AuthenticationRequiredError,
+      "Stored cookies are not authenticated."
+    )
+    allow(Turbo::StreamsChannel).to receive(:broadcast_append_to)
+    allow_any_instance_of(described_class).to receive(:claim_story_sync_lock!).and_return(true)
+
+    described_class.perform_now(instagram_account_id: account.id, story_limit: 10, auto_reply_only: false)
+
+    profile = account.instagram_profiles.find_by(username: account.username)
+    expect(profile).to be_present
+
+    failure_event = profile.instagram_profile_events.where(kind: "story_sync_job_failed").order(id: :desc).first
+    expect(failure_event).to be_present
+    expect(failure_event.metadata["source"]).to eq("home_story_carousel")
+    expect(failure_event.metadata["reason"]).to eq("job_exception")
+    expect(failure_event.metadata["error_class"]).to eq("Instagram::AuthenticationRequiredError")
+    expect(failure_event.metadata["story_limit"]).to eq(10)
+  end
 end

@@ -1385,6 +1385,15 @@ pre {
   gap: 8px;
 }
 
+.manual-send-state {
+  display: grid;
+  gap: 4px;
+}
+
+.manual-send-state p {
+  margin: 0;
+}
+
 .story-status-chip {
   display: inline-flex;
   align-items: center;

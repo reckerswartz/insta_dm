@@ -36,17 +36,60 @@ RSpec.describe GenerateLlmCommentJob do
       { allow: false, reason: "high_cpu_load", retry_in_seconds: 12, snapshot: { load_per_core: 2.0 } }
     )
     allow(LlmComment::GenerationService).to receive(:new)
+    account = InstagramAccount.create!(username: "acct_defer_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "profile_defer_#{SecureRandom.hex(3)}")
+    event = profile.instagram_profile_events.create!(
+      kind: "story_downloaded",
+      external_id: "evt_defer_#{SecureRandom.hex(4)}",
+      detected_at: Time.current,
+      llm_comment_status: "queued",
+      llm_comment_job_id: "job-old",
+      metadata: {}
+    )
+    deferred_job = instance_double(ActiveJob::Base, job_id: "job-new")
 
     expect(described_class).to receive(:set).with(wait: 12.seconds).and_return(described_class)
     expect(described_class).to receive(:perform_later).with(
-      instagram_profile_event_id: 7,
+      instagram_profile_event_id: event.id,
       provider: "local",
       model: nil,
-      requested_by: "system"
+      requested_by: "system",
+      defer_attempt: 1
+    ).and_return(deferred_job)
+
+    job.perform(instagram_profile_event_id: event.id, provider: "local", requested_by: "system")
+    expect(LlmComment::GenerationService).not_to have_received(:new)
+    expect(event.reload.llm_comment_status).to eq("queued")
+    expect(event.llm_comment_job_id).to eq("job-new")
+  end
+
+  it "marks comment generation failed when resource guard defer attempts are exhausted" do
+    allow(Ops::ResourceGuard).to receive(:allow_ai_task?).and_return(
+      { allow: false, reason: "high_cpu_load", retry_in_seconds: 20, snapshot: { load_per_core: 2.0 } }
+    )
+    allow(LlmComment::GenerationService).to receive(:new)
+    account = InstagramAccount.create!(username: "acct_defer_exhaust_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "profile_defer_exhaust_#{SecureRandom.hex(3)}")
+    event = profile.instagram_profile_events.create!(
+      kind: "story_downloaded",
+      external_id: "evt_defer_exhaust_#{SecureRandom.hex(4)}",
+      detected_at: Time.current,
+      llm_comment_status: "queued",
+      llm_comment_job_id: "job-old",
+      metadata: {}
     )
 
-    job.perform(instagram_profile_event_id: 7, provider: "local", requested_by: "system")
-    expect(LlmComment::GenerationService).not_to have_received(:new)
+    expect(described_class).not_to receive(:perform_later)
+    job.perform(
+      instagram_profile_event_id: event.id,
+      provider: "local",
+      requested_by: "system",
+      defer_attempt: described_class::MAX_RESOURCE_DEFER_ATTEMPTS
+    )
+
+    event.reload
+    expect(event.llm_comment_status).to eq("failed")
+    expect(event.llm_comment_last_error).to include("deferred too many times")
   end
 
   it "marks llm comment status as failed when timeout occurs" do
@@ -67,9 +110,7 @@ RSpec.describe GenerateLlmCommentJob do
     allow(LlmComment::GenerationService).to receive(:new).and_return(instance_double(LlmComment::GenerationService, call: true))
     allow(Timeout).to receive(:timeout).and_raise(Timeout::Error)
 
-    expect do
-      job.perform(instagram_profile_event_id: event.id, provider: "local", requested_by: "spec")
-    end.to raise_error(Timeout::Error)
+    job.perform(instagram_profile_event_id: event.id, provider: "local", requested_by: "spec")
 
     expect(event.reload.llm_comment_status).to eq("failed")
     expect(event.llm_comment_last_error).to include("timed out")

@@ -24,6 +24,7 @@ module InstagramAccounts
       profile = event.instagram_profile
       story_posted_at = metadata["upload_time"].presence || metadata["taken_at"].presence
       downloaded_at = metadata["downloaded_at"].presence || event.occurred_at&.iso8601
+      manual_send_status = manual_send_status(metadata)
 
       {
         id: event.id,
@@ -46,6 +47,15 @@ module InstagramAccounts
         story_id: metadata["story_id"].to_s,
         story_url: metadata["story_url"].to_s.presence || metadata["permalink"].to_s.presence,
         reply_comment: metadata["reply_comment"].to_s.presence,
+        manual_send_status: manual_send_status,
+        manual_send_message: metadata["manual_send_message"].to_s.presence,
+        manual_send_reason: metadata["manual_send_reason"].to_s.presence,
+        manual_send_last_error: metadata["manual_send_last_error"].to_s.presence,
+        manual_send_last_comment: metadata["manual_send_last_comment"].to_s.presence,
+        manual_send_attempt_count: metadata["manual_send_attempt_count"].to_i,
+        manual_send_last_attempted_at: metadata["manual_send_last_attempted_at"].to_s.presence,
+        manual_send_last_sent_at: metadata["manual_send_last_sent_at"].to_s.presence || metadata["manual_resend_last_at"].to_s.presence,
+        manual_send_updated_at: metadata["manual_send_updated_at"].to_s.presence,
         skipped: ActiveModel::Type::Boolean.new.cast(metadata["skipped"]),
         skip_reason: metadata["skip_reason"].to_s.presence,
         llm_generated_comment: event.llm_generated_comment,
@@ -141,6 +151,16 @@ module InstagramAccounts
       return text if text.length <= max
 
       "#{text[0, max]}..."
+    end
+
+    def manual_send_status(metadata)
+      status = metadata["manual_send_status"].to_s.strip
+      return status if status.present?
+
+      return "sent" if metadata["manual_resend_last_at"].to_s.present?
+      return "sent" if metadata["reply_comment"].to_s.present?
+
+      "ready"
     end
   end
 end
