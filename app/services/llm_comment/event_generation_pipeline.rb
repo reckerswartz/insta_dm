@@ -12,7 +12,37 @@ module LlmComment
       return completed_result if event.has_llm_generated_comment?
 
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue nil
+      report_stage!(
+        stage: "ocr_analysis",
+        state: "running",
+        progress: 10,
+        message: "Running OCR extraction."
+      )
       context = event.send(:build_comment_context)
+      report_stage!(
+        stage: "ocr_analysis",
+        state: "completed",
+        progress: 18,
+        message: "OCR extraction completed."
+      )
+      report_stage!(
+        stage: "vision_detection",
+        state: "completed",
+        progress: 24,
+        message: "Vision detection completed."
+      )
+      report_stage!(
+        stage: "face_recognition",
+        state: "completed",
+        progress: 30,
+        message: "Face recognition completed."
+      )
+      report_stage!(
+        stage: "metadata_extraction",
+        state: "completed",
+        progress: 36,
+        message: "Metadata extraction completed."
+      )
       local_intelligence = normalize_hash(context[:local_story_intelligence])
       validated_story_insights = normalize_hash(context[:validated_story_insights])
       generation_policy = normalize_hash(validated_story_insights[:generation_policy])
@@ -20,26 +50,72 @@ module LlmComment
       event.send(:persist_validated_story_insights!, validated_story_insights)
       event.send(:persist_local_story_intelligence!, local_intelligence)
       validate_intelligence!(local_intelligence: local_intelligence, generation_policy: generation_policy)
+      report_stage!(
+        stage: "context_matching",
+        state: "completed",
+        progress: 46,
+        message: "Context enrichment and history matching completed."
+      )
 
       event.broadcast_llm_comment_generation_progress(
         stage: "context_ready",
         message: "Context prepared from local story intelligence.",
-        progress: 20
+        progress: 46,
+        stage_statuses: event.llm_processing_stages
       )
       technical_details = event.capture_technical_details(context)
+      report_stage!(
+        stage: "prompt_construction",
+        state: "completed",
+        progress: 58,
+        message: "Prompt construction completed."
+      )
+      report_stage!(
+        stage: "llm_generation",
+        state: "running",
+        progress: 68,
+        message: "Generating comments with local model."
+      )
       event.broadcast_llm_comment_generation_progress(
         stage: "model_running",
         message: "Generating suggestions with local model.",
-        progress: 55
+        progress: 68,
+        stage_statuses: event.llm_processing_stages
       )
 
       result = generator.generate!(**generation_payload(context))
       enhanced_result = result.merge(technical_details: technical_details)
       validate_model_result!(result)
+      report_stage!(
+        stage: "llm_generation",
+        state: "completed",
+        progress: 82,
+        message: "Comment suggestions generated."
+      )
+      report_stage!(
+        stage: "relevance_scoring",
+        state: "running",
+        progress: 90,
+        message: "Scoring suggestions for manual and auto-post confidence."
+      )
 
       ranked = rank_suggestions(result: result, context: context)
-      selected_comment, relevance_score = ranked.first
+      selected = ranked.first
+      selected_comment = selected.to_h[:comment].to_s
+      relevance_score = selected.to_h[:score].to_f
+      selected_breakdown = selected.to_h[:factors].is_a?(Hash) ? selected[:factors] : {}
       raise "No valid comment suggestions generated" if selected_comment.to_s.blank?
+      report_stage!(
+        stage: "relevance_scoring",
+        state: "completed",
+        progress: 96,
+        message: "Relevance scoring completed.",
+        details: {
+          final_score: relevance_score,
+          confidence_level: selected.to_h[:confidence_level],
+          auto_post_eligible: selected.to_h[:auto_post_eligible]
+        }
+      )
 
       persist_completed_result!(
         result: result,
@@ -47,6 +123,9 @@ module LlmComment
         ranked: ranked,
         selected_comment: selected_comment,
         relevance_score: relevance_score,
+        relevance_breakdown: selected_breakdown,
+        selected_confidence_level: selected.to_h[:confidence_level].to_s,
+        selected_auto_post_eligible: ActiveModel::Type::Boolean.new.cast(selected.to_h[:auto_post_eligible]),
         technical_details: technical_details,
         started_at: started_at
       )
@@ -57,6 +136,7 @@ module LlmComment
         enhanced_result.merge(
           selected_comment: selected_comment,
           relevance_score: relevance_score,
+          relevance_breakdown: selected_breakdown,
           ranked_candidates: ranked.first(8)
         )
       )
@@ -64,6 +144,7 @@ module LlmComment
       enhanced_result.merge(
         selected_comment: selected_comment,
         relevance_score: relevance_score,
+        relevance_breakdown: selected_breakdown,
         ranked_candidates: ranked.first(8)
       )
     end
@@ -145,15 +226,17 @@ module LlmComment
     end
 
     def rank_suggestions(result:, context:)
-      Ai::CommentRelevanceScorer.rank(
+      Ai::CommentRelevanceScorer.rank_with_breakdown(
         suggestions: result[:comment_suggestions],
         image_description: context[:image_description],
         topics: context[:topics],
-        historical_comments: context[:historical_comments]
+        historical_comments: context[:historical_comments],
+        scored_context: context[:scored_context],
+        verified_story_facts: context[:verified_story_facts]
       )
     end
 
-    def persist_completed_result!(result:, context:, ranked:, selected_comment:, relevance_score:, technical_details:, started_at:)
+    def persist_completed_result!(result:, context:, ranked:, selected_comment:, relevance_score:, relevance_breakdown:, selected_confidence_level:, selected_auto_post_eligible:, technical_details:, started_at:)
       duration_ms =
         if started_at
           ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at) * 1000.0).round
@@ -182,14 +265,48 @@ module LlmComment
           "generation_policy" => context[:generation_policy],
           "validated_story_insights" => context[:validated_story_insights],
           "scored_context" => context[:scored_context],
-          "ranked_candidates" => ranked.first(8).map { |text, value| { "comment" => text, "score" => value } },
+          "ranked_candidates" => ranked.first(8).map do |row|
+            {
+              "comment" => row[:comment],
+              "score" => row[:score],
+              "auto_post_eligible" => row[:auto_post_eligible],
+              "confidence_level" => row[:confidence_level],
+              "factors" => row[:factors]
+            }
+          end,
           "selected_comment" => selected_comment,
           "selected_relevance_score" => relevance_score,
+          "selected_relevance_breakdown" => relevance_breakdown,
+          "selected_confidence_level" => selected_confidence_level,
+          "selected_auto_post_eligible" => selected_auto_post_eligible,
+          "auto_post_allowed" => selected_auto_post_eligible,
+          "manual_review_reason" => (selected_auto_post_eligible ? nil : "low_relevance_manual_review"),
+          "processing_stages" => event.llm_processing_stages,
           "generated_at" => Time.current.iso8601,
           "processing_ms" => duration_ms,
           "pipeline" => "validated_story_intelligence_v3"
         )
       )
+    end
+
+    def report_stage!(stage:, state:, progress:, message:, details: nil)
+      stages = event.record_llm_processing_stage!(
+        stage: stage,
+        state: state,
+        progress: progress,
+        message: message,
+        details: details
+      )
+
+      event.broadcast_llm_comment_generation_progress(
+        stage: stage,
+        message: message,
+        progress: progress,
+        details: details,
+        stage_statuses: stages
+      )
+    rescue StandardError
+      nil
     end
 
     def normalized_metadata

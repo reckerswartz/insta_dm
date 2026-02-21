@@ -198,6 +198,8 @@ module StoryIntelligence
       payload[:scenes] = normalize_hash_array(payload[:scenes], extracted[:scenes]).first(80)
       payload[:ocr_blocks] = normalize_hash_array(payload[:ocr_blocks], extracted[:ocr_blocks]).first(120)
       payload[:object_detections] = normalize_object_detections(payload[:object_detections], extracted[:object_detections], limit: 120)
+      payload[:processing_stages] = extracted[:processing_stages] if extracted[:processing_stages].is_a?(Hash)
+      payload[:processing_log] = Array(extracted[:processing_log]).last(24) if extracted[:processing_log].is_a?(Array)
     end
 
     def update_source_if_enriched(payload, extracted)
@@ -265,12 +267,50 @@ module StoryIntelligence
       detection = FaceDetectionService.new.detect(
         media_payload: { story_id: story_id.to_s, image_bytes: image_bytes }
       )
-      understanding = StoryContentUnderstandingService.new.build(
-        media_type: "image",
-        detections: [detection],
-        transcript_text: nil
-      )
+      stage_started_at = monotonic_time
+      extraction_threads = {}
+      extraction_results = {}
+      extraction_errors = {}
+
+      extraction_threads[:ocr_vision] = Thread.new do
+        StoryContentUnderstandingService.new.build(
+          media_type: "image",
+          detections: [detection],
+          transcript_text: nil
+        )
+      end
+      extraction_threads[:face_detection] = Thread.new do
+        {
+          face_count: Array(detection[:faces]).length,
+          faces: Array(detection[:faces])
+        }
+      end
+      extraction_threads[:metadata_extraction] = Thread.new do
+        {
+          source: detection.dig(:metadata, :source).to_s.presence || "local_ai",
+          reason: detection.dig(:metadata, :reason).to_s.presence,
+          warnings: Array(detection.dig(:metadata, :warnings)).first(20)
+        }
+      end
+
+      extraction_threads.each do |key, thread|
+        extraction_results[key] = thread.value
+      rescue StandardError => e
+        extraction_errors[key] = { error_class: e.class.name, error_message: e.message.to_s }
+      end
+
+      understanding = extraction_results[:ocr_vision].is_a?(Hash) ? extraction_results[:ocr_vision] : {}
+      face_payload = extraction_results[:face_detection].is_a?(Hash) ? extraction_results[:face_detection] : {}
+      metadata_payload = extraction_results[:metadata_extraction].is_a?(Hash) ? extraction_results[:metadata_extraction] : {}
       people = event.send(:resolve_people_from_faces, detected_faces: Array(detection[:faces]), fallback_image_bytes: image_bytes, story_id: story_id)
+      duration_ms = ((monotonic_time - stage_started_at) * 1000.0).round
+
+      processing_stages = {
+        ocr_analysis: stage_row(state: "completed", progress: 100, message: "OCR extraction completed"),
+        vision_detection: stage_row(state: "completed", progress: 100, message: "Vision/object extraction completed"),
+        face_recognition: stage_row(state: "completed", progress: 100, message: "Face detection completed"),
+        metadata_extraction: stage_row(state: "completed", progress: 100, message: "Metadata extraction completed")
+      }
 
       {
         ocr_text: understanding[:ocr_text].to_s.presence,
@@ -283,10 +323,21 @@ module StoryIntelligence
         scenes: Array(understanding[:scenes]).first(80),
         ocr_blocks: Array(understanding[:ocr_blocks]).first(120),
         object_detections: event.send(:normalize_object_detections, understanding[:object_detections], limit: 120),
-        face_count: Array(detection[:faces]).length,
+        face_count: face_payload[:face_count].to_i,
         people: people,
-        reason: detection.dig(:metadata, :reason).to_s.presence,
-        source: "live_local_vision_ocr"
+        reason: metadata_payload[:reason].to_s.presence,
+        source: "live_local_vision_ocr_parallel",
+        processing_stages: processing_stages,
+        processing_log: [
+          {
+            stage: "parallel_extraction",
+            state: extraction_errors.empty? ? "completed" : "completed_with_warnings",
+            progress: 100,
+            message: "OCR, vision, face, and metadata extraction processed in parallel.",
+            duration_ms: duration_ms,
+            warnings: extraction_errors
+          }
+        ]
       }
     end
 
@@ -295,6 +346,21 @@ module StoryIntelligence
       # Implementation would follow the video extraction logic
       # This is simplified for the refactoring example
       {}
+    end
+
+    def stage_row(state:, progress:, message:)
+      {
+        state: state,
+        progress: progress.to_i.clamp(0, 100),
+        message: message.to_s,
+        updated_at: Time.current.iso8601(3)
+      }
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    rescue StandardError
+      Time.current.to_f
     end
 
     def build_error_payload

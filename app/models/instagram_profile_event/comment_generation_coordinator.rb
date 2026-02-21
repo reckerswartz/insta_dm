@@ -2,6 +2,16 @@ require 'active_support/concern'
 
 module InstagramProfileEvent::CommentGenerationCoordinator
   extend ActiveSupport::Concern
+  LLM_PROCESSING_STAGE_TEMPLATE = {
+    "ocr_analysis" => { "group" => "media_analysis", "label" => "OCR Analysis", "state" => "pending", "progress" => 0 },
+    "vision_detection" => { "group" => "media_analysis", "label" => "Vision Detection", "state" => "pending", "progress" => 0 },
+    "face_recognition" => { "group" => "media_analysis", "label" => "Face Recognition", "state" => "pending", "progress" => 0 },
+    "metadata_extraction" => { "group" => "media_analysis", "label" => "Metadata Extraction", "state" => "pending", "progress" => 0 },
+    "context_matching" => { "group" => "context_enrichment", "label" => "Context Matching", "state" => "pending", "progress" => 0 },
+    "prompt_construction" => { "group" => "comment_generation", "label" => "Prompt Construction", "state" => "pending", "progress" => 0 },
+    "llm_generation" => { "group" => "comment_generation", "label" => "Generating Comments", "state" => "pending", "progress" => 0 },
+    "relevance_scoring" => { "group" => "comment_generation", "label" => "Relevance Scoring", "state" => "pending", "progress" => 0 }
+  }.freeze
 
   included do
     def has_llm_generated_comment?
@@ -20,11 +30,15 @@ module InstagramProfileEvent::CommentGenerationCoordinator
       broadcast_llm_comment_generation_queued(job_id: job_id)
     end
     def mark_llm_comment_running!(job_id: nil)
+      metadata = llm_comment_metadata.is_a?(Hash) ? llm_comment_metadata.deep_dup : {}
+      metadata["processing_stages"] = initialized_processing_stages
+      metadata["processing_log"] = []
       update!(
         llm_comment_status: "running",
         llm_comment_job_id: job_id.to_s.presence || llm_comment_job_id,
         llm_comment_attempts: llm_comment_attempts.to_i + 1,
-        llm_comment_last_error: nil
+        llm_comment_last_error: nil,
+        llm_comment_metadata: metadata
       )
 
       broadcast_llm_comment_generation_start
@@ -84,6 +98,59 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         provider: provider,
         model: model
       ).call
+    end
+    def initialized_processing_stages
+      stages = LLM_PROCESSING_STAGE_TEMPLATE.deep_dup
+      now = Time.current.iso8601(3)
+      stages.each_value { |row| row["updated_at"] = now }
+      stages
+    end
+    def llm_processing_stages
+      metadata = llm_comment_metadata.is_a?(Hash) ? llm_comment_metadata : {}
+      stored = metadata["processing_stages"].is_a?(Hash) ? metadata["processing_stages"] : {}
+      initialized_processing_stages.deep_merge(stored)
+    rescue StandardError
+      initialized_processing_stages
+    end
+    def record_llm_processing_stage!(stage:, state:, progress:, message:, details: nil)
+      stage_key = stage.to_s
+      event_message = message.to_s
+      now = Time.current.iso8601(3)
+
+      with_lock do
+        reload
+        metadata = llm_comment_metadata.is_a?(Hash) ? llm_comment_metadata.deep_dup : {}
+        stages = initialized_processing_stages
+        stored = metadata["processing_stages"].is_a?(Hash) ? metadata["processing_stages"] : {}
+        stages = stages.deep_merge(stored)
+        stage_row = stages[stage_key].is_a?(Hash) ? stages[stage_key] : {
+          "group" => "comment_generation",
+          "label" => stage_key.humanize
+        }
+        stage_row["state"] = state.to_s
+        stage_row["progress"] = progress.to_i.clamp(0, 100)
+        stage_row["message"] = event_message
+        stage_row["updated_at"] = now
+        stage_row["details"] = details if details.present?
+        stages[stage_key] = stage_row
+
+        log = Array(metadata["processing_log"]).last(40)
+        log << {
+          "stage" => stage_key,
+          "state" => state.to_s,
+          "progress" => progress.to_i.clamp(0, 100),
+          "message" => event_message,
+          "details" => details,
+          "at" => now
+        }.compact
+
+        metadata["processing_stages"] = stages
+        metadata["processing_log"] = log
+        update_columns(llm_comment_metadata: metadata, updated_at: Time.current)
+      end
+      llm_processing_stages
+    rescue StandardError
+      llm_processing_stages
     end
     def reply_comment
       metadata["reply_comment"] if metadata.is_a?(Hash)

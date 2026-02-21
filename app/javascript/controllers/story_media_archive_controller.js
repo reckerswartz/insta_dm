@@ -1,4 +1,5 @@
 import { Controller } from "@hotwired/stimulus"
+import { notifyApp } from "../lib/notifications"
 
 const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,[role='button'],video,.plyr"
 
@@ -314,12 +315,16 @@ export default class extends Controller {
     const ownershipLabel = String(item.story_ownership_label || "").trim()
     const ownershipSummary = String(item.story_ownership_summary || "").trim()
     const ownershipConfidence = typeof item.story_ownership_confidence === "number" ? item.story_ownership_confidence.toFixed(2) : ""
+    const suggestions = Array.isArray(item.llm_ranked_candidates) ? item.llm_ranked_candidates : []
+    const breakdown = item.llm_relevance_breakdown && typeof item.llm_relevance_breakdown === "object" ? item.llm_relevance_breakdown : {}
+    const stageList = this.renderStageList(item.llm_processing_stages)
+    const manualReviewReason = String(item.llm_manual_review_reason || "").trim()
 
     if (item.has_llm_comment && item.llm_generated_comment) {
       const generatedAt = this.formatDate(item.llm_comment_generated_at)
       const suggestionPreview = item.llm_generated_comment_preview || item.llm_generated_comment
       return `
-        <div class="llm-comment-section success">
+        <div class="llm-comment-section success" data-event-id="${this.esc(String(item.id))}">
           <p class="llm-generated-comment"><strong>AI Suggestion:</strong> ${this.esc(suggestionPreview)}</p>
           <p class="meta llm-comment-meta">
             Generated ${this.esc(generatedAt)}
@@ -327,6 +332,10 @@ export default class extends Controller {
             ${item.llm_comment_model ? ` (${this.esc(item.llm_comment_model)})` : ""}
             ${typeof item.llm_comment_relevance_score === "number" ? ` | relevance ${this.esc(item.llm_comment_relevance_score.toFixed(2))}` : ""}
           </p>
+          ${manualReviewReason ? `<p class="meta">Manual review: ${this.esc(manualReviewReason.replaceAll("_", " "))}</p>` : ""}
+          ${this.renderRelevanceBreakdown(breakdown)}
+          ${this.renderSuggestionPreviewList(item, suggestions)}
+          ${stageList}
         </div>
       `
     }
@@ -346,9 +355,13 @@ export default class extends Controller {
       ""
 
     return `
-      <div class="llm-comment-section">
+      <div class="llm-comment-section" data-event-id="${this.esc(String(item.id))}">
         ${classificationMeta}
         <p class="meta">${this.esc(label)}. ${this.esc(hint)}</p>
+        ${manualReviewReason ? `<p class="meta">Manual review: ${this.esc(manualReviewReason.replaceAll("_", " "))}</p>` : ""}
+        ${this.renderRelevanceBreakdown(breakdown)}
+        ${this.renderSuggestionPreviewList(item, suggestions)}
+        ${stageList}
         ${error}
       </div>
     `
@@ -426,11 +439,16 @@ export default class extends Controller {
     const llmLabel = llmInFlight ? (llmStatus === "queued" ? "Queued..." : "Generating...") : "Generate Comment Locally"
     const llmHint = llmInFlight ? "Comment generation is processing in the background." : "Runs in background and updates this archive automatically."
     const llmError = item.llm_comment_last_error_preview || item.llm_comment_last_error
+    const suggestions = Array.isArray(item.llm_ranked_candidates) ? item.llm_ranked_candidates : []
+    const breakdown = item.llm_relevance_breakdown && typeof item.llm_relevance_breakdown === "object" ? item.llm_relevance_breakdown : {}
+    const stageList = this.renderStageList(item.llm_processing_stages)
     const comment = item.llm_generated_comment ?
       `
         <section class="story-modal-section">
           <h4>AI Suggestion</h4>
           <p class="llm-generated-comment">${this.esc(item.llm_generated_comment)}</p>
+          ${this.renderRelevanceBreakdown(breakdown)}
+          ${this.renderSuggestionPreviewList(item, suggestions)}
         </section>
       ` :
       `
@@ -446,6 +464,8 @@ export default class extends Controller {
             ${this.esc(llmLabel)}
           </button>
           <p class="meta llm-progress-hint">${this.esc(llmHint)}</p>
+          ${stageList}
+          ${this.renderSuggestionPreviewList(item, suggestions)}
           ${llmFailed && llmError ? `<p class="meta error-text">Last error: ${this.esc(llmError)}</p>` : ""}
           ${llmSkipped && llmError ? `<p class="meta">Skipped: ${this.esc(llmError)}</p>` : ""}
         </section>
@@ -482,6 +502,119 @@ export default class extends Controller {
 
   handleModalKeydown(event) {
     if (event.key === "Escape") this.closeStoryModal()
+  }
+
+  async sendSuggestion(event) {
+    event.preventDefault()
+    const button = event.currentTarget
+    const eventId = button?.dataset?.eventId || button?.closest("[data-event-id]")?.dataset?.eventId
+    const text = String(button?.dataset?.commentText || "").trim()
+    if (!eventId || !text) return
+
+    button.disabled = true
+    try {
+      const response = await fetch(`/instagram_accounts/${this.accountIdValue}/resend_story_reply`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": this.getCsrfToken(),
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          event_id: eventId,
+          comment_text: text,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`)
+      notifyApp("Comment sent manually.", "success")
+      this.scheduleRefresh()
+    } catch (error) {
+      notifyApp(`Manual send failed: ${error.message}`, "error")
+    } finally {
+      button.disabled = false
+    }
+  }
+
+  getCsrfToken() {
+    return document.querySelector("meta[name='csrf-token']")?.content || ""
+  }
+
+  renderSuggestionPreviewList(item, suggestions) {
+    const rows = Array.isArray(suggestions) ? suggestions : []
+    if (rows.length === 0) return ""
+
+    const eventId = String(item.id)
+    const html = rows
+      .slice(0, 5)
+      .map((row) => {
+        const comment = String(row?.comment || "").trim()
+        if (!comment) return ""
+        const score = Number(row?.score)
+        const scoreText = Number.isFinite(score) ? ` (${score.toFixed(2)})` : ""
+        return `
+          <li>
+            <span>${this.esc(comment)}${this.esc(scoreText)}</span>
+            <button
+              type="button"
+              class="btn small secondary"
+              data-event-id="${this.esc(eventId)}"
+              data-comment-text="${this.esc(comment)}"
+              data-action="click->story-media-archive#sendSuggestion"
+            >
+              Send manually
+            </button>
+          </li>
+        `
+      })
+      .join("")
+
+    return `
+      <div class="llm-suggestions-preview">
+        <p class="meta"><strong>Preview suggestions (manual send available):</strong></p>
+        <ul class="meta">${html}</ul>
+      </div>
+    `
+  }
+
+  renderRelevanceBreakdown(breakdown) {
+    if (!breakdown || typeof breakdown !== "object") return ""
+    const keys = [
+      ["visual_context", "Visual context"],
+      ["ocr_text", "OCR text"],
+      ["user_context_match", "User context match"],
+      ["engagement_relevance", "Engagement relevance"],
+    ]
+    const rows = keys
+      .map(([key, label]) => {
+        const value = breakdown[key]
+        if (!value || typeof value !== "object") return ""
+        const level = String(value.label || "low")
+        const score = Number(value.value)
+        const scoreText = Number.isFinite(score) ? ` (${score.toFixed(2)})` : ""
+        return `<li>${this.esc(label)}: ${this.esc(level)}${this.esc(scoreText)}</li>`
+      })
+      .filter(Boolean)
+      .join("")
+    if (!rows) return ""
+    return `<ul class="meta llm-relevance-breakdown">${rows}</ul>`
+  }
+
+  renderStageList(stages) {
+    if (!stages || typeof stages !== "object") return ""
+    const rows = Object.values(stages)
+      .filter((row) => row && typeof row === "object")
+      .slice(0, 10)
+      .map((row) => {
+        const label = String(row.label || "Stage")
+        const state = String(row.state || "pending")
+        const progress = Number(row.progress)
+        const stateLabel = state === "completed" ? "Completed" : (state === "running" ? `Processing${Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""}` : "Pending")
+        return `<li>${this.esc(label)} -> ${this.esc(stateLabel)}</li>`
+      })
+      .join("")
+    if (!rows) return ""
+    return `<ul class="meta llm-progress-steps">${rows}</ul>`
   }
 
   videoElementHtml({

@@ -75,7 +75,9 @@ RSpec.describe Ai::VerifiedStoryInsightBuilder do
 
     assert_equal "insufficient_evidence", result.dig(:ownership_classification, :label)
     assert_equal "skip_comment", result.dig(:ownership_classification, :decision)
-    assert_equal false, result.dig(:generation_policy, :allow_comment)
+    assert_equal true, result.dig(:generation_policy, :allow_comment)
+    assert_equal false, result.dig(:generation_policy, :allow_auto_post)
+    assert_equal true, result.dig(:generation_policy, :manual_review_required)
     assert_includes Array(result.dig(:ownership_classification, :reason_codes)), "insufficient_verified_signals"
   end
 

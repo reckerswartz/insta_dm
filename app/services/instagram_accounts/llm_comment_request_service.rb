@@ -41,6 +41,7 @@ module InstagramAccounts
     end
 
     def completed_result(event)
+      llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       Result.new(
         payload: {
           success: true,
@@ -50,7 +51,12 @@ module InstagramAccounts
           llm_comment_generated_at: event.llm_comment_generated_at,
           llm_comment_model: event.llm_comment_model,
           llm_comment_provider: event.llm_comment_provider,
-          llm_comment_relevance_score: event.llm_comment_relevance_score
+          llm_comment_relevance_score: event.llm_comment_relevance_score,
+          llm_ranked_candidates: Array(llm_meta["ranked_candidates"]).first(8),
+          llm_relevance_breakdown: llm_meta["selected_relevance_breakdown"].is_a?(Hash) ? llm_meta["selected_relevance_breakdown"] : {},
+          llm_processing_stages: llm_meta["processing_stages"].is_a?(Hash) ? llm_meta["processing_stages"] : {},
+          llm_manual_review_reason: llm_meta["manual_review_reason"].to_s.presence,
+          llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(llm_meta["auto_post_allowed"])
         },
         status: :ok
       )
@@ -126,13 +132,16 @@ module InstagramAccounts
     end
 
     def status_result(event)
+      llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       Result.new(
         payload: {
           success: true,
           status: event.llm_comment_status.presence || "not_requested",
           event_id: event.id,
           estimated_seconds: llm_comment_estimated_seconds(event: event),
-          queue_size: ai_queue_size
+          queue_size: ai_queue_size,
+          llm_processing_stages: llm_meta["processing_stages"].is_a?(Hash) ? llm_meta["processing_stages"] : {},
+          llm_last_stage: Array(llm_meta["processing_log"]).last
         },
         status: :ok
       )

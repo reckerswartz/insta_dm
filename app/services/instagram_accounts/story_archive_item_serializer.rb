@@ -11,6 +11,15 @@ module InstagramAccounts
       metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
       llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       ownership_data = extract_ownership_data(metadata: metadata, llm_meta: llm_meta)
+      ranked_candidates = Array(llm_meta["ranked_candidates"]).select { |row| row.is_a?(Hash) }.first(8)
+      top_breakdown = llm_meta["selected_relevance_breakdown"].is_a?(Hash) ? llm_meta["selected_relevance_breakdown"] : {}
+      generation_policy = if llm_meta["generation_policy"].is_a?(Hash)
+        llm_meta["generation_policy"]
+      elsif metadata.dig("validated_story_insights", "generation_policy").is_a?(Hash)
+        metadata.dig("validated_story_insights", "generation_policy")
+      else
+        {}
+      end
       blob = event.media.blob
       profile = event.instagram_profile
       story_posted_at = metadata["upload_time"].presence || metadata["taken_at"].presence
@@ -48,6 +57,14 @@ module InstagramAccounts
         llm_comment_last_error: event.llm_comment_last_error,
         llm_comment_last_error_preview: text_preview(event.llm_comment_last_error, max: 180),
         llm_comment_relevance_score: event.llm_comment_relevance_score,
+        llm_relevance_breakdown: top_breakdown,
+        llm_ranked_suggestions: ranked_candidates.map { |row| row["comment"].to_s.presence }.compact,
+        llm_ranked_candidates: ranked_candidates,
+        llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(llm_meta["auto_post_allowed"]),
+        llm_manual_review_reason: llm_meta["manual_review_reason"].to_s.presence || generation_policy["reason"].to_s.presence,
+        llm_generation_policy: generation_policy,
+        llm_processing_stages: llm_meta["processing_stages"].is_a?(Hash) ? llm_meta["processing_stages"] : {},
+        llm_processing_log: Array(llm_meta["processing_log"]).last(24),
         llm_generated_comment_preview: text_preview(event.llm_generated_comment, max: 260),
         has_llm_comment: event.has_llm_generated_comment?,
         story_ownership_label: ownership_data["label"].to_s.presence,

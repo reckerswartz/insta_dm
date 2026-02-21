@@ -133,12 +133,16 @@ export default class extends Controller {
         generated_at: result.llm_comment_generated_at,
         provider: result.llm_comment_provider,
         model: result.llm_comment_model,
+        relevance_score: result.llm_comment_relevance_score,
+        ranked_candidates: result.llm_ranked_candidates,
+        relevance_breakdown: result.llm_relevance_breakdown,
       })
       return
     }
 
     if (status === "queued") {
       this.startStatusPolling(eventId)
+      this.updateProgressForEvent(eventId, result)
       this.updateButtonsForEvent(eventId, {
         disabled: true,
         label: "Queued...",
@@ -150,6 +154,7 @@ export default class extends Controller {
 
     if (status === "running" || status === "started") {
       this.startStatusPolling(eventId)
+      this.updateProgressForEvent(eventId, result)
       this.updateButtonsForEvent(eventId, {
         disabled: true,
         label: "Generating...",
@@ -178,6 +183,7 @@ export default class extends Controller {
     switch (status) {
       case "queued":
         this.startStatusPolling(eventId)
+        this.updateProgressForEvent(eventId, data)
         this.updateButtonsForEvent(eventId, {
           disabled: true,
           label: "Queued...",
@@ -188,6 +194,7 @@ export default class extends Controller {
       case "running":
       case "started":
         this.startStatusPolling(eventId)
+        this.updateProgressForEvent(eventId, data)
         this.updateButtonsForEvent(eventId, {
           disabled: true,
           label: data?.progress ? `Generating... ${Number(data.progress).toFixed(0)}%` : "Generating...",
@@ -197,6 +204,7 @@ export default class extends Controller {
         break
       case "completed":
         this.stopStatusPolling(eventId)
+        this.updateProgressForEvent(eventId, data)
         this.handleGenerationComplete(eventId, data)
         break
       case "skipped":
@@ -227,6 +235,8 @@ export default class extends Controller {
       const commentText = data.comment || data.llm_generated_comment || ""
 
       if (commentSection && commentText) {
+        const relevance = Number(data.relevance_score)
+        const relevanceText = Number.isFinite(relevance) ? ` | relevance ${this.esc(relevance.toFixed(2))}` : ""
         commentSection.innerHTML = `
           <div class="llm-comment-section success">
             <p class="llm-generated-comment"><strong>AI Suggestion:</strong> ${this.esc(commentText)}</p>
@@ -234,6 +244,7 @@ export default class extends Controller {
               Generated ${this.esc(generatedAt)}
               ${data.provider ? ` via ${this.esc(data.provider)}` : ""}
               ${data.model ? ` (${this.esc(data.model)})` : ""}
+              ${relevanceText}
             </p>
           </div>
         `
@@ -242,6 +253,40 @@ export default class extends Controller {
 
     this.updateButtonsForEvent(eventId, { disabled: true, label: "Completed", loading: false, eta: null })
     notifyApp("Comment generated successfully.", "success")
+  }
+
+  updateProgressForEvent(eventId, data) {
+    const stages = data?.stage_statuses || data?.llm_processing_stages
+    if (!stages || typeof stages !== "object") return
+
+    document
+      .querySelectorAll(`.llm-comment-section[data-event-id="${this.escapeSelector(String(eventId))}"]`)
+      .forEach((section) => this.renderStageProgress(section, stages))
+  }
+
+  renderStageProgress(section, stages) {
+    if (!section) return
+    const entries = Object.entries(stages)
+    if (entries.length === 0) return
+    const html = entries
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      .map(([, row]) => {
+        const state = String(row?.state || "pending")
+        const label = String(row?.label || "Stage")
+        const progress = Number(row?.progress)
+        const stateLabel = state === "completed" ? "Completed" : (state === "running" ? `Processing${Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""}` : "Pending")
+        const icon = state === "completed" ? "✓" : (state === "running" ? "…" : "○")
+        return `<li><span>${icon}</span> ${this.esc(label)} - ${this.esc(stateLabel)}</li>`
+      })
+      .join("")
+
+    let container = section.querySelector(".llm-progress-steps")
+    if (!container) {
+      container = document.createElement("ul")
+      container.className = "meta llm-progress-steps"
+      section.appendChild(container)
+    }
+    container.innerHTML = html
   }
 
   startStatusPolling(eventId) {

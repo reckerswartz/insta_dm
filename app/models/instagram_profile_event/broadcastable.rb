@@ -36,6 +36,7 @@ module InstagramProfileEvent::Broadcastable
           model: llm_comment_model,
           provider: llm_comment_provider,
           relevance_score: llm_comment_relevance_score,
+          stage_statuses: respond_to?(:llm_processing_stages) ? llm_processing_stages : {},
           generation_result: generation_result
         }
       )
@@ -53,7 +54,8 @@ module InstagramProfileEvent::Broadcastable
           status: "started",
           message: "Generating comment...",
           estimated_seconds: estimated_generation_seconds(queue_state: false),
-          progress: 12
+          progress: 12,
+          stage_statuses: respond_to?(:llm_processing_stages) ? llm_processing_stages : {}
         }
       )
     rescue StandardError
@@ -92,7 +94,7 @@ module InstagramProfileEvent::Broadcastable
     rescue StandardError
       nil
     end
-    def broadcast_llm_comment_generation_progress(stage:, message:, progress:)
+    def broadcast_llm_comment_generation_progress(stage:, message:, progress:, stage_statuses: nil, details: nil)
       account = instagram_profile&.instagram_account
       return unless account
 
@@ -104,7 +106,9 @@ module InstagramProfileEvent::Broadcastable
           stage: stage.to_s,
           message: message.to_s,
           progress: progress.to_i.clamp(0, 100),
-          estimated_seconds: estimated_generation_seconds(queue_state: false)
+          estimated_seconds: estimated_generation_seconds(queue_state: false),
+          stage_statuses: stage_statuses || (respond_to?(:llm_processing_stages) ? llm_processing_stages : {}),
+          details: details
         }
       )
     rescue StandardError

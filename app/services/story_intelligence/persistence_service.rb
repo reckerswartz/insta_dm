@@ -130,7 +130,9 @@ module StoryIntelligence
         "ocr_blocks" => normalize_hash_array(payload[:ocr_blocks]).first(120),
         "object_detections" => normalize_object_detections(payload[:object_detections], limit: 120),
         "face_count" => payload[:face_count].to_i,
-        "people" => Array(payload[:people]).first(12)
+        "people" => Array(payload[:people]).first(12),
+        "processing_stages" => payload[:processing_stages].is_a?(Hash) ? payload[:processing_stages] : {},
+        "processing_log" => Array(payload[:processing_log]).last(24)
       }
       current_meta["local_story_intelligence_history_appended_at"] = Time.current.iso8601
     end

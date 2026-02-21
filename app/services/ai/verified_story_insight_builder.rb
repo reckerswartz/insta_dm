@@ -242,12 +242,25 @@ module Ai
 
     def build_generation_policy(verified_story_facts:, ownership_classification:)
       allow_comment = ownership_classification[:decision].to_s == "allow_comment"
+      allow_auto_post = allow_comment
+      manual_review_required = false
+      manual_review_reason = nil
       identity_verification = verified_story_facts[:identity_verification].is_a?(Hash) ? verified_story_facts[:identity_verification] : {}
       if allow_comment &&
           ownership_classification[:label].to_s == "owned_by_profile" &&
           identity_verification[:owner_likelihood].to_s == "low" &&
           identity_verification[:confidence].to_f < MIN_OWNER_ALIGNMENT_CONFIDENCE
-        allow_comment = false
+        allow_comment = true
+        allow_auto_post = false
+        manual_review_required = true
+        manual_review_reason = "identity_likelihood_low"
+      end
+
+      if ownership_classification[:label].to_s == "insufficient_evidence"
+        allow_comment = true
+        allow_auto_post = false
+        manual_review_required = true
+        manual_review_reason ||= "insufficient_verified_signals"
       end
       reason_code = if allow_comment
         "verified_context_available"
@@ -262,6 +275,9 @@ module Ai
 
       {
         allow_comment: allow_comment,
+        allow_auto_post: allow_auto_post,
+        manual_review_required: manual_review_required,
+        manual_review_reason: manual_review_reason,
         reason_code: reason_code,
         reason: reason,
         classification: ownership_classification[:label].to_s,
