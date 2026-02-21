@@ -122,7 +122,7 @@ module EnhancedJobRetryStrategies
   private
 
   def handle_network_retry(job, error)
-    attempt = job.executions
+    attempt = job.executions.to_i
     delay = self.class.calculate_retry_delay(attempt, :network_errors)
     
     Ops::StructuredLogger.warn(
@@ -136,12 +136,12 @@ module EnhancedJobRetryStrategies
       }
     )
     
-    # Apply custom delay
-    sleep(delay) if delay > 0
+    # ActiveJob/Sidekiq already handles delayed retry scheduling.
+    # Never sleep inside workers: it blocks concurrency and causes queue starvation.
   end
 
   def handle_database_retry(job, error)
-    attempt = job.executions
+    attempt = job.executions.to_i
     delay = self.class.calculate_retry_delay(attempt, :database_errors)
     
     Ops::StructuredLogger.warn(
@@ -155,14 +155,12 @@ module EnhancedJobRetryStrategies
       }
     )
     
-    # Check database connection health before retry
-    check_database_health!
-    
-    sleep(delay) if delay > 0
+    # ActiveJob/Sidekiq already handles delayed retry scheduling.
+    # Never sleep inside workers: it blocks concurrency and causes queue starvation.
   end
 
   def handle_ai_service_retry(job, error)
-    attempt = job.executions
+    attempt = job.executions.to_i
     delay = self.class.calculate_retry_delay(attempt, :ai_service_errors)
     
     Ops::StructuredLogger.warn(
@@ -176,46 +174,7 @@ module EnhancedJobRetryStrategies
       }
     )
     
-    # Check AI microservice health before retry
-    check_ai_service_health!
-    
-    sleep(delay) if delay > 0
-  end
-
-  def check_database_health!
-    # Simple health check - can be expanded
-    ActiveRecord::Base.connection.execute("SELECT 1")
-  rescue StandardError => e
-    Ops::StructuredLogger.error(
-      event: "job.database_health_check_failed",
-      payload: {
-        job_class: self.class.name,
-        error_class: e.class.name,
-        error_message: e.message
-      }
-    )
-    raise
-  end
-
-  def check_ai_service_health!
-    # Check if AI microservice is responsive
-    require 'net/http'
-    
-    uri = URI.parse("http://localhost:8000/health")
-    response = Net::HTTP.get_response(uri)
-    
-    unless response.code.to_s.start_with?('2')
-      raise StandardError, "AI microservice health check failed: #{response.code}"
-    end
-  rescue StandardError => e
-    Ops::StructuredLogger.error(
-      event: "job.ai_service_health_check_failed",
-      payload: {
-        job_class: self.class.name,
-        error_class: e.class.name,
-        error_message: e.message
-      }
-    )
-    raise
+    # ActiveJob/Sidekiq already handles delayed retry scheduling.
+    # Never sleep inside workers: it blocks concurrency and causes queue starvation.
   end
 end

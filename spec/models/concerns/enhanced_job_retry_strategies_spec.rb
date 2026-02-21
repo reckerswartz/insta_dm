@@ -63,12 +63,8 @@ RSpec.describe EnhancedJobRetryStrategies, type: :model do
     let(:instance) { test_job_class.new }
     let(:job_like) { double("JobLike", executions: 1, class: double(name: "TestRetryJob")) }
 
-    before do
-      allow(instance.class).to receive(:calculate_retry_delay).and_return(0)
-      allow(instance).to receive(:sleep)
-    end
-
     it "logs network retries" do
+      allow(instance.class).to receive(:calculate_retry_delay).and_return(5.0)
       expect(Ops::StructuredLogger).to receive(:warn).with(
         event: "job.network_retry",
         payload: hash_including(job_class: "TestRetryJob", attempt: 1, error_class: "Net::ReadTimeout")
@@ -77,17 +73,15 @@ RSpec.describe EnhancedJobRetryStrategies, type: :model do
       instance.send(:handle_network_retry, job_like, Net::ReadTimeout.new("timeout"))
     end
 
-    it "checks database health for database retries" do
-      expect(instance).to receive(:check_database_health!)
+    it "logs database retries without blocking" do
+      allow(instance.class).to receive(:calculate_retry_delay).and_return(8.0)
       allow(Ops::StructuredLogger).to receive(:warn)
-
       instance.send(:handle_database_retry, job_like, ActiveRecord::ConnectionTimeoutError.new("db"))
     end
 
-    it "checks ai service health for ai retries" do
-      expect(instance).to receive(:check_ai_service_health!)
+    it "logs ai retries without blocking" do
+      allow(instance.class).to receive(:calculate_retry_delay).and_return(20.0)
       allow(Ops::StructuredLogger).to receive(:warn)
-
       instance.send(:handle_ai_service_retry, job_like, Timeout::Error.new("ai"))
     end
   end

@@ -154,7 +154,9 @@ class ApplicationJob < ActiveJob::Base
           locale: job.locale,
           timezone: job.timezone,
           executions: job.executions,
-          exception_executions: job.exception_executions
+          exception_executions: job.exception_executions,
+          failure_classification: job.send(:failure_classification_for, e),
+          manual_review_required: job.send(:manual_review_required_for, e)
         }
       )
 
@@ -218,7 +220,12 @@ class ApplicationJob < ActiveJob::Base
   end
 
   def retryable_for(error)
-    !authentication_error?(error)
+    return false if authentication_error?(error)
+    return false if manual_review_required_for(error)
+    return false if non_recoverable_error?(error)
+    return true if transient_error?(error)
+
+    false
   end
 
   def transient_error?(error)
@@ -227,11 +234,70 @@ class ApplicationJob < ActiveJob::Base
       "Net::ReadTimeout",
       "Errno::ECONNRESET",
       "Errno::ECONNREFUSED",
-      "Selenium::WebDriver::Error::TimeoutError"
+      "Selenium::WebDriver::Error::TimeoutError",
+      "Timeout::Error",
+      "ActiveRecord::ConnectionTimeoutError",
+      "ActiveRecord::LockWaitTimeout",
+      "ActiveRecord::Deadlocked"
     ].filter_map(&:safe_constantize)
     classes.any? { |klass| error.is_a?(klass) }
   rescue StandardError
     false
+  end
+
+  def non_recoverable_error?(error)
+    non_recoverable_classes = [
+      ActiveRecord::RecordNotFound,
+      ActiveRecord::RecordInvalid,
+      ActiveRecord::RecordNotUnique,
+      ActiveJob::DeserializationError,
+      ArgumentError
+    ]
+    return true if non_recoverable_classes.any? { |klass| error.is_a?(klass) }
+
+    message = error.message.to_s.downcase
+    return true if message.include?("invalid payload")
+    return true if message.include?("invalid parameter")
+    return true if message.include?("validation failed")
+    return true if message.include?("media missing")
+    return true if message.include?("deleted media")
+    return true if message.include?("404")
+    return true if message.include?("permission denied")
+    return true if message.include?("forbidden")
+    return true if message.include?("unsupported media")
+
+    false
+  rescue StandardError
+    false
+  end
+
+  def manual_review_required_for(error)
+    classes = [
+      NoMethodError,
+      NameError,
+      TypeError,
+      SyntaxError
+    ]
+    return true if classes.any? { |klass| error.is_a?(klass) }
+
+    message = error.message.to_s.downcase
+    return true if message.include?("undefined method")
+    return true if message.include?("stack level too deep")
+
+    false
+  rescue StandardError
+    false
+  end
+
+  def failure_classification_for(error)
+    return "non_recoverable" if authentication_error?(error)
+    return "manual_review_required" if manual_review_required_for(error)
+    return "recoverable" if transient_error?(error)
+    return "non_recoverable" if non_recoverable_error?(error)
+
+    "non_recoverable"
+  rescue StandardError
+    "non_recoverable"
   end
 
   def authentication_error?(error)

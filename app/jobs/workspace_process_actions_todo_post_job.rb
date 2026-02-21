@@ -16,8 +16,11 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     end
 
   PROFILE_RETRY_MAX_ATTEMPTS = ENV.fetch("WORKSPACE_ACTIONS_PROFILE_RETRY_MAX_ATTEMPTS", 4).to_i.clamp(1, 12)
+  MEDIA_RETRY_MAX_ATTEMPTS = ENV.fetch("WORKSPACE_ACTIONS_MEDIA_RETRY_MAX_ATTEMPTS", 6).to_i.clamp(1, 20)
+  POST_ANALYSIS_RETRY_MAX_ATTEMPTS = ENV.fetch("WORKSPACE_ACTIONS_POST_RETRY_MAX_ATTEMPTS", 8).to_i.clamp(1, 25)
   POST_RETRY_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_POST_RETRY_WAIT_MINUTES", 20).to_i.clamp(5, 180)
   MEDIA_RETRY_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_MEDIA_RETRY_WAIT_MINUTES", 10).to_i.clamp(2, 90)
+  RETRY_BACKOFF_MAX_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_RETRY_BACKOFF_MAX_WAIT_MINUTES", 240).to_i.clamp(15, 1440)
   ENQUEUE_COOLDOWN_SECONDS = ENV.fetch("WORKSPACE_ACTIONS_ENQUEUE_COOLDOWN_SECONDS", 180).to_i.clamp(15, 1800)
   RUNNING_LOCK_SECONDS = ENV.fetch("WORKSPACE_ACTIONS_RUNNING_LOCK_SECONDS", 600).to_i.clamp(60, 3600)
 
@@ -299,6 +302,11 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       state["next_run_at"] = next_run_at&.iso8601(3)
       state["suggestions_count"] = suggestions_count.to_i if suggestions_count.present?
       state["last_ready_at"] = Time.current.iso8601(3) if status.to_s == "ready"
+      if terminal_workspace_status?(status)
+        state["media_download_retry_attempts"] = 0
+        state["post_analysis_retry_attempts"] = 0
+        state["retry_exhausted"] = false
+      end
 
       metadata["workspace_actions"] = state
       post.update!(metadata: metadata)
@@ -319,6 +327,7 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       state["updated_at"] = now.iso8601(3)
       state["lock_until"] = (now + RUNNING_LOCK_SECONDS.seconds).iso8601(3)
       state["last_error"] = nil
+      state["retry_exhausted"] = false
 
       metadata["workspace_actions"] = state
       post.update!(metadata: metadata)
@@ -326,7 +335,26 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
   end
 
   def schedule_retry!(account:, profile:, post:, requested_by:, wait_until:, status:, last_error:)
+    retry_policy = retry_policy_for_status(status)
     retry_time = wait_until.is_a?(Time) ? wait_until : Time.current + POST_RETRY_WAIT_MINUTES.minutes
+
+    if retry_policy
+      retry_state = register_retry_attempt!(post: post, policy: retry_policy)
+      if retry_state[:exhausted]
+        reason = "#{status}_retry_attempts_exhausted"
+        persist_workspace_state!(
+          post: post,
+          status: "failed",
+          requested_by: requested_by,
+          next_run_at: nil,
+          last_error: reason
+        )
+        return { enqueued: false, reason: reason, exhausted: true }
+      end
+
+      retry_time = retry_state[:retry_time] if retry_state[:retry_time].is_a?(Time)
+    end
+
     result = self.class.enqueue_if_needed!(
       account: account,
       profile: profile,
@@ -534,5 +562,64 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     end
   rescue StandardError
     nil
+  end
+
+  def retry_policy_for_status(status)
+    case status.to_s
+    when "waiting_media_download"
+      {
+        attempt_key: "media_download_retry_attempts",
+        max_attempts: MEDIA_RETRY_MAX_ATTEMPTS,
+        base_wait_minutes: MEDIA_RETRY_WAIT_MINUTES
+      }
+    when "waiting_post_analysis"
+      {
+        attempt_key: "post_analysis_retry_attempts",
+        max_attempts: POST_ANALYSIS_RETRY_MAX_ATTEMPTS,
+        base_wait_minutes: POST_RETRY_WAIT_MINUTES
+      }
+    else
+      nil
+    end
+  end
+
+  def register_retry_attempt!(post:, policy:)
+    post.with_lock do
+      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+      state = metadata["workspace_actions"].is_a?(Hash) ? metadata["workspace_actions"].deep_dup : {}
+      key = policy[:attempt_key].to_s
+      attempts = state[key].to_i + 1
+      max_attempts = policy[:max_attempts].to_i
+
+      if attempts > max_attempts
+        state["retry_exhausted"] = true
+        state["updated_at"] = Time.current.iso8601(3)
+        metadata["workspace_actions"] = state
+        post.update!(metadata: metadata)
+        return { exhausted: true, attempts: attempts - 1 }
+      end
+
+      wait_minutes = [ policy[:base_wait_minutes].to_i * (2 ** (attempts - 1)), RETRY_BACKOFF_MAX_WAIT_MINUTES ].min
+      retry_time = Time.current + wait_minutes.minutes
+
+      state[key] = attempts
+      state["retry_exhausted"] = false
+      state["updated_at"] = Time.current.iso8601(3)
+      metadata["workspace_actions"] = state
+      post.update!(metadata: metadata)
+
+      { exhausted: false, attempts: attempts, wait_minutes: wait_minutes, retry_time: retry_time }
+    end
+  rescue StandardError => e
+    { exhausted: false, error_class: e.class.name, error_message: e.message.to_s }
+  end
+
+  def terminal_workspace_status?(status)
+    text = status.to_s
+    return true if text == "ready"
+    return true if text == "failed"
+    return true if text.start_with?("skipped_")
+
+    false
   end
 end

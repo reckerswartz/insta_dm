@@ -127,12 +127,19 @@ This document summarizes the comprehensive improvements made to stabilize and op
 - **Retry Strategies**: Exponential backoff for transient issues
 - **Graceful Degradation**: Skip processing when dependencies are missing
 - **Structured Logging**: Comprehensive error context for debugging
+- **Manual Review Routing**: Code-level failures (e.g. `NoMethodError`, `TypeError`) are flagged as manual-review-required issues
+- **Non-recoverable Classification**: Invalid payload/data/permission/media-missing failure patterns are marked non-retryable
 
 ### Idempotency
 - **Deduplication Keys**: Prevent duplicate job execution
 - **Work Completion Tracking**: Avoid redundant operations
 - **State Management**: Redis-based tracking with TTL
 - **Automatic Cleanup**: Remove stale state markers
+
+### Runaway Retry Protection
+- **No worker blocking in retry hooks**: Retry handlers no longer sleep inside worker threads
+- **Bounded self-requeue loops**: Workspace action retries now enforce max attempts with exponential backoff
+- **Safer manual retries**: Admin retry flow uses centralized actionable retry checks before enqueuing
 
 ### Resource Management
 - **Connection Resilience**: Redis reconnection attempts

@@ -37,6 +37,12 @@ RSpec.describe ApplicationJob, type: :job do
 
       timeout_error = Net::ReadTimeout.new("Timeout")
       expect(job.send(:retryable_for, timeout_error)).to be true
+
+      invalid_payload_error = ArgumentError.new("invalid payload")
+      expect(job.send(:retryable_for, invalid_payload_error)).to be false
+
+      code_error = NoMethodError.new("undefined method `foo'")
+      expect(job.send(:retryable_for, code_error)).to be false
     end
   end
 
@@ -56,6 +62,21 @@ RSpec.describe ApplicationJob, type: :job do
     it "classifies runtime errors by default" do
       error = StandardError.new("Generic error")
       expect(job.send(:failure_kind_for, error)).to eq("runtime")
+    end
+  end
+
+  describe "failure classification metadata helpers" do
+    let(:job) { Class.new(ApplicationJob).new }
+
+    it "marks manual review errors" do
+      error = NoMethodError.new("undefined method")
+      expect(job.send(:manual_review_required_for, error)).to be true
+      expect(job.send(:failure_classification_for, error)).to eq("manual_review_required")
+    end
+
+    it "marks non-recoverable errors" do
+      error = ActiveRecord::RecordNotFound.new("missing")
+      expect(job.send(:failure_classification_for, error)).to eq("non_recoverable")
     end
   end
 

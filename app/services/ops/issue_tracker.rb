@@ -4,8 +4,24 @@ module Ops
   class IssueTracker
     class << self
       def record_job_failure!(job:, exception:, context:, failure_record:)
-        issue_type = exception.is_a?(Instagram::AuthenticationRequiredError) ? "authentication_required" : "job_failure"
-        severity = exception.is_a?(Instagram::AuthenticationRequiredError) ? "critical" : "error"
+        classification = failure_record&.metadata.to_h["failure_classification"].to_s
+        manual_review = ActiveModel::Type::Boolean.new.cast(failure_record&.metadata.to_h["manual_review_required"])
+
+        issue_type =
+          if exception.is_a?(Instagram::AuthenticationRequiredError)
+            "authentication_required"
+          elsif manual_review || classification == "manual_review_required"
+            "job_manual_review_required"
+          else
+            "job_failure"
+          end
+
+        severity =
+          if exception.is_a?(Instagram::AuthenticationRequiredError) || manual_review || classification == "manual_review_required"
+            "critical"
+          else
+            "error"
+          end
 
         upsert_issue!(
           issue_type: issue_type,

@@ -118,27 +118,10 @@ class Admin::JobMonitoringController < Admin::BaseController
   end
 
   def retry_job_failure(failure)
-    # This is a simplified retry mechanism
-    # In practice, you might want to reconstruct the original job with its arguments
-    
-    job_class = failure.job_class.safe_constantize
-    return false unless job_class
-
-    # Parse arguments and retry the job
-    arguments = JSON.parse(failure.arguments_json) rescue {}
-    
-    # Mark the failure as retried
-    failure.update!(
-      retryable: false,
-      metadata: failure.metadata.merge({
-        retried_at: Time.current.iso8601,
-        retried_by: "admin_manual_retry"
-      })
-    )
-
-    # Enqueue the job again
-    job_class.perform_later(**arguments)
-    
+    Jobs::FailureRetry.enqueue!(failure, source: "admin_manual_retry")
     true
+  rescue Jobs::FailureRetry::RetryError => e
+    Rails.logger.warn("Retry skipped for failure #{failure.id}: #{e.message}")
+    false
   end
 end

@@ -197,4 +197,45 @@ it "marks story posts as skipped_non_user_post" do
   expect(post.metadata.dig("workspace_actions", "status")).to eq("skipped_non_user_post")
 end
 
+it "stops retrying waiting_post_analysis after max attempts" do
+  stub_const("WorkspaceProcessActionsTodoPostJob::POST_ANALYSIS_RETRY_MAX_ATTEMPTS", 1)
+
+  account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+  profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
+  post = profile.instagram_profile_posts.create!(
+    instagram_account: account,
+    shortcode: "post_#{SecureRandom.hex(3)}",
+    taken_at: Time.current,
+    ai_status: "running",
+    metadata: { "post_kind" => "post" }
+  )
+  post.media.attach(
+    io: StringIO.new("fake-jpeg"),
+    filename: "post.jpg",
+    content_type: "image/jpeg"
+  )
+
+  WorkspaceProcessActionsTodoPostJob.perform_now(
+    instagram_account_id: account.id,
+    instagram_profile_id: profile.id,
+    instagram_profile_post_id: post.id,
+    requested_by: "rspec"
+  )
+
+  post.reload
+  expect(post.metadata.dig("workspace_actions", "status")).to eq("waiting_post_analysis")
+  expect(post.metadata.dig("workspace_actions", "post_analysis_retry_attempts")).to eq(1)
+
+  WorkspaceProcessActionsTodoPostJob.perform_now(
+    instagram_account_id: account.id,
+    instagram_profile_id: profile.id,
+    instagram_profile_post_id: post.id,
+    requested_by: "rspec"
+  )
+
+  post.reload
+  expect(post.metadata.dig("workspace_actions", "status")).to eq("failed")
+  expect(post.metadata.dig("workspace_actions", "last_error")).to include("waiting_post_analysis_retry_attempts_exhausted")
+end
+
 end
