@@ -1,0 +1,16 @@
+{
+  "status": "generated_or_fallback",
+  "required_keys": [
+    "comment_suggestions",
+    "source",
+    "model",
+    "status",
+    "fallback_used"
+  ],
+  "quality_rules": {
+    "min_suggestions": 1,
+    "max_comment_length": 240,
+    "must_include_topic_anchor": true,
+    "disallow_empty_or_whitespace": true
+  }
+}

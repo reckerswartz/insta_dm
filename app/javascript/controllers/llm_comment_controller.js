@@ -10,6 +10,8 @@ export default class extends Controller {
     this.subscription = null
     this.wsConnected = false
     this.pendingEventIds = new Set()
+    this.statusPollers = new Map()
+    this.statusPollFailures = new Map()
     this.ensureSubscription()
   }
 
@@ -17,6 +19,7 @@ export default class extends Controller {
     if (this.consumer && this.subscription) {
       this.consumer.subscriptions.remove(this.subscription)
     }
+    this.clearStatusPollers()
     this.pendingEventIds.clear()
     this.wsConnected = false
   }
@@ -98,9 +101,33 @@ export default class extends Controller {
     return payload
   }
 
+  async callGenerateCommentStatusApi(eventId) {
+    const response = await fetch(`/instagram_accounts/${this.accountIdValue}/generate_llm_comment`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": this.getCsrfToken(),
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        event_id: eventId,
+        provider: "local",
+        status_only: true,
+      }),
+    })
+
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(payload.error || `Status request failed (${response.status})`)
+    }
+
+    return payload
+  }
+
   processImmediateResult(eventId, result) {
     const status = String(result?.status || "").toLowerCase()
     if (status === "completed") {
+      this.stopStatusPolling(eventId)
       this.handleGenerationComplete(eventId, {
         comment: result.llm_generated_comment,
         generated_at: result.llm_comment_generated_at,
@@ -111,6 +138,7 @@ export default class extends Controller {
     }
 
     if (status === "queued") {
+      this.startStatusPolling(eventId)
       this.updateButtonsForEvent(eventId, {
         disabled: true,
         label: "Queued...",
@@ -121,6 +149,7 @@ export default class extends Controller {
     }
 
     if (status === "running" || status === "started") {
+      this.startStatusPolling(eventId)
       this.updateButtonsForEvent(eventId, {
         disabled: true,
         label: "Generating...",
@@ -130,6 +159,14 @@ export default class extends Controller {
       return
     }
 
+    if (status === "failed" || status === "error" || status === "skipped") {
+      this.stopStatusPolling(eventId)
+      this.pendingEventIds.delete(String(eventId))
+      this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
+      return
+    }
+
+    this.stopStatusPolling(eventId)
     this.pendingEventIds.delete(String(eventId))
   }
 
@@ -140,6 +177,7 @@ export default class extends Controller {
     const status = String(data?.status || "").toLowerCase()
     switch (status) {
       case "queued":
+        this.startStatusPolling(eventId)
         this.updateButtonsForEvent(eventId, {
           disabled: true,
           label: "Queued...",
@@ -149,6 +187,7 @@ export default class extends Controller {
         break
       case "running":
       case "started":
+        this.startStatusPolling(eventId)
         this.updateButtonsForEvent(eventId, {
           disabled: true,
           label: data?.progress ? `Generating... ${Number(data.progress).toFixed(0)}%` : "Generating...",
@@ -157,15 +196,18 @@ export default class extends Controller {
         })
         break
       case "completed":
+        this.stopStatusPolling(eventId)
         this.handleGenerationComplete(eventId, data)
         break
       case "skipped":
+        this.stopStatusPolling(eventId)
         this.pendingEventIds.delete(eventId)
         this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
         notifyApp(data?.message || "Comment generation skipped: no usable local context.", "notice")
         break
       case "error":
       case "failed":
+        this.stopStatusPolling(eventId)
         this.pendingEventIds.delete(eventId)
         this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate Comment Locally", loading: false, eta: null })
         notifyApp(`Failed to generate comment: ${data?.error || data?.message || "Unknown error"}`, "error")
@@ -176,6 +218,7 @@ export default class extends Controller {
   }
 
   handleGenerationComplete(eventId, data) {
+    this.stopStatusPolling(eventId)
     this.pendingEventIds.delete(String(eventId))
     const storyCard = document.querySelector(`[data-event-id="${this.escapeSelector(eventId)}"]`)
     if (storyCard) {
@@ -199,6 +242,44 @@ export default class extends Controller {
 
     this.updateButtonsForEvent(eventId, { disabled: true, label: "Completed", loading: false, eta: null })
     notifyApp("Comment generated successfully.", "success")
+  }
+
+  startStatusPolling(eventId) {
+    const key = String(eventId)
+    if (this.statusPollers.has(key)) return
+
+    const timer = window.setInterval(async () => {
+      try {
+        const result = await this.callGenerateCommentStatusApi(key)
+        this.statusPollFailures.set(key, 0)
+        this.processImmediateResult(key, result)
+      } catch (error) {
+        const failures = Number(this.statusPollFailures.get(key) || 0) + 1
+        this.statusPollFailures.set(key, failures)
+        if (failures >= 4) {
+          this.stopStatusPolling(key)
+          notifyApp("Unable to verify comment generation status. Please refresh the archive.", "error")
+        }
+      }
+    }, 3000)
+
+    this.statusPollers.set(key, timer)
+  }
+
+  stopStatusPolling(eventId) {
+    const key = String(eventId)
+    const timer = this.statusPollers.get(key)
+    if (timer) {
+      clearInterval(timer)
+      this.statusPollers.delete(key)
+    }
+    this.statusPollFailures.delete(key)
+  }
+
+  clearStatusPollers() {
+    this.statusPollers.forEach((timer) => clearInterval(timer))
+    this.statusPollers.clear()
+    this.statusPollFailures.clear()
   }
 
   updateButtonsForEvent(eventId, state) {

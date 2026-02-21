@@ -15,45 +15,15 @@ module InstagramAccounts
       event = InstagramProfileEvent.find(event_id)
       return not_found_result unless accessible_event?(event)
 
-      if event.has_llm_generated_comment?
-        event.update_column(:llm_comment_status, "completed") if event.llm_comment_status.to_s != "completed"
-        return completed_result(event)
-      end
+      completed = normalize_completed_event(event)
+      return completed if completed
 
-      if event.llm_comment_in_progress?
-        if queue_inspector.stale_comment_job?(event: event)
-          event.update_columns(
-            llm_comment_status: "failed",
-            llm_comment_last_error: "Previous generation job appears stalled. Please retry.",
-            updated_at: Time.current
-          )
-          event.reload
-        else
-          return in_progress_result(event)
-        end
-      end
+      in_progress = normalize_in_progress_event(event)
+      return in_progress if in_progress
 
       return status_result(event) if status_only
 
-      job = GenerateLlmCommentJob.perform_later(
-        instagram_profile_event_id: event.id,
-        provider: provider,
-        model: model,
-        requested_by: "dashboard_manual_request"
-      )
-      event.queue_llm_comment_generation!(job_id: job.job_id)
-
-      Result.new(
-        payload: {
-          success: true,
-          status: "queued",
-          event_id: event.id,
-          job_id: job.job_id,
-          estimated_seconds: llm_comment_estimated_seconds(event: event, include_queue: true),
-          queue_size: ai_queue_size
-        },
-        status: :accepted
-      )
+      enqueue_comment_job(event)
     rescue StandardError => e
       Result.new(payload: { error: e.message }, status: :unprocessable_entity)
     end
@@ -84,6 +54,61 @@ module InstagramAccounts
         },
         status: :ok
       )
+    end
+
+    def normalize_completed_event(event)
+      return nil unless event.has_llm_generated_comment?
+
+      event.update_column(:llm_comment_status, "completed") if event.llm_comment_status.to_s != "completed"
+      completed_result(event)
+    end
+
+    def normalize_in_progress_event(event)
+      return nil unless event.llm_comment_in_progress?
+
+      if queue_inspector.stale_comment_job?(event: event)
+        event.update_columns(
+          llm_comment_status: "failed",
+          llm_comment_last_error: "Previous generation job appears stalled. Please retry.",
+          updated_at: Time.current
+        )
+        event.reload
+        return nil
+      end
+
+      in_progress_result(event)
+    end
+
+    def enqueue_comment_job(event)
+      event.with_lock do
+        event.reload
+
+        completed = normalize_completed_event(event)
+        return completed if completed
+
+        in_progress = normalize_in_progress_event(event)
+        return in_progress if in_progress
+
+        job = GenerateLlmCommentJob.perform_later(
+          instagram_profile_event_id: event.id,
+          provider: provider,
+          model: model,
+          requested_by: "dashboard_manual_request"
+        )
+        event.queue_llm_comment_generation!(job_id: job.job_id)
+
+        Result.new(
+          payload: {
+            success: true,
+            status: "queued",
+            event_id: event.id,
+            job_id: job.job_id,
+            estimated_seconds: llm_comment_estimated_seconds(event: event, include_queue: true),
+            queue_size: ai_queue_size
+          },
+          status: :accepted
+        )
+      end
     end
 
     def in_progress_result(event)

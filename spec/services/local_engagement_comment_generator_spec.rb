@@ -1,6 +1,10 @@
 require "rails_helper"
 
 RSpec.describe Ai::LocalEngagementCommentGenerator do
+  let(:expected_fixture) do
+    JSON.parse(File.read(Rails.root.join("spec/fixtures/ai/expected_story_comment_result.json")))
+  end
+
   it "prompt includes compact verified context and excludes low-value raw fields" do
     fake_client = Class.new do
       def generate(model:, prompt:, temperature:, max_tokens:)
@@ -136,5 +140,48 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     expect(result[:source]).to eq("fallback")
     expect(result[:comment_suggestions].first.downcase).to include("plant")
     expect(result[:comment_suggestions].none? { |row| row.include?("story media moment") }).to eq(true)
+  end
+
+  it "matches fixture-backed quality and structure rules for story suggestions" do
+    fake_client = Class.new do
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        {
+          "response" => {
+            comment_suggestions: [
+              "Love the plant corner and the soft window light.",
+              "That green setup looks so calming. Where is this from?"
+            ]
+          }.to_json
+        }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    result = generator.generate!(
+      post_payload: {},
+      image_description: "Visual elements: potted plant, window light.",
+      topics: ["plant", "home"],
+      author_type: "personal",
+      channel: "story",
+      verified_story_facts: { objects: ["potted plant"], topics: ["plant"] },
+      scored_context: {}
+    )
+
+    required_keys = Array(expected_fixture["required_keys"]).map(&:to_s)
+    rules = expected_fixture["quality_rules"].is_a?(Hash) ? expected_fixture["quality_rules"] : {}
+    min_suggestions = rules["min_suggestions"].to_i
+    max_comment_length = rules["max_comment_length"].to_i
+    anchored = ActiveModel::Type::Boolean.new.cast(rules["must_include_topic_anchor"])
+    no_empty = ActiveModel::Type::Boolean.new.cast(rules["disallow_empty_or_whitespace"])
+
+    required_keys.each do |key|
+      expect(result.key?(key.to_sym) || result.key?(key)).to eq(true), "Missing expected key: #{key}"
+    end
+
+    suggestions = Array(result[:comment_suggestions]).map(&:to_s)
+    expect(suggestions.length).to be >= min_suggestions
+    expect(suggestions.all? { |row| row.length <= max_comment_length }).to eq(true)
+    expect(suggestions.any? { |row| row.downcase.include?("plant") || row.downcase.include?("green") }).to eq(true) if anchored
+    expect(suggestions.any? { |row| row.strip.empty? }).to eq(false) if no_empty
   end
 end

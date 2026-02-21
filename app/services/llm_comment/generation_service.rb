@@ -113,8 +113,18 @@ module LlmComment
       end
 
       claimed
-    rescue StandardError
-      false
+    rescue StandardError => e
+      Ops::StructuredLogger.error(
+        event: "llm_comment.claim_slot_failed",
+        payload: {
+          event_id: event&.id,
+          instagram_profile_id: event&.instagram_profile_id,
+          active_job_id: active_job,
+          error_class: e.class.name,
+          error_message: e.message.to_s
+        }
+      )
+      raise
     end
 
     def log_completion(already_completed: false)

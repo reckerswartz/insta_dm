@@ -33,4 +33,16 @@ RSpec.describe LlmComment::GenerationService do
     expect(event.reload.llm_comment_job_id).to eq("job-1")
     expect(event.llm_comment_status).to eq("running")
   end
+
+  it "raises when slot claiming fails unexpectedly so job retries can run" do
+    event = build_story_event(status: "queued")
+    service = described_class.new(instagram_profile_event_id: event.id)
+
+    allow(service).to receive(:event).and_return(event)
+    allow(event).to receive(:with_lock).and_raise(ActiveRecord::StatementInvalid.new("lock error"))
+
+    expect do
+      Current.set(active_job_id: "job-9") { service.call }
+    end.to raise_error(ActiveRecord::StatementInvalid)
+  end
 end

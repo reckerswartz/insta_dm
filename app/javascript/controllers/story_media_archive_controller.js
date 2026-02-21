@@ -419,6 +419,13 @@ export default class extends Controller {
       ` :
       `<img src="${this.esc(item.media_url)}" alt="Story media" />`
 
+    const llmStatus = String(item.llm_comment_status || "").toLowerCase()
+    const llmInFlight = llmStatus === "queued" || llmStatus === "running" || llmStatus === "started"
+    const llmFailed = llmStatus === "failed" || llmStatus === "error"
+    const llmSkipped = llmStatus === "skipped"
+    const llmLabel = llmInFlight ? (llmStatus === "queued" ? "Queued..." : "Generating...") : "Generate Comment Locally"
+    const llmHint = llmInFlight ? "Comment generation is processing in the background." : "Runs in background and updates this archive automatically."
+    const llmError = item.llm_comment_last_error_preview || item.llm_comment_last_error
     const comment = item.llm_generated_comment ?
       `
         <section class="story-modal-section">
@@ -431,12 +438,16 @@ export default class extends Controller {
           <h4>Generate Suggestion</h4>
           <button
             type="button"
-            class="btn secondary generate-comment-btn"
+            class="btn secondary generate-comment-btn ${llmInFlight ? "loading" : ""}"
             data-event-id="${this.esc(String(item.id))}"
             data-action="click->llm-comment#generateComment"
+            ${llmInFlight ? "disabled" : ""}
           >
-            Generate Comment Locally
+            ${this.esc(llmLabel)}
           </button>
+          <p class="meta llm-progress-hint">${this.esc(llmHint)}</p>
+          ${llmFailed && llmError ? `<p class="meta error-text">Last error: ${this.esc(llmError)}</p>` : ""}
+          ${llmSkipped && llmError ? `<p class="meta">Skipped: ${this.esc(llmError)}</p>` : ""}
         </section>
       `
 

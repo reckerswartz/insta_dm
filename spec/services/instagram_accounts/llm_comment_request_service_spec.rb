@@ -89,6 +89,45 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     )
   end
 
+  it "does not enqueue a new job when generation is already queued" do
+    event = create_story_event(profile: profile, llm_comment_status: "queued", llm_comment_job_id: "job-existing")
+    allow(GenerateLlmCommentJob).to receive(:perform_later)
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: false,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:accepted)
+    expect(result.payload).to include(success: true, status: "queued", event_id: event.id, job_id: "job-existing")
+    expect(GenerateLlmCommentJob).not_to have_received(:perform_later)
+  end
+
+  it "marks stale in-progress jobs as failed and re-enqueues a fresh generation job" do
+    event = create_story_event(profile: profile, llm_comment_status: "running", llm_comment_job_id: "job-stale")
+    allow(queue_inspector).to receive(:stale_comment_job?).with(event: event).and_return(true)
+    job = instance_double(ActiveJob::Base, job_id: "job-new")
+    allow(GenerateLlmCommentJob).to receive(:perform_later).and_return(job)
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: false,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:accepted)
+    expect(result.payload).to include(success: true, status: "queued", event_id: event.id, job_id: "job-new")
+    expect(event.reload.llm_comment_status).to eq("queued")
+    expect(event.llm_comment_last_error).to be_nil
+  end
+
   def create_story_event(profile:, **attrs)
     defaults = {
       kind: "story_downloaded",

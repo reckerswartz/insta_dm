@@ -3,6 +3,9 @@ require "securerandom"
 require "stringio"
 
 RSpec.describe InstagramAccounts::StoryArchiveItemSerializer do
+  let(:image_fixture_path) { Rails.root.join("spec/fixtures/files/story_archive/story_reference.png") }
+  let(:video_fixture_path) { Rails.root.join("spec/fixtures/files/story_archive/story_reference.mp4") }
+
   def create_account_profile
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(
@@ -35,7 +38,7 @@ RSpec.describe InstagramAccounts::StoryArchiveItemSerializer do
         "media_bytes" => 321
       }
     )
-    event.media.attach(io: StringIO.new("img"), filename: "story.jpg", content_type: "image/jpeg")
+    event.media.attach(io: File.open(image_fixture_path, "rb"), filename: "story_reference.png", content_type: "image/png")
 
     payload = described_class.new(event: event).call
 
@@ -58,7 +61,7 @@ RSpec.describe InstagramAccounts::StoryArchiveItemSerializer do
       detected_at: Time.current,
       metadata: {}
     )
-    event.media.attach(io: StringIO.new("video-bytes"), filename: "story.mp4", content_type: "video/mp4")
+    event.media.attach(io: File.open(video_fixture_path, "rb"), filename: "story_reference.mp4", content_type: "video/mp4")
     allow(GenerateStoryPreviewImageJob).to receive(:perform_later)
 
     payload = described_class.new(event: event, preview_enqueue_ttl_seconds: 1).call
