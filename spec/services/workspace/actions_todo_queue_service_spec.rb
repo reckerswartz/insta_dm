@@ -3,6 +3,8 @@ require "securerandom"
 require "stringio"
 
 RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
+  before { Rails.cache.clear }
+
   it "builds queue items only for eligible user-created posts" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
 
@@ -116,5 +118,54 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
 
     assert_equal "waiting_build_history", row[:processing_status]
     assert_includes row[:processing_message], "Build History"
+  end
+
+  it "pauses enqueue when queue health is degraded" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(3)}")
+    profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "pending_#{SecureRandom.hex(2)}",
+      taken_at: Time.current,
+      ai_status: "pending",
+      analysis: {},
+      metadata: { "post_kind" => "post" }
+    )
+
+    allow(Ops::QueueHealth).to receive(:check!).and_return(
+      { ok: false, reason: "no_workers_with_backlog", counts: { enqueued: 12, processes: 0 } }
+    )
+    expect(WorkspaceProcessActionsTodoPostJob).not_to receive(:enqueue_if_needed!)
+
+    result = Workspace::ActionsTodoQueueService.new(account: account, limit: 10, enqueue_processing: true).fetch!
+
+    assert_equal 0, result.dig(:stats, :enqueued_now).to_i
+    assert_equal "no_workers_with_backlog", result.dig(:stats, :enqueue_blocked_reason)
+  end
+
+  it "enqueues when queue health is healthy" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(3)}")
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "todo_#{SecureRandom.hex(2)}",
+      taken_at: Time.current,
+      ai_status: "pending",
+      analysis: {},
+      metadata: { "post_kind" => "post" }
+    )
+
+    allow(Ops::QueueHealth).to receive(:check!).and_return({ ok: true, counts: { processes: 2 } })
+    expect(WorkspaceProcessActionsTodoPostJob).to receive(:enqueue_if_needed!).with(
+      account: account,
+      profile: profile,
+      post: post,
+      requested_by: "workspace_actions_queue"
+    ).and_return({ enqueued: true })
+
+    result = Workspace::ActionsTodoQueueService.new(account: account, limit: 10, enqueue_processing: true).fetch!
+
+    assert_equal 1, result.dig(:stats, :enqueued_now).to_i
+    assert_nil result.dig(:stats, :enqueue_blocked_reason)
   end
 end

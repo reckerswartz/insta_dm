@@ -32,7 +32,7 @@ module Workspace
       return empty_result if items.empty?
 
       ordered = sort_items(items: items)
-      enqueued_count = enqueue_processing_jobs(items: ordered) if @enqueue_processing
+      enqueue_result = @enqueue_processing ? enqueue_processing_jobs(items: ordered) : { enqueued_count: 0, blocked_reason: nil }
 
       {
         items: ordered.first(@limit),
@@ -40,7 +40,8 @@ module Workspace
           total_items: ordered.length,
           ready_items: ordered.count { |row| row[:suggestions].any? },
           processing_items: ordered.count { |row| row[:requires_processing] },
-          enqueued_now: enqueued_count.to_i,
+          enqueued_now: enqueue_result[:enqueued_count].to_i,
+          enqueue_blocked_reason: enqueue_result[:blocked_reason].to_s.presence,
           refreshed_at: @now.iso8601(3)
         }
       }
@@ -58,6 +59,7 @@ module Workspace
           ready_items: 0,
           processing_items: 0,
           enqueued_now: 0,
+          enqueue_blocked_reason: nil,
           refreshed_at: now.iso8601(3)
         }
       }
@@ -187,6 +189,20 @@ module Workspace
     end
 
     def enqueue_processing_jobs(items:)
+      queue_health = queue_health_status
+      unless ActiveModel::Type::Boolean.new.cast(queue_health[:ok])
+        reason = queue_health[:reason].to_s.presence || "queue_unhealthy"
+        Ops::StructuredLogger.warn(
+          event: "workspace.actions_queue.enqueue_skipped",
+          payload: {
+            instagram_account_id: account.id,
+            reason: reason,
+            counts: queue_health[:counts].is_a?(Hash) ? queue_health[:counts] : {}
+          }
+        )
+        return { enqueued_count: 0, blocked_reason: reason }
+      end
+
       candidates = items.select { |item| item[:requires_processing] }.first(ENQUEUE_BATCH_SIZE)
       enqueued = 0
 
@@ -202,7 +218,23 @@ module Workspace
         next
       end
 
-      enqueued
+      { enqueued_count: enqueued, blocked_reason: nil }
+    rescue StandardError => e
+      Ops::StructuredLogger.error(
+        event: "workspace.actions_queue.enqueue_check_failed",
+        payload: {
+          instagram_account_id: account.id,
+          error_class: e.class.name,
+          error_message: e.message.to_s
+        }
+      )
+      { enqueued_count: 0, blocked_reason: "queue_check_failed" }
+    end
+
+    def queue_health_status
+      Rails.cache.fetch("ops/workspace_actions_queue_health", expires_in: 20.seconds) do
+        Ops::QueueHealth.check!
+      end
     end
 
     def user_profile?(profile)

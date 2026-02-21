@@ -197,6 +197,13 @@
         </header>
 
         <div class="flash-stack">
+          <% if queue_health_warning.present? %>
+            <div class="alert alert-danger alert-dismissible fade show" role="alert" aria-live="assertive">
+              <div><strong>Queue health warning:</strong> <%= queue_health_warning[:message] %></div>
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+          <% end %>
+
           <% if flash[:notice] %>
             <div class="alert alert-success alert-dismissible fade show" role="alert" aria-live="polite">
               <div><%= flash[:notice] %></div>

@@ -17,6 +17,9 @@
     <span class="pill sent">Ready: <%= stats[:ready_items].to_i %></span>
     <span class="pill running">Processing: <%= stats[:processing_items].to_i %></span>
     <span class="pill">Enqueued now: <%= stats[:enqueued_now].to_i %></span>
+    <% if stats[:enqueue_blocked_reason].to_s.present? %>
+      <span class="pill failed">Enqueue paused: <%= stats[:enqueue_blocked_reason].to_s.humanize %></span>
+    <% end %>
     <% if refreshed_time.present? %>
       <span class="meta">Refreshed <%= relative_time_with_tooltip(refreshed_time) %></span>
     <% end %>
