@@ -77,4 +77,25 @@ namespace :story_debug do
       puts "count=#{entry[:count]} endpoint=#{entry[:endpoint]}"
     end
   end
+
+  desc "Audit recent story_downloaded assignments and export visual comparison artifacts"
+  task assignment_audit: :environment do
+    require_relative "../tasks/story_assignment_auditor"
+
+    days = ENV.fetch("DAYS", "7").to_i
+    limit = ENV.fetch("LIMIT", "250").to_i
+    compare_live = ActiveModel::Type::Boolean.new.cast(ENV.fetch("COMPARE_LIVE", "0"))
+
+    auditor = StoryAssignmentAuditor.new(days: days, limit: limit, compare_live: compare_live)
+    result = auditor.run!
+
+    puts "=== Story Assignment Audit ==="
+    puts "Generated: #{result[:report][:generated_at]}"
+    puts "Scanned: #{result[:report][:scanned]}"
+    puts "Flagged: #{result[:report][:flagged]}"
+    puts "Issue counts: #{result[:report][:issue_counts]}"
+    puts "Output directory: #{result[:output_dir]}"
+    puts "JSON report: #{result[:json_path]}"
+    puts "HTML report: #{result[:html_path]}"
+  end
 end

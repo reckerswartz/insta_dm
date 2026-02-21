@@ -101,6 +101,24 @@ RSpec.describe Instagram::Client do
     expect(reel).to eq({ "items" => [ { "id" => "story_1" } ] })
   end
 
+  it "does not fallback to unrelated single reels when requested owner is missing" do
+    allow(client).to receive(:debug_story_reel_data)
+
+    client.define_singleton_method(:ig_api_get_json) do |**kwargs|
+      {
+        "reels" => {
+          "999" => {
+            "user" => { "id" => "999", "username" => "other_user" },
+            "items" => [ { "id" => "story_999_1" } ]
+          }
+        }
+      }
+    end
+
+    reel = client.send(:fetch_story_reel, user_id: "123", referer_username: "target.user")
+    expect(reel).to be_nil
+  end
+
   it "propagates driver context through fetch_story_items_via_api before fallback scraping is considered" do
     driver = Object.new
     captured = {}

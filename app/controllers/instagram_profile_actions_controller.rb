@@ -120,16 +120,27 @@ class InstagramProfileActionsController < ApplicationController
 
   def build_history
     profile = current_account.instagram_profiles.find(params[:id])
-    enqueue_profile_job(
+    result = BuildInstagramProfileHistoryJob.enqueue_with_resume_if_needed!(
+      account: current_account,
       profile: profile,
-      action: "build_history",
-      job_class: BuildInstagramProfileHistoryJob
+      trigger_source: "ui",
+      requested_by: self.class.name
     )
+    unless ActiveModel::Type::Boolean.new.cast(result[:accepted])
+      raise StandardError, (result[:reason].to_s.presence || "history_build_enqueue_failed")
+    end
+
+    message =
+      if ActiveModel::Type::Boolean.new.cast(result[:queued])
+        "History build queued for #{profile.username}."
+      else
+        "History build already running for #{profile.username}."
+      end
 
     respond_to do |format|
-      format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: "History build queued." }
+      format.html { redirect_back fallback_location: instagram_profile_path(profile), notice: message }
       format.turbo_stream do
-        render turbo_stream: queued_action_streams(profile: profile, message: "History build queued for #{profile.username}.")
+        render turbo_stream: queued_action_streams(profile: profile, message: message)
       end
       format.json { head :accepted }
     end

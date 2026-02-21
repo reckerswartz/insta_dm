@@ -1,7 +1,7 @@
 require "timeout"
 
 class RefreshProfilePostFaceIdentityJob < ApplicationJob
-  queue_as :ai_face_queue
+  queue_as :ai_face_refresh_queue
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3

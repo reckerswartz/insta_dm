@@ -1,5 +1,5 @@
 class SyncHomeStoryCarouselJob < ApplicationJob
-  queue_as :story_downloads
+  queue_as :home_story_sync
 
   STORY_BATCH_LIMIT = 10
   STORY_SYNC_LOCK_NAMESPACE = 92_401

@@ -405,7 +405,12 @@ def ensure_local_ai_before_jobs
   if required
     log("Local AI not ready; attempting startup via bin/local_ai_services")
     started = system("bin/local_ai_services", "start", chdir: ROOT)
-    ready, snapshot = wait_for_local_ai_ready(timeout_seconds: LOCAL_AI_READY_TIMEOUT_SECONDS)
+    snapshot = local_ai_health_snapshot
+    ready = false
+    if started
+      ready, snapshot = wait_for_local_ai_ready(timeout_seconds: LOCAL_AI_READY_TIMEOUT_SECONDS)
+    end
+
     unless started && ready
       micro_port = parse_port_from_url(LOCAL_AI_SERVICE_URL, 8000)
       ollama_port = parse_port_from_url(OLLAMA_URL, 11434)

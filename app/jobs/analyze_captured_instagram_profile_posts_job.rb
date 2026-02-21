@@ -1,5 +1,5 @@
 class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
-  queue_as :ai
+  queue_as :captured_posts
 
   DEFAULT_BATCH_SIZE = 6
   MAX_BATCH_SIZE = 20
@@ -63,7 +63,7 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
       }
     )
 
-    analyzed_now = 0
+    queued_now = 0
     skipped_now = 0
     failed_now = []
 
@@ -76,18 +76,17 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
         next
       end
 
-      AnalyzeInstagramProfilePostJob.perform_now(
+      AnalyzeInstagramProfilePostJob.perform_later(
         instagram_account_id: account.id,
         instagram_profile_id: profile.id,
         instagram_profile_post_id: post.id,
-        pipeline_mode: "inline",
         task_flags: {
           generate_comments: false,
           enforce_comment_evidence_policy: false,
           retry_on_incomplete_profile: false
         }
       )
-      analyzed_now += 1
+      queued_now += 1
     rescue StandardError => e
       failed_now << {
         post_id: post_id,
@@ -102,7 +101,7 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
       action_log: action_log,
       total_candidates: total_candidates_i,
       processed_increment: current_batch_ids.length,
-      analyzed_increment: analyzed_now,
+      queued_increment: queued_now,
       skipped_increment: skipped_now,
       failed_rows: failed_now,
       remaining_count: remaining_ids.length
@@ -124,12 +123,6 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
     end
 
     refresh_job = nil
-    if ActiveModel::Type::Boolean.new.cast(refresh_profile_insights) && state["analyzed_count"].to_i.positive?
-      refresh_job = AnalyzeInstagramProfileJob.perform_later(
-        instagram_account_id: account.id,
-        instagram_profile_id: profile.id
-      )
-    end
 
     action_log.mark_succeeded!(
       extra_metadata: {
@@ -137,7 +130,7 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
         refresh_profile_insights: ActiveModel::Type::Boolean.new.cast(refresh_profile_insights),
         profile_insights_refresh_job_id: refresh_job&.job_id
       },
-      log_text: "Post analysis completed. analyzed=#{state['analyzed_count']}, skipped=#{state['skipped_count']}, failed=#{state['failed_count']}."
+      log_text: "Post analysis queued. queued=#{state['queued_count']}, skipped=#{state['skipped_count']}, failed=#{state['failed_count']}."
     )
   rescue StandardError => e
     action_log&.mark_failed!(error_message: e.message, extra_metadata: { active_job_id: job_id, queue_name: queue_name })
@@ -169,7 +162,7 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
     profile.instagram_profile_posts.pending_ai.recent_first.limit(200).pluck(:id)
   end
 
-  def merged_queue_state(action_log:, total_candidates:, processed_increment:, analyzed_increment:, skipped_increment:, failed_rows:, remaining_count:)
+  def merged_queue_state(action_log:, total_candidates:, processed_increment:, queued_increment:, skipped_increment:, failed_rows:, remaining_count:)
     metadata = action_log.metadata.is_a?(Hash) ? action_log.metadata : {}
     raw = metadata["analysis_queue_state"].is_a?(Hash) ? metadata["analysis_queue_state"] : {}
     previous_failed_rows = Array(raw["failed_posts"]).select { |row| row.is_a?(Hash) }
@@ -177,7 +170,7 @@ class AnalyzeCapturedInstagramProfilePostsJob < ApplicationJob
     {
       "total_candidates" => [raw["total_candidates"].to_i, total_candidates.to_i].max,
       "processed_count" => raw["processed_count"].to_i + processed_increment.to_i,
-      "analyzed_count" => raw["analyzed_count"].to_i + analyzed_increment.to_i,
+      "queued_count" => raw["queued_count"].to_i + queued_increment.to_i,
       "skipped_count" => raw["skipped_count"].to_i + skipped_increment.to_i,
       "failed_count" => raw["failed_count"].to_i + Array(failed_rows).length,
       "remaining_count" => remaining_count.to_i,

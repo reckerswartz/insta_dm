@@ -22,6 +22,23 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
     assert_equal "reenapandey6668:3834650166490093993", normalized[:story_key]
     assert_equal "https://www.instagram.com/stories/reenapandey6668/3834650166490093993/", normalized[:url]
   end
+
+  it "does not coerce mixed tokens into story ids" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    client = Instagram::Client.new(account: account)
+
+    assert_equal "", client.send(:normalize_story_id_token, "ranjana_magar2025:")
+    assert_equal "", client.send(:normalize_story_id_token, "_nikki_r_khatz_22")
+    assert_equal "3834712783221666503", client.send(:normalize_story_id_token, "3834712783221666503")
+  end
+
+  it "current_story_reference only resolves stories with numeric story id segments" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    client = Instagram::Client.new(account: account)
+
+    assert_equal "", client.send(:current_story_reference, "https://www.instagram.com/stories/example_user/")
+    assert_equal "example_user:3834712783221666503", client.send(:current_story_reference, "https://www.instagram.com/stories/example_user/3834712783221666503/")
+  end
   it "story id hint extraction decodes ig_cache_key media id" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     client = Instagram::Client.new(account: account)
@@ -48,6 +65,26 @@ RSpec.describe "InstagramClientStoryAssignmentTest" do
     assert_equal "api_unresolved", media[:source]
     assert_nil media[:url]
     assert_equal "123", media[:story_id]
+  end
+
+  it "resolve_story_media_for_current_context never uses fallback story keys as ids" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    client = Instagram::Client.new(account: account)
+    client.define_singleton_method(:resolve_story_item_via_api) { |username:, story_id:, cache:, driver: nil| nil }
+    client.define_singleton_method(:resolve_story_item_via_dom) { |driver:| nil }
+    client.define_singleton_method(:resolve_story_item_via_performance_logs) { |driver:| nil }
+
+    media = client.send(
+      :resolve_story_media_for_current_context,
+      driver: Struct.new(:current_url).new("https://www.instagram.com/stories/ranjana_magar2025/"),
+      username: "ranjana_magar2025",
+      story_id: "",
+      fallback_story_key: "ranjana_magar2025:sig:Stories|https://scontent.example",
+      cache: {}
+    )
+
+    assert_equal "api_unresolved", media[:source]
+    assert_equal "", media[:story_id]
   end
 
   it "resolve_story_media_for_current_context ignores non-http dom media urls" do

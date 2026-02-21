@@ -1,5 +1,5 @@
 class SyncAllHomeStoriesJob < ApplicationJob
-  queue_as :story_downloads
+  queue_as :home_story_orchestration
 
   MAX_CYCLES = 30
 

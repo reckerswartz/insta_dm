@@ -42,7 +42,7 @@ production:
 
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
-    queue: story_downloads
+    queue: story_auto_reply_orchestration
     args: [{ max_stories: 10, force_analyze_all: false }]
     schedule: every hour at minute 22
 
@@ -61,7 +61,7 @@ production:
 development:
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
-    queue: story_downloads
+    queue: story_auto_reply_orchestration
     args: [{ max_stories: 10, force_analyze_all: false }]
     schedule: every 2 hours
 

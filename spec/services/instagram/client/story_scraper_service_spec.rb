@@ -91,8 +91,22 @@ RSpec.describe Instagram::Client::StoryScraperService do
         attempts: [ { attempt: 1, source: "api_reels_media", resolved: true } ]
       }
     )
-    allow(client).to receive(:story_reply_capability_from_api).and_return(
-      { known: true, reply_possible: false, reason_code: "api_can_reply_false", status: "Replies not allowed (API)" }
+    allow(ValidateStoryReplyEligibilityJob).to receive(:perform_now).and_return(
+      {
+        eligible: false,
+        reason_code: "api_can_reply_false",
+        status: "Replies not allowed (API)",
+        retry_after_at: 3.days.from_now.iso8601,
+        interaction_retry_active: false,
+        interaction_state: "unavailable",
+        interaction_reason: "api_can_reply_false",
+        api_reply_gate: {
+          known: true,
+          reply_possible: false,
+          reason_code: "api_can_reply_false",
+          status: "Replies not allowed (API)"
+        }
+      }
     )
     expect(client).not_to receive(:comment_on_story_via_api!)
 
@@ -150,8 +164,22 @@ RSpec.describe Instagram::Client::StoryScraperService do
         attempts: [ { attempt: 1, source: "api_reels_media", resolved: true } ]
       }
     )
-    allow(client).to receive(:story_reply_capability_from_api).and_return(
-      { known: true, reply_possible: false, reason_code: "api_can_reply_false", status: "Replies not allowed (API)" }
+    allow(ValidateStoryReplyEligibilityJob).to receive(:perform_now).and_return(
+      {
+        eligible: false,
+        reason_code: "api_can_reply_false",
+        status: "Replies not allowed (API)",
+        retry_after_at: 3.days.from_now.iso8601,
+        interaction_retry_active: false,
+        interaction_state: "unavailable",
+        interaction_reason: "api_can_reply_false",
+        api_reply_gate: {
+          known: true,
+          reply_possible: false,
+          reason_code: "api_can_reply_false",
+          status: "Replies not allowed (API)"
+        }
+      }
     )
     allow(client).to receive(:click_next_story_in_carousel!).and_return(true, false)
 
@@ -211,8 +239,22 @@ RSpec.describe Instagram::Client::StoryScraperService do
         attempts: [ { attempt: 1, source: "api_reels_media", resolved: true } ]
       }
     )
-    allow(client).to receive(:story_reply_capability_from_api).and_return(
-      { known: true, reply_possible: false, reason_code: "api_can_reply_false", status: "Replies not allowed (API)" }
+    allow(ValidateStoryReplyEligibilityJob).to receive(:perform_now).and_return(
+      {
+        eligible: false,
+        reason_code: "api_can_reply_false",
+        status: "Replies not allowed (API)",
+        retry_after_at: 3.days.from_now.iso8601,
+        interaction_retry_active: false,
+        interaction_state: "unavailable",
+        interaction_reason: "api_can_reply_false",
+        api_reply_gate: {
+          known: true,
+          reply_possible: false,
+          reason_code: "api_can_reply_false",
+          status: "Replies not allowed (API)"
+        }
+      }
     )
 
     result = client.sync_home_story_carousel!(story_limit: 1, auto_reply_only: false)
@@ -262,6 +304,122 @@ RSpec.describe Instagram::Client::StoryScraperService do
     expect(failure.metadata["reference_url"]).to be_present
   end
 
+  it "assigns downloaded story media to the live story URL username when context is stale" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    stale_profile = InstagramProfile.create!(instagram_account: account, username: "stale_user_#{SecureRandom.hex(3)}")
+    live_profile = InstagramProfile.create!(instagram_account: account, username: "live_user_#{SecureRandom.hex(3)}")
+    client = Instagram::Client.new(account: account)
+    driver = build_story_driver(url: "https://www.instagram.com/stories/#{live_profile.username}/123/")
+
+    stub_story_sync_environment(client: client, driver: driver, account_profile: stale_profile)
+    allow(client).to receive(:find_story_network_profile) do |username:|
+      account.instagram_profiles.find_by(username: username)
+    end
+    allow(client).to receive(:find_or_create_profile_for_auto_engagement!) do |username:|
+      account.instagram_profiles.find_or_create_by!(username: username)
+    end
+    allow(client).to receive(:current_story_context).and_return(
+      {
+        ref: "#{stale_profile.username}:123",
+        username: stale_profile.username,
+        story_id: "123",
+        story_key: "#{stale_profile.username}:123"
+      }
+    )
+    allow(client).to receive(:normalized_story_context_for_processing).and_wrap_original { |_m, **kwargs| kwargs[:context] }
+    allow(client).to receive(:resolve_story_media_with_retry).and_return(
+      {
+        media: {
+          url: "https://cdn.example/story_123.jpg",
+          media_type: "image",
+          source: "api_reels_media",
+          image_url: "https://cdn.example/story_123.jpg",
+          video_url: nil,
+          width: 1080,
+          height: 1920,
+          media_variant_count: 1,
+          primary_media_source: "root",
+          primary_media_index: 0,
+          carousel_media: []
+        },
+        attempts: [ { attempt: 1, source: "api_reels_media", resolved: true } ]
+      }
+    )
+    allow(ValidateStoryReplyEligibilityJob).to receive(:perform_now).and_return(
+      {
+        eligible: false,
+        reason_code: "api_can_reply_false",
+        status: "Replies not allowed (API)",
+        retry_after_at: 3.days.from_now.iso8601,
+        interaction_retry_active: false,
+        interaction_state: "unavailable",
+        interaction_reason: "api_can_reply_false",
+        api_reply_gate: {
+          known: true,
+          reply_possible: false,
+          reason_code: "api_can_reply_false",
+          status: "Replies not allowed (API)"
+        }
+      }
+    )
+
+    result = client.sync_home_story_carousel!(story_limit: 1, auto_reply_only: false)
+
+    expect(result[:stories_visited]).to eq(1)
+    expect(result[:downloaded]).to eq(1)
+    expect(live_profile.instagram_profile_events.where(kind: "story_downloaded").count).to eq(1)
+    expect(stale_profile.instagram_profile_events.where(kind: "story_downloaded").count).to eq(0)
+  end
+
+  it "skips story processing when media owner username conflicts with resolved assignment username" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "story_user_#{SecureRandom.hex(3)}")
+    client = Instagram::Client.new(account: account)
+    driver = build_story_driver(url: "https://www.instagram.com/stories/#{profile.username}/123/")
+
+    stub_story_sync_environment(client: client, driver: driver, account_profile: profile)
+    allow(client).to receive(:find_story_network_profile).and_return(profile)
+    allow(client).to receive(:current_story_context).and_return(
+      {
+        ref: "#{profile.username}:123",
+        username: profile.username,
+        story_id: "123",
+        story_key: "#{profile.username}:123"
+      }
+    )
+    allow(client).to receive(:normalized_story_context_for_processing).and_wrap_original { |_m, **kwargs| kwargs[:context] }
+    allow(client).to receive(:resolve_story_media_with_retry).and_return(
+      {
+        media: {
+          url: "https://cdn.example/story_123.jpg",
+          media_type: "image",
+          source: "api_reels_media",
+          image_url: "https://cdn.example/story_123.jpg",
+          video_url: nil,
+          width: 1080,
+          height: 1920,
+          owner_username: "different_owner",
+          media_variant_count: 1,
+          primary_media_source: "root",
+          primary_media_index: 0,
+          carousel_media: []
+        },
+        attempts: [ { attempt: 1, source: "api_reels_media", resolved: true } ]
+      }
+    )
+    allow(client).to receive(:click_next_story_in_carousel!).and_return(true, false)
+
+    result = client.sync_home_story_carousel!(story_limit: 1, auto_reply_only: false)
+
+    expect(result[:stories_visited]).to eq(0)
+    expect(result[:downloaded]).to eq(0)
+    expect(profile.instagram_profile_events.where(kind: "story_downloaded").count).to eq(0)
+    failure = profile.instagram_profile_events.where(kind: "story_sync_failed").order(id: :desc).find do |event|
+      event.metadata["reason"].to_s == "story_owner_username_conflict"
+    end
+    expect(failure).to be_present
+  end
+
   def build_story_driver(url:)
     navigation = instance_double("SeleniumNavigation")
     driver = instance_double("SeleniumDriver")
@@ -287,6 +445,7 @@ RSpec.describe Instagram::Client::StoryScraperService do
     allow(client).to receive(:story_page_unavailable?).and_return(false)
     allow(client).to receive(:find_or_create_profile_for_auto_engagement!).and_return(account_profile)
     allow(client).to receive(:find_existing_story_download_for_profile).and_return(nil)
+    allow(client).to receive(:resolve_story_item_via_api).and_return(nil)
     allow(client).to receive(:detect_story_ad_context).and_return(
       ad_detected: false,
       reason: "",
@@ -304,11 +463,22 @@ RSpec.describe Instagram::Client::StoryScraperService do
       marker_text: "",
       linked_targets: []
     )
-    allow(client).to receive(:story_reply_capability_from_api).and_return(
-      known: false,
-      reply_possible: nil,
-      reason_code: nil,
-      status: "Unknown"
+    allow(ValidateStoryReplyEligibilityJob).to receive(:perform_now).and_return(
+      {
+        eligible: true,
+        reason_code: nil,
+        status: "Unknown",
+        retry_after_at: nil,
+        interaction_retry_active: false,
+        interaction_state: account_profile.story_interaction_state.to_s,
+        interaction_reason: account_profile.story_interaction_reason.to_s,
+        api_reply_gate: {
+          known: false,
+          reply_possible: nil,
+          reason_code: nil,
+          status: "Unknown"
+        }
+      }
     )
     allow(client).to receive(:load_story_download_media_for_profile).and_return(nil)
     allow(client).to receive(:download_media_with_metadata).and_return(

@@ -19,7 +19,7 @@ RSpec.describe Pipeline::AccountProcessingCoordinator do
       instagram_account_id: account.id,
       story_limit: SyncHomeStoryCarouselJob::STORY_BATCH_LIMIT,
       auto_reply_only: false
-    ).and_return(JobResult.new("job-story", "story_downloads"))
+    ).and_return(JobResult.new("job-story", "home_story_sync"))
 
     allow(AutoEngageHomeFeedJob).to receive(:perform_later).with(
       instagram_account_id: account.id,

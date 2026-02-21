@@ -59,7 +59,15 @@ module Ai
       download_queue = queue_missing_media_downloads(posts: latest_50_posts)
       analysis_queue = queue_missing_post_analysis(posts: latest_20_posts)
       preparation = prepare_history_summary(latest_20_posts: latest_20_posts)
-      face_verification = verify_face_identity(latest_posts: latest_50_posts)
+      face_verification =
+        if face_verification_ready_for_refresh?(checks: checks, analysis_queue: analysis_queue)
+          verify_face_identity(latest_posts: latest_50_posts)
+        else
+          deferred_face_verification(
+            reason_code: "latest_posts_not_analyzed",
+            reason: "Face verification is deferred until recent post analysis is complete."
+          )
+        end
       queue_state = build_queue_state(
         download_queue: download_queue,
         analysis_queue: analysis_queue,
@@ -348,6 +356,24 @@ module Ai
         "reason" => e.message.to_s,
         "error_class" => e.class.name
       }
+    end
+
+    def face_verification_ready_for_refresh?(checks:, analysis_queue:)
+      latest_20_ready = ActiveModel::Type::Boolean.new.cast(checks.dig("latest_20_analyzed", "ready"))
+      return false unless latest_20_ready
+
+      analysis_queue[:queued_count].to_i.zero? && analysis_queue[:pending_count].to_i.zero?
+    rescue StandardError
+      false
+    end
+
+    def deferred_face_verification(reason_code:, reason:)
+      payload = default_face_verification
+      payload["reason_code"] = reason_code.to_s.presence || "face_verification_deferred"
+      payload["reason"] = reason.to_s.presence || "Face verification deferred."
+      payload
+    rescue StandardError
+      default_face_verification
     end
 
     def verify_face_identity(latest_posts:)
@@ -639,25 +665,23 @@ module Ai
       metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
       face_recognition = metadata["face_recognition"].is_a?(Hash) ? metadata["face_recognition"] : {}
       updated_at = parse_time(face_recognition["updated_at"])
-      stale = updated_at.nil? || updated_at < FACE_RECENCY_REFRESH_DAYS.days.ago
-      stale || post.instagram_post_faces.none?
+      # Do not continuously requeue on recent failed/zero-face runs; refresh on recency window.
+      updated_at.nil? || updated_at < FACE_RECENCY_REFRESH_DAYS.days.ago
     rescue StandardError
       true
     end
 
     def face_refresh_in_flight?(post:)
       state = history_build_face_refresh_state(post: post)
-      status = state["status"].to_s
-      return false unless status.in?(%w[queued running])
-
-      reference_time = parse_time(state["started_at"]) || parse_time(state["queued_at"])
-      reference_time.present? && reference_time >= FACE_REFRESH_PENDING_WINDOW_HOURS.hours.ago
+      face_refresh_state_in_flight?(state)
     rescue StandardError
       false
     end
 
     def enqueue_face_refresh_for_post(post:)
-      return { queued: false, error_class: "AlreadyQueued", error_message: "Face refresh already in flight." } if face_refresh_in_flight?(post: post)
+      queued_at = Time.current
+      reservation = reserve_face_refresh_slot!(post: post, queued_at: queued_at)
+      return reservation unless reservation[:queued]
 
       job = RefreshProfilePostFaceIdentityJob.perform_later(
         instagram_account_id: @account.id,
@@ -672,7 +696,7 @@ module Ai
             "status" => "queued",
             "job_id" => job.job_id,
             "queue_name" => job.queue_name,
-            "queued_at" => Time.current.iso8601(3),
+            "queued_at" => queued_at.iso8601(3),
             "requested_by" => self.class.name
           }
         }
@@ -680,11 +704,69 @@ module Ai
 
       { queued: true, job_id: job.job_id, queue_name: job.queue_name }
     rescue StandardError => e
+      mark_history_build_metadata!(
+        post: post,
+        attributes: {
+          "face_refresh" => {
+            "status" => "failed",
+            "failed_at" => Time.current.iso8601(3),
+            "error_class" => e.class.name,
+            "error_message" => e.message.to_s.byteslice(0, 220)
+          }
+        }
+      ) if reservation&.dig(:queued)
+
       {
         queued: false,
         error_class: e.class.name,
         error_message: e.message.to_s
       }
+    end
+
+    def reserve_face_refresh_slot!(post:, queued_at:)
+      reservation = nil
+
+      post.with_lock do
+        post.reload
+        metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+        history = metadata["history_build"].is_a?(Hash) ? metadata["history_build"].deep_dup : {}
+        current_state = history["face_refresh"].is_a?(Hash) ? history["face_refresh"].deep_dup : {}
+
+        if face_refresh_state_in_flight?(current_state)
+          reservation = { queued: false, error_class: "AlreadyQueued", error_message: "Face refresh already in flight." }
+          next
+        end
+
+        history["face_refresh"] = current_state.merge(
+          "status" => "queued",
+          "queued_at" => queued_at.iso8601(3),
+          "requested_by" => self.class.name,
+          "error_class" => nil,
+          "error_message" => nil
+        ).compact
+        history["updated_at"] = queued_at.iso8601(3)
+        metadata["history_build"] = history
+        post.update!(metadata: metadata)
+        reservation = { queued: true }
+      end
+
+      reservation || { queued: false, error_class: "UnknownReservationState", error_message: "Unable to reserve face refresh slot." }
+    rescue StandardError => e
+      {
+        queued: false,
+        error_class: e.class.name,
+        error_message: e.message.to_s
+      }
+    end
+
+    def face_refresh_state_in_flight?(state)
+      status = state["status"].to_s
+      return false unless status.in?(%w[queued running])
+
+      reference_time = parse_time(state["started_at"]) || parse_time(state["queued_at"])
+      reference_time.present? && reference_time >= FACE_REFRESH_PENDING_WINDOW_HOURS.hours.ago
+    rescue StandardError
+      false
     end
 
     def history_build_face_refresh_state(post:)

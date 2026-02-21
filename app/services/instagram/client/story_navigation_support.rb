@@ -432,23 +432,25 @@ module Instagram
 
       def current_story_context(driver)
         url = driver.current_url.to_s
-        ref = current_story_reference(url)
-        username = ref.to_s.split(":").first.to_s
-        story_id = ref.to_s.split(":")[1].to_s
+        url_identity = story_url_identity(url)
+        username = url_identity[:username].to_s
+        story_id = url_identity[:story_id].to_s
+        ref = username.present? && story_id.present? ? "#{username}:#{story_id}" : ""
         dom = extract_story_dom_context(driver)
 
         if ref.blank? && dom[:og_story_url].present?
-          ref = current_story_reference(dom[:og_story_url])
-          username = ref.to_s.split(":").first.to_s if username.blank?
-          story_id = ref.to_s.split(":")[1].to_s if story_id.blank?
+          og_identity = story_url_identity(dom[:og_story_url])
+          username = og_identity[:username].to_s if username.blank?
+          story_id = og_identity[:story_id].to_s if story_id.blank?
+          ref = "#{username}:#{story_id}" if username.present? && story_id.present?
         end
 
         recovery_needed = false
         if ref.blank?
-          fallback_username = extract_username_from_profile_like_path(url)
+          fallback_username = url_identity[:username].presence || extract_username_from_profile_like_path(url)
           if fallback_username.present?
             username = fallback_username
-            ref = "#{fallback_username}:#{story_id.presence || 'unknown'}"
+            ref = "#{fallback_username}:#{story_id}"
             recovery_needed = dom[:story_viewer_active] && !dom[:story_frame_present]
           end
         end
@@ -483,13 +485,15 @@ module Instagram
       def normalized_story_context_for_processing(driver:, context:)
         ctx = context.is_a?(Hash) ? context.dup : {}
         live_url = driver.current_url.to_s
-        live_ref = current_story_reference(live_url)
-        if live_ref.present?
-          live_username = normalize_username(live_ref.to_s.split(":").first.to_s)
-          live_story_id = normalize_story_id_token(live_ref.to_s.split(":")[1].to_s)
-          ctx[:ref] = live_ref
-          ctx[:username] = live_username if live_username.present?
-          ctx[:story_id] = live_story_id if live_story_id.present?
+        live_identity = story_url_identity(live_url)
+        live_username = live_identity[:username].to_s
+        live_story_id = live_identity[:story_id].to_s
+        if live_username.present?
+          ctx[:username] = live_username
+          ctx[:ref] = "#{live_username}:#{live_story_id}"
+        end
+        if live_story_id.present?
+          ctx[:story_id] = live_story_id
         end
 
         ctx[:username] = normalize_username(ctx[:username])
@@ -648,9 +652,10 @@ module Instagram
         return "" if token.casecmp("unknown").zero?
         return "" if token.casecmp("sig").zero?
         return "" if token.start_with?("sig:")
+        return token if token.match?(/\A\d+\z/)
+        return Regexp.last_match(1).to_s if token.match?(/\A(\d+)_\d+\z/)
 
-        digits = token.gsub(/\D/, "")
-        digits.presence || ""
+        ""
       rescue StandardError
         ""
       end
@@ -694,15 +699,24 @@ module Instagram
       end
 
       def current_story_reference(url)
-        value = url.to_s
-        return "" unless value.include?("/stories/")
-
-        rest = value.split("/stories/").last.to_s
-        username = rest.split("/").first.to_s
-        story_id = rest.split("/")[1].to_s
-        return "" if username.blank?
+        identity = story_url_identity(url)
+        username = identity[:username].to_s
+        story_id = identity[:story_id].to_s
+        return "" if username.blank? || story_id.blank?
 
         "#{username}:#{story_id}"
+      end
+
+      def story_url_identity(url)
+        value = url.to_s
+        return { username: "", story_id: "" } unless value.include?("/stories/")
+
+        rest = value.split("/stories/").last.to_s
+        username = normalize_username(rest.split(/[\/?#]/).first.to_s)
+        story_id = normalize_story_id_token(rest.split("/")[1].to_s)
+        { username: username.to_s, story_id: story_id.to_s }
+      rescue StandardError
+        { username: "", story_id: "" }
       end
 
       def extract_username_from_profile_like_path(url)

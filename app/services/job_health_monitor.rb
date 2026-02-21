@@ -12,7 +12,13 @@ class JobHealthMonitor
       }
 
       # Check each queue
-      queue_names = %w[ai ai_visual_queue ai_face_queue ai_ocr_queue video_processing_queue ai_metadata_queue frame_generation story_downloads profiles engagements sync avatars post_downloads]
+      queue_names = %w[
+        ai ai_visual_queue ai_face_queue ai_face_refresh_queue ai_ocr_queue video_processing_queue ai_metadata_queue
+        frame_generation story_auto_reply_orchestration profile_story_orchestration home_story_orchestration
+        home_story_sync story_processing story_replies
+        profiles profile_reevaluation engagements sync story_validation avatars avatar_orchestration
+        post_downloads captured_posts messages
+      ]
       
       queue_names.each do |queue_name|
         queue_health = analyze_queue_health(queue_name)

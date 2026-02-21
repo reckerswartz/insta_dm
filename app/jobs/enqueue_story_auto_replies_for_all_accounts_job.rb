@@ -1,7 +1,7 @@
 class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
   include ScheduledAccountBatching
 
-  queue_as :story_downloads
+  queue_as :story_auto_reply_orchestration
 
   DEFAULT_ACCOUNT_BATCH_SIZE = ENV.fetch("STORY_AUTO_REPLY_ACCOUNT_BATCH_SIZE", "20").to_i.clamp(5, 120)
   CONTINUATION_WAIT_SECONDS = ENV.fetch("STORY_AUTO_REPLY_CONTINUATION_WAIT_SECONDS", "3").to_i.clamp(1, 90)

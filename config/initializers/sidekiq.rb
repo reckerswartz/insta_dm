@@ -36,10 +36,19 @@ Sidekiq.configure_server do |config|
     legacy_ai_concurrency = ENV.fetch("SIDEKIQ_AI_CONCURRENCY", 2).to_i.clamp(1, 4)
     visual_concurrency = ENV.fetch("SIDEKIQ_AI_VISUAL_CONCURRENCY", 3).to_i.clamp(1, 5)
     face_concurrency = ENV.fetch("SIDEKIQ_AI_FACE_CONCURRENCY", 3).to_i.clamp(1, 4)
+    face_refresh_concurrency = ENV.fetch("SIDEKIQ_AI_FACE_REFRESH_CONCURRENCY", 1).to_i.clamp(1, 3)
     ocr_concurrency = ENV.fetch("SIDEKIQ_AI_OCR_CONCURRENCY", 2).to_i.clamp(1, 3)
     video_concurrency = ENV.fetch("SIDEKIQ_AI_VIDEO_CONCURRENCY", 2).to_i.clamp(1, 3)
     metadata_concurrency = ENV.fetch("SIDEKIQ_AI_METADATA_CONCURRENCY", 2).to_i.clamp(1, 4)
     frame_concurrency = ENV.fetch("SIDEKIQ_FRAME_CONCURRENCY", 2).to_i.clamp(1, 4)
+    story_auto_reply_orchestration_concurrency = ENV.fetch("SIDEKIQ_STORY_AUTO_REPLY_ORCHESTRATION_CONCURRENCY", 2).to_i.clamp(1, 4)
+    profile_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_PROFILE_STORY_ORCHESTRATION_CONCURRENCY", 2).to_i.clamp(1, 4)
+    home_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 3)
+    home_story_sync_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_SYNC_CONCURRENCY", 2).to_i.clamp(1, 4)
+    story_processing_concurrency = ENV.fetch("SIDEKIQ_STORY_PROCESSING_CONCURRENCY", 2).to_i.clamp(1, 4)
+    story_replies_concurrency = ENV.fetch("SIDEKIQ_STORY_REPLIES_CONCURRENCY", 2).to_i.clamp(1, 4)
+    profile_reevaluation_concurrency = ENV.fetch("SIDEKIQ_PROFILE_REEVALUATION_CONCURRENCY", 1).to_i.clamp(1, 2)
+    story_validation_concurrency = ENV.fetch("SIDEKIQ_STORY_VALIDATION_CONCURRENCY", 2).to_i.clamp(1, 4)
 
     config.capsule("ai_legacy_lane") do |cap|
       cap.concurrency = legacy_ai_concurrency
@@ -54,6 +63,11 @@ Sidekiq.configure_server do |config|
     config.capsule("ai_face_lane") do |cap|
       cap.concurrency = face_concurrency
       cap.queues = %w[ai_face_queue]
+    end
+
+    config.capsule("ai_face_refresh_lane") do |cap|
+      cap.concurrency = face_refresh_concurrency
+      cap.queues = %w[ai_face_refresh_queue]
     end
 
     config.capsule("ai_ocr_lane") do |cap|
@@ -74,6 +88,46 @@ Sidekiq.configure_server do |config|
     config.capsule("frame_generation_lane") do |cap|
       cap.concurrency = frame_concurrency
       cap.queues = %w[frame_generation]
+    end
+
+    config.capsule("story_auto_reply_orchestration_lane") do |cap|
+      cap.concurrency = story_auto_reply_orchestration_concurrency
+      cap.queues = %w[story_auto_reply_orchestration]
+    end
+
+    config.capsule("profile_story_orchestration_lane") do |cap|
+      cap.concurrency = profile_story_orchestration_concurrency
+      cap.queues = %w[profile_story_orchestration]
+    end
+
+    config.capsule("home_story_orchestration_lane") do |cap|
+      cap.concurrency = home_story_orchestration_concurrency
+      cap.queues = %w[home_story_orchestration]
+    end
+
+    config.capsule("home_story_sync_lane") do |cap|
+      cap.concurrency = home_story_sync_concurrency
+      cap.queues = %w[home_story_sync]
+    end
+
+    config.capsule("story_processing_lane") do |cap|
+      cap.concurrency = story_processing_concurrency
+      cap.queues = %w[story_processing]
+    end
+
+    config.capsule("story_replies_lane") do |cap|
+      cap.concurrency = story_replies_concurrency
+      cap.queues = %w[story_replies]
+    end
+
+    config.capsule("profile_reevaluation_lane") do |cap|
+      cap.concurrency = profile_reevaluation_concurrency
+      cap.queues = %w[profile_reevaluation]
+    end
+
+    config.capsule("story_validation_lane") do |cap|
+      cap.concurrency = story_validation_concurrency
+      cap.queues = %w[story_validation]
     end
   end
 

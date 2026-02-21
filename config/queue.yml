@@ -7,7 +7,7 @@ default: &default
       batch_size: 500
   workers:
     # Ensure sync jobs don't starve message sending / UI-triggered profile fetches.
-    - queues: [sync]
+    - queues: [sync, story_validation]
       threads: <%= ENV.fetch("SYNC_JOB_THREADS", 1) %>
       processes: <%= ENV.fetch("SYNC_JOB_CONCURRENCY", 1) %>
       polling_interval: 0.2
@@ -17,7 +17,7 @@ default: &default
       processes: <%= ENV.fetch("MESSAGE_JOB_CONCURRENCY", 1) %>
       polling_interval: 0.1
 
-    - queues: [profiles, avatars, story_downloads, post_downloads, frame_generation, maintenance, ai]
+    - queues: [profiles, profile_reevaluation, avatars, avatar_orchestration, story_auto_reply_orchestration, profile_story_orchestration, home_story_orchestration, home_story_sync, story_processing, story_replies, post_downloads, captured_posts, frame_generation, maintenance, ai]
       threads: <%= ENV.fetch("PROFILE_JOB_THREADS", 2) %>
       processes: <%= ENV.fetch("PROFILE_JOB_CONCURRENCY", 1) %>
       polling_interval: 0.15

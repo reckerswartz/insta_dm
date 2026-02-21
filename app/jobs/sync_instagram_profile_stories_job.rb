@@ -5,7 +5,7 @@ require "stringio"
 require "timeout"
 
 class SyncInstagramProfileStoriesJob < ApplicationJob
-  queue_as :story_downloads
+  queue_as :story_processing
 
   MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
   MAX_INLINE_VIDEO_BYTES = 10 * 1024 * 1024
@@ -257,9 +257,13 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       )
       analyzed_count += 1
 
-      # Trigger profile re-evaluation after story analysis
-      ProfileReevaluationService.new(account: account, profile: profile)
-        .reevaluate_after_content_scan!(content_type: "story", content_id: story_id)
+      # Run profile re-evaluation independently to keep story processing throughput high.
+      ReevaluateProfileContentJob.perform_later(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        content_type: "story",
+        content_id: story_id
+      )
 
       if auto_reply_enabled
         decision = story_reply_decision(analysis: analysis, profile: profile, story_id: story_id)
@@ -752,6 +756,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
 
   def story_reply_decision(analysis:, profile:, story_id:)
     return { queue: false, reason: "already_sent" } if story_reply_already_sent?(profile: profile, story_id: story_id)
+    return { queue: false, reason: "already_queued" } if story_reply_already_queued?(profile: profile, story_id: story_id)
     return { queue: false, reason: "official_messaging_not_configured" } unless official_messaging_service.configured?
 
     relevant = analysis[:relevant]
@@ -777,8 +782,24 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     profile.instagram_profile_events.where(kind: "story_reply_sent", external_id: "story_reply_sent:#{story_id}").exists?
   end
 
+  def story_reply_already_queued?(profile:, story_id:)
+    event = profile.instagram_profile_events.find_by(kind: "story_reply_queued", external_id: "story_reply_queued:#{story_id}")
+    return false unless event
+
+    metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
+    status = metadata["delivery_status"].to_s
+    return false if %w[sent failed].include?(status)
+
+    event.detected_at.present? && event.detected_at > 12.hours.ago
+  rescue StandardError
+    false
+  end
+
   def queue_story_reply!(account:, profile:, story:, analysis:, downloaded_event: nil)
     story_id = story[:story_id].to_s
+    return false if story_reply_already_sent?(profile: profile, story_id: story_id)
+    return false if story_reply_already_queued?(profile: profile, story_id: story_id)
+
     suggestion = select_unique_story_comment(
       profile: profile,
       suggestions: Array(analysis[:comment_suggestions]),
@@ -786,43 +807,46 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     )
     return false if suggestion.blank?
 
-    result = official_messaging_service.send_text!(
-      recipient_id: profile.ig_user_id.presence || profile.username,
-      text: suggestion,
-      context: {
-        source: "story_auto_reply",
-        story_id: story_id
-      }
+    base_metadata = base_story_metadata(profile: profile, story: story).merge(
+      ai_reply_text: suggestion,
+      auto_reply: true
     )
-
-    message = account.instagram_messages.create!(
-      instagram_profile: profile,
-      direction: "outgoing",
-      body: suggestion,
-      status: "sent",
-      sent_at: Time.current
-    )
-
-    profile.record_event!(
-      kind: "story_reply_sent",
-      external_id: "story_reply_sent:#{story_id}",
+    enqueue_event = profile.record_event!(
+      kind: "story_reply_queued",
+      external_id: "story_reply_queued:#{story_id}",
       occurred_at: Time.current,
-      metadata: base_story_metadata(profile: profile, story: story).merge(
-        ai_reply_text: suggestion,
-        auto_reply: true,
-        instagram_message_id: message.id,
-        provider_message_id: result[:provider_message_id]
+      metadata: base_metadata.merge(
+        delivery_status: "queued",
+        queued_at: Time.current.iso8601(3)
       )
     )
-    attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: suggestion)
+
+    job = SendStoryReplyJob.perform_later(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      story_id: story_id,
+      reply_text: suggestion,
+      story_metadata: base_metadata,
+      downloaded_event_id: downloaded_event&.id
+    )
+
+    enqueue_event.update!(
+      metadata: enqueue_event.metadata.merge(
+        "active_job_id" => job.job_id,
+        "queue_name" => job.queue_name
+      )
+    )
+
     true
   rescue StandardError => e
+    return false if e.is_a?(ActiveRecord::RecordNotUnique)
+
     account.instagram_messages.create!(
       instagram_profile: profile,
       direction: "outgoing",
       body: suggestion.to_s,
       status: "failed",
-      error_message: e.message.to_s
+      error_message: "story_reply_enqueue_failed: #{e.message}"
     ) if suggestion.present?
     false
   end

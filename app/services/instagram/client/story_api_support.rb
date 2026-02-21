@@ -296,18 +296,6 @@ module Instagram
           by_owner = reels.values.find { |entry| reel_entry_owner_id(entry) == uid }
           return by_owner if by_owner.is_a?(Hash)
 
-          if reels.size == 1
-            Ops::StructuredLogger.warn(
-              event: "instagram.story_reel.single_reel_without_key_match",
-              payload: {
-                requested_user_id: uid,
-                referer_username: uname,
-                available_reel_keys: reels.keys.first(6)
-              }
-            )
-            return reels.values.first
-          end
-
           Ops::StructuredLogger.warn(
             event: "instagram.story_reel.requested_reel_missing",
             payload: {
@@ -324,17 +312,6 @@ module Instagram
         if reels_media.is_a?(Array)
           by_owner = reels_media.find { |entry| reel_entry_owner_id(entry) == uid }
           return by_owner if by_owner.is_a?(Hash)
-
-          if reels_media.length == 1
-            Ops::StructuredLogger.warn(
-              event: "instagram.story_reel.single_reel_media_without_owner_match",
-              payload: {
-                requested_user_id: uid,
-                referer_username: uname
-              }
-            )
-            return reels_media.first
-          end
 
           Ops::StructuredLogger.warn(
             event: "instagram.story_reel.reels_media_owner_missing",
@@ -354,8 +331,8 @@ module Instagram
 
       def resolve_story_media_for_current_context(driver:, username:, story_id:, fallback_story_key:, cache: nil)
         uname = normalize_username(username)
-        sid = story_id.to_s.strip
-        sid = "" if sid.casecmp("unknown").zero?
+        sid = normalize_story_id_token(story_id)
+        fallback_key = fallback_story_key.to_s
 
         api_story = resolve_story_item_via_api(username: uname, story_id: sid, cache: cache, driver: driver)
         if api_story.is_a?(Hash)
@@ -384,14 +361,14 @@ module Instagram
         if dom_story.is_a?(Hash)
           dom_media_url = dom_story[:media_url].to_s
           if downloadable_story_media_url?(dom_media_url)
-            hinted_story_id = story_id_hint_from_media_url(dom_media_url).to_s
+            hinted_story_id = normalize_story_id_token(story_id_hint_from_media_url(dom_media_url))
             return {
               media_type: dom_story[:media_type].to_s.presence || "unknown",
               url: dom_media_url,
               width: dom_story[:width],
               height: dom_story[:height],
               source: "dom_visible_media",
-              story_id: sid.presence || hinted_story_id.presence || fallback_story_key.to_s,
+              story_id: sid.presence || hinted_story_id.presence || "",
               image_url: dom_story[:image_url].to_s.presence,
               video_url: dom_story[:video_url].to_s.presence,
               owner_user_id: nil,
@@ -408,14 +385,14 @@ module Instagram
         if perf_story.is_a?(Hash)
           perf_media_url = perf_story[:media_url].to_s
           if downloadable_story_media_url?(perf_media_url)
-            hinted_story_id = story_id_hint_from_media_url(perf_media_url).to_s
+            hinted_story_id = normalize_story_id_token(story_id_hint_from_media_url(perf_media_url))
             return {
               media_type: perf_story[:media_type].to_s.presence || "unknown",
               url: perf_media_url,
               width: perf_story[:width],
               height: perf_story[:height],
               source: "performance_logs_media",
-              story_id: sid.presence || hinted_story_id.presence || fallback_story_key.to_s,
+              story_id: sid.presence || hinted_story_id.presence || "",
               image_url: perf_story[:image_url].to_s.presence,
               video_url: perf_story[:video_url].to_s.presence,
               owner_user_id: nil,
@@ -432,7 +409,8 @@ module Instagram
           event: "instagram.story_media.api_unresolved",
           payload: {
             username: uname,
-            story_id: sid.presence || fallback_story_key.to_s,
+            story_id: sid.presence,
+            story_key: fallback_key.presence,
             source: "api_then_dom_resolution"
           }
         )
@@ -442,7 +420,7 @@ module Instagram
           width: nil,
           height: nil,
           source: "api_unresolved",
-          story_id: sid.presence || fallback_story_key.to_s,
+          story_id: sid,
           image_url: nil,
           video_url: nil,
           owner_user_id: nil,
@@ -459,7 +437,7 @@ module Instagram
           width: nil,
           height: nil,
           source: "api_unresolved_error",
-          story_id: sid.presence || fallback_story_key.to_s,
+          story_id: sid,
           image_url: nil,
           video_url: nil,
           owner_user_id: nil,

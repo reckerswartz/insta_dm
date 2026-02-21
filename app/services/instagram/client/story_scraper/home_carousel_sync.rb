@@ -321,9 +321,48 @@ module Instagram
                     )
                   end
 
+                  assignment = resolve_story_assignment_context(
+                    context_username: context[:username],
+                    story_id: story_id,
+                    canonical_story_url: story_url,
+                    live_story_url: driver.current_url.to_s,
+                    media_owner_username: media[:owner_username]
+                  )
+                  unless assignment[:ok]
+                    stats[:failed] += 1
+                    failure_profile = find_story_network_profile(username: context[:username]) || account_profile
+                    failure_profile.record_event!(
+                      kind: "story_sync_failed",
+                      external_id: "story_sync_failed:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                      occurred_at: Time.current,
+                      metadata: story_sync_failure_metadata(
+                        reason: assignment[:reason_code].to_s.presence || "story_assignment_unresolved",
+                        error: nil,
+                        story_id: story_id,
+                        story_ref: ref,
+                        story_url: story_url,
+                        live_story_url: driver.current_url.to_s,
+                        context_username: context[:username].to_s,
+                        assignment_username: assignment[:username].to_s,
+                        assignment_conflict: assignment[:conflict] == true
+                      )
+                    )
+                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                    unless moved
+                      exit_reason = "next_navigation_failed"
+                      break
+                    end
+                    next
+                  end
+
+                  story_username = assignment[:username].to_s
+                  story_id = assignment[:story_id].to_s
+                  story_url = assignment[:story_url].to_s
+                  ref = assignment[:story_ref].to_s.presence || ref
+
                   stats[:stories_visited] += 1
-                  network_profile = find_story_network_profile(username: context[:username])
-                  profile = network_profile || find_or_create_profile_for_auto_engagement!(username: context[:username])
+                  network_profile = find_story_network_profile(username: story_username)
+                  profile = network_profile || find_or_create_profile_for_auto_engagement!(username: story_username)
                   out_of_network_profile = network_profile.nil?
 
                   ad_context = detect_story_ad_context(driver: driver, media: media)
@@ -335,7 +374,8 @@ module Instagram
                       story_id: story_id,
                       story_ref: ref,
                       story_key: story_key,
-                      username: context[:username],
+                      username: story_username,
+                      context_username: context[:username].to_s,
                       ad_detected: ad_context[:ad_detected],
                       ad_reason: ad_context[:reason],
                       ad_marker_text: ad_context[:marker_text],
@@ -426,22 +466,40 @@ module Instagram
                     next
                   end
 
-                  interaction_retry_active = profile_interaction_retry_pending?(profile)
-                  interaction_retry_after_at = profile.story_interaction_retry_after_at&.iso8601
-                  interaction_state = profile.story_interaction_state.to_s
-                  interaction_reason = profile.story_interaction_reason.to_s
                   api_external_context = story_external_profile_link_context_from_api(
-                    username: context[:username],
+                    username: story_username,
                     story_id: story_id,
                     cache: story_api_cache,
                     driver: driver
                   )
-                  api_reply_gate = story_reply_capability_from_api(
-                    username: context[:username],
+                  validation_job = ValidateStoryReplyEligibilityJob.perform_later(
+                    instagram_account_id: @account.id,
+                    instagram_profile_id: profile.id,
+                    story_username: story_username,
                     story_id: story_id,
-                    driver: driver,
-                    cache: story_api_cache
+                    api_reply_gate: api_external_context[:reply_gate]
                   )
+                  eligibility = {
+                    eligible: profile.story_reply_allowed?,
+                    reason_code: profile.story_reply_allowed? ? nil : "eligibility_pending_async_validation",
+                    status: profile.story_reply_allowed? ? "Eligible" : "Pending async story reply validation",
+                    retry_after_at: profile.story_interaction_retry_after_at&.iso8601,
+                    interaction_retry_active: profile.story_reply_retry_pending?,
+                    interaction_state: profile.story_interaction_state.to_s,
+                    interaction_reason: profile.story_interaction_reason.to_s,
+                    api_reply_gate: api_external_context[:reply_gate].is_a?(Hash) ? api_external_context[:reply_gate] : {
+                      known: false,
+                      reply_possible: nil,
+                      reason_code: nil,
+                      status: "Unknown"
+                    },
+                    validation_job_id: validation_job.job_id
+                  }
+                  interaction_retry_active = ActiveModel::Type::Boolean.new.cast(eligibility[:interaction_retry_active])
+                  interaction_retry_after_at = eligibility[:retry_after_at].to_s.presence
+                  interaction_state = eligibility[:interaction_state].to_s
+                  interaction_reason = eligibility[:interaction_reason].to_s
+                  api_reply_gate = eligibility[:api_reply_gate].is_a?(Hash) ? eligibility[:api_reply_gate] : {}
 
                   story_time = Time.current
                   profile.record_event!(
@@ -505,6 +563,16 @@ module Instagram
                       attached = attach_download_to_event(event: downloaded_event, download: download)
                       raise "story_media_attach_failed" unless attached
                       InstagramProfileEvent.broadcast_story_archive_refresh!(account: @account)
+                      stamp_story_assignment_validation!(
+                        downloaded_event: downloaded_event,
+                        profile: profile,
+                        story_id: story_id,
+                        story_url: story_url,
+                        story_username: story_username,
+                        media: media,
+                        cache: story_api_cache,
+                        driver: driver
+                      )
                       StoryIngestionService.new(account: @account, profile: profile).ingest!(
                         story: {
                           story_id: story_id,
@@ -664,6 +732,16 @@ module Instagram
                     attached = attach_download_to_event(event: downloaded_event, download: download)
                     raise "story_media_attach_failed" unless attached
                     InstagramProfileEvent.broadcast_story_archive_refresh!(account: @account)
+                    stamp_story_assignment_validation!(
+                      downloaded_event: downloaded_event,
+                      profile: profile,
+                      story_id: story_id,
+                      story_url: story_url,
+                      story_username: story_username,
+                      media: media,
+                      cache: story_api_cache,
+                      driver: driver
+                    )
                     archive_link = archive_link_metadata(downloaded_event: downloaded_event)
 
                     if out_of_network_profile
@@ -681,7 +759,7 @@ module Instagram
                           media_source: media[:source],
                           reason: "profile_not_in_network",
                           status: "Out of network",
-                          username: context[:username].to_s
+                          username: story_username
                         }.merge(archive_link)
                       )
                       capture_task_html(
@@ -691,7 +769,7 @@ module Instagram
                         meta: {
                           story_id: story_id,
                           story_ref: ref,
-                          username: context[:username].to_s,
+                          username: story_username,
                           reason: "profile_not_in_network",
                           media_url: media[:url].to_s.byteslice(0, 220),
                           archive_event_id: downloaded_event.id
@@ -803,16 +881,8 @@ module Instagram
                           linked_targets: Array(api_external_context[:linked_targets])
                         }.merge(archive_link)
                       )
-                    elsif api_reply_gate[:known] && api_reply_gate[:reply_possible] == false
+                    elsif eligibility[:eligible] == false
                       stats[:skipped_unreplyable] += 1
-                      retry_after = Time.current + STORY_INTERACTION_RETRY_DAYS.days
-                      mark_profile_interaction_state!(
-                        profile: profile,
-                        state: "unavailable",
-                        reason: api_reply_gate[:reason_code].to_s.presence || "api_can_reply_false",
-                        reaction_available: false,
-                        retry_after_at: retry_after
-                      )
                       profile.record_event!(
                         kind: "story_reply_skipped",
                         external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
@@ -824,9 +894,9 @@ module Instagram
                           story_url: story_url,
                           media_url: media[:url],
                           media_source: media[:source],
-                          reason: api_reply_gate[:reason_code],
-                          status: api_reply_gate[:status],
-                          retry_after_at: retry_after.iso8601
+                          reason: eligibility[:reason_code],
+                          status: eligibility[:status],
+                          retry_after_at: eligibility[:retry_after_at]
                         }.merge(archive_link)
                       )
                     else
@@ -903,54 +973,42 @@ module Instagram
                           retry_after_at: nil
                         )
 
-                        comment_result = comment_on_story_via_api!(
+                        enqueue_result = enqueue_story_reply_delivery!(
+                          profile: profile,
                           story_id: story_id,
-                          story_username: context[:username],
-                          comment_text: comment_text
+                          comment_text: comment_text,
+                          downloaded_event: downloaded_event,
+                          metadata: {
+                            source: "home_story_carousel",
+                            story_id: story_id,
+                            story_ref: ref,
+                            story_url: story_url,
+                            media_url: media[:url]
+                          }.merge(archive_link)
                         )
-                        if !comment_result[:posted]
-                          comment_result = comment_on_story_via_ui!(driver: driver, comment_text: comment_text)
-                        end
-                        posted = comment_result[:posted]
-                        skip_status = story_reply_skip_status_for(comment_result)
                         capture_task_html(
                           driver: driver,
                           task_name: "home_story_sync_comment_submission",
-                          status: posted ? "ok" : "error",
+                          status: enqueue_result[:queued] ? "ok" : "error",
                           meta: {
                             story_ref: ref,
                             comment_preview: comment_text.byteslice(0, 120),
-                            posted: posted,
-                            submission_method: comment_result[:method],
-                            failure_reason: comment_result[:reason],
-                            skip_status: skip_status[:status],
-                            skip_reason_code: skip_status[:reason_code]
+                            posted: false,
+                            queued: enqueue_result[:queued],
+                            queue_name: enqueue_result[:queue_name],
+                            active_job_id: enqueue_result[:job_id],
+                            failure_reason: enqueue_result[:reason]
                           }
                         )
-                        if posted
+                        if enqueue_result[:queued]
                           stats[:commented] += 1
                           mark_profile_interaction_state!(
                             profile: profile,
                             state: "reply_available",
-                            reason: "comment_sent",
+                            reason: "comment_queued",
                             reaction_available: nil,
                             retry_after_at: nil
                           )
-                          profile.record_event!(
-                            kind: "story_reply_sent",
-                            external_id: "story_reply_sent:#{story_id}",
-                            occurred_at: Time.current,
-                            metadata: {
-                              source: "home_story_carousel",
-                              story_id: story_id,
-                              story_ref: ref,
-                              story_url: story_url,
-                              media_url: media[:url],
-                              comment_text: comment_text,
-                              submission_method: comment_result[:method]
-                            }.merge(archive_link)
-                          )
-                          attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: comment_text)
                         else
                           profile.record_event!(
                             kind: "story_reply_skipped",
@@ -963,10 +1021,10 @@ module Instagram
                               story_url: story_url,
                               media_url: media[:url],
                               media_source: media[:source],
-                              reason: skip_status[:reason_code],
-                              status: skip_status[:status],
-                              submission_reason: comment_result[:reason],
-                              submission_marker_text: comment_result[:marker_text]
+                              reason: enqueue_result[:reason].to_s.presence || "reply_enqueue_failed",
+                              status: "Reply queued asynchronously",
+                              queue_name: enqueue_result[:queue_name],
+                              active_job_id: enqueue_result[:job_id]
                             }.merge(archive_link)
                           )
                         end
@@ -1144,6 +1202,148 @@ module Instagram
           ""
         end
 
+        def resolve_story_assignment_context(context_username:, story_id:, canonical_story_url:, live_story_url:, media_owner_username:)
+          sid = normalize_story_id_token(story_id.to_s)
+          return { ok: false, reason_code: "story_id_unresolved", story_id: sid, username: "" } if sid.blank?
+
+          context_user = normalize_username(context_username)
+          live_identity = story_url_identity(live_story_url.to_s)
+          live_user = normalize_username(live_identity[:username].to_s)
+          live_story_id = normalize_story_id_token(live_identity[:story_id].to_s)
+          owner_user = normalize_username(media_owner_username)
+
+          chosen_username = live_user.presence || context_user.presence || owner_user.presence
+          return { ok: false, reason_code: "story_username_unresolved", story_id: sid, username: "" } if chosen_username.blank?
+
+          if live_story_id.present? && live_story_id != sid
+            return {
+              ok: false,
+              reason_code: "story_id_live_url_conflict",
+              story_id: sid,
+              username: chosen_username,
+              conflict: true
+            }
+          end
+
+          if owner_user.present? && owner_user != chosen_username
+            return {
+              ok: false,
+              reason_code: "story_owner_username_conflict",
+              story_id: sid,
+              username: chosen_username,
+              conflict: true
+            }
+          end
+
+          final_story_url = canonical_story_url(
+            username: chosen_username,
+            story_id: sid,
+            fallback_url: live_story_url.to_s.presence || canonical_story_url.to_s
+          )
+
+          {
+            ok: true,
+            story_id: sid,
+            username: chosen_username,
+            story_url: final_story_url,
+            story_ref: "#{chosen_username}:#{sid}",
+            conflict: false,
+            reconciled_from_live_url: context_user.present? && live_user.present? && context_user != live_user
+          }
+        rescue StandardError
+          {
+            ok: false,
+            reason_code: "story_assignment_exception",
+            story_id: normalize_story_id_token(story_id.to_s),
+            username: normalize_username(context_username),
+            conflict: true
+          }
+        end
+
+        def stamp_story_assignment_validation!(downloaded_event:, profile:, story_id:, story_url:, story_username:, media:, cache:, driver:)
+          return unless downloaded_event
+
+          normalized_story_id = normalize_story_id_token(story_id.to_s)
+          profile_username = normalize_username(profile&.username.to_s)
+          requested_username = normalize_username(story_username.to_s)
+          story_identity = story_url_identity(story_url.to_s)
+          url_username = normalize_username(story_identity[:username].to_s)
+          url_story_id = normalize_story_id_token(story_identity[:story_id].to_s)
+          owner_username = normalize_username(media.is_a?(Hash) ? media[:owner_username].to_s : "")
+
+          validation = {
+            checked_at: Time.current.utc.iso8601(3),
+            profile_username: profile_username,
+            story_username: requested_username,
+            story_url_username: url_username.presence,
+            story_id: normalized_story_id,
+            story_url_story_id: url_story_id.presence,
+            media_owner_username: owner_username.presence,
+            media_source: media.is_a?(Hash) ? media[:source].to_s.presence : nil,
+            status: "passed",
+            reason_code: nil,
+            api_story_found: nil
+          }
+
+          if normalized_story_id.blank?
+            validation[:status] = "failed"
+            validation[:reason_code] = "missing_numeric_story_id"
+          elsif profile_username.blank?
+            validation[:status] = "failed"
+            validation[:reason_code] = "missing_profile_username"
+          elsif url_username.present? && url_username != profile_username
+            validation[:status] = "failed"
+            validation[:reason_code] = "story_url_username_mismatch"
+          elsif url_story_id.present? && url_story_id != normalized_story_id
+            validation[:status] = "failed"
+            validation[:reason_code] = "story_url_story_id_mismatch"
+          elsif owner_username.present? && owner_username != profile_username
+            validation[:status] = "failed"
+            validation[:reason_code] = "media_owner_username_mismatch"
+          else
+            api_story = resolve_story_item_via_api(
+              username: profile_username,
+              story_id: normalized_story_id,
+              cache: cache,
+              driver: driver
+            )
+            validation[:api_story_found] = api_story.is_a?(Hash)
+            if api_story.is_a?(Hash)
+              api_owner = normalize_username(api_story[:owner_username].to_s)
+              validation[:api_owner_username] = api_owner.presence
+              if api_owner.present? && api_owner != profile_username
+                validation[:status] = "failed"
+                validation[:reason_code] = "api_owner_username_mismatch"
+              end
+            else
+              validation[:status] = "unknown"
+              validation[:reason_code] = "api_story_not_resolved"
+            end
+          end
+
+          metadata = downloaded_event.metadata.is_a?(Hash) ? downloaded_event.metadata.deep_dup : {}
+          metadata["assignment_validation"] = validation
+          downloaded_event.update!(metadata: metadata)
+
+          return unless validation[:status] == "failed"
+
+          profile.record_event!(
+            kind: "story_assignment_validation_failed",
+            external_id: "story_assignment_validation_failed:#{normalized_story_id}:#{Time.current.utc.iso8601(6)}",
+            occurred_at: Time.current,
+            metadata: {
+              source: "home_story_carousel",
+              story_id: normalized_story_id,
+              story_url: story_url.to_s,
+              archive_event_id: downloaded_event.id,
+              archive_event_external_id: downloaded_event.external_id.to_s,
+              validation: validation
+            }
+          )
+        rescue StandardError
+          nil
+        end
+
         def story_media_resolution_metadata(media_probe)
           payload = media_probe.is_a?(Hash) ? media_probe : {}
           attempts = Array(payload[:attempts]).select { |row| row.is_a?(Hash) }
@@ -1210,6 +1410,10 @@ module Instagram
           return "session" if message.include?("login") || message.include?("cookie") || message.include?("csrf")
           return "navigation" if normalized_reason.include?("next_navigation_failed") || normalized_reason.include?("duplicate_story_key")
           return "parsing" if normalized_reason.include?("story_id_unresolved") || normalized_reason.include?("context_missing")
+          return "assignment" if normalized_reason.include?("story_assignment")
+          return "assignment" if normalized_reason.include?("story_url_username_mismatch")
+          return "assignment" if normalized_reason.include?("story_owner_username_conflict")
+          return "assignment" if normalized_reason.include?("story_id_live_url_conflict")
           return "navigation" if normalized_reason.include?("story_page_unavailable")
           return "navigation" if normalized_reason.include?("story_view_gate")
           return "storage" if message.include?("attach_failed") || message.include?("active storage")
@@ -1247,6 +1451,67 @@ module Instagram
 
           msg = error.message.to_s.downcase
           msg.include?("timeout") || msg.include?("http 429") || msg.include?("http 502") || msg.include?("http 503") || msg.include?("http 504")
+        end
+
+        def enqueue_story_reply_delivery!(profile:, story_id:, comment_text:, downloaded_event:, metadata:)
+          sid = story_id.to_s.strip
+          text = comment_text.to_s.strip
+          return { queued: false, reason: "missing_story_id" } if sid.blank?
+          return { queued: false, reason: "blank_comment" } if text.blank?
+
+          if profile.instagram_profile_events.where(kind: "story_reply_sent", external_id: "story_reply_sent:#{sid}").exists?
+            return { queued: false, reason: "already_sent" }
+          end
+
+          existing_queue_event = profile.instagram_profile_events.find_by(kind: "story_reply_queued", external_id: "story_reply_queued:#{sid}")
+          if existing_queue_event
+            metadata = existing_queue_event.metadata.is_a?(Hash) ? existing_queue_event.metadata : {}
+            status = metadata["delivery_status"].to_s
+            queue_fresh = existing_queue_event.detected_at.present? && existing_queue_event.detected_at > 12.hours.ago
+            if !%w[sent failed].include?(status) && queue_fresh
+              return { queued: false, reason: "already_queued" }
+            end
+          end
+
+          queue_event = profile.record_event!(
+            kind: "story_reply_queued",
+            external_id: "story_reply_queued:#{sid}",
+            occurred_at: Time.current,
+            metadata: metadata.merge(
+              comment_text: text,
+              auto_reply: true,
+              delivery_status: "queued",
+              queued_at: Time.current.iso8601(3)
+            )
+          )
+
+          job = SendStoryReplyJob.perform_later(
+            instagram_account_id: @account.id,
+            instagram_profile_id: profile.id,
+            story_id: sid,
+            reply_text: text,
+            story_metadata: metadata,
+            downloaded_event_id: downloaded_event&.id
+          )
+          queue_event.update!(
+            metadata: queue_event.metadata.merge(
+              "active_job_id" => job.job_id,
+              "queue_name" => job.queue_name
+            )
+          )
+
+          {
+            queued: true,
+            job_id: job.job_id,
+            queue_name: job.queue_name
+          }
+        rescue StandardError => e
+          {
+            queued: false,
+            reason: "reply_enqueue_failed",
+            error_class: e.class.name,
+            error_message: e.message.to_s
+          }
         end
 
         def attach_media_to_event(event, bytes:, filename:, content_type:)
