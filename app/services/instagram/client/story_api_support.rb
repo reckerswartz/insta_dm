@@ -35,7 +35,26 @@ module Instagram
 
         while attempts < max_attempts
           attempts += 1
-          apply_ig_api_request_spacing!(endpoint: endpoint_name, username: normalized_username)
+          spacing_delay = apply_ig_api_request_spacing!(endpoint: endpoint_name, username: normalized_username)
+          if spacing_delay.to_f.positive?
+            retry_after = spacing_delay.to_f.ceil.clamp(1, 120)
+            apply_local_ig_api_pause!(
+              endpoint: endpoint_name,
+              uri: uri,
+              username: normalized_username,
+              reason: "local_request_spacing",
+              retry_after_seconds: retry_after
+            )
+            failure = {
+              ok: false,
+              status: 429,
+              reason: "local_request_spacing",
+              body: "local request spacing pause active",
+              headers: { "retry-after" => retry_after.to_s },
+              retry_after_seconds: retry_after
+            }
+            break
+          end
           response = perform_ig_api_get(uri: uri, referer: referer)
           record_ig_api_usage!(
             endpoint: endpoint_name,
@@ -61,7 +80,19 @@ module Instagram
           end
 
           break unless retryable_ig_api_failure?(failure)
-          sleep(resolve_ig_api_retry_delay_seconds(failure: failure, attempt: attempts))
+          retry_after = resolve_ig_api_retry_delay_seconds(failure: failure, attempt: attempts).to_f.ceil.clamp(1, 120)
+          apply_local_ig_api_pause!(
+            endpoint: endpoint_name,
+            uri: uri,
+            username: normalized_username,
+            reason: failure[:reason].to_s.presence || "retryable_failure",
+            retry_after_seconds: retry_after
+          )
+          failure = failure.merge(
+            retry_after_seconds: retry_after,
+            headers: (failure[:headers].is_a?(Hash) ? failure[:headers] : {}).merge("retry-after" => retry_after.to_s)
+          )
+          break
         end
 
         browser_response = nil
@@ -1379,6 +1410,35 @@ module Instagram
         nil
       end
 
+      def apply_local_ig_api_pause!(endpoint:, uri:, username:, reason:, retry_after_seconds:)
+        retry_after = retry_after_seconds.to_i.clamp(1, 120)
+        key = ig_api_endpoint_pause_key(endpoint: endpoint, username: username)
+        unblock_at = Time.current + retry_after.seconds
+        headers = { "retry-after" => retry_after.to_s }
+        Rails.cache.write(
+          key,
+          {
+            "unblock_at" => unblock_at.iso8601,
+            "reason" => reason.to_s.presence || "local_rate_limit_pause",
+            "status" => 429,
+            "headers" => headers
+          },
+          expires_in: [ retry_after + 15, 90.minutes ].min.seconds
+        )
+
+        remember_story_api_failure!(
+          endpoint: endpoint.to_s.presence || "unknown",
+          url: uri.to_s,
+          status: 429,
+          username: username,
+          response_snippet: nil,
+          retry_after_seconds: retry_after,
+          headers: headers
+        )
+      rescue StandardError
+        nil
+      end
+
       def endpoint_request_spacing_seconds(endpoint)
         ep = endpoint.to_s
         return 0.7 if ep.include?("direct_v2")
@@ -1391,20 +1451,19 @@ module Instagram
 
       def apply_ig_api_request_spacing!(endpoint:, username:)
         spacing = endpoint_request_spacing_seconds(endpoint)
-        return if spacing <= 0
+        return 0.0 if spacing <= 0
 
         uname = normalize_username(username).presence || "global"
         ep = endpoint.to_s.presence || "unknown"
         key = "#{IG_API_RATE_LIMIT_CACHE_PREFIX}:spacing:account:#{@account.id}:#{uname}:#{ep}"
         now = Time.current.to_f
         next_allowed = Rails.cache.read(key).to_f
-        if next_allowed > now
-          sleep([next_allowed - now, 1.2].min)
-        end
+        return [ next_allowed - now, spacing ].max if next_allowed > now
 
-        Rails.cache.write(key, Time.current.to_f + spacing, expires_in: 90.seconds)
+        Rails.cache.write(key, now + spacing, expires_in: 90.seconds)
+        0.0
       rescue StandardError
-        nil
+        0.0
       end
 
       def record_ig_api_usage!(endpoint:, username:, method:, status:)

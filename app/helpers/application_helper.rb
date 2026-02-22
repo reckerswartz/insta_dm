@@ -55,6 +55,21 @@ module ApplicationHelper
     ai_dashboard_index_path
   end
 
+  def feed_capture_cooldown_remaining_seconds(account:, now: Time.current)
+    FeedCaptureThrottle.remaining_seconds(account: account, now: now)
+  end
+
+  def feed_capture_enqueue_locked?(account:, now: Time.current)
+    feed_capture_cooldown_remaining_seconds(account: account, now: now).positive?
+  end
+
+  def feed_capture_next_allowed_at(account:, now: Time.current)
+    remaining = feed_capture_cooldown_remaining_seconds(account: account, now: now)
+    return nil if remaining <= 0
+
+    now + remaining.seconds
+  end
+
   def current_section
     case controller_path
     when "instagram_accounts"

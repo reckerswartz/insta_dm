@@ -26,9 +26,16 @@ class EnqueueFeedAutoEngagementForAllAccountsJob < ApplicationJob
     )
 
     enqueued = 0
+    scheduler_lease_skipped = 0
 
     batch[:accounts].each do |account|
       next if account.cookies.blank?
+
+      scheduler_lease = AutonomousSchedulerLease.reserve!(account: account, source: self.class.name)
+      unless scheduler_lease.reserved
+        scheduler_lease_skipped += 1
+        next
+      end
 
       AutoEngageHomeFeedJob.perform_later(
         instagram_account_id: account.id,
@@ -67,6 +74,7 @@ class EnqueueFeedAutoEngagementForAllAccountsJob < ApplicationJob
       event: "feed_auto_engagement.batch_enqueued",
       payload: {
         enqueued_accounts: enqueued,
+        scheduler_lease_skipped: scheduler_lease_skipped,
         max_posts: max_posts_i,
         include_story: include_story_bool,
         story_hold_seconds: hold_seconds_i,
@@ -80,6 +88,7 @@ class EnqueueFeedAutoEngagementForAllAccountsJob < ApplicationJob
     {
       enqueued_accounts: enqueued,
       scanned_accounts: batch[:accounts].length,
+      scheduler_lease_skipped: scheduler_lease_skipped,
       continuation_job_id: continuation_job&.job_id
     }
   end

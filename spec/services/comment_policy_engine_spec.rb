@@ -71,4 +71,21 @@ RSpec.describe Ai::CommentPolicyEngine do
     expect(result[:accepted]).to include("The potted plant by the window looks great.")
     expect(result[:accepted]).not_to include("Love this vibe!")
   end
+
+  it "rejects robotic meta phrasing and awkward duo templates" do
+    engine = described_class.new
+    result = engine.evaluate(
+      suggestions: [
+        "(Light Question) What's in the bottle? 🔍",
+        "Person and sink, an intriguing duo. 🧐",
+        "Nice bottle setup! 🥂"
+      ],
+      context_keywords: %w[bottle person sink],
+      max_suggestions: 8
+    )
+
+    expect(result[:accepted]).to include("Nice bottle setup! 🥂")
+    expect(result[:accepted]).not_to include("(Light Question) What's in the bottle? 🔍")
+    expect(result[:accepted]).not_to include("Person and sink, an intriguing duo. 🧐")
+  end
 end

@@ -38,18 +38,18 @@ export default class extends Controller {
         src,
         retries: 0,
         loaded: false,
+        autoLoad: frame.getAttribute("loading") !== "lazy",
         lastReloadAt: 0,
       })
-
-      // Lazy frame intersection may fail under rapid scroll/headless rendering.
-      frame.setAttribute("loading", "eager")
 
       frame.addEventListener("turbo:frame-load", () => this.markLoaded(frame))
       frame.addEventListener("turbo:fetch-request-error", () => this.reloadFrame(frame, "fetch_error"))
     })
 
-    this.pollTimer = window.setInterval(() => this.pollFrames(), this.pollMsValue)
-    this.pollFrames()
+    if (this.frames.some((frame) => this.frameState.get(frame.id)?.autoLoad)) {
+      this.pollTimer = window.setInterval(() => this.pollFrames(), this.pollMsValue)
+      this.pollFrames()
+    }
     this.subscribeToOperationsUpdates()
   }
 
@@ -76,6 +76,7 @@ export default class extends Controller {
       const state = this.frameState.get(frame.id)
       if (!state) return
       if (state.loaded) return
+      if (!state.autoLoad) return
 
       if (this.frameHasResolvedContent(frame)) {
         this.markLoaded(frame)
@@ -199,6 +200,8 @@ export default class extends Controller {
   scheduleCapturedPostsReload(reason) {
     const frame = this.capturedPostsFrame()
     if (!frame) return
+    const state = this.frameState.get(frame.id)
+    if (!state?.loaded) return
 
     const minIntervalMs = 1100
     const elapsed = Date.now() - this.lastLiveReloadAt

@@ -1,0 +1,56 @@
+<section id="feed_capture_activity_section" class="card">
+  <h2>Feed Capture Activity</h2>
+  <p class="meta">Live feed capture logs for manual triggers and autonomous scheduler runs.</p>
+
+  <p class="meta">
+    Autonomous mode:
+    <strong><%= account.continuous_processing_enabled? ? "Enabled" : "Disabled" %></strong>
+    |
+    Next automated feed capture:
+    <% if account.continuous_processing_next_feed_sync_at.present? %>
+      <strong><%= relative_time_with_tooltip(account.continuous_processing_next_feed_sync_at) %></strong>
+    <% elsif account.continuous_processing_enabled? %>
+      <strong>Pending next continuous-processing cycle</strong>
+    <% else %>
+      <strong>Not scheduled</strong>
+    <% end %>
+  </p>
+
+  <% if feed_capture_activity_entries.any? %>
+    <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="feed-capture-activity-table-v1" data-table-standard-pagination-size-value="15">
+      <div class="table-scroll">
+        <table class="table" data-table-standard-target="table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Status</th>
+              <th>Source</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% feed_capture_activity_entries.each do |entry| %>
+              <% pill_state =
+                   case entry[:status].to_s
+                   when "failed"
+                     "failed"
+                   when "succeeded"
+                     "sent"
+                   else
+                     "queued"
+                   end %>
+              <tr>
+                <td><%= relative_time_with_tooltip(entry[:occurred_at]) %></td>
+                <td><span class="pill <%= pill_state %>"><%= entry[:status] %></span></td>
+                <td><%= entry[:source].presence || "-" %></td>
+                <td class="meta"><%= entry[:message] %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  <% else %>
+    <p class="meta">No feed capture activity recorded yet.</p>
+  <% end %>
+</section>

@@ -14,14 +14,15 @@
   </header>
 
   <section class="card">
-    <p class="meta">Use header filters/sorting and inline status controls. Shift + wheel scrolls horizontally, click-drag pans, and updates stream live.</p>
-
     <div
       class="tabulator-shell"
       data-controller="issues-table"
       data-issues-table-url-value="<%= admin_issues_path(format: :json) %>"
       data-issues-table-account-id-value="<%= current_account&.id.to_i %>"
     >
+      <%= render "shared/table_meta_bar",
+            controls: "inline status controls",
+            realtime_note: "Updates stream live." %>
       <div class="tabulator-host" data-issues-table-target="table"></div>
     </div>
   </section>

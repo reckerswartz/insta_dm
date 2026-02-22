@@ -11,7 +11,6 @@
     </div>
     <div class="page-toolbar-actions">
       <%= link_to "Account Dashboard", instagram_account_path(@account), class: "btn secondary" %>
-      <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
     </div>
   </header>
 
@@ -38,7 +37,6 @@
 
   <section class="card">
     <h2>Profiles Data Table</h2>
-    <p class="meta">Use header filters/sorting. Shift + wheel scrolls horizontally, and click-drag pans vertically/horizontally.</p>
 
     <div
       class="tabulator-shell"
@@ -46,6 +44,7 @@
       data-profiles-table-url-value="<%= instagram_profiles_path(format: :json) %>"
       data-profiles-table-account-id-value="<%= @account.id %>"
     >
+      <%= render "shared/table_meta_bar" %>
       <div class="tabulator-host" data-profiles-table-target="table"></div>
     </div>
   </section>

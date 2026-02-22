@@ -56,6 +56,11 @@ development:
         posts_limit: 3
         comments_limit: 8
     cron: "40 */2 * * *"
+  follow_graph_sync_all_accounts:
+    class: EnqueueFollowGraphSyncForAllAccountsJob
+    active_job: true
+    queue: sync
+    cron: "15 3 * * *"
 
 production:
   continuous_account_processing:

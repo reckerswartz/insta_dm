@@ -13,8 +13,7 @@
     </div>
     <div class="page-toolbar-actions">
       <%= link_to "Dashboard", instagram_accounts_path, class: "btn secondary" %>
-      <%= link_to "Profiles", instagram_profiles_path, class: "btn secondary" %>
-      <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
+      <%= link_to "Workspace Queue", actions_workspace_path, class: "btn secondary" %>
     </div>
   </header>
 
@@ -67,6 +66,8 @@
 
   <section class="card">
     <h2>Sync & Workload</h2>
+    <% capture_locked = feed_capture_enqueue_locked?(account: @account) %>
+    <% next_allowed_at = feed_capture_next_allowed_at(account: @account) %>
 
     <div class="actions-row">
       <%= button_to "Sync Followers/Following (Background)", follow_graph_sync_path, method: :post %>
@@ -75,8 +76,20 @@
       <%= button_to "Sync All Stories (Continuous Auto Reply)", sync_all_stories_continuous_instagram_account_path(@account), method: :post, class: "btn secondary" %>
       <%= button_to "Run Continuous Processing Now", run_continuous_processing_instagram_account_path(@account), method: :post, class: "btn secondary" %>
       <%= button_to "Download Missing Avatars (Background)", download_missing_avatars_instagram_profiles_path, method: :post, class: "btn secondary" %>
-      <%= button_to "Capture Feed (Background)", feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20), method: :post, class: "btn secondary" %>
+      <%= button_to(capture_locked ? "Capture Feed (Queued)" : "Capture Feed (Background)",
+            feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20),
+            method: :post,
+            class: "btn secondary",
+            disabled: capture_locked,
+            form: { data: { turbo_submits_with: "Queueing..." } }) %>
     </div>
+    <p class="meta">
+      <% if capture_locked && next_allowed_at.present? %>
+        Feed capture is already queued/running. Next manual trigger is available <strong><%= relative_time_with_tooltip(next_allowed_at) %></strong>.
+      <% else %>
+        Manual capture is ready. Autonomous capture is also handled by the continuous-processing scheduler.
+      <% end %>
+    </p>
 
     <div id="sync_status">
       <%= render "sync_runs/status", sync_run: @latest_sync_run %>
@@ -88,11 +101,14 @@
         <div class="stat-kv"><span class="muted">Profiles</span><strong><%= @metrics.dig(:app, :profiles) %></strong></div>
         <div class="stat-kv"><span class="muted">Followers</span><strong><%= @metrics.dig(:app, :followers) %></strong></div>
         <div class="stat-kv"><span class="muted">Following</span><strong><%= @metrics.dig(:app, :following) %></strong></div>
-        <div class="stat-kv"><span class="muted">Mutuals</span><strong><%= @metrics.dig(:app, :mutuals) %></strong></div>
         <div class="stat-kv"><span class="muted">Messages</span><strong><%= @metrics.dig(:app, :messages) %></strong></div>
-        <div class="stat-kv"><span class="muted">AI analyses</span><strong><%= @metrics.dig(:app, :ai_analyses) %></strong></div>
-        <div class="stat-kv"><span class="muted">AI API calls</span><strong><%= @metrics.dig(:app, :ai_api_calls) %></strong></div>
         <div class="stat-kv"><span class="muted">Feed posts</span><strong><%= @metrics.dig(:app, :posts) %></strong></div>
+        <details class="details-box mt-2">
+          <summary>Show extended totals</summary>
+          <div class="stat-kv"><span class="muted">Mutuals</span><strong><%= @metrics.dig(:app, :mutuals) %></strong></div>
+          <div class="stat-kv"><span class="muted">AI analyses</span><strong><%= @metrics.dig(:app, :ai_analyses) %></strong></div>
+          <div class="stat-kv"><span class="muted">AI API calls</span><strong><%= @metrics.dig(:app, :ai_api_calls) %></strong></div>
+        </details>
       </div>
 
       <div class="stat">
@@ -146,22 +162,23 @@
         <div class="stat-kv"><span class="muted">Report generation</span><strong><%= usage[:report_generation_calls].to_i %></strong></div>
         <div class="stat-kv"><span class="muted">Text generation</span><strong><%= usage[:text_generation_calls].to_i %></strong></div>
         <div class="stat-kv"><span class="muted">Failed calls</span><strong><%= usage[:failed_calls].to_i %></strong></div>
-        <div class="stat-kv"><span class="muted">Total tokens</span><strong><%= usage[:total_tokens].to_i %></strong></div>
-      </div>
-
-      <div class="stat">
-        <div class="stat-label">API Providers (24h)</div>
-        <% providers = usage[:by_provider] || {} %>
-        <% if providers.any? %>
-          <% providers.sort_by { |k, _| k }.each do |provider, count| %>
-            <div class="stat-kv"><span class="muted"><%= provider %></span><strong><%= count %></strong></div>
+        <details class="details-box mt-2">
+          <summary>Show providers and token totals</summary>
+          <div class="stat-kv"><span class="muted">Total tokens</span><strong><%= usage[:total_tokens].to_i %></strong></div>
+          <% providers = usage[:by_provider] || {} %>
+          <% if providers.any? %>
+            <% providers.sort_by { |k, _| k }.each do |provider, count| %>
+              <div class="stat-kv"><span class="muted"><%= provider %></span><strong><%= count %></strong></div>
+            <% end %>
+          <% else %>
+            <p class="meta mb-0">No provider activity in the last 24 hours.</p>
           <% end %>
-        <% else %>
-          <p class="meta">No provider activity in the last 24 hours.</p>
-        <% end %>
+        </details>
       </div>
     </div>
   </section>
+
+  <%= render "feed_capture_activity_section", account: @account, feed_capture_activity_entries: @feed_capture_activity_entries %>
 
   <%= render "actions_to_be_done_section", actions_todo_queue: @actions_todo_queue %>
 

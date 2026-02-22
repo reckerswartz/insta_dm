@@ -13,6 +13,7 @@ RSpec.describe Ops::AiServiceQueueRegistry do
     expect(described_class.service_for_job_class("AnalyzeInstagramProfileJob")&.key).to eq("profile_analysis_runner")
     expect(described_class.service_for_job_class("AnalyzeInstagramPostJob")&.key).to eq("post_analysis_runner")
     expect(described_class.service_for_job_class("GenerateLlmCommentJob")&.key).to eq("llm_comment_generation")
+    expect(described_class.service_for_job_class("GenerateStoryCommentFromPipelineJob")&.key).to eq("llm_comment_generation")
     expect(described_class.service_for_job_class("GeneratePostCommentSuggestionsJob")&.key).to eq("post_comment_generation")
   end
 
@@ -21,6 +22,7 @@ RSpec.describe Ops::AiServiceQueueRegistry do
     expect(AnalyzeInstagramPostJob.queue_name).to eq("ai_post_analysis_queue")
     expect(BuildInstagramProfileHistoryJob.queue_name).to eq("ai_profile_history_queue")
     expect(GenerateLlmCommentJob.queue_name).to eq("ai_llm_comment_queue")
+    expect(GenerateStoryCommentFromPipelineJob.queue_name).to eq("ai_llm_comment_queue")
     expect(GeneratePostCommentSuggestionsJob.queue_name).to eq("ai_comment_generation_queue")
     expect(AnalyzeInstagramProfilePostImageJob.queue_name).to eq("ai_profile_image_description_queue")
     expect(AnalyzeInstagramProfilePostJob.queue_name).to eq("ai_pipeline_orchestration_queue")

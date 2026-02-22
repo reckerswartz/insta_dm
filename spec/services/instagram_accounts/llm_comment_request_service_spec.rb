@@ -198,6 +198,41 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     expect(event.llm_comment_last_error).to be_nil
   end
 
+  it "keeps in-progress status when parallel pipeline metadata is active even if queue inspector reports stale" do
+    event = create_story_event(
+      profile: profile,
+      llm_comment_status: "running",
+      llm_comment_job_id: "job-stale",
+      llm_comment_metadata: {
+        "parallel_pipeline" => {
+          "run_id" => "run-123",
+          "status" => "running",
+          "created_at" => 2.minutes.ago.iso8601,
+          "updated_at" => Time.current.iso8601,
+          "steps" => {
+            "ocr_analysis" => { "status" => "running" }
+          }
+        }
+      }
+    )
+    allow(queue_inspector).to receive(:stale_comment_job?).with(event: event).and_return(true)
+    allow(GenerateLlmCommentJob).to receive(:perform_later)
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: true,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:accepted)
+    expect(result.payload).to include(status: "running", event_id: event.id)
+    expect(event.reload.llm_comment_status).to eq("running")
+    expect(GenerateLlmCommentJob).not_to have_received(:perform_later)
+  end
+
   def create_story_event(profile:, **attrs)
     defaults = {
       kind: "story_downloaded",

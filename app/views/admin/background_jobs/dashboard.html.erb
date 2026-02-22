@@ -335,6 +335,7 @@
               <th>Severity</th>
               <th>Status</th>
               <th>Occurrences</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -343,8 +344,29 @@
                 <td><%= relative_time_with_tooltip(issue.last_seen_at) %></td>
                 <td><%= issue.title %></td>
                 <td><span class="pill"><%= issue.severity %></span></td>
-                <td><%= issue.status %></td>
+                <td><span class="pill"><%= issue.status %></span></td>
                 <td><%= issue.occurrences %></td>
+                <td class="table-actions">
+                  <%= button_to "Open",
+                        admin_issue_path(issue),
+                        method: :patch,
+                        params: { status: "open" },
+                        class: issue.status == "open" ? "btn small" : "btn small secondary" %>
+                  <%= button_to "Pending",
+                        admin_issue_path(issue),
+                        method: :patch,
+                        params: { status: "pending" },
+                        class: issue.status == "pending" ? "btn small" : "btn small secondary" %>
+                  <%= button_to "Resolve",
+                        admin_issue_path(issue),
+                        method: :patch,
+                        params: { status: "resolved" },
+                        class: issue.status == "resolved" ? "btn small" : "btn small secondary" %>
+                  <% if issue.retryable? %>
+                    <%= button_to "Retry Job", retry_job_admin_issue_path(issue), method: :post, class: "btn small secondary" %>
+                  <% end %>
+                  <%= link_to "Full Table", admin_issues_path, class: "btn small secondary" %>
+                </td>
               </tr>
             <% end %>
           </tbody>
@@ -369,16 +391,42 @@
               <th>Record</th>
               <th>Size</th>
               <th>Job</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             <% @recent_storage_ingestions.each do |row| %>
+              <% record_url =
+                  case row.record_type
+                  when "InstagramAccount"
+                    instagram_account_path(row.record_id)
+                  when "InstagramProfile"
+                    instagram_profile_path(row.record_id)
+                  when "InstagramPost"
+                    instagram_post_path(row.record_id)
+                  end %>
               <tr>
                 <td><%= relative_time_with_tooltip(row.created_at) %></td>
                 <td><code><%= row.attachment_name %></code> · <%= row.blob_filename %></td>
-                <td><%= row.record_type %>#<%= row.record_id %></td>
+                <td>
+                  <% if record_url.present? %>
+                    <%= link_to "#{row.record_type}##{row.record_id}", record_url, class: "link-inline" %>
+                  <% else %>
+                    <%= row.record_type %>#<%= row.record_id %>
+                  <% end %>
+                </td>
                 <td><%= number_to_human_size(row.blob_byte_size) %></td>
                 <td><%= row.created_by_job_class.presence || "manual/request" %></td>
+                <td class="table-actions">
+                  <% if row.blob.present? %>
+                    <%= link_to "Download",
+                          rails_blob_path(row.blob, disposition: "attachment"),
+                          class: "btn small secondary" %>
+                  <% end %>
+                  <% if record_url.present? %>
+                    <%= link_to "Record", record_url, class: "btn small secondary" %>
+                  <% end %>
+                </td>
               </tr>
             <% end %>
           </tbody>

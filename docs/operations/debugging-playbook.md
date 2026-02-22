@@ -83,6 +83,41 @@ Checks:
 3. If processing fails, inspect `InstagramStory.metadata["processing_error"]` and linked job failure.
 4. Verify local AI microservice and ffmpeg/whisper dependencies for video paths.
 
+## Scenario: Story Comment Latency Benchmark
+
+Use this when you need before/after numbers for story comment generation.
+
+Run:
+
+```bash
+UI_AUDIT_STORY_ACCOUNT_PATH=/instagram_accounts/<id> \
+UI_AUDIT_EVENT_ID=<event_id> \
+UI_AUDIT_FORCE_REGENERATE=1 \
+spec/diagnostics/scripts/story_comment_workflow_benchmark.rb
+```
+
+Optional baseline comparison:
+
+```bash
+UI_AUDIT_BENCHMARK_BASELINE_FILE=tmp/diagnostic_specs/story_comment_benchmark/<baseline>.json \
+UI_AUDIT_STORY_ACCOUNT_PATH=/instagram_accounts/<id> \
+UI_AUDIT_EVENT_ID=<event_id> \
+spec/diagnostics/scripts/story_comment_workflow_benchmark.rb
+```
+
+Artifact output:
+
+- `tmp/diagnostic_specs/story_comment_benchmark/*.json`
+
+Includes:
+
+- UI click-to-complete seconds
+- trigger/status polling call counts
+- final status
+- prompt chars and LLM eval counters
+- pipeline generation duration
+- finalizer enqueue/execute counts from structured logs
+
 ## Scenario: DM Send Failures/Retry Pending
 
 Where to inspect:

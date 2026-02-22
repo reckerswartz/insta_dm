@@ -6,6 +6,31 @@ module Ai
     DEFAULT_MODEL = "mistral:7b".freeze
     MIN_SUGGESTIONS = 3
     MAX_SUGGESTIONS = 8
+    MIN_DETECTION_ANCHOR_CONFIDENCE = 0.38
+    STRONG_DETECTION_ANCHOR_CONFIDENCE = 0.55
+    STORY_MODE_HINTS = {
+      "text_heavy" => %w[promo offer discount loan bank apr interest apply sale starting rate money],
+      "sports" => %w[sport sports match game stadium cricket football basketball athlete bat ball goal jersey],
+      "food" => %w[food dish meal plate bowl drink recipe restaurant cafe kitchen cooking],
+      "group" => %w[group family friends crowd team together gathering],
+      "repost_meme" => %w[repost meme status quote brother single screenshot forward shared]
+    }.freeze
+    GENERIC_OBJECT_ANCHORS = %w[
+      person
+      people
+      human
+      man
+      woman
+      boy
+      girl
+      sink
+      room
+      wall
+      floor
+      table
+      corner
+      interior
+    ].freeze
     NON_VISUAL_CONTEXT_TOKENS = %w[
       detected
       visual
@@ -36,6 +61,7 @@ module Ai
       Errno::ECONNRESET,
       Errno::ECONNREFUSED
     ].freeze
+    MAX_CONTEXT_JSON_CHARS = ENV.fetch("LLM_COMMENT_MAX_CONTEXT_JSON_CHARS", "4200").to_i.clamp(1800, 12000)
 
     def initialize(ollama_client:, model: nil, policy_engine: nil)
       @ollama_client = ollama_client
@@ -84,6 +110,7 @@ module Ai
         temperature: 0.7,
         max_tokens: 300
       )
+      llm_telemetry = build_llm_telemetry(prompt: prompt, response_payload: resp)
 
       @last_topics_for_policy = Array(topics).map(&:to_s)
       @last_image_description_for_policy = image_description.to_s
@@ -107,6 +134,7 @@ module Ai
           temperature: 0.4,
           max_tokens: 220
         )
+        llm_telemetry[:retry] = build_llm_telemetry(prompt: prompt, response_payload: retry_resp)
         retry_suggestions = evaluate_suggestions(
           suggestions: parse_comment_suggestions(retry_resp),
           historical_comments: historical_comments,
@@ -137,6 +165,7 @@ module Ai
           source: "fallback",
           status: "fallback_used",
           fallback_used: true,
+          llm_telemetry: llm_telemetry,
           error_message: "Generated suggestions were insufficient (#{suggestions.size}/#{MIN_SUGGESTIONS})",
           comment_suggestions: fallback
         }
@@ -149,6 +178,7 @@ module Ai
         source: "ollama",
         status: "ok",
         fallback_used: false,
+        llm_telemetry: llm_telemetry,
         error_message: nil,
         comment_suggestions: suggestions.first(MAX_SUGGESTIONS)
       }
@@ -162,6 +192,9 @@ module Ai
         source: "fallback",
         status: "error_fallback",
         fallback_used: true,
+        llm_telemetry: {
+          prompt_chars: prompt.to_s.length
+        },
         error_message: e.message.to_s,
         comment_suggestions: fallback_comments(
           image_description: image_description,
@@ -203,6 +236,12 @@ module Ai
         verified_story_facts: verified_story_facts,
         historical_comparison: historical_comparison
       )
+      content_mode = classify_story_content_mode(
+        image_description: image_description,
+        topics: topics,
+        verified_story_facts: verified_story_facts
+      )
+      face_count = extract_face_count(verified_story_facts)
       visual_anchors = build_visual_anchors(
         image_description: image_description,
         topics: topics,
@@ -227,9 +266,11 @@ module Ai
         conversational_voice: conversational_voice,
         scored_context: scored_context,
         current_story: {
-          image_description: truncate_text(image_description.to_s, max: 280),
-          topics: Array(topics).map(&:to_s).reject(&:blank?).uniq.first(10),
-          visual_anchors: visual_anchors.first(14),
+          image_description: truncate_text(image_description.to_s, max: 180),
+          topics: Array(topics).map(&:to_s).reject(&:blank?).uniq.first(6),
+          visual_anchors: visual_anchors.first(8),
+          content_mode: content_mode,
+          face_count: face_count,
           verified_story_facts: verified_story_facts,
           ownership: story_ownership_classification,
           generation_policy: generation_policy
@@ -238,53 +279,47 @@ module Ai
           comparison: historical_comparison,
           recent_story_patterns: compact_story_history,
           recent_profile_history: verified_profile_history,
-          recent_comments: Array(historical_comments).map { |value| truncate_text(value.to_s, max: 110) }.reject(&:blank?).first(6),
-          summary: truncate_text(historical_context.to_s, max: 280)
+          recent_comments: Array(historical_comments).map { |value| truncate_text(value.to_s, max: 90) }.reject(&:blank?).first(4),
+          summary: truncate_text(historical_context.to_s, max: 180)
         }
       }
+      context_json = compact_prompt_context(context_json)
 
       <<~PROMPT
-        You are a production-grade Instagram engagement assistant.
-        Generate concise comments from VERIFIED data only.
+        Generate Instagram story comments from CONTEXT_JSON only.
+        No fabrication, no hidden metadata, and no assumptions outside verified_story_facts.
+        If generation_policy.allow_comment is false, return an empty list.
+        If ownership is not owned_by_profile, keep comments neutral and non-personal.
 
-        Grounding rules:
-        - treat CONTEXT_JSON as the only source of truth
-        - never use URLs, IDs, or hidden metadata as evidence
-        - do not infer facts not present in `verified_story_facts`
-        - require `profile_preparation.ready_for_comment_generation` to be true for personalized comments
-        - if `generation_policy.allow_comment` is false, return empty suggestions
-        - if ownership is not `owned_by_profile`, keep output neutral and non-personal
-        - if identity_verification.owner_likelihood is low, avoid user-specific assumptions
-        - never fabricate OCR text, usernames, objects, scenes, or participants
+        Mode: #{Ai::CommentToneProfile.normalize(channel)}
+        Tone guidance: #{tone_profile[:guidance]}
 
-        Writing rules:
-        - channel mode: #{Ai::CommentToneProfile.normalize(channel)}
-        - tone guidance: #{tone_profile[:guidance]}
-        - follow `tone_plan` and vary style across suggestions
-        - use `situational_cues` to tailor tone (for example celebration/travel/lifestyle)
-        - adapt to `occasion_context` (weekday/daypart/holiday-like moments)
-        - each comment must include at least one phrase grounded in `current_story.visual_anchors` or `current_story.topics`
-        - natural, public-safe, short comments
-        - max 140 chars each
-        - vary openings and avoid duplicates
-        - avoid explicit/adult language
-        - avoid identity, age, gender, or sensitive-trait claims
-        - avoid empty praise with no visual anchor from topics/description
-        - reflect recurring themes and wording style from `historical_context` and `conversational_voice`
-
-        Output STRICT JSON only:
-        {
-          "comment_suggestions": ["...", "...", "...", "...", "...", "...", "...", "..."]
-        }
-
-        Generate exactly 8 suggestions, each <= 140 characters.
-        Keep at least 3 suggestions neutral-safe for public comments.
-        Include 1-2 light conversational questions to invite engagement.
-        Avoid repeating phrases from previous comments for the same profile.
+        Requirements:
+        - Return strict JSON only with key "comment_suggestions"
+        - Exactly 8 suggestions, each <= 140 chars
+        - Every suggestion must reference current_story.topics or current_story.visual_anchors
+        - Keep at least 3 suggestions neutral-safe
+        - Include 1-2 light conversational questions
+        - Avoid explicit/adult/sensitive-trait language
+        - Avoid duplicate openings and avoid repeating prior comments
 
         CONTEXT_JSON:
-        #{JSON.pretty_generate(context_json)}
+        #{JSON.generate(context_json)}
       PROMPT
+    end
+
+    def build_llm_telemetry(prompt:, response_payload:)
+      {
+        prompt_chars: prompt.to_s.length,
+        prompt_eval_count: (response_payload["prompt_eval_count"] || response_payload[:prompt_eval_count]).to_i,
+        eval_count: (response_payload["eval_count"] || response_payload[:eval_count]).to_i,
+        total_duration_ns: (response_payload["total_duration"] || response_payload[:total_duration]).to_i,
+        load_duration_ns: (response_payload["load_duration"] || response_payload[:load_duration]).to_i
+      }
+    rescue StandardError
+      {
+        prompt_chars: prompt.to_s.length
+      }
     end
 
     def evaluate_suggestions(suggestions:, historical_comments:, scored_context: {})
@@ -365,36 +400,40 @@ module Ai
     end
 
     def fallback_comments(image_description:, topics:, channel:, scored_context:, verified_story_facts:)
+      facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      mode = classify_story_content_mode(
+        image_description: image_description,
+        topics: topics,
+        verified_story_facts: facts
+      )
       anchors = build_visual_anchors(
         image_description: image_description,
         topics: topics,
-        verified_story_facts: verified_story_facts,
+        verified_story_facts: facts,
         scored_context: scored_context
       )
-      anchor = anchors.first.to_s.presence || "this moment"
+      anchor = select_fallback_anchor(
+        anchors: anchors,
+        mode: mode,
+        image_description: image_description,
+        verified_story_facts: facts
+      )
 
-      if Ai::CommentToneProfile.normalize(channel) == "story"
-        [
-          "#{anchor.capitalize} looks great here.",
-          "Love how you framed the #{anchor}.",
-          "The #{anchor} detail really stands out.",
-          "This #{anchor} shot feels super natural.",
-          "Great capture of the #{anchor}.",
-          "What made you choose this #{anchor} moment?",
-          "Strong story frame around the #{anchor}.",
-          "The #{anchor} adds a nice touch."
-        ]
+      case mode
+      when "text_heavy"
+        text_heavy_fallback_comments(anchor: anchor, channel: channel)
+      when "sports"
+        sports_fallback_comments(anchor: anchor, channel: channel)
+      when "group"
+        group_fallback_comments(anchor: anchor, channel: channel)
+      when "food"
+        food_fallback_comments(anchor: anchor, channel: channel)
+      when "portrait"
+        portrait_fallback_comments(anchor: anchor, channel: channel)
+      when "repost_meme"
+        repost_fallback_comments(anchor: anchor, channel: channel)
       else
-        [
-          "Great focus on the #{anchor}.",
-          "The #{anchor} detail lands really well.",
-          "Love the way the #{anchor} is framed.",
-          "Clean composition with the #{anchor}.",
-          "The #{anchor} gives this post personality.",
-          "What inspired this #{anchor} setup?",
-          "Nice balance and strong #{anchor} context.",
-          "The #{anchor} makes this feel more real."
-        ]
+        generic_fallback_comments(anchor: anchor, channel: channel)
       end
     end
 
@@ -410,6 +449,8 @@ module Ai
       cues = []
       cues << "celebration" if corpus.match?(/\b(birthday|party|wedding|anniversary|celebrat|congrats|graduation)\b/)
       cues << "travel" if corpus.match?(/\b(travel|trip|vacation|beach|airport|hotel|flight|mountain|city)\b/)
+      cues << "sports" if corpus.match?(/\b(match|stadium|cricket|football|basketball|athlete|game)\b/)
+      cues << "text_heavy" if corpus.match?(/\b(offer|loan|bank|discount|sale|apply|promo)\b/)
       cues << "lifestyle" if corpus.match?(/\b(workout|gym|coffee|food|restaurant|fashion|outfit|selfcare|morning)\b/)
       cues << "social" if corpus.match?(/\b(friend|family|hangout|crew|together|date)\b/)
       cues << "creative" if corpus.match?(/\b(art|music|dance|shoot|photo|film|design)\b/)
@@ -419,6 +460,7 @@ module Ai
 
     def build_occasion_context(post_payload:, topics:, image_description:)
       post = post_payload.is_a?(Hash) ? (post_payload[:post] || post_payload["post"]) : {}
+      post = {} unless post.is_a?(Hash)
       timestamp = parse_time(post[:taken_at] || post["taken_at"] || post[:occurred_at] || post["occurred_at"]) || Time.current
       month_day = timestamp.strftime("%m-%d")
       text_blob = "#{Array(topics).join(' ')} #{image_description}".downcase
@@ -483,6 +525,46 @@ module Ai
       return text if text.length <= max
 
       "#{text.byteslice(0, max)}..."
+    end
+
+    def compact_prompt_context(payload)
+      data = deep_clone_json(payload)
+      return data if prompt_context_within_budget?(data)
+
+      # Trim lower-signal historical slices first before removing current story context.
+      if data[:historical_context].is_a?(Hash)
+        data[:historical_context][:recent_profile_history] = Array(data[:historical_context][:recent_profile_history]).first(2)
+        data[:historical_context][:recent_story_patterns] = Array(data[:historical_context][:recent_story_patterns]).first(2)
+        data[:historical_context][:recent_comments] = Array(data[:historical_context][:recent_comments]).first(2)
+        data[:historical_context][:summary] = truncate_text(data[:historical_context][:summary], max: 120)
+      end
+      if data[:scored_context].is_a?(Hash)
+        data[:scored_context][:prioritized_signals] = Array(data[:scored_context][:prioritized_signals]).first(4)
+      end
+      if data[:current_story].is_a?(Hash)
+        data[:current_story][:visual_anchors] = Array(data[:current_story][:visual_anchors]).first(6)
+        data[:current_story][:topics] = Array(data[:current_story][:topics]).first(4)
+        data[:current_story][:image_description] = truncate_text(data[:current_story][:image_description], max: 120)
+      end
+      return data if prompt_context_within_budget?(data)
+
+      data[:conversational_voice] = {}
+      data[:historical_context][:comparison] = {} if data[:historical_context].is_a?(Hash)
+      data
+    rescue StandardError
+      payload
+    end
+
+    def prompt_context_within_budget?(payload)
+      JSON.generate(payload).length <= MAX_CONTEXT_JSON_CHARS
+    rescue StandardError
+      true
+    end
+
+    def deep_clone_json(value)
+      JSON.parse(JSON.generate(value), symbolize_names: true)
+    rescue StandardError
+      value
     end
 
     def compact_local_story_intelligence(payload)
@@ -556,18 +638,18 @@ module Ai
         source: data[:source] || data["source"],
         reason: data[:reason] || data["reason"],
         signal_score: (data[:signal_score] || data["signal_score"]).to_i,
-        ocr_text: truncate_text(data[:ocr_text] || data["ocr_text"], max: 320),
-        transcript: truncate_text(data[:transcript] || data["transcript"], max: 320),
-        objects: Array(data[:objects] || data["objects"]).map(&:to_s).reject(&:blank?).first(15),
+        ocr_text: truncate_text(data[:ocr_text] || data["ocr_text"], max: 180),
+        transcript: truncate_text(data[:transcript] || data["transcript"], max: 180),
+        objects: Array(data[:objects] || data["objects"]).map(&:to_s).reject(&:blank?).first(10),
         object_detections: compact_object_detections(data[:object_detections] || data["object_detections"]),
         scenes: compact_scenes(data[:scenes] || data["scenes"]),
-        hashtags: Array(data[:hashtags] || data["hashtags"]).map(&:to_s).reject(&:blank?).first(15),
-        mentions: Array(data[:mentions] || data["mentions"]).map(&:to_s).reject(&:blank?).first(15),
-        profile_handles: Array(data[:profile_handles] || data["profile_handles"]).map(&:to_s).reject(&:blank?).first(15),
-        detected_usernames: Array(data[:detected_usernames] || data["detected_usernames"]).map(&:to_s).reject(&:blank?).first(15),
-        source_profile_references: Array(data[:source_profile_references] || data["source_profile_references"]).map(&:to_s).reject(&:blank?).first(15),
+        hashtags: Array(data[:hashtags] || data["hashtags"]).map(&:to_s).reject(&:blank?).first(8),
+        mentions: Array(data[:mentions] || data["mentions"]).map(&:to_s).reject(&:blank?).first(8),
+        profile_handles: Array(data[:profile_handles] || data["profile_handles"]).map(&:to_s).reject(&:blank?).first(8),
+        detected_usernames: Array(data[:detected_usernames] || data["detected_usernames"]).map(&:to_s).reject(&:blank?).first(8),
+        source_profile_references: Array(data[:source_profile_references] || data["source_profile_references"]).map(&:to_s).reject(&:blank?).first(8),
         share_status: (data[:share_status] || data["share_status"]).to_s.presence,
-        meme_markers: Array(data[:meme_markers] || data["meme_markers"]).map(&:to_s).reject(&:blank?).first(10),
+        meme_markers: Array(data[:meme_markers] || data["meme_markers"]).map(&:to_s).reject(&:blank?).first(6),
         face_count: (data[:face_count] || data["face_count"]).to_i,
         faces: compact_faces_payload(data[:faces] || data["faces"]),
         identity_verification: compact_identity_verification(data[:identity_verification] || data["identity_verification"])
@@ -629,19 +711,19 @@ module Ai
     end
 
     def compact_verified_profile_history(rows)
-      Array(rows).first(10).map do |row|
+      Array(rows).first(4).map do |row|
         data = row.is_a?(Hash) ? row : {}
         {
           shortcode: data[:shortcode] || data["shortcode"],
           taken_at: data[:taken_at] || data["taken_at"],
-          topics: Array(data[:topics] || data["topics"]).first(6),
-          objects: Array(data[:objects] || data["objects"]).first(6),
-          hashtags: Array(data[:hashtags] || data["hashtags"]).first(6),
-          mentions: Array(data[:mentions] || data["mentions"]).first(6),
+          topics: Array(data[:topics] || data["topics"]).first(4),
+          objects: Array(data[:objects] || data["objects"]).first(4),
+          hashtags: Array(data[:hashtags] || data["hashtags"]).first(4),
+          mentions: Array(data[:mentions] || data["mentions"]).first(4),
           face_count: (data[:face_count] || data["face_count"]).to_i,
           primary_face_count: (data[:primary_face_count] || data["primary_face_count"]).to_i,
           secondary_face_count: (data[:secondary_face_count] || data["secondary_face_count"]).to_i,
-          image_description: truncate_text(data[:image_description] || data["image_description"], max: 180)
+          image_description: truncate_text(data[:image_description] || data["image_description"], max: 120)
         }
       end
     end
@@ -650,52 +732,74 @@ module Ai
       data = payload.is_a?(Hash) ? payload : {}
       {
         author_type: data[:author_type] || data["author_type"],
-        profile_tags: Array(data[:profile_tags] || data["profile_tags"]).first(10),
-        bio_keywords: Array(data[:bio_keywords] || data["bio_keywords"]).first(10),
-        recurring_topics: Array(data[:recurring_topics] || data["recurring_topics"]).first(12),
-        recurring_hashtags: Array(data[:recurring_hashtags] || data["recurring_hashtags"]).first(10),
-        frequent_people_labels: Array(data[:frequent_people_labels] || data["frequent_people_labels"]).first(8),
-        prior_comment_examples: Array(data[:prior_comment_examples] || data["prior_comment_examples"]).map { |value| truncate_text(value, max: 100) }.first(6)
+        profile_tags: Array(data[:profile_tags] || data["profile_tags"]).first(6),
+        bio_keywords: Array(data[:bio_keywords] || data["bio_keywords"]).first(6),
+        recurring_topics: Array(data[:recurring_topics] || data["recurring_topics"]).first(8),
+        recurring_hashtags: Array(data[:recurring_hashtags] || data["recurring_hashtags"]).first(6),
+        frequent_people_labels: Array(data[:frequent_people_labels] || data["frequent_people_labels"]).first(4),
+        prior_comment_examples: Array(data[:prior_comment_examples] || data["prior_comment_examples"]).map { |value| truncate_text(value, max: 80) }.first(3)
       }.compact
     end
 
     def compact_scored_context(payload)
       data = payload.is_a?(Hash) ? payload : {}
       {
-        prioritized_signals: Array(data[:prioritized_signals] || data["prioritized_signals"]).first(12).map do |row|
+        prioritized_signals: Array(data[:prioritized_signals] || data["prioritized_signals"]).first(6).map do |row|
           next unless row.is_a?(Hash)
 
           {
-            value: (row[:value] || row["value"]).to_s,
+            value: truncate_text((row[:value] || row["value"]).to_s, max: 56),
             signal_type: (row[:signal_type] || row["signal_type"]).to_s,
             source: (row[:source] || row["source"]).to_s,
             score: (row[:score] || row["score"]).to_f.round(3)
           }
         end.compact,
-        style_profile: (data[:style_profile] || data["style_profile"]).is_a?(Hash) ? (data[:style_profile] || data["style_profile"]) : {},
-        engagement_memory: (data[:engagement_memory] || data["engagement_memory"]).is_a?(Hash) ? (data[:engagement_memory] || data["engagement_memory"]) : {},
-        context_keywords: Array(data[:context_keywords] || data["context_keywords"]).map(&:to_s).reject(&:blank?).first(24)
+        style_profile: compact_style_profile(data[:style_profile] || data["style_profile"]),
+        engagement_memory: compact_engagement_memory(data[:engagement_memory] || data["engagement_memory"]),
+        context_keywords: Array(data[:context_keywords] || data["context_keywords"]).map(&:to_s).reject(&:blank?).first(14)
       }
+    end
+
+    def compact_style_profile(payload)
+      data = payload.is_a?(Hash) ? payload : {}
+      {
+        tone: data[:tone] || data["tone"],
+        formality: data[:formality] || data["formality"],
+        punctuation_style: data[:punctuation_style] || data["punctuation_style"],
+        emoji_usage: data[:emoji_usage] || data["emoji_usage"],
+        avg_comment_length: data[:avg_comment_length] || data["avg_comment_length"]
+      }.compact
+    end
+
+    def compact_engagement_memory(payload)
+      data = payload.is_a?(Hash) ? payload : {}
+      {
+        relationship_familiarity: data[:relationship_familiarity] || data["relationship_familiarity"],
+        recent_openers: Array(data[:recent_openers] || data["recent_openers"]).map { |value| truncate_text(value, max: 42) }.first(6),
+        recent_generated_comments: Array(data[:recent_generated_comments] || data["recent_generated_comments"]).map { |value| truncate_text(value, max: 84) }.first(3),
+        recent_story_generated_comments: Array(data[:recent_story_generated_comments] || data["recent_story_generated_comments"]).map { |value| truncate_text(value, max: 84) }.first(3),
+        recurring_phrases: Array(data[:common_comment_phrases] || data["common_comment_phrases"]).map { |value| truncate_text(value, max: 40) }.first(6)
+      }.compact
     end
 
     def compact_historical_story_context(rows)
       cutoff = 45.days.ago
-      Array(rows).first(12).filter_map do |row|
+      Array(rows).first(8).filter_map do |row|
         data = row.is_a?(Hash) ? row : {}
         occurred_at = parse_time(data[:occurred_at] || data["occurred_at"])
         next if occurred_at && occurred_at < cutoff
 
         {
           occurred_at: occurred_at&.iso8601,
-          topics: Array(data[:topics] || data["topics"]).first(6),
-          objects: Array(data[:objects] || data["objects"]).first(6),
-          hashtags: Array(data[:hashtags] || data["hashtags"]).first(6),
-          mentions: Array(data[:mentions] || data["mentions"]).first(6),
-          profile_handles: Array(data[:profile_handles] || data["profile_handles"]).first(6),
-          recurring_people_ids: Array(data[:people] || data["people"]).map { |person| person.is_a?(Hash) ? (person[:person_id] || person["person_id"]) : nil }.compact.first(4),
+          topics: Array(data[:topics] || data["topics"]).first(4),
+          objects: Array(data[:objects] || data["objects"]).first(4),
+          hashtags: Array(data[:hashtags] || data["hashtags"]).first(4),
+          mentions: Array(data[:mentions] || data["mentions"]).first(4),
+          profile_handles: Array(data[:profile_handles] || data["profile_handles"]).first(4),
+          recurring_people_ids: Array(data[:people] || data["people"]).map { |person| person.is_a?(Hash) ? (person[:person_id] || person["person_id"]) : nil }.compact.first(3),
           face_count: (data[:face_count] || data["face_count"]).to_i
         }
-      end.first(6)
+      end.first(4)
     end
 
     def compact_author_profile(payload, author_type:)
@@ -735,11 +839,9 @@ module Ai
             person_id: r[:person_id] || r["person_id"],
             role: r[:role] || r["role"],
             label: r[:label] || r["label"],
-            similarity: (r[:similarity] || r["similarity"]).to_f,
-            age_range: r[:age_range] || r["age_range"],
-            gender: r[:gender] || r["gender"]
+            similarity: (r[:similarity] || r["similarity"]).to_f.round(3)
           }.compact
-        end.first(8)
+        end.first(4)
       }
     end
 
@@ -753,7 +855,7 @@ module Ai
           label: label.downcase,
           confidence: (data[:confidence] || data["confidence"] || data[:score] || data["score"]).to_f.round(3)
         }
-      end.uniq.first(8)
+      end.uniq.first(6)
     end
 
     def compact_scenes(rows)
@@ -766,7 +868,7 @@ module Ai
           type: scene_type.downcase,
           timestamp: (data[:timestamp] || data["timestamp"]).to_f.round(2)
         }
-      end.uniq.first(8)
+      end.uniq.first(5)
     end
 
     def parse_time(value)
@@ -817,7 +919,8 @@ module Ai
     end
 
     def build_light_question(topics:, image_description:, channel:)
-      anchor = Array(topics).map(&:to_s).find(&:present?) || extract_keywords_from_text(image_description.to_s).first
+      topic_anchors = Array(topics).map { |value| normalize_anchor(value) }.compact
+      anchor = topic_anchors.find { |value| !generic_object_anchor?(value) } || topic_anchors.first || extract_keywords_from_text(image_description.to_s).first
       return nil if anchor.blank?
 
       if Ai::CommentToneProfile.normalize(channel) == "story"
@@ -829,30 +932,347 @@ module Ai
 
     def build_visual_anchors(image_description:, topics:, verified_story_facts:, scored_context:)
       facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      prioritized_detections = prioritized_object_anchor_labels(facts)
+      suppress_generic_object_tokens = prioritized_detections.any? { |label| !generic_object_anchor?(label) }
       anchors = []
-      anchors.concat(Array(topics).map(&:to_s))
-      anchors.concat(Array(facts[:topics] || facts["topics"]).map(&:to_s))
-      anchors.concat(Array(facts[:objects] || facts["objects"]).map(&:to_s))
+      anchors.concat(prioritized_detections)
+      anchors.concat(filter_anchor_values(Array(topics), suppress_generic_object_tokens: suppress_generic_object_tokens))
+      anchors.concat(filter_anchor_values(Array(facts[:topics] || facts["topics"]), suppress_generic_object_tokens: suppress_generic_object_tokens))
+      anchors.concat(filter_anchor_values(Array(facts[:objects] || facts["objects"]), suppress_generic_object_tokens: suppress_generic_object_tokens))
       anchors.concat(Array(facts[:hashtags] || facts["hashtags"]).map(&:to_s))
       anchors.concat(Array(facts[:mentions] || facts["mentions"]).map(&:to_s))
       anchors.concat(Array(facts[:profile_handles] || facts["profile_handles"]).map(&:to_s))
-      anchors.concat(
-        Array(facts[:object_detections] || facts["object_detections"]).map do |row|
-          row.is_a?(Hash) ? (row[:label] || row["label"]).to_s : ""
-        end
-      )
-      anchors.concat(
+      anchors.concat(filter_anchor_values(
         Array(scored_context[:prioritized_signals] || scored_context["prioritized_signals"]).map do |row|
           row.is_a?(Hash) ? (row[:value] || row["value"]).to_s : row.to_s
-        end
-      )
-      anchors.concat(extract_keywords_from_text(image_description.to_s))
+        end,
+        suppress_generic_object_tokens: suppress_generic_object_tokens
+      ))
+      anchors.concat(filter_anchor_values(
+        extract_keywords_from_text(image_description.to_s),
+        suppress_generic_object_tokens: suppress_generic_object_tokens
+      ))
 
       anchors
         .map { |value| normalize_anchor(value) }
         .reject(&:blank?)
         .uniq
         .first(18)
+    end
+
+    def prioritized_object_anchor_labels(facts)
+      rows = Array(facts[:object_detections] || facts["object_detections"]).filter_map do |row|
+        next unless row.is_a?(Hash)
+        label = normalize_anchor(row[:label] || row["label"])
+        next if label.blank?
+        confidence = (row[:confidence] || row["confidence"] || row[:score] || row["score"]).to_f.clamp(0.0, 1.0)
+        next if confidence < MIN_DETECTION_ANCHOR_CONFIDENCE
+
+        { label: label, confidence: confidence }
+      end
+      return [] if rows.empty?
+
+      rows.sort_by! { |row| -row[:confidence] }
+      strong_specific_detected = rows.any? do |row|
+        row[:confidence] >= STRONG_DETECTION_ANCHOR_CONFIDENCE && !generic_object_anchor?(row[:label])
+      end
+
+      rows
+        .filter_map do |row|
+          next if strong_specific_detected && generic_object_anchor?(row[:label])
+          next if generic_object_anchor?(row[:label]) && row[:confidence] < STRONG_DETECTION_ANCHOR_CONFIDENCE
+
+          row[:label]
+        end
+        .uniq
+        .first(10)
+    end
+
+    def filter_anchor_values(values, suppress_generic_object_tokens:)
+      Array(values).filter_map do |value|
+        anchor = normalize_anchor(value)
+        next if anchor.blank?
+        next if suppress_generic_object_tokens && generic_object_anchor?(anchor)
+
+        anchor
+      end
+    end
+
+    def classify_story_content_mode(image_description:, topics:, verified_story_facts:)
+      facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      corpus_tokens = story_corpus_tokens(image_description: image_description, topics: topics, verified_story_facts: facts)
+      ocr_text = (facts[:ocr_text] || facts["ocr_text"]).to_s
+      ocr_tokens = tokenize_text(ocr_text)
+      face_count = extract_face_count(facts)
+
+      return "text_heavy" if text_heavy_story?(ocr_text: ocr_text, ocr_tokens: ocr_tokens, corpus_tokens: corpus_tokens)
+      return "sports" if overlap_count(corpus_tokens, STORY_MODE_HINTS["sports"]) >= 2
+      return "food" if overlap_count(corpus_tokens, STORY_MODE_HINTS["food"]) >= 2
+      return "repost_meme" if overlap_count(corpus_tokens, STORY_MODE_HINTS["repost_meme"]) >= 2
+      return "group" if face_count >= 3 || overlap_count(corpus_tokens, STORY_MODE_HINTS["group"]) >= 2
+      return "portrait" if face_count.positive? || corpus_tokens.include?("portrait") || corpus_tokens.include?("selfie")
+
+      "general"
+    end
+
+    def select_fallback_anchor(anchors:, mode:, image_description:, verified_story_facts:)
+      specific_anchor = Array(anchors).find { |value| !generic_object_anchor?(value) }
+      return specific_anchor if specific_anchor.present?
+
+      facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      ocr_tokens = tokenize_text((facts[:ocr_text] || facts["ocr_text"]).to_s)
+      ocr_anchor = ocr_tokens.reject { |token| token.length < 4 }.first(3).join(" ")
+      return ocr_anchor if mode == "text_heavy" && ocr_anchor.present?
+
+      case mode
+      when "sports" then "match moment"
+      when "group" then "group shot"
+      when "food" then "food setup"
+      when "portrait" then "portrait"
+      when "repost_meme" then "story mood"
+      when "text_heavy" then "message"
+      else
+        normalize_anchor(extract_keywords_from_text(image_description.to_s).first) || "frame"
+      end
+    end
+
+    def text_heavy_fallback_comments(anchor:, channel:)
+      base = anchor.to_s.presence || "message"
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "The #{base} lands clearly in this story frame.",
+          "Strong text-first layout and clear message here.",
+          "That #{base} detail grabs attention right away.",
+          "Clean promo-style visual with a clear focal point.",
+          "Nice balance between text and visual structure.",
+          "What inspired this #{base}-focused story?",
+          "The wording and layout feel very deliberate.",
+          "This frame communicates the point quickly."
+        ]
+      else
+        [
+          "The #{base} is clear and easy to read.",
+          "Strong text-forward composition in this post.",
+          "The key line and layout work really well together.",
+          "Clean visual hierarchy and readable message.",
+          "This #{base} detail stands out nicely.",
+          "What was the core message you wanted to highlight?",
+          "Simple, direct, and visually clear.",
+          "The typography focus is handled well here."
+        ]
+      end
+    end
+
+    def sports_fallback_comments(anchor:, channel:)
+      base = anchor.to_s.presence || "action moment"
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "Great timing on this #{base} frame.",
+          "That #{base} capture has real game-day energy.",
+          "Strong action shot with solid intensity.",
+          "This frame freezes the pace of the moment perfectly.",
+          "Love the movement and focus in this sports shot.",
+          "What part of the match stood out most here?",
+          "Big competitive energy in this story frame.",
+          "The #{base} detail looks sharp."
+        ]
+      else
+        [
+          "Great timing on this #{base} shot.",
+          "Strong sports moment captured here.",
+          "Love the action and crowd energy in this frame.",
+          "This shot holds the movement really well.",
+          "The #{base} focus makes this post stand out.",
+          "Which part of the game was this from?",
+          "Clean action capture with great intensity.",
+          "The pace and framing work really well together."
+        ]
+      end
+    end
+
+    def group_fallback_comments(anchor:, channel:)
+      base = anchor.to_s.presence || "group moment"
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "Great group frame with warm energy.",
+          "Love the way this #{base} came together.",
+          "Strong group composition and background context.",
+          "This story captures a real together moment.",
+          "Nice balance across everyone in the frame.",
+          "Where was this #{base} taken?",
+          "The group vibe here feels very genuine.",
+          "Clean and memorable #{base} shot."
+        ]
+      else
+        [
+          "Great group photo with strong presence.",
+          "This #{base} feels natural and well framed.",
+          "Nice group balance and clear setting details.",
+          "The collective energy in this frame stands out.",
+          "Solid composition across everyone in the shot.",
+          "What was the occasion behind this #{base}?",
+          "Warm, candid group moment here.",
+          "The framing keeps the whole group in focus."
+        ]
+      end
+    end
+
+    def food_fallback_comments(anchor:, channel:)
+      base = anchor.to_s.presence || "food setup"
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "This #{base} looks really inviting.",
+          "Great food frame with clean table detail.",
+          "Love the way the #{base} is presented here.",
+          "The composition makes this meal moment pop.",
+          "Nice mix of detail and color in this shot.",
+          "What was your favorite part of this #{base}?",
+          "This story has a solid food vibe.",
+          "The #{base} focus works really well."
+        ]
+      else
+        [
+          "This #{base} looks great.",
+          "Clean food composition with nice detail.",
+          "Love the plating and framing in this shot.",
+          "The table setup gives this post character.",
+          "Strong visual balance in this food frame.",
+          "What dish are we looking at here?",
+          "Great capture of this meal moment.",
+          "The #{base} detail stands out nicely."
+        ]
+      end
+    end
+
+    def portrait_fallback_comments(anchor:, channel:)
+      base = anchor.to_s.presence || "portrait"
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "Strong #{base} frame here.",
+          "Love the styling and focus in this shot.",
+          "The #{base} detail feels intentional and clean.",
+          "This portrait-style frame has great presence.",
+          "Nice visual balance and expression here.",
+          "What inspired this #{base} look?",
+          "The framing keeps the focus exactly where it should be.",
+          "This #{base} shot stands out."
+        ]
+      else
+        [
+          "Strong #{base} shot.",
+          "The styling and framing work really well together.",
+          "Clean portrait capture with good focus.",
+          "The #{base} detail gives this post character.",
+          "Nice expression and composition in this frame.",
+          "What was the idea behind this #{base} setup?",
+          "The visual tone feels very intentional.",
+          "This portrait has a solid presence."
+        ]
+      end
+    end
+
+    def repost_fallback_comments(anchor:, channel:)
+      base = anchor.to_s.presence || "story mood"
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "This repost-style frame carries a clear #{base}.",
+          "Strong mood-driven story composition here.",
+          "The text and visual blend set the tone well.",
+          "This frame communicates a distinct feeling.",
+          "The #{base} comes through clearly in this story.",
+          "What made you share this #{base} frame?",
+          "Nice balance of mood and visual texture.",
+          "The overall tone of this story stands out."
+        ]
+      else
+        [
+          "This repost-style frame has a clear #{base}.",
+          "Strong mood-forward composition in this post.",
+          "The visual tone is consistent and intentional.",
+          "This frame communicates the vibe clearly.",
+          "Nice blend of message and atmosphere here.",
+          "What drew you to share this #{base}?",
+          "The mood-first structure works well.",
+          "Distinct tone and styling in this frame."
+        ]
+      end
+    end
+
+    def generic_fallback_comments(anchor:, channel:)
+      base = anchor.to_s.presence || "frame"
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "The #{base} focus works well here.",
+          "Love how this #{base} is framed.",
+          "Strong detail and clean composition on this one.",
+          "This #{base} shot feels natural.",
+          "Great capture with a clear focal point.",
+          "What made you choose this #{base} moment?",
+          "Nice visual balance in this story frame.",
+          "The #{base} adds a strong touch."
+        ]
+      else
+        [
+          "Great focus on the #{base}.",
+          "The #{base} detail lands well.",
+          "Clean composition with a clear focal point.",
+          "The framing around this #{base} works nicely.",
+          "This #{base} gives the post character.",
+          "What inspired this #{base} setup?",
+          "Strong visual balance in this frame.",
+          "The #{base} detail stands out."
+        ]
+      end
+    end
+
+    def text_heavy_story?(ocr_text:, ocr_tokens:, corpus_tokens:)
+      has_layout_keywords = overlap_count(corpus_tokens, STORY_MODE_HINTS["text_heavy"]) >= 2
+      has_percentage_or_rate = ocr_text.to_s.match?(/\b\d{1,3}(?:\.\d+)?%|\bapr\b|\brate\b/i)
+      ocr_tokens.length >= 6 || has_layout_keywords || has_percentage_or_rate
+    end
+
+    def story_corpus_tokens(image_description:, topics:, verified_story_facts:)
+      facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      tokens = []
+      tokens.concat(tokenize_text(image_description))
+      tokens.concat(Array(topics).flat_map { |row| tokenize_text(row) })
+      tokens.concat(Array(facts[:topics] || facts["topics"]).flat_map { |row| tokenize_text(row) })
+      tokens.concat(Array(facts[:objects] || facts["objects"]).flat_map { |row| tokenize_text(row) })
+      tokens.concat(Array(facts[:hashtags] || facts["hashtags"]).flat_map { |row| tokenize_text(row) })
+      tokens.concat(Array(facts[:mentions] || facts["mentions"]).flat_map { |row| tokenize_text(row) })
+      tokens.concat(
+        Array(facts[:scenes] || facts["scenes"]).flat_map do |row|
+          row.is_a?(Hash) ? tokenize_text(row[:type] || row["type"]) : tokenize_text(row)
+        end
+      )
+      tokens.concat(tokenize_text(facts[:ocr_text] || facts["ocr_text"]))
+      tokens.uniq
+    end
+
+    def extract_face_count(verified_story_facts)
+      facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      count = (facts[:face_count] || facts["face_count"]).to_i
+      return count if count.positive?
+
+      faces = facts[:faces].is_a?(Hash) ? facts[:faces] : (facts["faces"].is_a?(Hash) ? facts["faces"] : {})
+      (faces[:total_count] || faces["total_count"]).to_i
+    end
+
+    def overlap_count(tokens, hint_tokens)
+      token_rows = Array(tokens).map(&:to_s)
+      hints = Array(hint_tokens).map(&:to_s)
+      (token_rows & hints).size
+    end
+
+    def tokenize_text(value)
+      value.to_s.downcase.scan(/[a-z0-9_]+/).reject { |token| token.length < 3 }.uniq
+    end
+
+    def generic_object_anchor?(value)
+      tokens = value.to_s.downcase.scan(/[a-z0-9_]+/)
+      return false if tokens.empty?
+
+      tokens.all? { |token| GENERIC_OBJECT_ANCHORS.include?(token) }
     end
 
     def normalize_anchor(value)

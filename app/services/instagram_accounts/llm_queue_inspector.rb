@@ -1,12 +1,13 @@
 module InstagramAccounts
   class LlmQueueInspector
     STALE_AFTER = 5.minutes
+    LLM_QUEUE_NAME = Ops::AiServiceQueueRegistry.queue_name_for(:llm_comment_generation).to_s.presence || "ai_llm_comment_queue"
 
     def queue_size
       return 0 unless sidekiq_adapter?
 
       require "sidekiq/api"
-      Sidekiq::Queue.new("ai").size.to_i
+      Sidekiq::Queue.new(LLM_QUEUE_NAME).size.to_i
     rescue StandardError
       0
     end
@@ -44,9 +45,11 @@ module InstagramAccounts
     end
 
     def queued?(job_id:, event_marker:)
-      Sidekiq::Queue.new("ai").any? do |job|
-        payload = job.item.to_s
-        payload.include?(job_id) || payload.include?(event_marker)
+      tracked_queue_names.any? do |queue_name|
+        Sidekiq::Queue.new(queue_name).any? do |job|
+          payload = job.item.to_s
+          payload.include?(job_id) || payload.include?(event_marker)
+        end
       end
     end
 
@@ -62,6 +65,13 @@ module InstagramAccounts
         payload = job.item.to_s
         payload.include?(job_id) || payload.include?(event_marker)
       end
+    end
+
+    def tracked_queue_names
+      @tracked_queue_names ||= [
+        Ops::AiServiceQueueRegistry.queue_name_for(:llm_comment_generation),
+        Ops::AiServiceQueueRegistry.queue_name_for(:pipeline_orchestration)
+      ].map(&:to_s).reject(&:blank?).uniq
     end
   end
 end

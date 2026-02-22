@@ -25,7 +25,8 @@ RSpec.describe Pipeline::AccountProcessingCoordinator do
       instagram_account_id: account.id,
       rounds: 3,
       delay_seconds: 20,
-      max_new: 15
+      max_new: 15,
+      trigger_source: "scheduler"
     ).and_return(JobResult.new("job-feed", "engagements"))
 
     allow(EnqueueRecentProfilePostScansForAccountJob).to receive(:perform_later).with(

@@ -10,25 +10,35 @@
       <% if current_account %>
         <%= link_to "Account Dashboard", instagram_account_path(current_account), class: "btn secondary" %>
       <% end %>
-      <%= link_to "Profiles", instagram_profiles_path, class: "btn secondary" %>
     </div>
   </header>
 
   <section class="card">
     <h2>Capture</h2>
     <p class="meta">Queues a short capture run that scrolls periodically and records visible posts (no auto-like/comment).</p>
+    <% capture_locked = feed_capture_enqueue_locked?(account: @account) %>
+    <% next_allowed_at = feed_capture_next_allowed_at(account: @account) %>
 
     <div class="actions-row">
-      <%= button_to "Capture Feed (Background)", feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20), method: :post %>
-      <% if current_account %>
-        <%= link_to "Account Dashboard", instagram_account_path(current_account), class: "btn secondary" %>
-      <% end %>
+      <%= button_to(capture_locked ? "Capture Feed (Queued)" : "Capture Feed (Background)",
+            feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20),
+            method: :post,
+            disabled: capture_locked,
+            form: { data: { turbo_submits_with: "Queueing..." } }) %>
     </div>
+    <p class="meta">
+      <% if capture_locked && next_allowed_at.present? %>
+        Feed capture is already queued/running. Next manual trigger is available <strong><%= relative_time_with_tooltip(next_allowed_at) %></strong>.
+      <% else %>
+        Manual capture is ready. Autonomous capture is handled by the continuous-processing scheduler.
+      <% end %>
+    </p>
   </section>
+
+  <%= render "instagram_accounts/feed_capture_activity_section", account: @account, feed_capture_activity_entries: @feed_capture_activity_entries %>
 
   <section class="card">
     <h2>Posts Data Table</h2>
-    <p class="meta">Use header filters/sorting. Shift + wheel scrolls horizontally, and click-drag pans vertically/horizontally.</p>
 
     <div
       class="tabulator-shell"
@@ -36,6 +46,7 @@
       data-posts-table-url-value="<%= instagram_posts_path(format: :json) %>"
       data-posts-table-account-id-value="<%= current_account&.id.to_i %>"
     >
+      <%= render "shared/table_meta_bar" %>
       <div class="tabulator-host" data-posts-table-target="table"></div>
     </div>
   </section>

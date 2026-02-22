@@ -107,11 +107,23 @@
             </td>
             <td>
               <% if suggestions.any? %>
-                <ol class="compact-numbered-list tight">
-                  <% suggestions.each do |text| %>
-                    <li class="meta"><%= text %></li>
-                  <% end %>
-                </ol>
+                <p class="meta compact-meta-top"><strong><%= suggestions.size %></strong> suggestions ready</p>
+                <details class="details-box workspace-suggestions-details">
+                  <summary>View and post</summary>
+                  <ol class="compact-numbered-list tight">
+                    <% suggestions.each_with_index do |text, idx| %>
+                      <li class="meta">
+                        <span><%= text %></span>
+                        <span class="workspace-suggestion-actions">
+                          <%= button_to "Post ##{idx + 1}",
+                                forward_comment_instagram_profile_instagram_profile_post_path(profile, post, comment: text),
+                                method: :post,
+                                class: "btn small secondary" %>
+                        </span>
+                      </li>
+                    <% end %>
+                  </ol>
+                </details>
               <% else %>
                 <span class="meta">Suggestions pending</span>
               <% end %>
@@ -121,29 +133,21 @@
               <p class="meta compact-meta-top"><%= item[:processing_message].to_s.presence || "Queued for background processing." %></p>
             </td>
             <td class="table-actions">
-              <% if suggestions.any? %>
-                <% suggestions.each_with_index do |text, idx| %>
-                  <%= button_to "Post ##{idx + 1}",
-                        forward_comment_instagram_profile_instagram_profile_post_path(profile, post, comment: text),
-                        method: :post,
-                        class: "btn small secondary" %>
-                <% end %>
-              <% else %>
-                <%= button_to "Regenerate",
-                      analyze_instagram_profile_instagram_profile_post_path(profile, post),
-                      method: :post,
-                      params: {
-                        analyze_visual: false,
-                        analyze_faces: false,
-                        run_ocr: false,
-                        run_video: false,
-                        run_metadata: true,
-                        generate_comments: true,
-                        enforce_comment_evidence_policy: false,
-                        retry_on_incomplete_profile: false
-                      },
-                      class: "btn small secondary" %>
-              <% end %>
+              <%= link_to "Profile", instagram_profile_path(profile), class: "btn small secondary" %>
+              <%= button_to "Regenerate",
+                    analyze_instagram_profile_instagram_profile_post_path(profile, post),
+                    method: :post,
+                    params: {
+                      analyze_visual: false,
+                      analyze_faces: false,
+                      run_ocr: false,
+                      run_video: false,
+                      run_metadata: true,
+                      generate_comments: true,
+                      enforce_comment_evidence_policy: false,
+                      retry_on_incomplete_profile: false
+                    },
+                    class: "btn small secondary" %>
             </td>
           </tr>
         <% end %>

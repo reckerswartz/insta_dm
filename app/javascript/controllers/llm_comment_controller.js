@@ -10,8 +10,12 @@ export default class extends Controller {
     this.subscription = null
     this.wsConnected = false
     this.pendingEventIds = new Set()
+    this.statusPollingActive = new Set()
     this.statusPollers = new Map()
+    this.statusPollCadenceMs = new Map()
     this.statusPollFailures = new Map()
+    this.statusPollInFlight = new Map()
+    this.statusPollLastRealtimeAt = new Map()
     this.ensureSubscription()
   }
 
@@ -67,6 +71,10 @@ export default class extends Controller {
           },
           disconnected: () => {
             this.wsConnected = false
+            this.statusPollingActive.forEach((eventId) => {
+              this.statusPollCadenceMs.set(String(eventId), 3000)
+              this.scheduleStatusPoll(String(eventId), 1200)
+            })
           },
           rejected: () => {
             this.wsConnected = false
@@ -187,6 +195,7 @@ export default class extends Controller {
   handleReceived(data) {
     const eventId = String(data?.event_id || "")
     if (!eventId) return
+    this.recordRealtimeUpdate(eventId)
 
     const status = String(data?.status || "").toLowerCase()
     switch (status) {
@@ -510,6 +519,7 @@ export default class extends Controller {
   defaultQueuedStages() {
     return {
       queue_wait: { label: "Queue Wait", state: "queued", progress: 0, order: 5 },
+      parallel_services: { label: "Parallel Stage Jobs", state: "pending", progress: 0, order: 10 },
       ocr_analysis: { label: "OCR Analysis", state: "pending", progress: 0, order: 20 },
       vision_detection: { label: "Video/Image Analysis", state: "pending", progress: 0, order: 24 },
       face_recognition: { label: "Face Recognition", state: "pending", progress: 0, order: 28 },
@@ -534,40 +544,118 @@ export default class extends Controller {
 
   startStatusPolling(eventId) {
     const key = String(eventId)
-    if (this.statusPollers.has(key)) return
+    if (this.statusPollingActive.has(key)) return
 
-    const timer = window.setInterval(async () => {
+    this.statusPollingActive.add(key)
+    this.statusPollFailures.set(key, 0)
+    this.statusPollCadenceMs.set(key, this.wsConnected ? 9000 : 3000)
+    this.scheduleStatusPoll(key, this.statusPollCadenceMs.get(key))
+  }
+
+  scheduleStatusPoll(eventId, delayMs) {
+    const key = String(eventId)
+    if (!this.statusPollingActive.has(key)) return
+
+    const existing = this.statusPollers.get(key)
+    if (existing) {
+      clearTimeout(existing)
+      this.statusPollers.delete(key)
+    }
+
+    const timeoutMs = Number.isFinite(Number(delayMs)) ? Math.max(1000, Math.round(Number(delayMs))) : 3000
+    const timer = window.setTimeout(async () => {
+      this.statusPollers.delete(key)
+      if (!this.statusPollingActive.has(key)) return
+
+      if (this.shouldDeferPollForRealtime(key)) {
+        this.scheduleStatusPoll(key, this.nextPollDelayMs(key, { realtimeDeferral: true }))
+        return
+      }
+
+      if (this.statusPollInFlight.get(key)) {
+        this.scheduleStatusPoll(key, this.nextPollDelayMs(key, { realtimeDeferral: true }))
+        return
+      }
+
+      this.statusPollInFlight.set(key, true)
       try {
         const result = await this.callGenerateCommentStatusApi(key)
         this.statusPollFailures.set(key, 0)
         this.processImmediateResult(key, result)
+        if (this.statusPollingActive.has(key)) {
+          this.scheduleStatusPoll(key, this.nextPollDelayMs(key, { status: result?.status }))
+        }
       } catch (error) {
         const failures = Number(this.statusPollFailures.get(key) || 0) + 1
         this.statusPollFailures.set(key, failures)
         if (failures >= 4) {
           this.stopStatusPolling(key)
           notifyApp("Unable to verify comment generation status. Please refresh the archive.", "error")
+        } else if (this.statusPollingActive.has(key)) {
+          this.scheduleStatusPoll(key, this.nextPollDelayMs(key, { failed: true }))
         }
+      } finally {
+        this.statusPollInFlight.set(key, false)
       }
-    }, 3000)
+    }, timeoutMs)
 
     this.statusPollers.set(key, timer)
   }
 
+  shouldDeferPollForRealtime(eventId) {
+    if (!this.wsConnected) return false
+    const lastUpdateAt = Number(this.statusPollLastRealtimeAt.get(String(eventId)) || 0)
+    if (!Number.isFinite(lastUpdateAt) || lastUpdateAt <= 0) return false
+    return Date.now() - lastUpdateAt < 12000
+  }
+
+  nextPollDelayMs(eventId, { status = "", failed = false, realtimeDeferral = false } = {}) {
+    const key = String(eventId)
+    const normalizedStatus = String(status || "").toLowerCase()
+    const current = Number(this.statusPollCadenceMs.get(key) || (this.wsConnected ? 9000 : 3000))
+    let nextDelay = current
+
+    if (failed) {
+      nextDelay = Math.min(Math.round(current * 1.7), 30000)
+    } else if (realtimeDeferral) {
+      nextDelay = Math.min(Math.round(Math.max(current, 7000) * 1.25), 30000)
+    } else if (this.wsConnected) {
+      const floor = normalizedStatus === "queued" ? 9000 : 11000
+      nextDelay = Math.min(Math.max(current, floor) + 1500, 30000)
+    } else {
+      nextDelay = Math.min(Math.round(Math.max(current, 3000) * 1.35), 15000)
+    }
+
+    this.statusPollCadenceMs.set(key, nextDelay)
+    return nextDelay
+  }
+
+  recordRealtimeUpdate(eventId) {
+    this.statusPollLastRealtimeAt.set(String(eventId), Date.now())
+  }
+
   stopStatusPolling(eventId) {
     const key = String(eventId)
+    this.statusPollingActive.delete(key)
     const timer = this.statusPollers.get(key)
     if (timer) {
-      clearInterval(timer)
+      clearTimeout(timer)
       this.statusPollers.delete(key)
     }
+    this.statusPollCadenceMs.delete(key)
     this.statusPollFailures.delete(key)
+    this.statusPollInFlight.delete(key)
+    this.statusPollLastRealtimeAt.delete(key)
   }
 
   clearStatusPollers() {
-    this.statusPollers.forEach((timer) => clearInterval(timer))
+    this.statusPollers.forEach((timer) => clearTimeout(timer))
+    this.statusPollingActive.clear()
     this.statusPollers.clear()
+    this.statusPollCadenceMs.clear()
     this.statusPollFailures.clear()
+    this.statusPollInFlight.clear()
+    this.statusPollLastRealtimeAt.clear()
   }
 
   updateButtonsForEvent(eventId, state) {

@@ -59,7 +59,7 @@ module Instagram
         text = comment_text.to_s.strip
         return { posted: false, method: "api", reason: "blank_comment_text" } if text.blank?
 
-        sid = story_id.to_s.strip.gsub(/[^0-9]/, "")
+        sid = normalize_story_id_token(story_id)
         return { posted: false, method: "api", reason: "missing_story_id" } if sid.blank?
 
         username = normalize_username(story_username)

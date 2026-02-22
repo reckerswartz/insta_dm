@@ -20,6 +20,7 @@ export default class extends Controller {
     this.tableEl = this.element.querySelector("[data-issues-table-target='table']")
 
     if (!this.tableEl) return
+    this.ensureDetailsModal()
 
     const options = tabulatorBaseOptions({
       url: this.urlValue,
@@ -112,26 +113,31 @@ export default class extends Controller {
           },
         },
         {
-          title: "Details",
+          title: "Summary",
           field: "details",
           headerSort: false,
-          minWidth: 420,
-          width: 520,
-          formatter: (cell) => `<span class="meta">${escapeHtml(cell.getValue() || "")}</span>`,
+          minWidth: 260,
+          width: 320,
+          formatter: (cell) => {
+            const value = String(cell.getValue() || "")
+            const preview = value.length > 110 ? `${value.slice(0, 110)}...` : value
+            return `<span class="meta">${escapeHtml(preview || "-")}</span>`
+          },
         },
         {
           title: "Actions",
           field: "id",
           headerSort: false,
           download: false,
-          minWidth: 420,
-          width: 450,
+          minWidth: 460,
+          width: 500,
           formatter: (cell) => {
             const row = cell.getRow().getData()
             const status = row.status || "open"
 
             return `
               <div class="table-actions no-wrap">
+                <button class="btn small secondary" data-action="issues-table#openDetails" data-id="${escapeHtml(row.id)}">Details</button>
                 <button class="${status === "open" ? "btn small" : "btn small secondary"}" data-action="issues-table#setStatus" data-url="${escapeHtml(row.update_url)}" data-status="open">Open</button>
                 <button class="${status === "pending" ? "btn small" : "btn small secondary"}" data-action="issues-table#setStatus" data-url="${escapeHtml(row.update_url)}" data-status="pending">Pending</button>
                 <button class="${status === "resolved" ? "btn small" : "btn small secondary"}" data-action="issues-table#setStatus" data-url="${escapeHtml(row.update_url)}" data-status="resolved">Resolve</button>
@@ -162,6 +168,38 @@ export default class extends Controller {
       this.table.destroy()
       this.table = null
     }
+
+    if (this.detailsModalEl) {
+      this.detailsModalInstance?.dispose?.()
+      this.detailsModalInstance = null
+      this.detailsModalEl.remove()
+      this.detailsModalEl = null
+    }
+  }
+
+  openDetails(event) {
+    event.preventDefault()
+
+    const rowId = String(event.currentTarget?.dataset?.id || "")
+    if (!rowId || !this.table) return
+
+    const row = this.table.getData().find((entry) => String(entry.id) === rowId)
+    if (!row || !this.detailsModalInstance) return
+
+    this.detailsTitleEl.textContent = row.title || `Issue #${rowId}`
+    this.detailsMetaEl.textContent = [
+      `Last seen: ${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString() : "-"}`,
+      `Severity: ${row.severity || "-"}`,
+      `Status: ${row.status || "-"}`,
+      `Occurrences: ${Number(row.occurrences || 0).toLocaleString()}`,
+      this.contextLabelForRow(row),
+    ].join(" | ")
+    this.detailsBodyEl.textContent = row.details || "No details recorded."
+    this.detailsLinksEl.innerHTML = row.failure_url
+      ? `<a class="btn small secondary" href="${escapeHtml(row.failure_url)}">Open Failure Log</a>`
+      : ""
+
+    this.detailsModalInstance.show()
   }
 
   async setStatus(event) {
@@ -235,5 +273,47 @@ export default class extends Controller {
 
   _tableHeight() {
     return adaptiveTableHeight(this.tableEl, { min: 380, max: 920, bottomPadding: 38 })
+  }
+
+  contextLabelForRow(row) {
+    if (row.instagram_profile_id) {
+      return `Profile #${row.instagram_profile_id} (Account #${row.instagram_account_id || "?"})`
+    }
+    if (row.instagram_account_id) {
+      return `Account #${row.instagram_account_id}`
+    }
+    return "System"
+  }
+
+  ensureDetailsModal() {
+    if (this.detailsModalEl) return
+
+    const modal = document.createElement("div")
+    modal.className = "modal fade app-media-modal issue-details-modal"
+    modal.tabIndex = -1
+    modal.setAttribute("aria-hidden", "true")
+    modal.innerHTML = `
+      <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" data-issue-details-title>Issue details</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p class="meta mb-2" data-issue-details-meta></p>
+            <div class="d-flex flex-wrap gap-2 mb-3" data-issue-details-links></div>
+            <pre class="json-pre" data-issue-details-body></pre>
+          </div>
+        </div>
+      </div>
+    `
+
+    this.element.appendChild(modal)
+    this.detailsModalEl = modal
+    this.detailsTitleEl = modal.querySelector("[data-issue-details-title]")
+    this.detailsMetaEl = modal.querySelector("[data-issue-details-meta]")
+    this.detailsBodyEl = modal.querySelector("[data-issue-details-body]")
+    this.detailsLinksEl = modal.querySelector("[data-issue-details-links]")
+    this.detailsModalInstance = window.bootstrap?.Modal?.getOrCreateInstance(modal)
   }
 }

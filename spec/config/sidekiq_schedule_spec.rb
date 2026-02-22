@@ -15,4 +15,15 @@ RSpec.describe "Sidekiq schedule configuration" do
     unresolved = class_names.reject { |name| name.safe_constantize.present? }
     expect(unresolved).to be_empty, "Unresolved Sidekiq schedule classes: #{unresolved.join(', ')}"
   end
+
+  it "keeps continuous account processing scheduled in development and production" do
+    schedule_path = Rails.root.join("config/sidekiq_schedule.yml")
+    raw_schedule = YAML.safe_load(File.read(schedule_path), aliases: true) || {}
+
+    %w[development production].each do |env_name|
+      entry = raw_schedule.dig(env_name, "continuous_account_processing").to_h
+      expect(entry["class"]).to eq("EnqueueContinuousAccountProcessingJob"), "#{env_name} missing continuous processing scheduler"
+      expect(entry["cron"].to_s).not_to be_blank
+    end
+  end
 end

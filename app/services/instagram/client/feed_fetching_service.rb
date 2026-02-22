@@ -456,9 +456,10 @@ module Instagram
       []
     end
 
-    def fetch_home_feed_items_via_api_paginated(limit: 60, max_pages: 3, starting_max_id: nil)
+    def fetch_home_feed_items_via_api_paginated(limit: 60, max_pages: 3, starting_max_id: nil, inter_page_delay_seconds: nil)
       n = limit.to_i.clamp(1, 200)
       pages_cap = max_pages.to_i.clamp(1, 20)
+      inter_page_delay = inter_page_delay_seconds.to_f
       items = []
       pages = 0
       max_id = starting_max_id.to_s.strip.presence
@@ -499,6 +500,9 @@ module Instagram
 
         next_max_id = body["next_max_id"].to_s.strip.presence
         more_available = ActiveModel::Type::Boolean.new.cast(body["more_available"])
+        if next_max_id.present? && pages < pages_cap && items.length < n
+          break unless reserve_home_feed_capture_page_slot!(seconds: inter_page_delay)
+        end
         max_id = next_max_id
         break if max_id.blank?
       end
@@ -519,6 +523,25 @@ module Instagram
         error: e.message.to_s,
         items: []
       }
+    end
+
+    def reserve_home_feed_capture_page_slot!(seconds:)
+      delay = seconds.to_f
+      return true if delay <= 0
+
+      key = "instagram:feed_capture:page_throttle:account:#{@account.id}"
+      now = Time.current.to_f
+      next_allowed = Rails.cache.read(key).to_f
+      return false if next_allowed > now
+
+      Rails.cache.write(
+        key,
+        now + delay,
+        expires_in: [ delay.ceil + 5, 180 ].min.seconds
+      )
+      true
+    rescue StandardError
+      true
     end
 
     def fetch_home_feed_timeline_page(count:, max_id: nil)

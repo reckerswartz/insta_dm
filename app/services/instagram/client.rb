@@ -85,23 +85,48 @@ module Instagram
 
     def story_reply_eligibility(username:, story_id:)
       uname = normalize_username(username)
-      sid = story_id.to_s.strip
+      sid = normalize_story_id_token(story_id)
       return { eligible: false, reason_code: "missing_story_username", status: "failed", story_item: nil } if uname.blank?
       return { eligible: false, reason_code: "missing_story_id", status: "failed", story_item: nil } if sid.blank?
 
       item = resolve_story_item_via_api(username: uname, story_id: sid, cache: {})
-      return { eligible: false, reason_code: "story_unavailable", status: "expired_removed", story_item: nil } unless item.is_a?(Hash)
-
-      if item[:can_reply] == false
-        return { eligible: false, reason_code: "commenting_not_allowed", status: "failed", story_item: item }
+      unless item.is_a?(Hash)
+        return {
+          eligible: true,
+          reason_code: "story_lookup_unresolved",
+          status: "unknown",
+          availability_known: false,
+          story_item: nil
+        }
       end
 
-      { eligible: true, reason_code: nil, status: "eligible", story_item: item }
+      if item[:can_reply] == false
+        return {
+          eligible: false,
+          reason_code: "commenting_not_allowed",
+          status: "failed",
+          availability_known: true,
+          story_item: item
+        }
+      end
+
+      if item[:can_reply].nil?
+        return {
+          eligible: true,
+          reason_code: "api_can_reply_missing",
+          status: "unknown",
+          availability_known: true,
+          story_item: item
+        }
+      end
+
+      { eligible: true, reason_code: nil, status: "eligible", availability_known: true, story_item: item }
     rescue StandardError => e
       {
-        eligible: false,
+        eligible: true,
         reason_code: "eligibility_check_error:#{e.class.name}",
-        status: "failed",
+        status: "unknown",
+        availability_known: false,
         story_item: nil
       }
     end

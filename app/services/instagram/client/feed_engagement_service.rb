@@ -5,11 +5,12 @@ module Instagram
       #
       # This does NOT auto-like or auto-comment. It only records posts, downloads media (temporarily),
       # and queues analysis. Interaction should remain a user-confirmed action in the UI.
-      def capture_home_feed_posts!(rounds: 4, delay_seconds: 45, max_new: 20)
+      def capture_home_feed_posts!(rounds: 4, delay_seconds: 45, max_new: 20, starting_max_id: nil)
         rounds_i = rounds.to_i.clamp(1, 12)
         delay_i = delay_seconds.to_i.clamp(10, 120)
         max_new_i = max_new.to_i.clamp(1, 200)
         fetch_limit = [ max_new_i * 3, max_new_i ].max.clamp(12, 120)
+        start_cursor = starting_max_id.to_s.strip.presence
 
         with_recoverable_session(label: "feed_capture") do
           with_authenticated_driver do |driver|
@@ -17,7 +18,13 @@ module Instagram
               driver.navigate.to(INSTAGRAM_BASE_URL)
               wait_for(driver, css: "body", timeout: 12)
               dismiss_common_overlays!(driver)
-              retrieval = fetch_home_feed_items_for_capture(driver: driver, max_items: fetch_limit, max_pages: rounds_i)
+              retrieval = fetch_home_feed_items_for_capture(
+                driver: driver,
+                max_items: fetch_limit,
+                max_pages: rounds_i,
+                inter_page_delay_seconds: delay_i,
+                starting_max_id: start_cursor
+              )
               items = Array(retrieval[:items])
 
               seen = 0
@@ -111,7 +118,10 @@ module Instagram
                 fetched_items: items.length,
                 fetch_source: retrieval[:source].to_s.presence || "unknown",
                 fetch_pages: retrieval[:pages_fetched].to_i,
-                fetch_error: retrieval[:error].to_s.presence
+                fetch_error: retrieval[:error].to_s.presence,
+                next_max_id: retrieval[:next_max_id].to_s.presence,
+                more_available: ActiveModel::Type::Boolean.new.cast(retrieval[:more_available]),
+                starting_max_id: start_cursor
               }
 
               Ops::StructuredLogger.info(
@@ -210,10 +220,16 @@ module Instagram
 
       private
 
-      def fetch_home_feed_items_for_capture(driver:, max_items:, max_pages:)
+      def fetch_home_feed_items_for_capture(driver:, max_items:, max_pages:, inter_page_delay_seconds:, starting_max_id: nil)
+        start_cursor = starting_max_id.to_s.strip.presence
         api_error = nil
         if feed_capture_api_eligible?
-          api_result = fetch_home_feed_items_via_api_paginated(limit: max_items, max_pages: max_pages)
+          api_result = fetch_home_feed_items_via_api_paginated(
+            limit: max_items,
+            max_pages: max_pages,
+            starting_max_id: start_cursor,
+            inter_page_delay_seconds: inter_page_delay_seconds
+          )
           return api_result if Array(api_result[:items]).any?
           api_error = api_result[:error].to_s.presence
         end

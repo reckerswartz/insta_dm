@@ -25,6 +25,12 @@ module Ai
       /\b(ai-powered video|ai-enhanced video|video analysis is|local ai models?)\b/i
     ].freeze
 
+    ROBOTIC_META_PATTERNS = [
+      /\(\s*light question\s*\)/i,
+      /\bintriguing\s+duo\b/i,
+      /\b[a-z0-9_]+\s+and\s+[a-z0-9_]+,\s+an\s+[a-z0-9_]+\s+duo\b/i
+    ].freeze
+
     NON_VISUAL_CONTEXT_TOKENS = %w[
       detected
       visual
@@ -107,6 +113,7 @@ module Ai
         reasons << "recent_opening_reuse" if repetitive_opening?(text, recent_openers: recent_openers, accepted: accepted)
         reasons << "batch_similarity" if repetitive_within_batch?(text, accepted: accepted)
         reasons << "generic_phrase" if generic_phrase?(text)
+        reasons << "robotic_meta_phrase" if robotic_meta_phrase?(text)
         reasons << "weak_visual_grounding" if weak_visual_grounding?(text, context_tokens)
         reasons << "low_information" if low_information_comment?(text)
 
@@ -144,6 +151,10 @@ module Ai
 
     def generic_phrase?(comment)
       GENERIC_PHRASE_PATTERNS.any? { |pattern| comment.to_s.match?(pattern) }
+    end
+
+    def robotic_meta_phrase?(comment)
+      ROBOTIC_META_PATTERNS.any? { |pattern| comment.to_s.match?(pattern) }
     end
 
     def repetitive_against_history?(comment, history)

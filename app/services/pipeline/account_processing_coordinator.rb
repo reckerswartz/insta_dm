@@ -114,7 +114,8 @@ module Pipeline
         instagram_account_id: @account.id,
         rounds: 3,
         delay_seconds: 20,
-        max_new: 15
+        max_new: 15,
+        trigger_source: @trigger_source
       )
 
       stats[:enqueued_jobs] << {

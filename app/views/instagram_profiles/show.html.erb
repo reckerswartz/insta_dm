@@ -81,11 +81,11 @@
     <a class="profile-quick-link" href="#profile_history_build">Build History</a>
     <a class="profile-quick-link" href="#profile_mutual">Mutual</a>
     <a class="profile-quick-link" href="#profile_ai_analysis">AI</a>
-    <a class="profile-quick-link" href="#profile_captured_posts_<%= @profile.id %>">Posts</a>
-    <a class="profile-quick-link" href="#profile_downloaded_stories_<%= @profile.id %>">Stories</a>
-    <a class="profile-quick-link" href="#profile_messages_<%= @profile.id %>">Messages</a>
-    <a class="profile-quick-link" href="#profile_actions_<%= @profile.id %>">Actions</a>
-    <a class="profile-quick-link" href="#profile_events_table_<%= @profile.id %>">History</a>
+    <a class="profile-quick-link" href="#profile_captured_posts_drilldown">Posts</a>
+    <a class="profile-quick-link" href="#profile_downloaded_stories_drilldown">Stories</a>
+    <a class="profile-quick-link" href="#profile_messages_drilldown">Messages</a>
+    <a class="profile-quick-link" href="#profile_actions_drilldown">Actions</a>
+    <a class="profile-quick-link" href="#profile_events_table_drilldown">History</a>
   </nav>
 
   <section id="profile_overview" class="card">
@@ -147,7 +147,6 @@
 
         <div class="actions-row">
           <%= button_to "Capture Posts", capture_posts_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Build History", build_history_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Fetch Details", fetch_details_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Verify Messageability", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Sync Avatar", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
@@ -369,39 +368,49 @@
     <% end %>
   </section>
 
-  <%= turbo_frame_tag "profile_captured_posts_#{@profile.id}", src: captured_posts_section_instagram_profile_path(@profile), loading: :eager do %>
-    <section class="card">
-      <h2>Captured Profile Posts (AI Input)</h2>
-      <p class="meta">Loading captured posts...</p>
-    </section>
-  <% end %>
+  <details id="profile_captured_posts_drilldown" class="details-box profile-drilldown" open>
+    <summary>Captured Profile Posts (AI Input)</summary>
+    <div class="profile-drilldown-body">
+      <%= turbo_frame_tag "profile_captured_posts_#{@profile.id}", src: captured_posts_section_instagram_profile_path(@profile), loading: :lazy do %>
+        <p class="meta profile-frame-placeholder">Loading captured posts...</p>
+      <% end %>
+    </div>
+  </details>
 
-  <%= turbo_frame_tag "profile_downloaded_stories_#{@profile.id}", src: downloaded_stories_section_instagram_profile_path(@profile), loading: :eager do %>
-    <section class="card">
-      <h2>Downloaded Stories</h2>
-      <p class="meta">Loading downloaded stories...</p>
-    </section>
-  <% end %>
+  <details id="profile_downloaded_stories_drilldown" class="details-box profile-drilldown">
+    <summary>Downloaded Stories</summary>
+    <div class="profile-drilldown-body">
+      <%= turbo_frame_tag "profile_downloaded_stories_#{@profile.id}", src: downloaded_stories_section_instagram_profile_path(@profile), loading: :lazy do %>
+        <p class="meta profile-frame-placeholder">Loading downloaded stories...</p>
+      <% end %>
+    </div>
+  </details>
 
-  <%= turbo_frame_tag "profile_messages_#{@profile.id}", src: messages_section_instagram_profile_path(@profile), loading: :eager do %>
-    <section class="card">
-      <h2>Message History</h2>
-      <p class="meta">Loading message history...</p>
-    </section>
-  <% end %>
+  <details id="profile_messages_drilldown" class="details-box profile-drilldown">
+    <summary>Message History (<%= @messages_count %>)</summary>
+    <div class="profile-drilldown-body">
+      <%= turbo_frame_tag "profile_messages_#{@profile.id}", src: messages_section_instagram_profile_path(@profile), loading: :lazy do %>
+        <p class="meta profile-frame-placeholder">Loading message history...</p>
+      <% end %>
+    </div>
+  </details>
 
-  <%= turbo_frame_tag "profile_actions_#{@profile.id}", src: action_history_section_instagram_profile_path(@profile), loading: :eager do %>
-    <section class="card">
-      <h2>Action History</h2>
-      <p class="meta">Loading action history...</p>
-    </section>
-  <% end %>
+  <details id="profile_actions_drilldown" class="details-box profile-drilldown">
+    <summary>Action History (<%= @action_logs_count %>)</summary>
+    <div class="profile-drilldown-body">
+      <%= turbo_frame_tag "profile_actions_#{@profile.id}", src: action_history_section_instagram_profile_path(@profile), loading: :lazy do %>
+        <p class="meta profile-frame-placeholder">Loading action history...</p>
+      <% end %>
+    </div>
+  </details>
 
-  <%= turbo_frame_tag "profile_events_table_#{@profile.id}", src: events_table_section_instagram_profile_path(@profile), loading: :eager do %>
-    <section class="card">
-      <h2>History</h2>
-      <p class="meta">Loading profile history table...</p>
-    </section>
-  <% end %>
+  <details id="profile_events_table_drilldown" class="details-box profile-drilldown">
+    <summary>Unified History</summary>
+    <div class="profile-drilldown-body">
+      <%= turbo_frame_tag "profile_events_table_#{@profile.id}", src: events_table_section_instagram_profile_path(@profile), loading: :lazy do %>
+        <p class="meta profile-frame-placeholder">Loading profile history table...</p>
+      <% end %>
+    </div>
+  </details>
 
 </div>

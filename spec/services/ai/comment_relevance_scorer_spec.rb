@@ -37,4 +37,65 @@ RSpec.describe Ai::CommentRelevanceScorer do
     expect(result[:auto_post_eligible]).to eq(false)
     expect(%w[low medium high]).to include(result[:confidence_level])
   end
+
+  it "prefers high-confidence anchors over low-confidence object pair phrasing" do
+    ranked = described_class.rank_with_breakdown(
+      suggestions: [
+        "Person and sink, an intriguing duo. 🧐",
+        "Nice bottle setup! 🥂"
+      ],
+      image_description: "Visual elements: bottle, person, sink. Inferred topics: bottle, person, sink.",
+      topics: %w[bottle person sink],
+      historical_comments: [],
+      scored_context: { engagement_memory: { relationship_familiarity: "new" } },
+      verified_story_facts: {
+        objects: %w[bottle person sink],
+        object_detections: [
+          { label: "bottle", confidence: 0.834 },
+          { label: "person", confidence: 0.826 },
+          { label: "sink", confidence: 0.41 }
+        ]
+      }
+    )
+
+    expect(ranked.first[:comment]).to eq("Nice bottle setup! 🥂")
+  end
+
+  it "penalizes generic compliments when specific visual anchors exist" do
+    ranked = described_class.rank_with_breakdown(
+      suggestions: [
+        "Person looks great here.",
+        "Great timing on this cricket shot."
+      ],
+      image_description: "Cricket action shot in a stadium with crowd energy",
+      topics: %w[cricket stadium match],
+      historical_comments: [],
+      scored_context: { engagement_memory: { relationship_familiarity: "new" } },
+      verified_story_facts: {
+        objects: %w[player bat stadium crowd],
+        ocr_text: ""
+      }
+    )
+
+    expect(ranked.first[:comment]).to eq("Great timing on this cricket shot.")
+  end
+
+  it "prefers text-grounded comments for text-heavy story frames" do
+    ranked = described_class.rank_with_breakdown(
+      suggestions: [
+        "This moment looks great here.",
+        "The loan offer text is clear and attention-grabbing."
+      ],
+      image_description: "Bank poster with loan offer and rate details",
+      topics: %w[loan bank offer],
+      historical_comments: [],
+      scored_context: { engagement_memory: { relationship_familiarity: "new" } },
+      verified_story_facts: {
+        ocr_text: "Smart Personal Loan Starting 10.99%",
+        objects: %w[poster text]
+      }
+    )
+
+    expect(ranked.first[:comment]).to eq("The loan offer text is clear and attention-grabbing.")
+  end
 end

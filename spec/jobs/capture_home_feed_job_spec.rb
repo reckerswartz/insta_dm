@@ -11,6 +11,7 @@ RSpec.describe "CaptureHomeFeedJobTest" do
     client = instance_double(Instagram::Client)
     allow(Instagram::Client).to receive(:new).with(account: account).and_return(client)
     allow(Ops::StructuredLogger).to receive(:info)
+    allow(FeedCaptureActivityLog).to receive(:append!)
     expect(client).not_to receive(:capture_home_feed_posts!)
 
     CaptureHomeFeedJob.perform_now(
@@ -41,6 +42,7 @@ RSpec.describe "CaptureHomeFeedJobTest" do
       }
     )
     allow(Ops::StructuredLogger).to receive(:info)
+    allow(FeedCaptureActivityLog).to receive(:append!)
     allow(Turbo::StreamsChannel).to receive(:broadcast_append_to)
 
     CaptureHomeFeedJob.perform_now(
@@ -53,6 +55,11 @@ RSpec.describe "CaptureHomeFeedJobTest" do
     account.reload
     expect(account.continuous_processing_last_feed_sync_enqueued_at).to be_present
     expect(account.continuous_processing_last_feed_sync_enqueued_at).to be > now
-    expect(client).to have_received(:capture_home_feed_posts!).with(rounds: 2, delay_seconds: 20, max_new: 10)
+    expect(client).to have_received(:capture_home_feed_posts!).with(
+      rounds: 1,
+      delay_seconds: 20,
+      max_new: 10,
+      starting_max_id: nil
+    )
   end
 end

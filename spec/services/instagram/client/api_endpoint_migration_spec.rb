@@ -51,7 +51,7 @@ RSpec.describe Instagram::Client do
     captured = {}
     expected = { "follow_alpha" => { display_name: "Follow Alpha" } }
 
-    client.define_singleton_method(:fetch_follow_list_via_api) do |profile_username:, list_kind:, driver: nil|
+    client.define_singleton_method(:fetch_follow_list_via_api) do |profile_username:, list_kind:, driver: nil, starting_max_id: nil, page_limit: nil|
       captured = { profile_username: profile_username, list_kind: list_kind, driver: driver }
       expected
     end
@@ -257,9 +257,9 @@ RSpec.describe Instagram::Client do
     expect(story[:story_id]).to eq("111")
   end
 
-  it "retries API GET requests before succeeding" do
+  it "returns quickly after a retryable API GET failure and records pause state" do
     attempts = 0
-    allow(client).to receive(:sleep)
+    logged = false
 
     client.define_singleton_method(:perform_ig_api_get) do |uri:, referer:|
       attempts += 1
@@ -269,7 +269,7 @@ RSpec.describe Instagram::Client do
       raise "browser fallback should not be used"
     end
     client.define_singleton_method(:log_ig_api_get_failure) do |**|
-      raise "final failure should not be logged"
+      logged = true
     end
 
     result = client.send(
@@ -281,14 +281,14 @@ RSpec.describe Instagram::Client do
       retries: 2
     )
 
-    expect(result).to eq({ "ok" => true })
-    expect(attempts).to eq(2)
+    expect(result).to be_nil
+    expect(attempts).to eq(1)
+    expect(logged).to eq(true)
   end
 
-  it "uses browser API fallback when direct API GET retries fail" do
+  it "uses browser API fallback when direct API GET fails with a retryable error" do
     attempts = 0
     logged = false
-    allow(client).to receive(:sleep)
 
     client.define_singleton_method(:perform_ig_api_get) do |uri:, referer:|
       attempts += 1
@@ -312,7 +312,7 @@ RSpec.describe Instagram::Client do
     )
 
     expect(result).to eq({ "data" => { "ok" => true } })
-    expect(attempts).to eq(2)
+    expect(attempts).to eq(1)
     expect(logged).to eq(false)
   end
 
@@ -378,5 +378,54 @@ RSpec.describe Instagram::Client do
 
     expect(attempts).to eq(2)
     expect(payload["status"]).to eq("ok")
+  end
+
+  it "normalizes story id tokens before checking reply eligibility" do
+    captured = {}
+    client.define_singleton_method(:resolve_story_item_via_api) do |username:, story_id:, cache:|
+      captured = { username: username, story_id: story_id, cache: cache }
+      { story_id: story_id, can_reply: true }
+    end
+
+    result = client.story_reply_eligibility(username: "Target.User", story_id: "44556677_123456")
+
+    expect(result[:eligible]).to eq(true)
+    expect(result[:status]).to eq("eligible")
+    expect(captured[:username]).to eq("target.user")
+    expect(captured[:story_id]).to eq("44556677")
+    expect(captured[:cache]).to eq({})
+  end
+
+  it "treats unresolved story lookup as unknown availability" do
+    client.define_singleton_method(:resolve_story_item_via_api) do |username:, story_id:, cache:|
+      nil
+    end
+
+    result = client.story_reply_eligibility(username: "Target.User", story_id: "77889900")
+
+    expect(result[:eligible]).to eq(true)
+    expect(result[:status]).to eq("unknown")
+    expect(result[:reason_code]).to eq("story_lookup_unresolved")
+    expect(result[:availability_known]).to eq(false)
+  end
+
+  it "uses normalized story id when composing reel share media id" do
+    captured_form = nil
+    client.define_singleton_method(:story_user_id_for) { |username:| "42" }
+    client.define_singleton_method(:direct_thread_id_for_user) { |user_id:| "thread_42" }
+    client.define_singleton_method(:ig_api_post_form_json) do |path:, referer:, form:, endpoint:, username:, retries:|
+      captured_form = form
+      { "status" => "ok", "payload" => { "thread_id" => "thread_42", "item_id" => "item_42" } }
+    end
+
+    result = client.send(
+      :comment_on_story_via_api!,
+      story_id: "44556677_123456",
+      story_username: "target.user",
+      comment_text: "hello"
+    )
+
+    expect(result[:posted]).to eq(true)
+    expect(captured_form[:media_id]).to eq("44556677_42")
   end
 end

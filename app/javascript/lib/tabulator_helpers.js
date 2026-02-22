@@ -201,6 +201,124 @@ function writePreferredPageSize(storageKey, value) {
   }
 }
 
+function estimateTotalRows(table) {
+  if (!table) return 0
+
+  const pageModule = table.modules?.page
+  const mode = String(pageModule?.mode || table.options?.paginationMode || "local")
+  const pageRows = Array.isArray(table.getRows?.("visible")) ? table.getRows("visible").length : 0
+  const pageSizeRaw = Number(pageModule?.size)
+  const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0
+    ? pageSizeRaw
+    : (Number(table.options?.paginationSize) || 25)
+  const currentPage = Math.max(1, Number(pageModule?.page) || 1)
+  const maxPage = Math.max(1, Number(pageModule?.max) || 1)
+
+  const activeCount = Number(table.getDataCount?.("active"))
+  const remoteEstimate = Number(pageModule?.remoteRowCountEstimate)
+  if (mode !== "remote" && Number.isFinite(activeCount) && activeCount >= 0) return activeCount
+  if (Number.isFinite(remoteEstimate) && remoteEstimate >= 0) return remoteEstimate
+
+  if (mode === "remote" && maxPage > 1) {
+    if (currentPage >= maxPage) return ((maxPage - 1) * pageSize) + pageRows
+    return maxPage * pageSize
+  }
+
+  if (Number.isFinite(activeCount) && activeCount >= 0) return activeCount
+  return pageRows
+}
+
+function formatMetaTimestamp(value) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return "not yet loaded"
+
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  })
+}
+
+function installTableMetaBar(controller, table) {
+  const scopeEl = controller?.element
+  if (!scopeEl || !table) return false
+
+  const countEl = scopeEl.querySelector("[data-table-meta-count]")
+  const updatedEl = scopeEl.querySelector("[data-table-meta-updated]")
+  const stateEl = scopeEl.querySelector("[data-table-meta-state]")
+  const runtimeEl = scopeEl.querySelector(".table-meta-runtime")
+
+  if (!countEl && !updatedEl && !stateEl && !runtimeEl) return false
+
+  let isLoading = false
+  let loadedOnce = false
+  let lastLoadedAt = null
+
+  const sync = ({ loading = null, markLoaded = false } = {}) => {
+    if (typeof loading === "boolean") isLoading = loading
+    if (markLoaded) {
+      isLoading = false
+      loadedOnce = true
+      lastLoadedAt = new Date()
+    }
+
+    const totalRows = estimateTotalRows(table)
+    if (countEl) countEl.textContent = Number(totalRows || 0).toLocaleString()
+
+    if (updatedEl) {
+      if (!loadedOnce && isLoading) {
+        updatedEl.textContent = "loading..."
+      } else if (!loadedOnce) {
+        updatedEl.textContent = "not yet loaded"
+      } else {
+        updatedEl.textContent = formatMetaTimestamp(lastLoadedAt)
+      }
+    }
+
+    if (stateEl) {
+      if (isLoading) {
+        stateEl.textContent = "Refreshing..."
+      } else if (loadedOnce) {
+        stateEl.textContent = "Up to date"
+      } else {
+        stateEl.textContent = "Idle"
+      }
+    }
+
+    runtimeEl?.classList.toggle("is-loading", isLoading)
+  }
+
+  const onDataLoading = () => sync({ loading: true })
+  const onDataLoaded = () => sync({ markLoaded: true })
+  const onPageLoaded = () => sync()
+  const onDataProcessed = () => sync()
+  const onRenderComplete = () => sync()
+  const onTableBuilt = () => sync()
+
+  table.on("dataLoading", onDataLoading)
+  table.on("dataLoaded", onDataLoaded)
+  table.on("pageLoaded", onPageLoaded)
+  table.on("dataProcessed", onDataProcessed)
+  table.on("renderComplete", onRenderComplete)
+  table.on("tableBuilt", onTableBuilt)
+
+  sync({ loading: true })
+
+  registerCleanup(controller, () => {
+    if (typeof table.off === "function") {
+      table.off("dataLoading", onDataLoading)
+      table.off("dataLoaded", onDataLoaded)
+      table.off("pageLoaded", onPageLoaded)
+      table.off("dataProcessed", onDataProcessed)
+      table.off("renderComplete", onRenderComplete)
+      table.off("tableBuilt", onTableBuilt)
+    }
+    runtimeEl?.classList.remove("is-loading")
+  })
+
+  return true
+}
+
 export function registerCleanup(controller, cleanup) {
   if (typeof cleanup !== "function") return
   if (!Array.isArray(controller._tableCleanups)) controller._tableCleanups = []
@@ -355,6 +473,7 @@ export function attachTabulatorBehaviors(
 
   const rafId = window.requestAnimationFrame(() => {
     if (!controllerOwnsTable(controller, table)) return
+    installTableMetaBar(controller, table)
     installTableInteractions(controller, table)
     installAdaptiveResizing(controller, table)
     installTableLifecycleMonitor(controller, table, { storageKey })

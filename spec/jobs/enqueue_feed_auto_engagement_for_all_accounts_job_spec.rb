@@ -45,4 +45,32 @@ RSpec.describe "EnqueueFeedAutoEngagementForAllAccountsJobTest" do
     expect(feed_account_ids).to contain_exactly(first.id, second.id)
     expect(feed_account_ids).not_to include(third.id)
   end
+
+  it "skips accounts when the autonomous scheduler lease is already held" do
+    first = create_account_with_session
+    second = create_account_with_session
+    third = create_account_with_session
+
+    allow(AutonomousSchedulerLease).to receive(:reserve!).and_return(
+      AutonomousSchedulerLease::Reservation.new(reserved: false, remaining_seconds: 45, blocked_by: "other_scheduler"),
+      AutonomousSchedulerLease::Reservation.new(reserved: true, remaining_seconds: 0),
+      AutonomousSchedulerLease::Reservation.new(reserved: true, remaining_seconds: 0)
+    )
+
+    result = EnqueueFeedAutoEngagementForAllAccountsJob.perform_now(
+      batch_size: 3,
+      max_posts: 2,
+      include_story: false,
+      story_hold_seconds: 12,
+      cursor_id: first.id - 1
+    )
+
+    enqueued_feed_jobs = enqueued_jobs.select { |row| row[:job] == AutoEngageHomeFeedJob }
+    enqueued_ids = enqueued_feed_jobs.map do |row|
+      Array(row[:args]).first.to_h.with_indifferent_access[:instagram_account_id]
+    end
+
+    expect(result[:scheduler_lease_skipped]).to eq(1)
+    expect(enqueued_ids).to contain_exactly(second.id, third.id)
+  end
 end

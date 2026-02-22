@@ -45,15 +45,15 @@
                     source: <code><%= feed_fetch["source"].to_s.presence || "-" %></code>,
                     pages: <strong><%= feed_fetch["pages_fetched"].to_i %></strong><br>
                   <% end %>
-                  <a class="btn small secondary" href="#captured_profile_posts_section">Posts</a>
-                  <a class="btn small secondary" href="#profile_events_table_<%= log.instagram_profile_id %>">History</a>
+                  <a class="btn small secondary" href="#profile_captured_posts_drilldown">Posts</a>
+                  <a class="btn small secondary" href="#profile_events_table_drilldown">History</a>
                 <% elsif log.action == "analyze_profile_posts" %>
                   <% state = metadata["analysis_queue_state"].is_a?(Hash) ? metadata["analysis_queue_state"] : {} %>
                   total: <strong><%= state["total_candidates"].to_i %></strong>,
                   analyzed: <strong><%= state["analyzed_count"].to_i %></strong>,
                   skipped: <strong><%= state["skipped_count"].to_i %></strong>,
                   failed: <strong><%= state["failed_count"].to_i %></strong><br>
-                  <a class="btn small secondary" href="#captured_profile_posts_section">Posts</a>
+                  <a class="btn small secondary" href="#profile_captured_posts_drilldown">Posts</a>
                 <% elsif log.action == "build_history" %>
                   <% history = metadata["history_build"].is_a?(Hash) ? metadata["history_build"] : {} %>
                   <% checks = history["checks"].is_a?(Hash) ? history["checks"] : {} %>
@@ -73,7 +73,7 @@
                   <a class="btn small secondary" href="#profile_mutual">Mutual</a>
                 <% elsif metadata["post_shortcode"].to_s.present? %>
                   Post: <code><%= metadata["post_shortcode"] %></code><br>
-                  <a class="btn small secondary" href="#captured_profile_posts_section">View post</a>
+                  <a class="btn small secondary" href="#profile_captured_posts_drilldown">View post</a>
                 <% else %>
                   -
                 <% end %>

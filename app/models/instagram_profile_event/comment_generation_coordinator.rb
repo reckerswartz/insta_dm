@@ -4,6 +4,7 @@ module InstagramProfileEvent::CommentGenerationCoordinator
   extend ActiveSupport::Concern
   LLM_PROCESSING_STAGE_TEMPLATE = {
     "queue_wait" => { "group" => "orchestration", "label" => "Queue Wait", "state" => "pending", "progress" => 0 },
+    "parallel_services" => { "group" => "orchestration", "label" => "Parallel Stage Jobs", "state" => "pending", "progress" => 0 },
     "ocr_analysis" => { "group" => "media_analysis", "label" => "OCR Analysis", "state" => "pending", "progress" => 0 },
     "vision_detection" => { "group" => "media_analysis", "label" => "Vision Detection", "state" => "pending", "progress" => 0 },
     "face_recognition" => { "group" => "media_analysis", "label" => "Face Recognition", "state" => "pending", "progress" => 0 },

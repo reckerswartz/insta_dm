@@ -27,9 +27,16 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
     )
 
     enqueued_accounts = 0
+    scheduler_lease_skipped = 0
 
     batch[:accounts].each do |account|
       next if account.cookies.blank?
+
+      scheduler_lease = AutonomousSchedulerLease.reserve!(account: account, source: self.class.name)
+      unless scheduler_lease.reserved
+        scheduler_lease_skipped += 1
+        next
+      end
 
       EnqueueRecentProfilePostScansForAccountJob.perform_later(
         instagram_account_id: account.id,
@@ -69,6 +76,7 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
       payload: {
         accounts_enqueued: enqueued_accounts,
         scanned_accounts: batch[:accounts].length,
+        scheduler_lease_skipped: scheduler_lease_skipped,
         limit_per_account: limit_per_account,
         posts_limit: posts_limit_i,
         comments_limit: comments_limit_i,
@@ -81,6 +89,7 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
     {
       accounts_enqueued: enqueued_accounts,
       scanned_accounts: batch[:accounts].length,
+      scheduler_lease_skipped: scheduler_lease_skipped,
       continuation_job_id: continuation_job&.job_id
     }
   end

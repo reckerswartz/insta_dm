@@ -28,6 +28,7 @@ class InstagramAccountsController < ApplicationController
     @recent_audit_entries = snapshot[:recent_audit_entries]
     @actions_todo_queue = snapshot[:actions_todo_queue]
     @skip_diagnostics = snapshot[:skip_diagnostics]
+    @feed_capture_activity_entries = FeedCaptureActivityLog.entries_for(account: @account)
   end
 
   def create

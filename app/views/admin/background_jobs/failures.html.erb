@@ -14,13 +14,15 @@
   </header>
 
   <section class="card">
-    <p class="meta">Use header filters/sorting and row retry actions. Shift + wheel scrolls horizontally, click-drag pans, and updates stream live via ActionCable.</p>
     <div
       class="tabulator-shell"
       data-controller="background-job-failures-table"
       data-background-job-failures-table-url-value="<%= admin_background_job_failures_path(format: :json) %>"
       data-background-job-failures-table-account-id-value="<%= current_account&.id.to_i %>"
     >
+      <%= render "shared/table_meta_bar",
+            controls: "row retry actions",
+            realtime_note: "Updates stream live via ActionCable." %>
       <div class="tabulator-host" data-background-job-failures-table-target="table"></div>
     </div>
   </section>

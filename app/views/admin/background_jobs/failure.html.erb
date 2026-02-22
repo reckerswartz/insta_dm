@@ -43,13 +43,19 @@
     <h2>Error</h2>
     <pre><%= "#{@failure.error_class}: #{@failure.error_message}" %></pre>
 
-    <h2>Arguments</h2>
-    <pre><%= @failure.arguments_json.to_s %></pre>
+    <details class="details-box mt-section" open>
+      <summary>Arguments</summary>
+      <pre class="mt-2"><%= @failure.arguments_json.to_s %></pre>
+    </details>
 
-    <h2>Metadata</h2>
-    <pre><%= (@failure.metadata || {}).to_json %></pre>
+    <details class="details-box mt-section">
+      <summary>Metadata</summary>
+      <pre class="mt-2"><%= (@failure.metadata || {}).to_json %></pre>
+    </details>
 
-    <h2>Backtrace</h2>
-    <pre><%= @failure.backtrace.to_s %></pre>
+    <details class="details-box mt-section">
+      <summary>Backtrace</summary>
+      <pre class="mt-2"><%= @failure.backtrace.to_s %></pre>
+    </details>
   </section>
 </div>

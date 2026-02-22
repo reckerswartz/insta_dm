@@ -26,9 +26,16 @@ class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
     )
 
     enqueued = 0
+    scheduler_lease_skipped = 0
 
     batch[:accounts].each do |account|
       next if account.cookies.blank?
+
+      scheduler_lease = AutonomousSchedulerLease.reserve!(account: account, source: self.class.name)
+      unless scheduler_lease.reserved
+        scheduler_lease_skipped += 1
+        next
+      end
 
       SyncProfileStoriesForAccountJob.perform_later(
         instagram_account_id: account.id,
@@ -70,6 +77,7 @@ class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
       payload: {
         enqueued_accounts: enqueued,
         scanned_accounts: batch[:accounts].length,
+        scheduler_lease_skipped: scheduler_lease_skipped,
         max_stories: max_stories_i,
         force_analyze_all: force,
         profile_limit: profile_limit,
@@ -82,6 +90,7 @@ class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
     {
       enqueued_accounts: enqueued,
       scanned_accounts: batch[:accounts].length,
+      scheduler_lease_skipped: scheduler_lease_skipped,
       continuation_job_id: continuation_job&.job_id
     }
   end

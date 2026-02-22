@@ -653,7 +653,7 @@ module Instagram
         return "" if token.casecmp("sig").zero?
         return "" if token.start_with?("sig:")
         return token if token.match?(/\A\d+\z/)
-        return Regexp.last_match(1).to_s if token.match?(/\A(\d+)_\d+\z/)
+        return Regexp.last_match(1).to_s if token.match(/\A(\d+)_\d+\z/)
 
         ""
       rescue StandardError

@@ -1,0 +1,14 @@
+<% controls = local_assigns[:controls].to_s.strip.presence %>
+<% realtime_note = local_assigns[:realtime_note].to_s.strip.presence %>
+<% row_label = local_assigns[:row_label].to_s.strip.presence || "rows" %>
+
+<div class="table-meta-bar">
+  <%= render "shared/table_usage_hint", controls: controls, realtime_note: realtime_note %>
+  <p class="meta table-meta-runtime">
+    <span class="table-meta-runtime-item"><strong data-table-meta-count>0</strong> <%= row_label %></span>
+    <span class="table-meta-divider" aria-hidden="true">|</span>
+    <span class="table-meta-runtime-item">Updated <span data-table-meta-updated>loading...</span></span>
+    <span class="table-meta-divider" aria-hidden="true">|</span>
+    <span class="table-meta-runtime-item" data-table-meta-state>Loading...</span>
+  </p>
+</div>

@@ -16,8 +16,11 @@ module InstagramAccounts
       event = InstagramProfileEvent.find(event_id)
       return not_found_result unless accessible_event?(event)
 
-      completed = normalize_completed_event(event)
-      return completed if completed && !force
+      completed_event = normalize_completed_event(event)
+      if completed_event && !force
+        return completed_status_result(completed_event) if status_only
+        return completed_result(completed_event)
+      end
 
       in_progress = normalize_in_progress_event(event)
       return in_progress if in_progress
@@ -69,11 +72,12 @@ module InstagramAccounts
       return nil unless event.has_llm_generated_comment?
 
       event.update_column(:llm_comment_status, "completed") if event.llm_comment_status.to_s != "completed"
-      completed_result(event)
+      event
     end
 
     def normalize_in_progress_event(event)
       return nil unless event.llm_comment_in_progress?
+      return in_progress_result(event) if parallel_pipeline_active?(event)
 
       if queue_inspector.stale_comment_job?(event: event)
         event.update_columns(
@@ -92,8 +96,8 @@ module InstagramAccounts
       event.with_lock do
         event.reload
 
-        completed = normalize_completed_event(event)
-        return completed if completed && !force
+        completed_event = normalize_completed_event(event)
+        return completed_result(completed_event) if completed_event && !force
 
         in_progress = normalize_in_progress_event(event)
         return in_progress if in_progress
@@ -117,7 +121,6 @@ module InstagramAccounts
             estimated_seconds: llm_comment_estimated_seconds(event: event, include_queue: true),
             queue_size: ai_queue_size,
             llm_processing_stages: merged_llm_processing_stages(event),
-            llm_processing_log: merged_llm_processing_log(event),
             llm_last_stage: merged_llm_last_stage(event),
             forced: force
           },
@@ -151,7 +154,6 @@ module InstagramAccounts
           estimated_seconds: llm_comment_estimated_seconds(event: event),
           queue_size: ai_queue_size,
           llm_processing_stages: merged_llm_processing_stages(event),
-          llm_processing_log: merged_llm_processing_log(event),
           llm_last_stage: merged_llm_last_stage(event)
         },
         status: :accepted
@@ -167,7 +169,20 @@ module InstagramAccounts
           estimated_seconds: llm_comment_estimated_seconds(event: event),
           queue_size: ai_queue_size,
           llm_processing_stages: merged_llm_processing_stages(event),
-          llm_processing_log: merged_llm_processing_log(event),
+          llm_last_stage: merged_llm_last_stage(event)
+        },
+        status: :ok
+      )
+    end
+
+    def completed_status_result(event)
+      Result.new(
+        payload: {
+          success: true,
+          status: "completed",
+          event_id: event.id,
+          llm_comment_generated_at: event.llm_comment_generated_at,
+          llm_processing_stages: merged_llm_processing_stages(event),
           llm_last_stage: merged_llm_last_stage(event)
         },
         status: :ok
@@ -245,6 +260,30 @@ module InstagramAccounts
 
     def ai_queue_size
       queue_inspector.queue_size
+    end
+
+    def parallel_pipeline_active?(event)
+      llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
+      pipeline = llm_meta["parallel_pipeline"]
+      return false unless pipeline.is_a?(Hash)
+      return false unless pipeline["run_id"].to_s.present?
+      return false unless pipeline["status"].to_s == "running"
+
+      # Treat stale pipelines as failed to avoid infinite in-progress states.
+      updated_at = parse_time(pipeline["updated_at"]) || parse_time(pipeline["created_at"])
+      return false if updated_at.present? && updated_at < 20.minutes.ago
+
+      true
+    rescue StandardError
+      false
+    end
+
+    def parse_time(value)
+      return nil if value.to_s.blank?
+
+      Time.zone.parse(value.to_s)
+    rescue StandardError
+      nil
     end
   end
 end

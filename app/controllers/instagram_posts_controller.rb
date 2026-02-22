@@ -3,6 +3,7 @@ class InstagramPostsController < ApplicationController
 
   def index
     @account = current_account
+    @feed_capture_activity_entries = FeedCaptureActivityLog.entries_for(account: @account)
 
     scope = @account.instagram_posts
     scope = apply_tabulator_filters(scope)

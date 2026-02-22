@@ -709,7 +709,6 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       raise unless transient_failure?(error: e, normalized: e.message.to_s.downcase)
       raise if attempt >= MEDIA_DOWNLOAD_ATTEMPTS
 
-      sleep(0.4 * attempt)
       retry
     end
   end

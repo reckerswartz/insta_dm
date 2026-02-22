@@ -1,0 +1,9 @@
+<% controls = local_assigns[:controls].to_s.strip.presence %>
+<% realtime_note = local_assigns[:realtime_note].to_s.strip.presence %>
+<%
+  hint_sentences = []
+  hint_sentences << "Use header filters/sorting#{controls.present? ? " and #{controls}" : ""}."
+  hint_sentences << "Shift + wheel scrolls horizontally, and click-drag pans vertically/horizontally."
+  hint_sentences << realtime_note if realtime_note.present?
+%>
+<p class="meta table-usage-hint"><%= safe_join(hint_sentences, " ") %></p>

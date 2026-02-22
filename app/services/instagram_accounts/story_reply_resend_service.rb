@@ -162,7 +162,20 @@ module InstagramAccounts
     end
 
     def story_id_for(event:)
-      story_metadata(event: event)["story_id"].to_s.strip
+      metadata = story_metadata(event: event)
+      candidates = [
+        metadata["story_id"],
+        metadata["media_id"],
+        metadata["story_url"],
+        metadata["permalink"],
+        event.external_id
+      ]
+      candidates.each do |value|
+        normalized = normalize_story_id_token(value)
+        return normalized if normalized.present?
+      end
+
+      ""
     end
 
     def story_metadata(event:)
@@ -185,16 +198,19 @@ module InstagramAccounts
         }
       end
 
+      status = eligibility[:status].to_s
       {
         eligible: true,
-        status: "eligible",
-        reason_code: nil
+        status: status.presence || "eligible",
+        reason_code: eligibility[:reason_code].to_s.presence
       }
     end
 
     def already_posted?(profile:, story_id:, comment_text:)
       normalized = normalize_comment(comment_text)
       return false if normalized.blank?
+      target_story_id = normalize_story_id_token(story_id)
+      return false if target_story_id.blank?
 
       recent = profile.instagram_profile_events
         .where(kind: %w[story_reply_sent story_reply_resent])
@@ -202,7 +218,7 @@ module InstagramAccounts
         .limit(40)
 
       recent.any? do |row|
-        next false unless story_id_from_reply_event(row) == story_id.to_s
+        next false unless story_id_from_reply_event(row) == target_story_id
 
         replied_comment = extract_reply_comment(row)
         replied_comment = comment_text if replied_comment.blank?
@@ -245,7 +261,7 @@ module InstagramAccounts
         )
       end
 
-      if status == "expired_removed"
+      if status == "expired_removed" && reason_indicates_story_expired?(reason, event: event)
         update_manual_send_state!(
           event: event,
           status: "expired_removed",
@@ -307,7 +323,7 @@ module InstagramAccounts
     end
 
     def send_failure_result(event:, profile:, story_id:, message_text:, reason:, api_response:)
-      if reason_indicates_story_expired?(reason)
+      if reason_indicates_story_expired?(reason, event: event)
         update_manual_send_state!(
           event: event,
           status: "expired_removed",
@@ -473,12 +489,18 @@ module InstagramAccounts
 
     def story_id_from_reply_event(row)
       metadata = row.metadata.is_a?(Hash) ? row.metadata : {}
-      story_id = metadata["story_id"].to_s.strip
+      story_id = normalize_story_id_token(metadata["story_id"])
       return story_id if story_id.present?
 
       external_id = row.external_id.to_s
-      return Regexp.last_match(1).to_s if external_id.match?(/\Astory_reply_sent:([^:]+)\z/)
-      return Regexp.last_match(1).to_s if external_id.match?(/\Astory_reply_resent:([^:]+):/)
+      if (match = external_id.match(/\Astory_reply_sent:([^:]+)\z/))
+        normalized = normalize_story_id_token(match[1].to_s)
+        return normalized if normalized.present?
+      end
+      if (match = external_id.match(/\Astory_reply_resent:([^:]+):/))
+        normalized = normalize_story_id_token(match[1].to_s)
+        return normalized if normalized.present?
+      end
 
       ""
     rescue StandardError
@@ -498,16 +520,90 @@ module InstagramAccounts
       text.to_s.downcase.gsub(/\s+/, " ").strip
     end
 
-    def reason_indicates_story_expired?(reason)
+    def reason_indicates_story_expired?(reason, event: nil)
       value = reason.to_s.downcase
-      return true if value.include?("story_unavailable")
-      return true if value.include?("story_not_found")
-      return true if value.include?("api_story_not_found")
-      return true if value.include?("missing_story")
+      return false if value.blank?
+      return false if transient_story_failure_reason?(value)
       return true if value.include?("expired_story")
+      return true if value.include?("story_expired")
+      return true if value.include?("story_removed")
+      return true if value.include?("story_deleted")
+      return true if value.include?("removed_story")
       return true if value.include?("content_unavailable")
+      return true if value.include?("reel_not_found")
+      return true if value.include?("media_not_found")
+      return true if value.include?("item_unavailable")
+
+      lookup_reason =
+        value.include?("story_unavailable") ||
+        value.include?("story_not_found") ||
+        value.include?("api_story_not_found") ||
+        value.include?("missing_story")
+      return false unless lookup_reason
+      return false if story_likely_active?(event: event)
+
+      true
+    end
+
+    def transient_story_failure_reason?(value)
+      return true if value.include?("timeout")
+      return true if value.include?("timed_out")
+      return true if value.include?("connection")
+      return true if value.include?("network")
+      return true if value.include?("rate_limit")
+      return true if value.include?("rate limit")
+      return true if value.include?("http_429")
+      return true if value.include?("http_5")
+      return true if value.include?("api_exception")
+      return true if value.include?("request_exception")
+      return true if value.include?("empty_api_response")
+      return true if value.include?("eligibility_check_error")
 
       false
+    end
+
+    def story_likely_active?(event:)
+      return false unless event.present?
+
+      metadata = story_metadata(event: event)
+      expiring_at = parse_story_timestamp(metadata["expiring_at"])
+      return expiring_at > 2.minutes.ago if expiring_at.present?
+
+      taken_at = parse_story_timestamp(metadata["upload_time"] || metadata["taken_at"])
+      return taken_at > 22.hours.ago if taken_at.present?
+
+      false
+    rescue StandardError
+      false
+    end
+
+    def parse_story_timestamp(raw)
+      value = raw
+      return nil if value.blank?
+      return value if value.is_a?(Time)
+      return value.to_time if value.respond_to?(:to_time)
+
+      text = value.to_s.strip
+      return nil if text.blank?
+      return Time.at(text.to_i).utc if text.match?(/\A\d+\z/)
+
+      Time.iso8601(text)
+    rescue StandardError
+      nil
+    end
+
+    def normalize_story_id_token(value)
+      token = value.to_s.strip
+      return "" if token.blank?
+
+      return Regexp.last_match(1).to_s if token.match(%r{/stories/[A-Za-z0-9._]{1,40}/(\d+)(?:[/?#]|$)})
+      return Regexp.last_match(1).to_s if token.match(/\A(\d+)\z/)
+      return Regexp.last_match(1).to_s if token.match(/\A(\d+)_\d+\z/)
+      return Regexp.last_match(1).to_s if token.match(/:(\d+)(?::|$)/)
+
+      ""
+    rescue StandardError
+      ""
     end
 
     def quality_review_snapshot(event:, comment_text:, status:, reason:)

@@ -25,7 +25,7 @@ module LlmComment
       prepare_profile_context
       persist_profile_preparation_snapshot
       generate_comment
-      log_completion
+      log_pipeline_enqueued
 
       self
     rescue InstagramProfileEvent::LocalStoryIntelligenceUnavailableError => e
@@ -51,7 +51,7 @@ module LlmComment
         updated_at: Time.current
       )
 
-      log_completion(already_completed: true)
+      log_pipeline_enqueued(already_completed: true)
       self
     end
 
@@ -75,8 +75,19 @@ module LlmComment
       nil
     end
 
+    def enqueue_parallel_pipeline
+      @result = ParallelPipelineOrchestrator.new(
+        event: event,
+        provider: @provider,
+        model: @model,
+        requested_by: @requested_by,
+        source_job_id: Current.active_job_id
+      ).call
+    end
+
+    # Backward-compatible seam used by existing specs and callers.
     def generate_comment
-      @result = event.generate_llm_comment!(provider: @provider, model: @model)
+      enqueue_parallel_pipeline
     end
 
     def claim_generation_slot!
@@ -130,31 +141,32 @@ module LlmComment
       raise
     end
 
-    def log_completion(already_completed: false)
-      payload = build_completion_log_payload(already_completed: already_completed)
-      
+    def log_pipeline_enqueued(already_completed: false)
+      payload = build_pipeline_log_payload(already_completed: already_completed)
+
       Ops::StructuredLogger.info(
-        event: already_completed ? "llm_comment.already_completed" : "llm_comment.completed",
+        event: already_completed ? "llm_comment.already_completed" : "llm_comment.parallel_pipeline_enqueued",
         payload: payload
       )
     end
 
-    def build_completion_log_payload(already_completed:)
+    def build_pipeline_log_payload(already_completed:)
       base_payload = {
         event_id: event.id,
         instagram_profile_id: event.instagram_profile_id,
         requested_provider: @provider,
         requested_by: @requested_by
       }
+      result_payload = @result.is_a?(Hash) ? @result : {}
 
       if already_completed
         base_payload
       else
         base_payload.merge(
-          provider: event.llm_comment_provider,
-          model: event.llm_comment_model,
-          relevance_score: event.llm_comment_relevance_score,
-          source: @result[:source]
+          provider: @provider,
+          model: @model,
+          parallel_pipeline_run_id: result_payload[:run_id].to_s.presence,
+          pipeline_status: result_payload[:status].to_s.presence
         )
       end
     end

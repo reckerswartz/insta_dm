@@ -28,10 +28,8 @@
 
       <div class="actions-row">
         <%= button_to "Select This Account", select_instagram_account_path(@account), method: :post, class: "btn secondary", form: { data: { turbo: false } } %>
-        <%= link_to "Profiles", instagram_profiles_path, class: "btn" %>
-        <%= link_to "Feed Posts", instagram_posts_path, class: "btn secondary" %>
+        <%= link_to "Workspace Queue", actions_workspace_path, class: "btn" %>
         <%= link_to "Background Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
-        <%= link_to "Failure Logs", admin_background_job_failures_path, class: "btn secondary" %>
       </div>
     </div>
   </details>

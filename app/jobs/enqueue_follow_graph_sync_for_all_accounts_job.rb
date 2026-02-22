@@ -15,8 +15,15 @@ class EnqueueFollowGraphSyncForAllAccountsJob < ApplicationJob
     )
 
     enqueued = 0
+    scheduler_lease_skipped = 0
     batch[:accounts].each do |account|
       next if account.cookies.blank?
+
+      scheduler_lease = AutonomousSchedulerLease.reserve!(account: account, source: self.class.name)
+      unless scheduler_lease.reserved
+        scheduler_lease_skipped += 1
+        next
+      end
 
       run = account.sync_runs.create!(kind: "follow_graph", status: "queued")
       SyncFollowGraphJob.perform_later(instagram_account_id: account.id, sync_run_id: run.id)
@@ -40,6 +47,7 @@ class EnqueueFollowGraphSyncForAllAccountsJob < ApplicationJob
     {
       accounts_enqueued: enqueued,
       scanned_accounts: batch[:accounts].length,
+      scheduler_lease_skipped: scheduler_lease_skipped,
       continuation_job_id: continuation_job&.job_id
     }
   end

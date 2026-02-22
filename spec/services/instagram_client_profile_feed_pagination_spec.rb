@@ -68,7 +68,12 @@ RSpec.describe "InstagramClientProfileFeedPaginationTest" do
       timeline_pages[max_id]
     end
 
-    result = client.send(:fetch_home_feed_items_via_api_paginated, limit: 3, max_pages: 4)
+    result = client.send(
+      :fetch_home_feed_items_via_api_paginated,
+      limit: 3,
+      max_pages: 4,
+      inter_page_delay_seconds: 0.75
+    )
 
     assert_equal "api_timeline", result[:source]
     assert_equal 2, result[:pages_fetched]

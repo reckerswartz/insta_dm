@@ -65,11 +65,20 @@ Key recurring jobs:
   - `EnqueueFeedAutoEngagementForAllAccountsJob`
 - Recent profile post scan batch:
   - `EnqueueRecentProfilePostScansForAllAccountsJob`
-- Additional production jobs:
-  - `EnqueueFollowGraphSyncForAllAccountsJob`
-  - `EnqueueAvatarSyncForAllAccountsJob`
-  - `EnqueueProfileRefreshForAllAccountsJob`
-  - `PurgeExpiredInstagramPostMediaJob`
+
+Feed capture autonomy:
+
+- `EnqueueContinuousAccountProcessingJob` fans out to `ProcessInstagramAccountContinuouslyJob`.
+- `Pipeline::AccountProcessingCoordinator` enqueues `CaptureHomeFeedJob` whenever `continuous_processing_next_feed_sync_at` is due.
+- Default cadence target: every ~2 hours per account (`FEED_SYNC_INTERVAL`), with account-level jitter and local-AI health gating.
+- `delay_seconds` is applied as inter-page pacing for timeline pagination to spread feed API fetches within each capture run.
+
+Additional production jobs:
+
+- `EnqueueFollowGraphSyncForAllAccountsJob`
+- `EnqueueAvatarSyncForAllAccountsJob`
+- `EnqueueProfileRefreshForAllAccountsJob`
+- `PurgeExpiredInstagramPostMediaJob`
 
 ## Batched Scheduler Pattern
 
@@ -80,6 +89,11 @@ Jobs that fan out across accounts use `ScheduledAccountBatching`:
 - self-schedule continuation with cursor when `has_more`.
 
 This pattern prevents large one-shot queue spikes and keeps scheduling idempotent across large account sets.
+
+Follow graph sync safety:
+
+- Follow graph list collection stores per-account cursors and advances incrementally across runs.
+- Partial runs are non-destructive: relationship flags are only cleared when a full snapshot is confirmed from the start cursor.
 
 ## Failure Capture and Retry Pipeline
 

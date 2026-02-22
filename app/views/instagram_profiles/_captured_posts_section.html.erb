@@ -330,7 +330,7 @@
                 <% if download_url.present? %>
                   <a class="btn small secondary" href="<%= download_url %>" target="_blank" rel="noreferrer">Download</a>
                 <% end %>
-                <% if image_url.present? %>
+                <% if image_url.present? && is_video %>
                   <button
                     type="button"
                     class="btn btn-sm btn-primary"
@@ -359,7 +359,7 @@
                     data-suggestions-json="<%= h(suggestions.to_json) %>"
                     data-face-summary-json="<%= h(face_summary_payload.to_json) %>"
                   >
-                    View
+                    Details
                   </button>
                 <% end %>
                 <% if pp.ai_status == "running" %>

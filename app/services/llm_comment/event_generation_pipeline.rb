@@ -2,47 +2,52 @@
 
 module LlmComment
   class EventGenerationPipeline
-    def initialize(event:, provider:, model:)
+    def initialize(event:, provider:, model:, skip_media_stage_reporting: false)
       @event = event
       @provider = provider.to_s
       @model = model
+      @skip_media_stage_reporting = ActiveModel::Type::Boolean.new.cast(skip_media_stage_reporting)
     end
 
     def call
       return completed_result if event.has_llm_generated_comment?
 
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue nil
-      report_stage!(
-        stage: "ocr_analysis",
-        state: "running",
-        progress: 10,
-        message: "Running OCR extraction."
-      )
+      unless skip_media_stage_reporting?
+        report_stage!(
+          stage: "ocr_analysis",
+          state: "running",
+          progress: 10,
+          message: "Running OCR extraction."
+        )
+      end
       context = event.send(:build_comment_context)
-      report_stage!(
-        stage: "ocr_analysis",
-        state: "completed",
-        progress: 18,
-        message: "OCR extraction completed."
-      )
-      report_stage!(
-        stage: "vision_detection",
-        state: "completed",
-        progress: 24,
-        message: "Vision detection completed."
-      )
-      report_stage!(
-        stage: "face_recognition",
-        state: "completed",
-        progress: 30,
-        message: "Face recognition completed."
-      )
-      report_stage!(
-        stage: "metadata_extraction",
-        state: "completed",
-        progress: 36,
-        message: "Metadata extraction completed."
-      )
+      unless skip_media_stage_reporting?
+        report_stage!(
+          stage: "ocr_analysis",
+          state: "completed",
+          progress: 18,
+          message: "OCR extraction completed."
+        )
+        report_stage!(
+          stage: "vision_detection",
+          state: "completed",
+          progress: 24,
+          message: "Vision detection completed."
+        )
+        report_stage!(
+          stage: "face_recognition",
+          state: "completed",
+          progress: 30,
+          message: "Face recognition completed."
+        )
+        report_stage!(
+          stage: "metadata_extraction",
+          state: "completed",
+          progress: 36,
+          message: "Metadata extraction completed."
+        )
+      end
       local_intelligence = normalize_hash(context[:local_story_intelligence])
       validated_story_insights = normalize_hash(context[:validated_story_insights])
       generation_policy = normalize_hash(validated_story_insights[:generation_policy])
@@ -153,6 +158,10 @@ module LlmComment
 
     attr_reader :event, :provider, :model
 
+    def skip_media_stage_reporting?
+      @skip_media_stage_reporting
+    end
+
     def completed_result
       event.update_columns(
         llm_comment_status: "completed",
@@ -255,6 +264,7 @@ module LlmComment
           "source" => result[:source],
           "fallback_used" => ActiveModel::Type::Boolean.new.cast(result[:fallback_used]),
           "generation_status" => result[:status],
+          "llm_telemetry" => result[:llm_telemetry].is_a?(Hash) ? result[:llm_telemetry] : {},
           "technical_details" => technical_details,
           "local_story_intelligence" => context[:local_story_intelligence],
           "historical_story_context_used" => Array(context[:historical_story_context]).first(12),
