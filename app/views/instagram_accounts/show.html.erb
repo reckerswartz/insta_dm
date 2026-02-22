@@ -1,4 +1,6 @@
 <% content_for :title, @account.username %>
+<% actions_queue = @actions_todo_queue.is_a?(Hash) ? @actions_todo_queue : {} %>
+<% actions_queue_stats = actions_queue[:stats].is_a?(Hash) ? actions_queue[:stats] : {} %>
 
 <div class="page">
   <header class="page-header page-toolbar">
@@ -16,6 +18,31 @@
       <%= link_to "Workspace Queue", actions_workspace_path, class: "btn secondary" %>
     </div>
   </header>
+
+  <section class="card">
+    <h2>Current Status</h2>
+    <div class="stat-grid profile-overview-grid">
+      <div class="stat">
+        <div class="stat-label">Authentication</div>
+        <div class="stat-kv"><span class="muted">State</span><strong><%= @account.login_state.to_s.presence || "-" %></strong></div>
+        <div class="stat-kv"><span class="muted">Cookie auth</span><strong><%= @account.cookie_authenticated? ? "Valid" : "Needs attention" %></strong></div>
+        <div class="stat-kv"><span class="muted">Session cookie</span><strong><%= @account.sessionid_cookie_present? ? "Present" : "Missing" %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Latest Sync</div>
+        <div class="stat-kv"><span class="muted">Status</span><strong><%= @latest_sync_run&.status.to_s.presence || "No runs yet" %></strong></div>
+        <div class="stat-kv"><span class="muted">Started</span><strong><%= relative_time_with_tooltip(@latest_sync_run&.started_at) %></strong></div>
+        <div class="stat-kv"><span class="muted">Finished</span><strong><%= relative_time_with_tooltip(@latest_sync_run&.finished_at) %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Workspace Queue</div>
+        <div class="stat-kv"><span class="muted">Total</span><strong><%= actions_queue_stats[:total_items].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Ready</span><strong><%= actions_queue_stats[:ready_items].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Processing</span><strong><%= actions_queue_stats[:processing_items].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Failed</span><strong><%= actions_queue_stats[:failed_items].to_i %></strong></div>
+      </div>
+    </div>
+  </section>
 
   <%= render "account_health_auth_section" %>
 
@@ -72,17 +99,22 @@
     <div class="actions-row">
       <%= button_to "Sync Followers/Following (Background)", follow_graph_sync_path, method: :post %>
       <%= button_to "Sync Next 10 Stories", sync_profile_stories_instagram_account_path(@account, story_limit: InstagramAccountsController::STORY_SYNC_LIMIT), method: :post, class: "btn secondary" %>
-      <%= button_to "Sync Next 10 Stories (Auto Reply Enabled)", sync_stories_with_comments_instagram_account_path(@account, story_limit: InstagramAccountsController::STORY_SYNC_LIMIT), method: :post, class: "btn secondary" %>
-      <%= button_to "Sync All Stories (Continuous Auto Reply)", sync_all_stories_continuous_instagram_account_path(@account), method: :post, class: "btn secondary" %>
       <%= button_to "Run Continuous Processing Now", run_continuous_processing_instagram_account_path(@account), method: :post, class: "btn secondary" %>
-      <%= button_to "Download Missing Avatars (Background)", download_missing_avatars_instagram_profiles_path, method: :post, class: "btn secondary" %>
-      <%= button_to(capture_locked ? "Capture Feed (Queued)" : "Capture Feed (Background)",
-            feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20),
-            method: :post,
-            class: "btn secondary",
-            disabled: capture_locked,
-            form: { data: { turbo_submits_with: "Queueing..." } }) %>
     </div>
+    <details class="details-box mt-2">
+      <summary>Advanced workload actions</summary>
+      <div class="actions-row mt-2">
+        <%= button_to "Sync Next 10 Stories (Auto Reply Enabled)", sync_stories_with_comments_instagram_account_path(@account, story_limit: InstagramAccountsController::STORY_SYNC_LIMIT), method: :post, class: "btn secondary" %>
+        <%= button_to "Sync All Stories (Continuous Auto Reply)", sync_all_stories_continuous_instagram_account_path(@account), method: :post, class: "btn secondary" %>
+        <%= button_to "Download Missing Avatars (Background)", download_missing_avatars_instagram_profiles_path, method: :post, class: "btn secondary" %>
+        <%= button_to(capture_locked ? "Capture Feed (Queued)" : "Capture Feed (Background)",
+              feed_capture_path(rounds: 4, delay_seconds: 45, max_new: 20),
+              method: :post,
+              class: "btn secondary",
+              disabled: capture_locked,
+              form: { data: { turbo_submits_with: "Queueing..." } }) %>
+      </div>
+    </details>
     <p class="meta">
       <% if capture_locked && next_allowed_at.present? %>
         Feed capture is already queued/running. Next manual trigger is available <strong><%= relative_time_with_tooltip(next_allowed_at) %></strong>.

@@ -9,6 +9,8 @@ module Ai
     DEFAULT_TASK_FLAGS = {
       "analyze_visual" => true,
       "analyze_faces" => false,
+      "secondary_face_analysis" => true,
+      "secondary_only_on_ambiguous" => true,
       "run_ocr" => false,
       "run_video" => true,
       "run_metadata" => true,

@@ -12,10 +12,20 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class WhisperService:
     def __init__(self):
         self.models = {}
-        self.default_model = "base"
+        self.default_model = os.getenv("LOCAL_WHISPER_MODEL", "tiny").strip() or "tiny"
+        self.compute_type = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8").strip() or "int8"
+        self.allow_dynamic_model_loading = env_enabled("LOCAL_WHISPER_ALLOW_DYNAMIC_MODEL_LOADING", False)
         self._load_default_model()
     
     def _load_default_model(self):
@@ -26,7 +36,7 @@ class WhisperService:
                 self.models[self.default_model] = WhisperModel(
                     self.default_model,
                     device="cpu",
-                    compute_type="int8"  # Use int8 for lower memory usage
+                    compute_type=self.compute_type
                 )
                 logger.info(f"Whisper model '{self.default_model}' loaded successfully")
             else:
@@ -37,7 +47,7 @@ class WhisperService:
     def is_loaded(self) -> bool:
         return self.default_model in self.models
     
-    def transcribe(self, audio_path: str, model_size: str = "base") -> Dict[str, Any]:
+    def transcribe(self, audio_path: str, model_size: str = None) -> Dict[str, Any]:
         """
         Transcribe audio file using Whisper
         
@@ -49,21 +59,26 @@ class WhisperService:
             Dictionary with transcription text and metadata
         """
         try:
-            # Load model if not already loaded
-            if model_size not in self.models:
-                self._load_model(model_size)
+            requested_model = model_size or self.default_model
+            if requested_model not in self.models:
+                if requested_model != self.default_model and not self.allow_dynamic_model_loading:
+                    requested_model = self.default_model
+                if requested_model not in self.models:
+                    self._load_model(requested_model)
+
+            if requested_model not in self.models:
+                raise ValueError(f"Could not load Whisper model: {requested_model}")
             
-            if model_size not in self.models:
-                raise ValueError(f"Could not load Whisper model: {model_size}")
-            
-            model = self.models[model_size]
+            model = self.models[requested_model]
             
             # Transcribe audio
             segments, info = model.transcribe(
                 audio_path,
                 language="en",  # Specify English for better accuracy
-                beam_size=2,    # Smaller beam size for faster processing
-                vad_filter=True # Voice activity detection
+                beam_size=1,
+                best_of=1,
+                vad_filter=True,
+                condition_on_previous_text=False
             )
             
             # Collect transcription
@@ -95,7 +110,7 @@ class WhisperService:
                 'language': info.language,
                 'language_probability': info.language_probability,
                 'confidence': confidence,
-                'model': model_size
+                'model': requested_model
             }
             
         except Exception as e:
@@ -107,7 +122,7 @@ class WhisperService:
                 'language': 'unknown',
                 'language_probability': 0.0,
                 'confidence': 0.0,
-                'model': model_size,
+                'model': model_size or self.default_model,
                 'error': str(e)
             }
     
@@ -118,7 +133,7 @@ class WhisperService:
                 self.models[model_size] = WhisperModel(
                     model_size,
                     device="cpu",
-                    compute_type="int8"
+                    compute_type=self.compute_type
                 )
                 logger.info(f"Whisper model '{model_size}' loaded successfully")
         except Exception as e:

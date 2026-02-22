@@ -293,7 +293,7 @@ async def analyze_image(
 async def analyze_video(
     file: UploadFile = File(...),
     features: Optional[str] = "labels,faces,scenes",
-    sample_rate: Optional[int] = 2  # Sample every 2 seconds
+    sample_rate: Optional[int] = int(os.getenv("LOCAL_AI_VIDEO_SAMPLE_RATE_DEFAULT", "3"))
 ):
     """
     Analyze video with local AI models
@@ -320,8 +320,8 @@ async def analyze_video(
                 allowed_features=["labels", "faces", "scenes", "text"],
                 default_features=["labels", "faces", "scenes"]
             )
-            normalized_sample_rate = int(sample_rate or 2)
-            normalized_sample_rate = max(1, min(normalized_sample_rate, 10))
+            normalized_sample_rate = int(sample_rate or int(os.getenv("LOCAL_AI_VIDEO_SAMPLE_RATE_DEFAULT", "3")))
+            normalized_sample_rate = max(1, min(normalized_sample_rate, 12))
 
             if video_service is None:
                 results = empty_video_results(normalized_sample_rate)
@@ -355,7 +355,7 @@ async def analyze_video(
 @app.post("/transcribe/audio")
 async def transcribe_audio(
     file: UploadFile = File(...),
-    model: Optional[str] = "base"
+    model: Optional[str] = os.getenv("LOCAL_WHISPER_MODEL", "tiny")
 ):
     """
     Transcribe audio using local Whisper
@@ -428,58 +428,6 @@ async def get_face_embedding(file: UploadFile = File(...)):
         raise
     except Exception as e:
         logger.error(f"Face embedding error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/face/compare")
-async def compare_faces(
-    file1: UploadFile = File(...),
-    file2: UploadFile = File(...),
-    threshold: Optional[float] = 0.6
-):
-    """
-    Compare two faces and return similarity score
-    """
-    if not service_available(face_service):
-        raise HTTPException(status_code=503, detail="face_service_unavailable")
-
-    try:
-        # Read both images
-        img1_bytes = await file1.read()
-        img2_bytes = await file2.read()
-        
-        if not img1_bytes or not img2_bytes:
-            raise HTTPException(status_code=422, detail="empty_image_payload")
-        
-        try:
-            img1 = Image.open(io.BytesIO(img1_bytes))
-            img1.verify()
-            img1 = Image.open(io.BytesIO(img1_bytes))
-        except (UnidentifiedImageError, OSError) as e:
-            raise HTTPException(status_code=422, detail=f"invalid_or_corrupted_image_1: {str(e)}")
-            
-        try:
-            img2 = Image.open(io.BytesIO(img2_bytes))
-            img2.verify()
-            img2 = Image.open(io.BytesIO(img2_bytes))
-        except (UnidentifiedImageError, OSError) as e:
-            raise HTTPException(status_code=422, detail=f"invalid_or_corrupted_image_2: {str(e)}")
-        
-        opencv_img1 = cv2.cvtColor(np.array(img1), cv2.COLOR_RGB2BGR)
-        opencv_img2 = cv2.cvtColor(np.array(img2), cv2.COLOR_RGB2BGR)
-        
-        similarity = face_service.compare_faces(opencv_img1, opencv_img2, threshold)
-        
-        return {
-            "success": True,
-            "similarity": similarity,
-            "is_match": similarity > threshold,
-            "threshold": threshold
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Face comparison error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

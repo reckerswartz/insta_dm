@@ -43,7 +43,7 @@ RSpec.describe Ai::Providers::LocalProvider do
       super
     end
 
-    def should_run_legacy_media_analysis?(options:)
+    def should_run_local_media_preanalysis?(options:)
       true
     end
 

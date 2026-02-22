@@ -6,7 +6,7 @@ module Ai
   class OllamaClient
     BASE_URL = ENV.fetch("OLLAMA_URL", "http://localhost:11434").freeze
     DEFAULT_MODEL = Ai::ModelDefaults.base_model.freeze
-    DEFAULT_NUM_CTX = ENV.fetch("OLLAMA_NUM_CTX", "3072").to_i.clamp(1024, 32768)
+    DEFAULT_NUM_CTX = ENV.fetch("OLLAMA_NUM_CTX", "2048").to_i.clamp(1024, 32768)
     DEFAULT_NUM_THREAD = ENV["OLLAMA_NUM_THREAD"].to_i
     OPEN_TIMEOUT_SECONDS = ENV.fetch("OLLAMA_OPEN_TIMEOUT_SECONDS", "12").to_i.clamp(5, 60)
     READ_TIMEOUT_SECONDS = ENV.fetch("OLLAMA_READ_TIMEOUT_SECONDS", "240").to_i.clamp(30, 600)

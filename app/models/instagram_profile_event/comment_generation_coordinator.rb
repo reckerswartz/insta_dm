@@ -12,7 +12,9 @@ module InstagramProfileEvent::CommentGenerationCoordinator
     "context_matching" => { "group" => "context_enrichment", "label" => "Context Matching", "state" => "pending", "progress" => 0 },
     "prompt_construction" => { "group" => "comment_generation", "label" => "Prompt Construction", "state" => "pending", "progress" => 0 },
     "llm_generation" => { "group" => "comment_generation", "label" => "Generating Comments", "state" => "pending", "progress" => 0 },
-    "relevance_scoring" => { "group" => "comment_generation", "label" => "Relevance Scoring", "state" => "pending", "progress" => 0 }
+    "relevance_scoring" => { "group" => "comment_generation", "label" => "Relevance Scoring", "state" => "pending", "progress" => 0 },
+    "engagement_eligibility" => { "group" => "engagement", "label" => "Engagement Eligibility", "state" => "pending", "progress" => 0 },
+    "reply_send_action" => { "group" => "engagement", "label" => "Reply Send Action", "state" => "pending", "progress" => 0 }
   }.freeze
 
   included do

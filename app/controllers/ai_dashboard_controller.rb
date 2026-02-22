@@ -4,6 +4,11 @@ class AiDashboardController < ApplicationController
 
   def index
     @service_status = AiDashboard::HealthChecker.new(force_refresh: refresh_requested?).call
+    @ai_service_queue_metrics = Ops::AiServiceQueueMetrics.snapshot
+    @runtime_audit = AiDashboard::RuntimeAudit.new(
+      service_status: @service_status,
+      queue_metrics: @ai_service_queue_metrics
+    ).call
     @test_results = {}
   end
 

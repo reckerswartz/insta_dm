@@ -222,8 +222,8 @@ module Ai
       row = profile&.latest_analysis&.ai_provider_setting
       row&.config_value("ollama_comment_model").to_s.presence ||
         row&.config_value("ollama_fast_model").to_s.presence ||
-        row&.config_value("ollama_vision_model").to_s.presence ||
         row&.config_value("ollama_model").to_s.presence ||
+        row&.config_value("ollama_vision_model").to_s.presence ||
         ENV.fetch("OLLAMA_COMMENT_MODEL", Ai::ModelDefaults.comment_model)
     rescue StandardError
       ENV.fetch("OLLAMA_COMMENT_MODEL", Ai::ModelDefaults.comment_model)

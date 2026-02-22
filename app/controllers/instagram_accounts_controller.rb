@@ -321,13 +321,27 @@ class InstagramAccountsController < ApplicationController
   end
 
   def resend_story_reply
-    result = InstagramAccounts::StoryReplyResendService.new(
-      account: @account,
-      event_id: params.require(:event_id),
-      comment_text: params[:comment_text]
-    ).call
+    target_event = InstagramProfileEvent.includes(:instagram_profile).find_by(id: params.require(:event_id))
+    unless target_event&.story_archive_item? && target_event.instagram_profile&.instagram_account_id == @account.id
+      return render json: { error: "Event not found or not accessible", status: "failed" }, status: :not_found
+    end
 
-    render json: result.payload, status: result.status
+    job = SendStoryReplyEngagementJob.perform_later(
+      instagram_account_id: @account.id,
+      event_id: target_event.id,
+      comment_text: params[:comment_text].to_s,
+      requested_by: "manual_story_archive_send"
+    )
+
+    render json: {
+      success: true,
+      status: "queued",
+      message: "Send action queued.",
+      reason: "queued",
+      event_id: target_event.id,
+      job_id: job.job_id,
+      queue_name: job.queue_name
+    }, status: :accepted
   end
 
   def technical_details

@@ -1,6 +1,7 @@
 require "sidekiq"
 require "sidekiq/cron/job"
 require Rails.root.join("app/services/ops/ai_service_queue_registry")
+require Rails.root.join("app/services/ops/sidekiq_job_state_tracker")
 require Rails.root.join("app/services/ops/structured_logger")
 
 redis_url = ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -130,7 +131,12 @@ Sidekiq.configure_server do |config|
   end
 
   # Add middleware for job monitoring
+  config.client_middleware do |chain|
+    chain.add Ops::SidekiqJobStateTracker::ClientMiddleware
+  end
+
   config.server_middleware do |chain|
+    chain.add Ops::SidekiqJobStateTracker::ServerMiddleware
     chain.add SidekiqJobMonitor
   end
 
@@ -149,6 +155,9 @@ end
 
 Sidekiq.configure_client do |config|
   config.redis = { url: redis_url, reconnect_attempts: 3, network_timeout: 5 }
+  config.client_middleware do |chain|
+    chain.add Ops::SidekiqJobStateTracker::ClientMiddleware
+  end
 end
 
 # Error categorization helper

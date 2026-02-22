@@ -11,6 +11,13 @@ development:
     active_job: true
     queue: sync
     cron: "*/5 * * * *"
+  ai_feature_evidence_snapshot:
+    class: AnalyzeAiFeatureEvidenceJob
+    active_job: true
+    queue: maintenance
+    args:
+      - days: 14
+    cron: "10 */6 * * *"
   queue_health_check:
     class: CheckQueueHealthJob
     active_job: true
@@ -75,6 +82,13 @@ production:
     active_job: true
     queue: sync
     cron: "*/5 * * * *"
+  ai_feature_evidence_snapshot:
+    class: AnalyzeAiFeatureEvidenceJob
+    active_job: true
+    queue: maintenance
+    args:
+      - days: 14
+    cron: "10 */6 * * *"
   queue_health_check:
     class: CheckQueueHealthJob
     active_job: true

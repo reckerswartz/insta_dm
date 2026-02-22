@@ -84,14 +84,7 @@ class StoryCommentPipelineJob < ApplicationJob
   end
 
   def step_progress(step, state)
-    map = {
-      "ocr_analysis" => { running: 14, completed: 26, failed: 26 },
-      "vision_detection" => { running: 16, completed: 30, failed: 30 },
-      "face_recognition" => { running: 18, completed: 34, failed: 34 },
-      "metadata_extraction" => { running: 20, completed: 38, failed: 38 }
-    }
-    row = map[step.to_s] || {}
-    row[state.to_s.to_sym] || 20
+    LlmComment::StepRegistry.progress_for(step: step, state: state)
   end
 
   def truncated_error(error)

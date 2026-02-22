@@ -1,0 +1,33 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../config/environment"
+
+days = ENV.fetch("DAYS", "14").to_i.clamp(1, 120)
+report = Ops::AiFeatureEvidenceService.new(days: days).call
+
+puts "AI Feature Evidence Report"
+puts "Window: #{report[:window_start].iso8601} -> #{report[:window_end].iso8601} (#{days} days)"
+puts
+puts format("%-30s %-34s %-8s %-8s %-10s %-30s", "Provider", "Operation", "Calls", "Fail", "Fail %", "Recommendation")
+puts "-" * 132
+
+Array(report[:rows]).each do |row|
+  failure_ratio = row[:failure_ratio].to_f * 100.0
+  fail_pct = format("%.1f%%", failure_ratio)
+  puts format(
+    "%-30s %-34s %-8d %-8d %-10s %-30s",
+    row[:provider],
+    row[:operation],
+    row[:calls].to_i,
+    row[:failures].to_i,
+    fail_pct,
+    row[:recommendation]
+  )
+end
+
+puts
+puts "Guidance:"
+puts "- `remove_candidate_no_usage`: no runtime evidence in window; safe candidate for removal backlog."
+puts "- `improve_candidate_high_failure`: used but unstable; improve before removing."
+puts "- `keep_active`: actively used with acceptable stability."

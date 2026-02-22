@@ -29,8 +29,17 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class OCRService:
     MIN_CONFIDENCE = float(os.getenv("LOCAL_OCR_MIN_CONFIDENCE", "0.35"))
+    ENABLE_PADDLE_OCR = env_enabled("LOCAL_AI_ENABLE_PADDLE_OCR", True)
+    ENABLE_EASY_OCR = env_enabled("LOCAL_AI_ENABLE_EASY_OCR", False)
 
     def __init__(self):
         self.paddle_ocr = None
@@ -41,7 +50,7 @@ class OCRService:
     def _load_models(self):
         """Load OCR models"""
         try:
-            if PADDLEOCR_AVAILABLE:
+            if self.ENABLE_PADDLE_OCR and PADDLEOCR_AVAILABLE:
                 # Keep angle classifier for rotated text; runtime fallback handles API differences.
                 self.paddle_ocr = PaddleOCR(use_angle_cls=True, lang="en")
                 logger.info("PaddleOCR loaded successfully")
@@ -50,7 +59,7 @@ class OCRService:
             self.paddle_ocr = None
 
         try:
-            if EASYOCR_AVAILABLE:
+            if self.ENABLE_EASY_OCR and EASYOCR_AVAILABLE:
                 self.easy_reader = easyocr.Reader(["en"])
                 logger.info("EasyOCR loaded successfully")
         except Exception as e:

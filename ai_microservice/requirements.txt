@@ -14,7 +14,6 @@ insightface==0.2.1
 # OCR
 paddlepaddle>=3.2.0
 paddleocr>=2.8.0
-easyocr==1.7.0
 
 # Audio processing
 faster-whisper>=1.0.0

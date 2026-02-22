@@ -6,32 +6,6 @@
 module JobSafetyImprovements
   extend ActiveSupport::Concern
 
-  included do
-    # Add retry logic for transient errors
-    retry_on ActiveRecord::ConnectionTimeoutError, wait: :exponentially_longer, attempts: 3
-    retry_on Net::ReadTimeout, Net::OpenTimeout, wait: :exponentially_longer, attempts: 3
-    retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :exponentially_longer, attempts: 3
-    
-    # Discard on non-recoverable errors
-    discard_on ActiveRecord::RecordNotUnique
-    discard_on Instagram::AuthenticationRequiredError
-    
-    # Discard on record not found errors with proper logging
-    discard_on ActiveRecord::RecordNotFound do |job, error|
-      context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
-      Ops::StructuredLogger.warn(
-        event: "job.record_not_found_discarded",
-        payload: {
-          job_class: job.class.name,
-          error_message: error.message,
-          instagram_account_id: context[:instagram_account_id],
-          instagram_profile_id: context[:instagram_profile_id],
-          instagram_profile_post_id: context[:instagram_profile_post_id]
-        }
-      )
-    end
-  end
-
   class_methods do
     def safe_find_record(klass, id, context = {})
       return nil if id.blank?

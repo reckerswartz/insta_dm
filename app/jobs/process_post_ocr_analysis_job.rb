@@ -1,6 +1,6 @@
 require "timeout"
 
-class ProcessPostOcrAnalysisJob < PostAnalysisPipelineJob
+class ProcessPostOcrAnalysisJob < PostAnalysisStepJob
   queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:ocr_analysis)
 
   MAX_DEFER_ATTEMPTS = ENV.fetch("AI_OCR_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)
@@ -9,157 +9,70 @@ class ProcessPostOcrAnalysisJob < PostAnalysisPipelineJob
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
 
-  def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, defer_attempt: 0)
-    enqueue_finalizer = true
-    context = load_pipeline_context!(
-      instagram_account_id: instagram_account_id,
-      instagram_profile_id: instagram_profile_id,
-      instagram_profile_post_id: instagram_profile_post_id,
-      pipeline_run_id: pipeline_run_id
-    )
-    return unless context
-
-    account = context[:account]
-    post = context[:post]
-    pipeline_state = context[:pipeline_state]
-    if pipeline_state.pipeline_terminal?(run_id: pipeline_run_id) || pipeline_state.step_terminal?(run_id: pipeline_run_id, step: "ocr")
-      enqueue_finalizer = false
-      Ops::StructuredLogger.info(
-        event: "ai.ocr_analysis.skipped_terminal",
-        payload: {
-          active_job_id: job_id,
-          instagram_account_id: account.id,
-          instagram_profile_id: context[:profile].id,
-          instagram_profile_post_id: post.id,
-          pipeline_run_id: pipeline_run_id
-        }
-      )
-      return
-    end
-
-    unless resource_available?(defer_attempt: defer_attempt, context: context, pipeline_run_id: pipeline_run_id)
-      return
-    end
-
-    pipeline_state.mark_step_running!(
-      run_id: pipeline_run_id,
-      step: "ocr",
-      queue_name: queue_name,
-      active_job_id: job_id
-    )
-
-    reused = reuse_ocr_from_face_metadata(post: post)
-    result =
-      if reused
-        reused
-      else
-        context_builder = Ai::PostAnalysisContextBuilder.new(profile: context[:profile], post: post)
-        image_payload = context_builder.detection_image_payload
-        if ActiveModel::Type::Boolean.new.cast(image_payload[:skipped])
-          {
-            skipped: true,
-            ocr_text: nil,
-            ocr_blocks: [],
-            metadata: {
-              source: "post_ocr_service",
-              reason: image_payload[:reason].to_s.presence || "image_payload_unavailable"
-            }
-          }
-        else
-          Timeout.timeout(ocr_timeout_seconds) do
-            Ai::PostOcrService.new.extract_from_image_bytes(
-              image_bytes: image_payload[:image_bytes],
-              usage_context: {
-                workflow: "post_analysis_pipeline",
-                task: "ocr",
-                post_id: post.id,
-                instagram_account_id: account.id
-              }
-            )
-          end
-        end
-      end
-
-    persist_ocr_result!(post: post, result: result)
-
-    pipeline_state.mark_step_completed!(
-      run_id: pipeline_run_id,
-      step: "ocr",
-      status: "succeeded",
-      result: {
-        skipped: ActiveModel::Type::Boolean.new.cast(result[:skipped]),
-        text_present: result[:ocr_text].to_s.present?,
-        ocr_blocks_count: Array(result[:ocr_blocks]).length,
-        source: result.dig(:metadata, :source) || result.dig("metadata", "source")
-      }.compact
-    )
-  rescue StandardError => e
-    context&.dig(:pipeline_state)&.mark_step_completed!(
-      run_id: pipeline_run_id,
-      step: "ocr",
-      status: "failed",
-      error: format_error(e),
-      result: {
-        reason: "ocr_analysis_failed"
-      }
-    )
-    raise
-  ensure
-    if context && enqueue_finalizer
-      enqueue_pipeline_finalizer(
-        account: context[:account],
-        profile: context[:profile],
-        post: context[:post],
-        pipeline_run_id: pipeline_run_id
-      )
-    end
-  end
-
   private
 
-  def resource_available?(defer_attempt:, context:, pipeline_run_id:)
-    guard = Ops::ResourceGuard.allow_ai_task?(task: "ocr", queue_name: queue_name, critical: false)
-    return true if ActiveModel::Type::Boolean.new.cast(guard[:allow])
+  def step_key
+    "ocr"
+  end
 
-    if defer_attempt.to_i >= MAX_DEFER_ATTEMPTS
-      context[:pipeline_state].mark_step_completed!(
-        run_id: pipeline_run_id,
-        step: "ocr",
-        status: "failed",
-        error: "resource_guard_exhausted: #{guard[:reason]}",
-        result: {
-          reason: "resource_constraints",
-          snapshot: guard[:snapshot]
+  def resource_task_name
+    "ocr"
+  end
+
+  def max_defer_attempts
+    MAX_DEFER_ATTEMPTS
+  end
+
+  def timeout_seconds
+    ocr_timeout_seconds
+  end
+
+  def step_failure_reason
+    "ocr_analysis_failed"
+  end
+
+  def perform_step!(context:, pipeline_run_id:, options: {})
+    account = context[:account]
+    post = context[:post]
+
+    result = reuse_ocr_from_face_metadata(post: post)
+    unless result
+      context_builder = Ai::PostAnalysisContextBuilder.new(profile: context[:profile], post: post)
+      image_payload = context_builder.detection_image_payload
+      result = if ActiveModel::Type::Boolean.new.cast(image_payload[:skipped])
+        {
+          skipped: true,
+          ocr_text: nil,
+          ocr_blocks: [],
+          metadata: {
+            source: "post_ocr_service",
+            reason: image_payload[:reason].to_s.presence || "image_payload_unavailable"
+          }
         }
-      )
-      return false
+      else
+        Ai::PostOcrService.new.extract_from_image_bytes(
+          image_bytes: image_payload[:image_bytes],
+          usage_context: {
+            workflow: "post_analysis_pipeline",
+            task: "ocr",
+            post_id: post.id,
+            instagram_account_id: account.id
+          }
+        )
+      end
     end
 
-    retry_seconds = guard[:retry_in_seconds].to_i
-    retry_seconds = 20 if retry_seconds <= 0
+    persist_ocr_result!(post: post, result: result)
+    result
+  end
 
-    context[:pipeline_state].mark_step_queued!(
-      run_id: pipeline_run_id,
-      step: "ocr",
-      queue_name: queue_name,
-      active_job_id: job_id,
-      result: {
-        reason: "resource_constrained",
-        defer_attempt: defer_attempt.to_i,
-        retry_in_seconds: retry_seconds,
-        snapshot: guard[:snapshot]
-      }
-    )
-
-    self.class.set(wait: retry_seconds.seconds).perform_later(
-      instagram_account_id: context[:account].id,
-      instagram_profile_id: context[:profile].id,
-      instagram_profile_post_id: context[:post].id,
-      pipeline_run_id: pipeline_run_id,
-      defer_attempt: defer_attempt.to_i + 1
-    )
-
-    false
+  def step_completion_result(raw_result:, context:, options: {})
+    {
+      skipped: ActiveModel::Type::Boolean.new.cast(raw_result[:skipped]),
+      text_present: raw_result[:ocr_text].to_s.present?,
+      ocr_blocks_count: Array(raw_result[:ocr_blocks]).length,
+      source: raw_result.dig(:metadata, :source) || raw_result.dig("metadata", "source")
+    }.compact
   end
 
   def reuse_ocr_from_face_metadata(post:)

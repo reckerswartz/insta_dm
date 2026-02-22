@@ -1,6 +1,6 @@
 require "timeout"
 
-class ProcessPostFaceAnalysisJob < PostAnalysisPipelineJob
+class ProcessPostFaceAnalysisJob < PostAnalysisStepJob
   queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:face_analysis)
   MAX_DEFER_ATTEMPTS = ENV.fetch("AI_FACE_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)
 
@@ -8,129 +8,49 @@ class ProcessPostFaceAnalysisJob < PostAnalysisPipelineJob
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
 
-  def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, defer_attempt: 0)
-    enqueue_finalizer = true
-    context = load_pipeline_context!(
-      instagram_account_id: instagram_account_id,
-      instagram_profile_id: instagram_profile_id,
-      instagram_profile_post_id: instagram_profile_post_id,
-      pipeline_run_id: pipeline_run_id
-    )
-    return unless context
+  private
 
-    pipeline_state = context[:pipeline_state]
-    post = context[:post]
-    if pipeline_state.pipeline_terminal?(run_id: pipeline_run_id) || pipeline_state.step_terminal?(run_id: pipeline_run_id, step: "face")
-      enqueue_finalizer = false
-      Ops::StructuredLogger.info(
-        event: "ai.face_analysis.skipped_terminal",
-        payload: {
-          active_job_id: job_id,
-          instagram_account_id: context[:account].id,
-          instagram_profile_id: context[:profile].id,
-          instagram_profile_post_id: post.id,
-          pipeline_run_id: pipeline_run_id
-        }
-      )
-      return
-    end
-
-    unless resource_available?(defer_attempt: defer_attempt, context: context, pipeline_run_id: pipeline_run_id)
-      return
-    end
-
-    pipeline_state.mark_step_running!(
-      run_id: pipeline_run_id,
-      step: "face",
-      queue_name: queue_name,
-      active_job_id: job_id
-    )
-
-    result = Timeout.timeout(face_timeout_seconds) do
-      PostFaceRecognitionService.new.process!(post: post)
-    end
-
-    pipeline_state.mark_step_completed!(
-      run_id: pipeline_run_id,
-      step: "face",
-      status: "succeeded",
-      result: {
-        skipped: ActiveModel::Type::Boolean.new.cast(result[:skipped]),
-        face_count: result[:face_count].to_i,
-        reason: result[:reason].to_s,
-        matched_people_count: Array(result[:matched_people]).length
-      }
-    )
-  rescue StandardError => e
-    context&.dig(:pipeline_state)&.mark_step_completed!(
-      run_id: pipeline_run_id,
-      step: "face",
-      status: "failed",
-      error: format_error(e),
-      result: {
-        reason: "face_analysis_failed"
-      }
-    )
-    raise
-  ensure
-    if context && enqueue_finalizer
-      enqueue_pipeline_finalizer(
-        account: context[:account],
-        profile: context[:profile],
-        post: context[:post],
-        pipeline_run_id: pipeline_run_id
-      )
-    end
+  def step_key
+    "face"
   end
 
-  private
+  def resource_task_name
+    "face"
+  end
+
+  def max_defer_attempts
+    MAX_DEFER_ATTEMPTS
+  end
+
+  def timeout_seconds
+    face_timeout_seconds
+  end
+
+  def step_failure_reason
+    "face_analysis_failed"
+  end
+
+  def terminal_blocked?(pipeline_state:, pipeline_run_id:, options: {})
+    return false if ActiveModel::Type::Boolean.new.cast(options[:allow_terminal_pipeline])
+
+    pipeline_state.pipeline_terminal?(run_id: pipeline_run_id)
+  end
+
+  def perform_step!(context:, pipeline_run_id:, options: {})
+    PostFaceRecognitionService.new.process!(post: context[:post])
+  end
+
+  def step_completion_result(raw_result:, context:, options: {})
+    {
+      secondary_run: ActiveModel::Type::Boolean.new.cast(options[:secondary_run]),
+      skipped: ActiveModel::Type::Boolean.new.cast(raw_result[:skipped]),
+      face_count: raw_result[:face_count].to_i,
+      reason: raw_result[:reason].to_s,
+      matched_people_count: Array(raw_result[:matched_people]).length
+    }
+  end
 
   def face_timeout_seconds
     ENV.fetch("AI_FACE_TIMEOUT_SECONDS", 180).to_i.clamp(20, 420)
-  end
-
-  def resource_available?(defer_attempt:, context:, pipeline_run_id:)
-    guard = Ops::ResourceGuard.allow_ai_task?(task: "face", queue_name: queue_name, critical: false)
-    return true if ActiveModel::Type::Boolean.new.cast(guard[:allow])
-
-    if defer_attempt.to_i >= MAX_DEFER_ATTEMPTS
-      context[:pipeline_state].mark_step_completed!(
-        run_id: pipeline_run_id,
-        step: "face",
-        status: "failed",
-        error: "resource_guard_exhausted: #{guard[:reason]}",
-        result: {
-          reason: "resource_constraints",
-          snapshot: guard[:snapshot]
-        }
-      )
-      return false
-    end
-
-    retry_seconds = guard[:retry_in_seconds].to_i
-    retry_seconds = 20 if retry_seconds <= 0
-
-    context[:pipeline_state].mark_step_queued!(
-      run_id: pipeline_run_id,
-      step: "face",
-      queue_name: queue_name,
-      active_job_id: job_id,
-      result: {
-        reason: "resource_constrained",
-        defer_attempt: defer_attempt.to_i,
-        retry_in_seconds: retry_seconds,
-        snapshot: guard[:snapshot]
-      }
-    )
-
-    self.class.set(wait: retry_seconds.seconds).perform_later(
-      instagram_account_id: context[:account].id,
-      instagram_profile_id: context[:profile].id,
-      instagram_profile_post_id: context[:post].id,
-      pipeline_run_id: pipeline_run_id,
-      defer_attempt: defer_attempt.to_i + 1
-    )
-
-    false
   end
 end

@@ -1,10 +1,19 @@
 <% content_for :title, "AI Services" %>
+<% runtime_audit = @runtime_audit.is_a?(Hash) ? @runtime_audit : {} %>
+<% architecture = runtime_audit[:architecture].is_a?(Hash) ? runtime_audit[:architecture] : {} %>
+<% concurrent_services = Array(runtime_audit[:concurrent_services]) %>
+<% cleanup_candidates = Array(runtime_audit[:cleanup_candidates]) %>
+<% totals = runtime_audit[:totals].is_a?(Hash) ? runtime_audit[:totals] : {} %>
+<% configured_models = architecture[:configured_models].is_a?(Hash) ? architecture[:configured_models] : {} %>
+<% available_models = Array(architecture[:ollama_available_models]) %>
+<% unused_models = Array(architecture[:unused_ollama_models]) %>
+<% lightweight_controls = architecture[:lightweight_controls].is_a?(Hash) ? architecture[:lightweight_controls] : {} %>
 
 <div class="page">
   <header class="page-header page-toolbar">
     <div class="page-toolbar-main">
       <h1>AI Services</h1>
-      <p class="meta">Run service checks and view response payloads without leaving the dashboard.</p>
+      <p class="meta">Current local AI runtime status, concurrent lanes, and cleanup candidates.</p>
     </div>
     <div class="page-toolbar-actions">
       <%= link_to "Dashboard", instagram_accounts_path, class: "btn secondary" %>
@@ -13,13 +22,13 @@
   </header>
 
   <section class="card">
-    <h2>Service Status</h2>
+    <h2>Local AI Stack Status</h2>
 
     <div id="service-status" class="service-grid">
       <% if @service_status[:status] == "online" %>
         <div class="status-indicator online">
           <div>
-            <strong>AI microservice online</strong>
+            <strong>Local AI stack online</strong>
             <div class="status-time">
               <%= relative_time_with_tooltip(@service_status[:last_check]) %>
               <% if @service_status[:stale] %>
@@ -33,20 +42,25 @@
         </div>
 
         <% @service_status[:services].each do |service, active| %>
+          <% default_test = get_default_test_for_service(service) %>
           <div class="service-item <%= active ? "active" : "inactive" %>">
             <div class="service-info">
-              <span class="service-name"><%= service.capitalize %></span>
+              <span class="service-name"><%= service.to_s.capitalize %></span>
               <span class="service-status"><%= active ? "Active" : "Inactive" %></span>
             </div>
-            <button class="btn btn-small test-service-btn" data-service="<%= service %>" data-test="<%= get_default_test_for_service(service) %>">
-              Run test
-            </button>
+            <% if default_test.present? %>
+              <button class="btn btn-small test-service-btn" data-service="<%= service %>" data-test="<%= default_test %>">
+                Run test
+              </button>
+            <% else %>
+              <span class="meta">No direct test</span>
+            <% end %>
           </div>
         <% end %>
       <% else %>
         <div class="status-indicator offline">
           <div>
-            <strong>AI microservice offline</strong>
+            <strong>Local AI stack offline</strong>
             <div class="status-time">
               <%= relative_time_with_tooltip(@service_status[:last_check]) %>
               <% if @service_status[:stale] %>
@@ -60,7 +74,7 @@
         </div>
         <div class="error-message">
           <strong>Error:</strong> <%= @service_status[:message] %>
-          <p class="hint mb-0">Ensure the microservice is running on <code>localhost:8000</code>.</p>
+          <p class="hint mb-0">Verify Ollama and local microservice endpoints are reachable.</p>
         </div>
       <% end %>
     </div>
@@ -69,6 +83,154 @@
       <button id="refresh-status" class="btn btn-secondary">Refresh status</button>
       <button id="test-all-services" class="btn btn-primary">Run all tests</button>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>Runtime Architecture</h2>
+    <div class="info-grid ai-runtime-grid">
+      <div class="info-item">
+        <h4>Policy</h4>
+        <p class="mb-1">
+          Microservice:
+          <code>enabled=<%= architecture[:microservice_enabled] %></code>
+          <code>required=<%= architecture[:microservice_required] %></code>
+        </p>
+        <p class="mb-0">
+          Stack status:
+          <strong><%= architecture[:stack_status].to_s.presence || "unknown" %></strong>
+          |
+          Ollama: <strong><%= architecture[:ollama_ok] ? "reachable" : "unreachable" %></strong>
+        </p>
+      </div>
+
+      <div class="info-item">
+        <h4>Configured Models</h4>
+        <p class="mb-1">
+          <% if configured_models.any? %>
+            <% configured_models.each do |role, model_name| %>
+              <code><%= role %>:<%= model_name %></code>
+            <% end %>
+          <% else %>
+            <span class="meta">No configured models found.</span>
+          <% end %>
+        </p>
+        <p class="mb-0">
+          Installed models:
+          <% if available_models.any? %>
+            <%= available_models.join(", ") %>
+          <% else %>
+            <span class="meta">none detected</span>
+          <% end %>
+        </p>
+      </div>
+
+      <div class="info-item">
+        <h4>Lightweight Controls</h4>
+        <p class="mb-1">
+          <code>local_provider_lightweight=<%= lightweight_controls[:local_provider_lightweight_mode] %></code>
+          <code>post_video_lightweight=<%= lightweight_controls[:post_video_lightweight_mode] %></code>
+        </p>
+        <p class="mb-0">
+          <code>skip_dynamic_with_audio=<%= lightweight_controls[:skip_dynamic_vision_when_audio_present] %></code>
+          <code>frame_sample_limit=<%= lightweight_controls[:post_video_frame_sample_limit] %></code>
+          <code>dynamic_keyframes=<%= lightweight_controls[:post_video_dynamic_keyframe_limit] %></code>
+        </p>
+      </div>
+    </div>
+
+    <% if unused_models.any? %>
+      <div class="runtime-note warning mt-2">
+        <strong>Unused local models detected:</strong>
+        <%= unused_models.join(", ") %>
+      </div>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Concurrent AI Lanes</h2>
+    <p class="meta mb-1">
+      Backend: <strong><%= runtime_audit[:queue_backend].to_s.presence || "unknown" %></strong>
+      | Total lanes: <strong><%= totals[:total_lanes].to_i %></strong>
+      | Active lanes: <strong><%= totals[:active_lanes].to_i %></strong>
+      | Idle lanes: <strong><%= totals[:idle_lanes].to_i %></strong>
+    </p>
+    <p class="meta mt-0">Captured at <%= runtime_audit[:captured_at].to_s.presence || "-" %></p>
+
+    <% if concurrent_services.any? %>
+      <div class="table-scroll">
+        <table class="table ai-runtime-table">
+          <thead>
+            <tr>
+              <th>Service</th>
+              <th>Queue</th>
+              <th>Concurrency</th>
+              <th>Pending</th>
+              <th>API Calls (24h)</th>
+              <th>Failures (24h)</th>
+              <th>Tokens (24h)</th>
+              <th>Job Classes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% concurrent_services.each do |row| %>
+              <tr class="<%= row[:active] ? "runtime-row-active" : "runtime-row-idle" %>">
+                <td>
+                  <strong><%= row[:service_name] %></strong>
+                  <div class="meta"><%= row[:category].to_s.humanize %></div>
+                </td>
+                <td><code><%= row[:queue_name] %></code></td>
+                <td><code><%= row[:configured_concurrency] %></code></td>
+                <td><%= row[:queue_pending].to_i %></td>
+                <td><%= row[:api_calls_24h].to_i %></td>
+                <td><%= row[:recent_failures_24h].to_i %></td>
+                <td><%= row[:api_total_tokens_24h].to_i %></td>
+                <td>
+                  <span><%= row[:job_class_count].to_i %> registered</span>
+                  <% sample_rows = Array(row[:sampled_job_classes]) %>
+                  <% if sample_rows.any? %>
+                    <div class="meta">
+                      <% sample_rows.first(2).each do |entry| %>
+                        <code><%= entry[:key] %>=<%= entry[:count] %></code>
+                      <% end %>
+                    </div>
+                  <% end %>
+                </td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No AI lane metrics available.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Legacy & Cleanup Candidates</h2>
+    <% if cleanup_candidates.any? %>
+      <div class="runtime-candidate-grid">
+        <% cleanup_candidates.each do |candidate| %>
+          <% status = candidate[:status].to_s %>
+          <% status_class = if status == "safe_to_remove"
+            "candidate-remove"
+          elsif status == "tune_concurrency"
+            "candidate-tune"
+          else
+            "candidate-keep"
+          end %>
+          <div class="runtime-candidate <%= status_class %>">
+            <div class="runtime-candidate-head">
+              <strong><%= candidate[:title] %></strong>
+              <span class="pill"><%= status.humanize %></span>
+            </div>
+            <p class="meta mb-1">Evidence: <%= candidate[:evidence].to_s.presence || "-" %></p>
+            <p class="mb-0"><%= candidate[:recommended_action] %></p>
+          </div>
+        <% end %>
+      </div>
+    <% else %>
+      <p class="meta">No cleanup candidates detected.</p>
+    <% end %>
   </section>
 
   <section class="card">
@@ -113,7 +275,6 @@
         <div class="test-list">
           <button class="btn btn-small test-service-btn" data-service="face" data-test="detection">Face detection</button>
           <button class="btn btn-small test-service-btn" data-service="face" data-test="embedding">Face embedding</button>
-          <button class="btn btn-small test-service-btn" data-service="face" data-test="comparison">Face comparison</button>
         </div>
       </div>
 
@@ -145,14 +306,14 @@
     <div class="info-grid">
       <div class="info-item">
         <h4>Configuration</h4>
-        <p class="mb-1">Service endpoint: <code>localhost:8000</code></p>
-        <p class="mb-0">Vision, face, OCR, whisper, and video services are supported.</p>
+        <p class="mb-1">Microservice endpoint: <code><%= Ai::LocalMicroserviceClient::BASE_URL %></code></p>
+        <p class="mb-0">Ollama endpoint: <code><%= Ai::OllamaClient::BASE_URL %></code></p>
       </div>
 
       <div class="info-item">
         <h4>Performance</h4>
-        <p class="mb-1">Services run locally for low-latency processing.</p>
-        <p class="mb-0">Model warm-up happens during service startup.</p>
+        <p class="mb-1">Pipelines prioritize lightweight pre-analysis and key-frame sampling.</p>
+        <p class="mb-0">Concurrent Sidekiq lanes are isolated for local hardware stability.</p>
       </div>
 
       <div class="info-item">

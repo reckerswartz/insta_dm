@@ -50,7 +50,7 @@ Related reference:
 2. Routes image vs video branch.
 3. Video branch runs frame-change classification:
    - static-video => image-style processing from representative frame
-   - dynamic-video => frame extraction + per-frame detection + audio extraction + transcription
+   - dynamic-video => lightweight key-frame sampling + audio extraction + transcription (audio/metadata-first when full visual pass is unnecessary)
 4. Persists face detections into `InstagramStoryFace`.
 5. Links/matches faces to `InstagramStoryPerson` using embeddings and vector matching.
 6. Builds `content_understanding` and generated response suggestions.

@@ -63,6 +63,8 @@ module InstagramAccounts
         llm_comment_model: event.llm_comment_model,
         llm_comment_provider: event.llm_comment_provider,
         llm_comment_status: event.llm_comment_status,
+        llm_workflow_status: llm_workflow_status(event: event, llm_meta: llm_meta, manual_send_status: manual_send_status),
+        llm_workflow_progress: llm_workflow_progress(event: event, llm_meta: llm_meta, manual_send_status: manual_send_status),
         llm_comment_attempts: event.llm_comment_attempts,
         llm_comment_last_error: event.llm_comment_last_error,
         llm_comment_last_error_preview: text_preview(event.llm_comment_last_error, max: 180),
@@ -170,6 +172,62 @@ module InstagramAccounts
       return "sent" if metadata["reply_comment"].to_s.present?
 
       "ready"
+    end
+
+    def llm_workflow_status(event:, llm_meta:, manual_send_status:)
+      llm_status = event.llm_comment_status.to_s
+      manual = manual_send_status.to_s
+      failed_pipeline = pipeline_has_failed_steps?(llm_meta)
+
+      return "failed" if llm_status.in?(%w[failed]) || manual.in?(%w[failed expired_removed])
+      return "queued" if llm_status == "queued" || manual == "queued"
+      return "processing" if llm_status.in?(%w[running]) || manual.in?(%w[sending running])
+      return "partial" if llm_status == "completed" && failed_pipeline
+      return "ready" if llm_status == "completed"
+
+      "queued"
+    rescue StandardError
+      "queued"
+    end
+
+    def llm_workflow_progress(event:, llm_meta:, manual_send_status:)
+      llm_status = event.llm_comment_status.to_s
+      manual = manual_send_status.to_s
+      steps = completed_workflow_steps(event: event, llm_meta: llm_meta, manual_send_status: manual)
+      total = 5
+      {
+        completed: steps,
+        total: total,
+        summary: "#{steps}/#{total} completed"
+      }
+    rescue StandardError
+      { completed: 0, total: 5, summary: "0/5 completed" }
+    end
+
+    def completed_workflow_steps(event:, llm_meta:, manual_send_status:)
+      completed = 0
+      rollup = pipeline_step_rollup(llm_meta)
+      media_done = LlmComment::ParallelPipelineState::STEP_KEYS.all? do |key|
+        state = rollup.dig(key, :status).to_s
+        state.in?(%w[succeeded skipped])
+      end
+      completed += 1 if media_done
+
+      stages = event.llm_processing_stages
+      completed += 1 if stages.dig("context_matching", "state").to_s.in?(%w[completed completed_with_warnings])
+      completed += 1 if event.llm_comment_status.to_s == "completed"
+      completed += 1 if stages.dig("engagement_eligibility", "state").to_s.in?(%w[completed])
+      completed += 1 if manual_send_status.to_s == "sent"
+      completed
+    end
+
+    def pipeline_has_failed_steps?(llm_meta)
+      rollup = pipeline_step_rollup(llm_meta)
+      rollup.values.any? do |row|
+        row.is_a?(Hash) && row[:status].to_s == "failed"
+      end
+    rescue StandardError
+      false
     end
 
     def parallel_pipeline(llm_meta)

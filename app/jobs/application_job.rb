@@ -2,9 +2,9 @@ require "json"
 require_dependency "scheduled_account_batching"
 
 class ApplicationJob < ActiveJob::Base
+  include JobRetryPolicy
   include JobSafetyImprovements
   include JobIdempotency
-  include EnhancedJobRetryStrategies
   # Automatically retry jobs that encountered a deadlock
   # retry_on ActiveRecord::Deadlocked
 
@@ -32,6 +32,22 @@ class ApplicationJob < ActiveJob::Base
         instagram_profile_post_id: context[:instagram_profile_post_id]
       },
       throttle_key: "jobs_changed"
+    )
+  end
+
+  discard_on ActiveRecord::RecordNotUnique
+
+  discard_on ActiveRecord::RecordNotFound do |job, error|
+    context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
+    Ops::StructuredLogger.warn(
+      event: "job.record_not_found_discarded",
+      payload: {
+        job_class: job.class.name,
+        error_message: error.message,
+        instagram_account_id: context[:instagram_account_id],
+        instagram_profile_id: context[:instagram_profile_id],
+        instagram_profile_post_id: context[:instagram_profile_post_id]
+      }
     )
   end
 

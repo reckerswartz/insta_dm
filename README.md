@@ -51,7 +51,13 @@ bundle exec rspec
 
 # Parallel specs
 bin/parallel_rspec
+
+# Optional AI feature usage/failure evidence report (for prune decisions)
+bin/ai_feature_evidence_report
 ```
+
+Evidence automation:
+- `AnalyzeAiFeatureEvidenceJob` runs on cron (see `config/sidekiq_schedule.yml`) and logs usage/failure recommendations for candidate legacy AI features.
 
 Diagnostics specs:
 
@@ -96,6 +102,7 @@ bin/dev health
 bin/local_ai_services status
 bin/local_ai_services restart
 bin/local_ai_services logs
+bin/local_ai_services cleanup-models
 ```
 
 Manual local AI setup:
@@ -109,7 +116,8 @@ cd ai_microservice
 Useful env vars:
 - `LOCAL_AI_SERVICE_URL` (default `http://localhost:8000`)
 - `OLLAMA_URL` (default `http://localhost:11434`)
-- `OLLAMA_MODEL` (default `llama3.2-vision:11b`)
+- `OLLAMA_MODEL` (default `llama3.2:3b`)
+- `OLLAMA_VISION_MODEL` (default `llava:7b`)
 
 ### Active Record Encryption Bootstrap
 

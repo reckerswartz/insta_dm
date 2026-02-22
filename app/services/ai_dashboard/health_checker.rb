@@ -38,10 +38,13 @@ module AiDashboard
 
     def format_online_response(health, stale, checked_at)
       service_map = build_service_map(health)
+      details = extract_health_details(health)
 
       {
         status: "online",
         services: service_map,
+        details: details,
+        policy: details[:policy].is_a?(Hash) ? details[:policy] : {},
         stale: stale,
         source: health[:source].to_s,
         last_check: checked_at
@@ -50,10 +53,13 @@ module AiDashboard
 
     def format_offline_response(health, stale, checked_at)
       message = health[:error].presence || "Local AI stack unavailable"
+      details = extract_health_details(health)
 
       {
         status: "offline",
         message: message,
+        details: details,
+        policy: details[:policy].is_a?(Hash) ? details[:policy] : {},
         stale: stale,
         source: health[:source].to_s,
         last_check: checked_at
@@ -66,6 +72,15 @@ module AiDashboard
         "ollama" => Array(health.dig(:details, :ollama, :models)).any?
       )
       service_map
+    end
+
+    def extract_health_details(health)
+      payload = health.is_a?(Hash) ? health[:details] || health["details"] : nil
+      return {} unless payload.is_a?(Hash)
+
+      payload.deep_symbolize_keys
+    rescue StandardError
+      {}
     end
 
     def enqueue_health_refresh_if_needed(health:)

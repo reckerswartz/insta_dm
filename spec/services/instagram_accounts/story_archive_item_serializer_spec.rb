@@ -50,6 +50,8 @@ RSpec.describe InstagramAccounts::StoryArchiveItemSerializer do
     expect(payload[:video_static_frame_only]).to eq(false)
     expect(payload[:media_bytes]).to eq(321)
     expect(payload[:llm_comment_status]).to eq("completed")
+    expect(payload[:llm_workflow_status]).to eq("ready")
+    expect(payload.dig(:llm_workflow_progress, :summary)).to end_with("/5 completed")
     expect(payload[:story_ownership_label]).to eq("self")
   end
 

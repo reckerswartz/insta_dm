@@ -66,8 +66,6 @@ module AiDashboard
         test_image_analysis(features: 'faces', description: 'Face detection')
       when 'embedding'
         test_face_embedding
-      when 'comparison'
-        test_face_comparison
       else
         { error: "Unknown test type: #{test_type}" }
       end
@@ -143,46 +141,6 @@ module AiDashboard
           success: true,
           result: data['embedding'] ? "Embedding generated (size: #{embedding_size})" : nil,
           message: "Face embedding working - generated #{embedding_size}-dimensional vector"
-        }
-      else
-        { error: "HTTP #{response.code}: #{response.body}" }
-      end
-    end
-
-    def test_face_comparison
-      test_image_bytes = create_test_image
-      
-      uri = URI("#{AI_SERVICE_URL}/face/compare")
-      req = Net::HTTP::Post.new(uri)
-      
-      boundary = "----WebKitFormBoundary#{SecureRandom.hex(16)}"
-      post_data = []
-      
-      # Add first file
-      post_data << "--#{boundary}\r\n"
-      post_data << "Content-Disposition: form-data; name=\"file1\"; filename=\"test1.png\"\r\n"
-      post_data << "Content-Type: image/png\r\n\r\n"
-      post_data << test_image_bytes
-      post_data << "\r\n--#{boundary}\r\n"
-      
-      # Add second file
-      post_data << "Content-Disposition: form-data; name=\"file2\"; filename=\"test2.png\"\r\n"
-      post_data << "Content-Type: image/png\r\n\r\n"
-      post_data << test_image_bytes
-      post_data << "\r\n--#{boundary}--\r\n"
-      
-      req.body = post_data.join
-      req['Content-Type'] = "multipart/form-data; boundary=#{boundary}"
-      
-      response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(req) }
-      
-      if response.code == '200'
-        data = JSON.parse(response.body)
-        similarity = data['similarity'] || 0
-        {
-          success: true,
-          result: data,
-          message: "Face comparison working - similarity score: #{similarity.round(3)}"
         }
       else
         { error: "HTTP #{response.code}: #{response.body}" }

@@ -85,6 +85,45 @@ RSpec.describe "AnalyzeInstagramProfilePostJobTest" do
     refute_includes Array(pipeline["required_steps"]), "video"
   end
 
+  it "defers face analysis from the primary queue when only secondary face mode is enabled" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "profile_#{SecureRandom.hex(4)}",
+      followers_count: 1200
+    )
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "post_#{SecureRandom.hex(3)}",
+      ai_status: "pending"
+    )
+
+    AnalyzeInstagramProfilePostJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_mode: "async",
+      task_flags: {
+        analyze_visual: true,
+        analyze_faces: false,
+        secondary_face_analysis: true,
+        secondary_only_on_ambiguous: true,
+        run_ocr: true,
+        run_video: false,
+        run_metadata: true
+      }
+    )
+
+    enqueued = enqueued_jobs.map { |row| row[:job] }
+    assert_includes enqueued, ProcessPostVisualAnalysisJob
+    assert_includes enqueued, ProcessPostOcrAnalysisJob
+    assert_includes enqueued, FinalizePostAnalysisPipelineJob
+    refute_includes enqueued, ProcessPostFaceAnalysisJob
+
+    pipeline = post.reload.metadata["ai_pipeline"]
+    refute_includes Array(pipeline["required_steps"]), "face"
+    assert_equal "skipped", pipeline.dig("steps", "face", "status")
+  end
+
   it "queues build history fallback for inline comment generation when profile context is incomplete" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(

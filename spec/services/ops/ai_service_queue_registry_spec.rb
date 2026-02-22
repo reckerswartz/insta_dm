@@ -34,6 +34,7 @@ RSpec.describe Ops::AiServiceQueueRegistry do
     expect(ProcessPostMetadataTaggingJob.queue_name).to eq("ai_metadata_queue")
     expect(RefreshProfilePostFaceIdentityJob.queue_name).to eq("ai_face_refresh_queue")
     expect(WorkspaceProcessActionsTodoPostJob.queue_name).to eq("workspace_actions_queue")
+    expect(described_class.queue_name_for(:face_analysis_secondary)).to eq("ai_face_secondary_queue")
   end
 
   it "keeps every registered job class aligned with its service queue" do
@@ -63,6 +64,12 @@ RSpec.describe Ops::AiServiceQueueRegistry do
       hash_including(
         capsule_name: "ai_llm_comment_lane",
         queue_name: "ai_llm_comment_queue"
+      )
+    )
+    expect(capsules).to include(
+      hash_including(
+        capsule_name: "ai_face_secondary_lane",
+        queue_name: "ai_face_secondary_queue"
       )
     )
   end

@@ -68,7 +68,10 @@ Step specifics:
   - guarded by `Ops::ResourceGuard` defer/retry logic
 - `video` (`video_processing_queue`):
   - routes through `PostVideoContextExtractionService`
+  - runs lightweight pre-analysis before LLM vision (audio/text and existing structured signals can skip multimodal inference)
+  - samples timestamp/key frames (instead of full-frame scans) for dynamic videos when visual enrichment is required
   - writes normalized video summary fields and merges topic/object/ocr signals
+  - reuses cached `metadata["video_processing"]` for matching `media_fingerprint` + `extraction_profile`
 
 ## 4) Finalizer and Pipeline Completion
 
@@ -118,6 +121,7 @@ Comment generation is not always part of the first pass.
 
 - Network and timeout errors are retried at step-job level (`retry_on` policies).
 - OCR/video can defer under resource pressure and requeue themselves.
+- Video context extraction avoids repeated heavy work by reusing fingerprint-matched cached results.
 - `Jobs::FailureRetry` avoids retrying pipeline step jobs when the underlying pipeline/step is already terminal.
 
 ## 8) Debugging Checklist

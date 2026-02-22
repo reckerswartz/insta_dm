@@ -75,6 +75,33 @@
     </div>
   </header>
 
+  <section class="card">
+    <h2>Current Status</h2>
+    <div class="stat-grid profile-overview-grid">
+      <div class="stat">
+        <div class="stat-label">Relationship</div>
+        <div class="stat-kv"><span class="muted">Following</span><strong><%= @profile.following ? "Yes" : "No" %></strong></div>
+        <div class="stat-kv"><span class="muted">Follows you</span><strong><%= @profile.follows_you ? "Yes" : "No" %></strong></div>
+        <div class="stat-kv"><span class="muted">Mutual</span><strong><%= @profile.mutual? ? "Yes" : "No" %></strong></div>
+        <div class="stat-kv"><span class="muted">Can message</span><strong><%= @profile.can_message.nil? ? "Unknown" : (@profile.can_message ? "Yes" : "No") %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Activity</div>
+        <div class="stat-kv"><span class="muted">Last active</span><strong><%= relative_time_with_tooltip(@profile.last_active_at) %></strong></div>
+        <div class="stat-kv"><span class="muted">Messages</span><strong><%= @messages_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Action logs</span><strong><%= @action_logs_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Last analyzed</span><strong><%= relative_time_with_tooltip(@profile.ai_last_analyzed_at) %></strong></div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Content Readiness</div>
+        <div class="stat-kv"><span class="muted">Captured posts</span><strong><%= @profile_posts_total_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Analyzed posts</span><strong><%= @analyzed_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">Pending analysis</span><strong><%= @pending_posts_count %></strong></div>
+        <div class="stat-kv"><span class="muted">History</span><strong><%= history_status_label %></strong></div>
+      </div>
+    </div>
+  </section>
+
   <nav class="profile-quick-links" aria-label="Profile sections">
     <a class="profile-quick-link" href="#profile_overview">Overview</a>
     <a class="profile-quick-link" href="#profile_details">Details</a>
@@ -148,9 +175,14 @@
         <div class="actions-row">
           <%= button_to "Capture Posts", capture_posts_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
           <%= button_to "Fetch Details", fetch_details_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Verify Messageability", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
-          <%= button_to "Sync Avatar", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
         </div>
+        <details class="details-box profile-secondary-actions">
+          <summary>Maintenance actions</summary>
+          <div class="actions-row mt-2">
+            <%= button_to "Verify Messageability", verify_messageability_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+            <%= button_to "Sync Avatar", download_avatar_instagram_profile_path(@profile), method: :post, class: "btn secondary" %>
+          </div>
+        </details>
 
         <details class="details-box profile-secondary-actions">
           <summary>Story analysis actions</summary>

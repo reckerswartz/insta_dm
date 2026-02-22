@@ -151,8 +151,9 @@ File: `app/services/video_frame_extraction_service.rb`
 Extracts frames from video using FFmpeg.
 
 - Configurable sample rate (frames per second)
+- Supports timestamp/key-frame extraction for lightweight dynamic-video sampling
 - Outputs frames as JPEG bytes array
-- Uses `ffmpeg -i input -vf fps=<rate> -f image2pipe` pipeline
+- Uses either interval sampling (`fps=<rate>`) or timestamp extraction (`-ss <ts> -frames:v 1`)
 
 ### VideoAudioExtractionService
 
@@ -197,9 +198,12 @@ File: `app/services/post_video_context_extraction_service.rb`
 
 Full video context extraction for post analysis pipeline.
 
-- Manages frame extraction → per-frame analysis → audio extraction → transcription
+- Manages frame extraction → audio extraction → transcription with lightweight pre-analysis gates
+- Prioritizes audio/metadata cues and can skip multimodal vision when transcript or structured signals are sufficient
+- Uses key-frame/timestamp sampling for dynamic videos instead of broad frame sweeps
 - Merges OCR, object, and topic signals across frames
 - Builds normalized video summary for `post.metadata["video_processing"]`
+- Stores extraction profile + media fingerprint for cache reuse in retry/resume flows
 - Integration point between video services and `ProcessPostVideoAnalysisJob`
 
 ## SpeechTranscriptionService

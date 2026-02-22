@@ -5,11 +5,11 @@ require "json"
 module Ai
   class VisionUnderstandingService
     DEFAULT_MODEL = Ai::ModelDefaults.vision_model.freeze
-    MAX_IMAGES = ENV.fetch("OLLAMA_VISION_MAX_IMAGES", "4").to_i.clamp(1, 8)
+    MAX_IMAGES = ENV.fetch("OLLAMA_VISION_MAX_IMAGES", "2").to_i.clamp(1, 8)
     MAX_IMAGE_BYTES = ENV.fetch("OLLAMA_VISION_MAX_IMAGE_BYTES", (4 * 1024 * 1024).to_s).to_i.clamp(64 * 1024, 16 * 1024 * 1024)
-    TOPIC_LIMIT = ENV.fetch("OLLAMA_VISION_TOPIC_LIMIT", "24").to_i.clamp(6, 60)
-    OBJECT_LIMIT = ENV.fetch("OLLAMA_VISION_OBJECT_LIMIT", "24").to_i.clamp(6, 60)
-    SUMMARY_MAX_CHARS = ENV.fetch("OLLAMA_VISION_SUMMARY_MAX_CHARS", "260").to_i.clamp(80, 700)
+    TOPIC_LIMIT = ENV.fetch("OLLAMA_VISION_TOPIC_LIMIT", "18").to_i.clamp(6, 60)
+    OBJECT_LIMIT = ENV.fetch("OLLAMA_VISION_OBJECT_LIMIT", "18").to_i.clamp(6, 60)
+    SUMMARY_MAX_CHARS = ENV.fetch("OLLAMA_VISION_SUMMARY_MAX_CHARS", "220").to_i.clamp(80, 700)
 
     def initialize(ollama_client: Ai::OllamaClient.new, model: nil, enabled: nil)
       @ollama_client = ollama_client
@@ -126,7 +126,7 @@ module Ai
         prompt: prompt,
         image_bytes_list: image_bytes_list,
         temperature: 0.2,
-        max_tokens: 420
+        max_tokens: 260
       )
     end
 
@@ -140,13 +140,13 @@ module Ai
     end
 
     def build_prompt(media_type:, transcript:, candidate_topics:)
-      hints = Array(candidate_topics).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(12)
-      transcript_text = truncate_text(transcript.to_s, max: 220)
+      hints = Array(candidate_topics).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(8)
+      transcript_text = truncate_text(transcript.to_s, max: 140)
 
       <<~PROMPT
         Analyze the attached #{media_type} frame(s) for Instagram-safe visual understanding.
         Return strict JSON only with keys:
-        - summary (string, <= 260 chars)
+        - summary (string, <= #{SUMMARY_MAX_CHARS} chars)
         - topics (array of short lowercase tokens)
         - objects (array of short lowercase tokens)
         - visual_cues (array of short lowercase phrases)

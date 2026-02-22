@@ -47,7 +47,7 @@ module ApplicationHelper
     when 'video'
       'analysis'
     else
-      'basic'
+      nil
     end
   end
 

@@ -13,7 +13,8 @@ class LocalAIValidator
   def initialize
     @microservice_url = ENV.fetch('LOCAL_AI_SERVICE_URL', 'http://localhost:8000')
     @ollama_url = ENV.fetch('OLLAMA_URL', 'http://localhost:11434')
-    @ollama_model = ENV.fetch('OLLAMA_COMMENT_MODEL', ENV.fetch('OLLAMA_FAST_MODEL', ENV.fetch('OLLAMA_MODEL', 'llama3.2-vision:11b')))
+    @ollama_model = ENV.fetch('OLLAMA_COMMENT_MODEL', ENV.fetch('OLLAMA_FAST_MODEL', ENV.fetch('OLLAMA_MODEL', 'llama3.2:3b')))
+    @whisper_model = ENV.fetch('LOCAL_WHISPER_MODEL', ENV.fetch('WHISPER_MODEL', 'tiny'))
     @use_microservice = ENV.fetch('USE_LOCAL_AI_MICROSERVICE', 'true').to_s.strip.downcase == 'true'
     @results = { passed: 0, failed: 0, tests: [] }
   end
@@ -157,7 +158,7 @@ class LocalAIValidator
       test_audio = create_test_audio
       
       response = upload_file("#{@microservice_url}/transcribe/audio", test_audio,
-                           { model: 'base' })
+                           { model: @whisper_model })
       data = JSON.parse(response.body)
       
       if data['success']

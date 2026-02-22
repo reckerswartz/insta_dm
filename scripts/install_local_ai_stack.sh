@@ -17,8 +17,9 @@ NC='\033[0m' # No Color
 # Configuration
 INSTALL_DIR="$PWD"
 PYTHON_VERSION="3.12"
-OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2-vision:11b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
 OLLAMA_QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-$OLLAMA_MODEL}"
+OLLAMA_VISION_MODEL="${OLLAMA_VISION_MODEL:-llava:7b}"
 
 # Logging
 LOG_FILE="$INSTALL_DIR/installation.log"
@@ -183,6 +184,10 @@ install_ollama() {
         print_status "Pulling quality model $OLLAMA_QUALITY_MODEL (this may take a while)..."
         ollama pull "$OLLAMA_QUALITY_MODEL"
     fi
+    if [[ "$OLLAMA_VISION_MODEL" != "$OLLAMA_MODEL" && "$OLLAMA_VISION_MODEL" != "$OLLAMA_QUALITY_MODEL" ]]; then
+        print_status "Pulling vision model $OLLAMA_VISION_MODEL (this may take a while)..."
+        ollama pull "$OLLAMA_VISION_MODEL"
+    fi
     
     print_status "Ollama installation completed"
 }
@@ -272,7 +277,9 @@ configure_services() {
             config: {
               ollama_model: '$OLLAMA_MODEL',
               ollama_fast_model: '$OLLAMA_MODEL',
-              ollama_quality_model: '$OLLAMA_QUALITY_MODEL'
+              ollama_quality_model: '$OLLAMA_QUALITY_MODEL',
+              ollama_comment_model: '$OLLAMA_MODEL',
+              ollama_vision_model: '$OLLAMA_VISION_MODEL'
             },
             enabled: true
         )
@@ -292,6 +299,11 @@ verify_installation() {
     else
         print_error "❌ Ollama verification failed"
         return 1
+    fi
+    if curl -s http://localhost:11434/api/tags | grep -Fq "$OLLAMA_VISION_MODEL"; then
+        print_status "✅ Vision model available: $OLLAMA_VISION_MODEL"
+    else
+        print_warning "⚠️ Vision model not preloaded: $OLLAMA_VISION_MODEL"
     fi
     
     # Check Python environment
@@ -385,7 +397,7 @@ show_next_steps() {
     echo -e "${GREEN}🎉 Local AI Stack installation completed successfully!${NC}"
     echo ""
     echo -e "${CYAN}What's been installed:${NC}"
-    echo "✅ Ollama (LLM service) with primary model $OLLAMA_MODEL and quality model $OLLAMA_QUALITY_MODEL"
+    echo "✅ Ollama (LLM service) with primary model $OLLAMA_MODEL, quality model $OLLAMA_QUALITY_MODEL, and vision model $OLLAMA_VISION_MODEL"
     echo "✅ Python AI microservice with vision, face, OCR capabilities"
     echo "✅ Rails integration with local AI provider"
     echo "✅ All necessary system dependencies"

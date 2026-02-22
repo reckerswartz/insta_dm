@@ -2,16 +2,17 @@
 
 module Ai
   module ModelDefaults
-    META_LLAMA_3_2_VISION = "llama3.2-vision:11b".freeze
+    DEFAULT_TEXT_MODEL = "llama3.2:3b".freeze
+    DEFAULT_VISION_MODEL = "llava:7b".freeze
 
     module_function
 
     def vision_model
-      ENV.fetch("OLLAMA_VISION_MODEL", META_LLAMA_3_2_VISION).to_s.presence || META_LLAMA_3_2_VISION
+      ENV.fetch("OLLAMA_VISION_MODEL", DEFAULT_VISION_MODEL).to_s.presence || DEFAULT_VISION_MODEL
     end
 
     def base_model
-      ENV.fetch("OLLAMA_MODEL", vision_model).to_s.presence || vision_model
+      ENV.fetch("OLLAMA_MODEL", DEFAULT_TEXT_MODEL).to_s.presence || DEFAULT_TEXT_MODEL
     end
 
     def fast_model
@@ -19,7 +20,7 @@ module Ai
     end
 
     def quality_model
-      ENV.fetch("OLLAMA_QUALITY_MODEL", base_model).to_s.presence || fast_model
+      ENV.fetch("OLLAMA_QUALITY_MODEL", fast_model).to_s.presence || fast_model
     end
 
     def comment_model

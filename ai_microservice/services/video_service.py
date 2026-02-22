@@ -3,13 +3,22 @@ import numpy as np
 from typing import List, Dict, Any
 import logging
 import os
-import tempfile
+import hashlib
+from collections import OrderedDict
 
 from .vision_service import VisionService
 from .face_service import FaceService
 from .ocr_service import OCRService
 
 logger = logging.getLogger(__name__)
+
+
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
 
 class VideoService:
     def __init__(self, vision_service=None, face_service=None, ocr_service=None):
@@ -18,6 +27,18 @@ class VideoService:
         self.vision_service = vision_service if vision_service is not None else VisionService()
         self.face_service = face_service if face_service is not None else FaceService()
         self.ocr_service = ocr_service if ocr_service is not None else OCRService()
+        self.max_frames = int(os.getenv("LOCAL_AI_VIDEO_MAX_FRAMES", "12"))
+        self.max_frames = max(1, min(self.max_frames, 60))
+        self.max_frame_width = int(os.getenv("LOCAL_AI_VIDEO_RESIZE_MAX_WIDTH", "960"))
+        self.max_frame_width = max(160, min(self.max_frame_width, 1920))
+        self.static_prefilter_enabled = env_enabled("LOCAL_AI_VIDEO_STATIC_PREFILTER", True)
+        self.static_prefilter_sample_frames = int(os.getenv("LOCAL_AI_VIDEO_STATIC_PREFILTER_SAMPLES", "4"))
+        self.static_prefilter_sample_frames = max(2, min(self.static_prefilter_sample_frames, 8))
+        self.static_diff_threshold = float(os.getenv("LOCAL_AI_VIDEO_STATIC_DIFF_THRESHOLD", "8.5"))
+        self.static_diff_threshold = max(1.0, min(self.static_diff_threshold, 35.0))
+        self.frame_cache_max_entries = int(os.getenv("LOCAL_AI_VIDEO_FRAME_CACHE_SIZE", "64"))
+        self.frame_cache_max_entries = max(0, min(self.frame_cache_max_entries, 512))
+        self._frame_cache: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
     
     def is_loaded(self) -> bool:
         statuses = []
@@ -41,26 +62,51 @@ class VideoService:
         Returns:
             Dictionary with analysis results
         """
+        cap = None
         try:
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 raise ValueError(f"Cannot open video: {video_path}")
             
             fps = cap.get(cv2.CAP_PROP_FPS)
+            fps = float(fps) if fps and fps > 0 else 1.0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             duration = total_frames / fps if fps > 0 else 0
-            
-            # Calculate frame sampling
-            frames_to_sample = int(duration / sample_rate)
-            frame_interval = int(fps * sample_rate)
-            
+
+            normalized_sample_rate = max(1, int(sample_rate or 1))
+            frame_indices = self._sampling_frame_indices(
+                total_frames=total_frames,
+                fps=fps,
+                sample_rate=normalized_sample_rate
+            )
+            static_prefilter = {
+                "enabled": self.static_prefilter_enabled,
+                "applied": False,
+                "detected_static": False,
+                "mean_abs_diff": None,
+                "max_abs_diff": None
+            }
+
+            if self.static_prefilter_enabled and len(frame_indices) > 1:
+                static_detected, static_metrics = self._is_static_video(
+                    cap=cap,
+                    frame_indices=frame_indices
+                )
+                static_prefilter.update(static_metrics)
+                if static_detected:
+                    frame_indices = frame_indices[:1]
+                    static_prefilter["detected_static"] = True
+
             results = {
                 'metadata': {
                     'duration': duration,
                     'fps': fps,
                     'total_frames': total_frames,
                     'frames_analyzed': 0,
-                    'sample_rate': sample_rate
+                    'sample_rate': normalized_sample_rate,
+                    'max_frames': self.max_frames,
+                    'sampled_frame_indices': frame_indices,
+                    'static_prefilter': static_prefilter
                 },
                 'labels': [],
                 'faces': [],
@@ -68,45 +114,36 @@ class VideoService:
                 'text': [],
                 'shot_changes': []
             }
-            
-            frame_count = 0
+
             analyzed_frames = 0
             last_frame = None
-            
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                # Sample frames at specified interval
-                if frame_count % frame_interval == 0:
-                    analyzed_frames += 1
-                    timestamp = frame_count / fps
-                    
-                    # Analyze frame based on requested features
-                    frame_results = self._analyze_frame(frame, features, timestamp)
-                    
-                    # Aggregate results
-                    if 'labels' in features:
-                        results['labels'].extend(frame_results.get('labels', []))
-                    
-                    if 'faces' in features:
-                        results['faces'].extend(frame_results.get('faces', []))
-                    
-                    if 'text' in features:
-                        results['text'].extend(frame_results.get('text', []))
-                    
-                    if 'scenes' in features and last_frame is not None:
-                        # Basic scene change detection
-                        scene_change = self._detect_scene_change(last_frame, frame, timestamp)
-                        if scene_change:
-                            results['scenes'].append(scene_change)
-                    
-                    last_frame = frame.copy()
-                
-                frame_count += 1
-            
-            cap.release()
+
+            for frame_index in frame_indices:
+                frame = self._read_frame_at(cap=cap, frame_index=frame_index)
+                if frame is None:
+                    continue
+
+                prepared = self._prepare_frame(frame)
+                analyzed_frames += 1
+                timestamp = frame_index / fps if fps > 0 else 0.0
+
+                frame_results = self._analyze_frame(prepared, features, timestamp)
+
+                if 'labels' in features:
+                    results['labels'].extend(frame_results.get('labels', []))
+
+                if 'faces' in features:
+                    results['faces'].extend(frame_results.get('faces', []))
+
+                if 'text' in features:
+                    results['text'].extend(frame_results.get('text', []))
+
+                if 'scenes' in features and last_frame is not None:
+                    scene_change = self._detect_scene_change(last_frame, prepared, timestamp)
+                    if scene_change:
+                        results['scenes'].append(scene_change)
+
+                last_frame = prepared
             
             # Update metadata
             results['metadata']['frames_analyzed'] = analyzed_frames
@@ -119,32 +156,57 @@ class VideoService:
         except Exception as e:
             logger.error(f"Video analysis error: {e}")
             raise
+        finally:
+            if cap is not None:
+                cap.release()
     
     def _analyze_frame(self, frame: np.ndarray, features: List[str], timestamp: float) -> Dict[str, Any]:
         """Analyze a single frame"""
         frame_results = {}
+        frame_signature = self._frame_signature(frame)
         
         try:
             # Object/Label Detection
             if 'labels' in features and self.vision_service is not None and self.vision_service.is_loaded():
-                labels = self.vision_service.detect_objects(frame)
+                labels = self._cached_inference(
+                    feature_name="labels",
+                    frame_signature=frame_signature,
+                    infer_fn=lambda: self.vision_service.detect_objects(frame)
+                )
+                annotated_labels = []
                 for label in labels:
-                    label['timestamp'] = timestamp
-                frame_results['labels'] = labels
+                    row = dict(label) if isinstance(label, dict) else {"label": str(label)}
+                    row['timestamp'] = timestamp
+                    annotated_labels.append(row)
+                frame_results['labels'] = annotated_labels
             
             # Face Detection
             if 'faces' in features and self.face_service is not None and self.face_service.is_loaded():
-                faces = self.face_service.detect_faces(frame)
+                faces = self._cached_inference(
+                    feature_name="faces",
+                    frame_signature=frame_signature,
+                    infer_fn=lambda: self.face_service.detect_faces(frame)
+                )
+                annotated_faces = []
                 for face in faces:
-                    face['timestamp'] = timestamp
-                frame_results['faces'] = faces
+                    row = dict(face) if isinstance(face, dict) else {"bbox": [], "confidence": 0.0}
+                    row['timestamp'] = timestamp
+                    annotated_faces.append(row)
+                frame_results['faces'] = annotated_faces
             
             # Text Detection
             if 'text' in features and self.ocr_service is not None and self.ocr_service.is_loaded():
-                text = self.ocr_service.extract_text(frame)
+                text = self._cached_inference(
+                    feature_name="text",
+                    frame_signature=frame_signature,
+                    infer_fn=lambda: self.ocr_service.extract_text(frame)
+                )
+                annotated_text = []
                 for text_item in text:
-                    text_item['timestamp'] = timestamp
-                frame_results['text'] = text
+                    row = dict(text_item) if isinstance(text_item, dict) else {"text": str(text_item)}
+                    row['timestamp'] = timestamp
+                    annotated_text.append(row)
+                frame_results['text'] = annotated_text
         
         except Exception as e:
             logger.error(f"Frame analysis error at {timestamp}: {e}")
@@ -293,3 +355,123 @@ class VideoService:
             
         except Exception:
             return False
+
+    def _sampling_frame_indices(self, total_frames: int, fps: float, sample_rate: int) -> List[int]:
+        if total_frames <= 0:
+            return [0]
+
+        frame_interval = max(int(round(float(fps) * float(sample_rate))), 1)
+        indices = list(range(0, total_frames, frame_interval))
+        if not indices:
+            indices = [0]
+        if len(indices) == 1 and total_frames > 1:
+            indices.append(total_frames - 1)
+        return self._limit_frame_indices(indices, self.max_frames)
+
+    def _limit_frame_indices(self, indices: List[int], max_frames: int) -> List[int]:
+        clean = sorted({max(0, int(idx)) for idx in indices})
+        if len(clean) <= max_frames:
+            return clean
+
+        if max_frames <= 1:
+            return [clean[0]]
+
+        sample_positions = np.linspace(0, len(clean) - 1, num=max_frames)
+        reduced = [clean[int(round(pos))] for pos in sample_positions]
+        return sorted({int(idx) for idx in reduced})
+
+    def _read_frame_at(self, cap: cv2.VideoCapture, frame_index: int):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(frame_index)))
+        ret, frame = cap.read()
+        if not ret:
+            return None
+        return frame
+
+    def _prepare_frame(self, frame: np.ndarray) -> np.ndarray:
+        if frame is None or frame.size == 0:
+            return frame
+
+        height, width = frame.shape[:2]
+        if width <= self.max_frame_width:
+            return frame
+
+        ratio = self.max_frame_width / float(width)
+        resized_height = max(1, int(round(height * ratio)))
+        return cv2.resize(frame, (self.max_frame_width, resized_height), interpolation=cv2.INTER_AREA)
+
+    def _is_static_video(self, cap: cv2.VideoCapture, frame_indices: List[int]):
+        diagnostic = {
+            "applied": True,
+            "mean_abs_diff": None,
+            "max_abs_diff": None
+        }
+        probe_indices = self._limit_frame_indices(
+            frame_indices,
+            self.static_prefilter_sample_frames
+        )
+        if len(probe_indices) < 2:
+            return False, diagnostic
+
+        gray_frames = []
+        for idx in probe_indices:
+            frame = self._read_frame_at(cap=cap, frame_index=idx)
+            if frame is None:
+                continue
+            frame = self._prepare_frame(frame)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
+            gray_frames.append(gray)
+
+        if len(gray_frames) < 2:
+            return False, diagnostic
+
+        diffs = []
+        for prev, curr in zip(gray_frames, gray_frames[1:]):
+            diffs.append(float(np.mean(cv2.absdiff(prev, curr))))
+
+        if not diffs:
+            return False, diagnostic
+
+        mean_diff = float(np.mean(diffs))
+        max_diff = float(np.max(diffs))
+        diagnostic["mean_abs_diff"] = round(mean_diff, 3)
+        diagnostic["max_abs_diff"] = round(max_diff, 3)
+
+        static_detected = (
+            mean_diff <= self.static_diff_threshold and
+            max_diff <= (self.static_diff_threshold * 1.35)
+        )
+        return static_detected, diagnostic
+
+    def _frame_signature(self, frame: np.ndarray) -> str:
+        if frame is None or frame.size == 0:
+            return "empty"
+        return hashlib.sha1(frame.tobytes()).hexdigest()
+
+    def _cache_get(self, key: str):
+        if self.frame_cache_max_entries <= 0:
+            return None
+        value = self._frame_cache.get(key)
+        if value is None:
+            return None
+        self._frame_cache.move_to_end(key)
+        return [dict(item) if isinstance(item, dict) else item for item in value]
+
+    def _cache_set(self, key: str, value: List[Dict[str, Any]]):
+        if self.frame_cache_max_entries <= 0:
+            return
+        self._frame_cache[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+        self._frame_cache.move_to_end(key)
+        while len(self._frame_cache) > self.frame_cache_max_entries:
+            self._frame_cache.popitem(last=False)
+
+    def _cached_inference(self, feature_name: str, frame_signature: str, infer_fn):
+        cache_key = f"{feature_name}:{frame_signature}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        value = infer_fn()
+        normalized = [dict(item) if isinstance(item, dict) else item for item in (value or [])]
+        self._cache_set(cache_key, normalized)
+        return [dict(item) if isinstance(item, dict) else item for item in normalized]

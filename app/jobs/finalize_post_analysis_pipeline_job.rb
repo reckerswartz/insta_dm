@@ -4,6 +4,9 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
   MAX_FINALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_FINALIZE_ATTEMPTS", 30).to_i.clamp(5, 120)
   FINALIZER_LOCK_SECONDS = ENV.fetch("AI_PIPELINE_FINALIZER_LOCK_SECONDS", 4).to_i.clamp(2, 30)
   STEP_STALL_TIMEOUT_SECONDS = ENV.fetch("AI_PIPELINE_STEP_STALL_TIMEOUT_SECONDS", 180).to_i.clamp(45, 1800)
+  SECONDARY_FACE_QUEUE = Ops::AiServiceQueueRegistry.queue_name_for(:face_analysis_secondary).presence || "ai_face_secondary_queue"
+  SECONDARY_FACE_MIN_CONFIDENCE = ENV.fetch("AI_SECONDARY_FACE_AMBIGUITY_MIN_CONFIDENCE", "0.35").to_f.clamp(0.0, 1.0)
+  SECONDARY_FACE_MAX_CONFIDENCE = ENV.fetch("AI_SECONDARY_FACE_AMBIGUITY_MAX_CONFIDENCE", "0.68").to_f.clamp(0.0, 1.0)
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, attempts: 0)
     context = load_pipeline_context!(
@@ -59,6 +62,8 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
       )
       return
     end
+
+    maybe_enqueue_secondary_face_step!(context: context, pipeline_run_id: pipeline_run_id)
 
     pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
     required_steps = Array(pipeline["required_steps"]).map(&:to_s)
@@ -311,6 +316,86 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     end
   end
 
+  def maybe_enqueue_secondary_face_step!(context:, pipeline_run_id:)
+    pipeline_state = context[:pipeline_state]
+    pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
+    return unless pipeline.is_a?(Hash)
+
+    task_flags = pipeline["task_flags"].is_a?(Hash) ? pipeline["task_flags"] : {}
+    required_steps = Array(pipeline["required_steps"]).map(&:to_s)
+    face_required = required_steps.include?("face")
+    face_state = pipeline.dig("steps", "face").to_h
+    face_status = face_state["status"].to_s
+
+    return if face_required || !face_status.in?(%w[skipped pending])
+    return unless ActiveModel::Type::Boolean.new.cast(task_flags["secondary_face_analysis"])
+
+    primary_confidence = primary_confidence_for(post: context[:post])
+    if secondary_only_on_ambiguous?(task_flags: task_flags) && !ambiguous_primary_confidence?(primary_confidence)
+      pipeline_state.mark_step_completed!(
+        run_id: pipeline_run_id,
+        step: "face",
+        status: "skipped",
+        result: {
+          reason: "secondary_face_not_needed",
+          secondary_face_analysis: true,
+          primary_confidence: primary_confidence
+        }
+      )
+      return
+    end
+
+    guard = Ops::ResourceGuard.allow_ai_task?(task: "face_secondary", queue_name: SECONDARY_FACE_QUEUE, critical: false)
+    unless ActiveModel::Type::Boolean.new.cast(guard[:allow])
+      pipeline_state.mark_step_completed!(
+        run_id: pipeline_run_id,
+        step: "face",
+        status: "skipped",
+        error: "secondary_face_resource_constrained: #{guard[:reason]}",
+        result: {
+          reason: "secondary_face_resource_constrained",
+          secondary_face_analysis: true,
+          primary_confidence: primary_confidence,
+          snapshot: guard[:snapshot]
+        }
+      )
+      return
+    end
+
+    job = ProcessPostFaceAnalysisJob.set(queue: SECONDARY_FACE_QUEUE).perform_later(
+      instagram_account_id: context[:account].id,
+      instagram_profile_id: context[:profile].id,
+      instagram_profile_post_id: context[:post].id,
+      pipeline_run_id: pipeline_run_id,
+      allow_terminal_pipeline: true,
+      secondary_run: true
+    )
+
+    pipeline_state.mark_step_queued!(
+      run_id: pipeline_run_id,
+      step: "face",
+      queue_name: job.queue_name,
+      active_job_id: job.job_id,
+      result: {
+        reason: "secondary_face_enqueued",
+        secondary_face_analysis: true,
+        primary_confidence: primary_confidence,
+        enqueued_by: self.class.name,
+        enqueued_at: Time.current.iso8601(3)
+      }
+    )
+  rescue StandardError => e
+    pipeline_state.mark_step_completed!(
+      run_id: pipeline_run_id,
+      step: "face",
+      status: "skipped",
+      error: "secondary_face_enqueue_failed: #{format_error(e)}",
+      result: {
+        reason: "secondary_face_enqueue_failed"
+      }
+    )
+  end
+
   def mark_stalled_steps_failed!(context:, pipeline_run_id:)
     pipeline_state = context[:pipeline_state]
     pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
@@ -407,5 +492,41 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
 
   def merge_string_array(existing, incoming, limit:)
     normalize_string_array(Array(existing) + Array(incoming), limit: limit)
+  end
+
+  def secondary_only_on_ambiguous?(task_flags:)
+    return true unless task_flags.key?("secondary_only_on_ambiguous")
+
+    ActiveModel::Type::Boolean.new.cast(task_flags["secondary_only_on_ambiguous"])
+  end
+
+  def ambiguous_primary_confidence?(value)
+    score = value.to_f.clamp(0.0, 1.0)
+    score >= SECONDARY_FACE_MIN_CONFIDENCE && score <= SECONDARY_FACE_MAX_CONFIDENCE
+  end
+
+  def primary_confidence_for(post:)
+    analysis = post.analysis.is_a?(Hash) ? post.analysis : {}
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+
+    base_confidence = analysis["confidence"].to_f
+    base_confidence = 0.55 if base_confidence <= 0.0
+
+    mention_count = normalize_string_array(analysis["mentions"], limit: 50).length
+    hashtag_count = normalize_string_array(analysis["hashtags"], limit: 50).length
+    ocr_text_present = analysis["ocr_text"].to_s.present? || metadata.dig("ocr_analysis", "ocr_text").to_s.present?
+    transcript_present = analysis["transcript"].to_s.present? || metadata.dig("video_processing", "transcript").to_s.present?
+
+    score = base_confidence
+    score += 0.08 if mention_count.positive?
+    score += 0.04 if hashtag_count.positive?
+    score += 0.08 if ocr_text_present
+    score += 0.08 if transcript_present
+    score += 0.05 if post.caption.to_s.include?("@")
+    score += 0.05 if post.caption.to_s.include?("#")
+
+    score.clamp(0.0, 1.0).round(4)
+  rescue StandardError
+    0.55
   end
 end

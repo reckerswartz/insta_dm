@@ -18,9 +18,11 @@ MICROSERVICE_STARTUP_TIMEOUT_SECONDS="${MICROSERVICE_STARTUP_TIMEOUT_SECONDS:-90
 MICROSERVICE_STABILITY_WINDOW_SECONDS="${MICROSERVICE_STABILITY_WINDOW_SECONDS:-18}"
 MICROSERVICE_SAFE_MODE_FALLBACK="${MICROSERVICE_SAFE_MODE_FALLBACK:-true}"
 MICROSERVICE_FORCE_SAFE_MODE="${MICROSERVICE_FORCE_SAFE_MODE:-false}"
-OLLAMA_VISION_MODEL="${OLLAMA_VISION_MODEL:-llama3.2-vision:11b}"
-OLLAMA_PRIMARY_MODEL="${OLLAMA_FAST_MODEL:-${OLLAMA_MODEL:-$OLLAMA_VISION_MODEL}}"
-OLLAMA_QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-${OLLAMA_MODEL:-$OLLAMA_PRIMARY_MODEL}}"
+OLLAMA_VISION_MODEL="${OLLAMA_VISION_MODEL:-llava:7b}"
+OLLAMA_BASE_MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
+OLLAMA_COMMENT_MODEL="${OLLAMA_COMMENT_MODEL:-$OLLAMA_BASE_MODEL}"
+OLLAMA_PRIMARY_MODEL="${OLLAMA_FAST_MODEL:-${OLLAMA_COMMENT_MODEL:-$OLLAMA_BASE_MODEL}}"
+OLLAMA_QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-$OLLAMA_PRIMARY_MODEL}"
 
 # Function to print colored output
 print_status() {
@@ -47,6 +49,42 @@ is_truthy() {
 
 microservice_enabled() {
     is_truthy "${USE_LOCAL_AI_MICROSERVICE:-true}"
+}
+
+configured_ollama_models() {
+    printf "%s\n" \
+        "$OLLAMA_BASE_MODEL" \
+        "$OLLAMA_PRIMARY_MODEL" \
+        "$OLLAMA_QUALITY_MODEL" \
+        "$OLLAMA_COMMENT_MODEL" \
+        "$OLLAMA_VISION_MODEL" \
+        "${OLLAMA_COMMENT_QUALITY_MODEL:-}" \
+        | sed '/^[[:space:]]*$/d' \
+        | sort -u
+}
+
+model_in_list() {
+    local needle="$1"
+    shift || true
+    local item
+    for item in "$@"; do
+        if [[ "$item" == "$needle" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_ollama_model() {
+    local model_name="$1"
+    [ -n "$model_name" ] || return 0
+
+    if ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -Fxq "$model_name"; then
+        return 0
+    fi
+
+    print_status "Pulling model $model_name (this may take a while)..."
+    ollama pull "$model_name"
 }
 
 port_listener_pids() {
@@ -195,16 +233,11 @@ start_ollama() {
     
     if check_service "Ollama" 11434 "/api/tags" '"models"'; then
         print_status "Ollama started successfully"
-        
-        # Ensure configured models are available
-        if ! ollama list | grep -Fq "$OLLAMA_PRIMARY_MODEL"; then
-            print_status "Pulling primary model $OLLAMA_PRIMARY_MODEL (this may take a while)..."
-            ollama pull "$OLLAMA_PRIMARY_MODEL"
-        fi
-        if [ "$OLLAMA_QUALITY_MODEL" != "$OLLAMA_PRIMARY_MODEL" ] && ! ollama list | grep -Fq "$OLLAMA_QUALITY_MODEL"; then
-            print_status "Pulling quality model $OLLAMA_QUALITY_MODEL (this may take a while)..."
-            ollama pull "$OLLAMA_QUALITY_MODEL"
-        fi
+
+        while IFS= read -r configured_model; do
+            [ -n "$configured_model" ] || continue
+            ensure_ollama_model "$configured_model"
+        done < <(configured_ollama_models)
     else
         print_error "Failed to start Ollama"
         return 1
@@ -319,25 +352,25 @@ status() {
     
     echo ""
     print_status "Model Availability:"
-    if ollama list 2>/dev/null | grep -Fq "$OLLAMA_PRIMARY_MODEL"; then
-        echo "✅ primary model available: $OLLAMA_PRIMARY_MODEL"
-    else
-        echo "❌ primary model missing: $OLLAMA_PRIMARY_MODEL"
-    fi
-    if ollama list 2>/dev/null | grep -Fq "$OLLAMA_QUALITY_MODEL"; then
-        echo "✅ quality model available: $OLLAMA_QUALITY_MODEL"
-    else
-        echo "❌ quality model missing: $OLLAMA_QUALITY_MODEL"
-    fi
+    while IFS= read -r configured_model; do
+        [ -n "$configured_model" ] || continue
+        if ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -Fxq "$configured_model"; then
+            echo "✅ model available: $configured_model"
+        else
+            echo "❌ model missing: $configured_model"
+        fi
+    done < <(configured_ollama_models)
     
     echo ""
     print_status "Configuration:"
     echo "LOCAL_AI_SERVICE_URL: ${LOCAL_AI_SERVICE_URL:-http://localhost:8000}"
     echo "OLLAMA_URL: ${OLLAMA_URL:-http://localhost:11434}"
     echo "USE_LOCAL_AI_MICROSERVICE: ${USE_LOCAL_AI_MICROSERVICE:-true}"
-    echo "OLLAMA_MODEL: ${OLLAMA_MODEL:-$OLLAMA_VISION_MODEL}"
+    echo "OLLAMA_MODEL: ${OLLAMA_MODEL:-$OLLAMA_BASE_MODEL}"
     echo "OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-$OLLAMA_PRIMARY_MODEL}"
     echo "OLLAMA_QUALITY_MODEL: $OLLAMA_QUALITY_MODEL"
+    echo "OLLAMA_COMMENT_MODEL: ${OLLAMA_COMMENT_MODEL:-$OLLAMA_PRIMARY_MODEL}"
+    echo "OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-llava:7b}"
     echo "MICROSERVICE_FORCE_SAFE_MODE: $MICROSERVICE_FORCE_SAFE_MODE"
     echo "MICROSERVICE_SAFE_MODE_FALLBACK: $MICROSERVICE_SAFE_MODE_FALLBACK"
 }
@@ -368,6 +401,43 @@ test_services() {
     else
         print_error "❌ Ollama is not responding"
     fi
+}
+
+cleanup_models() {
+    print_header "Cleaning Up Unused Ollama Models"
+
+    if ! command -v ollama >/dev/null 2>&1; then
+        print_error "Ollama binary not found"
+        return 1
+    fi
+
+    mapfile -t keep_models < <(configured_ollama_models)
+    mapfile -t installed_models < <(ollama list 2>/dev/null | awk 'NR>1 {print $1}')
+
+    if [ "${#installed_models[@]}" -eq 0 ]; then
+        print_warning "No installed models found"
+        return 0
+    fi
+
+    print_status "Keeping configured models: ${keep_models[*]}"
+    local removed=0
+    local kept=0
+    local model
+    for model in "${installed_models[@]}"; do
+        if model_in_list "$model" "${keep_models[@]}"; then
+            kept=$((kept + 1))
+            continue
+        fi
+
+        print_status "Removing unused model: $model"
+        if ollama rm "$model" >/dev/null 2>&1; then
+            removed=$((removed + 1))
+        else
+            print_warning "Failed to remove model: $model"
+        fi
+    done
+
+    print_status "Model cleanup complete. kept=$kept removed=$removed"
 }
 
 # Show logs
@@ -409,13 +479,16 @@ case "${1:-help}" in
     test)
         test_services
         ;;
+    cleanup-models)
+        cleanup_models
+        ;;
     logs)
         logs
         ;;
     help|*)
         echo "Local AI Services Management Script"
         echo ""
-        echo "Usage: $0 {start|stop|restart|status|test|logs|help}"
+        echo "Usage: $0 {start|stop|restart|status|test|cleanup-models|logs|help}"
         echo ""
         echo "Commands:"
         echo "  start   - Start all local AI services (Ollama + AI Microservice)"
@@ -423,6 +496,7 @@ case "${1:-help}" in
         echo "  restart - Restart all local AI services"
         echo "  status  - Show status of all services"
         echo "  test    - Test service connectivity"
+        echo "  cleanup-models - Remove Ollama models that are not configured for this app"
         echo "  logs    - Show service logs"
         echo "  help    - Show this help message"
         echo ""

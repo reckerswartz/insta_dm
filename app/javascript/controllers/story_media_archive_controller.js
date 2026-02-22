@@ -305,6 +305,7 @@ export default class extends Controller {
   buildLlmCommentSection(item) {
     const state = this.resolveLlmCardState({
       status: item.llm_comment_status,
+      workflowStatus: item.llm_workflow_status,
       hasComment: item.has_llm_comment,
       generatedComment: item.llm_generated_comment,
     })
@@ -312,7 +313,11 @@ export default class extends Controller {
     const manualMessage = this.manualSendMessageForItem(item, manual)
     const generatedAt = this.formatDate(item.llm_comment_generated_at)
     const forceRegenerate = state.code === "completed"
-    const progressText = this.compactProgressText(item.llm_processing_stages, item.llm_comment_status)
+    const progressText = this.compactProgressText(
+      item.llm_processing_stages,
+      item.llm_workflow_status || item.llm_comment_status,
+      item.llm_workflow_progress
+    )
 
     return `
       <div class="llm-comment-section" data-event-id="${this.esc(String(item.id))}" data-llm-status="${this.esc(state.code)}">
@@ -417,6 +422,8 @@ export default class extends Controller {
     if (Object.prototype.hasOwnProperty.call(patch, "llm_generated_comment")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_generated_at")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_ranked_candidates")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_workflow_status")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_workflow_progress")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_status") && String(patch.llm_comment_status) === "completed") return true
     return false
   }
@@ -451,6 +458,12 @@ export default class extends Controller {
     }
     if (patch?.llm_pipeline_timing && typeof patch.llm_pipeline_timing === "object") {
       merged.llm_pipeline_timing = patch.llm_pipeline_timing
+    }
+    if (typeof patch?.llm_workflow_status === "string" && patch.llm_workflow_status.length > 0) {
+      merged.llm_workflow_status = patch.llm_workflow_status
+    }
+    if (patch?.llm_workflow_progress && typeof patch.llm_workflow_progress === "object") {
+      merged.llm_workflow_progress = patch.llm_workflow_progress
     }
     if (String(merged.llm_generated_comment || "").trim().length > 0) {
       merged.has_llm_comment = true
@@ -532,6 +545,7 @@ export default class extends Controller {
 
     const llmState = this.resolveLlmCardState({
       status: item.llm_comment_status,
+      workflowStatus: item.llm_workflow_status,
       hasComment: item.has_llm_comment,
       generatedComment: item.llm_generated_comment,
     })
@@ -686,7 +700,12 @@ export default class extends Controller {
     `
   }
 
-  compactProgressText(stageMap, status) {
+  compactProgressText(stageMap, status, workflowProgress = null) {
+    if (workflowProgress && typeof workflowProgress === "object") {
+      const summary = String(workflowProgress.summary || "").trim()
+      if (summary) return summary
+    }
+
     const entries = this.normalizeStageEntries(stageMap)
     const normalizedStatus = String(status || "").toLowerCase()
     if (entries.length === 0 && !["queued", "running", "started", "completed", "failed", "error", "skipped"].includes(normalizedStatus)) {
@@ -982,8 +1001,12 @@ export default class extends Controller {
     const logList = this.renderProcessingLog(item.llm_processing_log)
     if (!timing && !stageList && !logList) return ""
 
-    const summary = this.compactProgressText(item.llm_processing_stages, item.llm_comment_status)
-    const status = String(item.llm_comment_status || "").toLowerCase()
+    const summary = this.compactProgressText(
+      item.llm_processing_stages,
+      item.llm_workflow_status || item.llm_comment_status,
+      item.llm_workflow_progress
+    )
+    const status = String(item.llm_workflow_status || item.llm_comment_status || "").toLowerCase()
     const shouldOpen = status === "running" || status === "queued" || status === "started"
 
     return `
@@ -1138,6 +1161,8 @@ export default class extends Controller {
       prompt_construction: 50,
       llm_generation: 60,
       relevance_scoring: 70,
+      engagement_eligibility: 80,
+      reply_send_action: 90,
     }
     return Number(order[String(stageKey)] || 900)
   }
@@ -1163,6 +1188,8 @@ export default class extends Controller {
       ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "face_recognition", "metadata_extraction"]],
       ["context", ["context_matching", "prompt_construction"]],
       ["generation", ["llm_generation", "relevance_scoring"]],
+      ["eligibility", ["engagement_eligibility"]],
+      ["send", ["reply_send_action"]],
     ]
 
     return phases.map(([, keys]) => {
@@ -1205,20 +1232,23 @@ export default class extends Controller {
     `
   }
 
-  resolveLlmCardState({ status, hasComment, generatedComment }) {
-    const normalizedStatus = String(status || "").toLowerCase()
+  resolveLlmCardState({ status, workflowStatus, hasComment, generatedComment }) {
+    const normalizedStatus = String(workflowStatus || status || "").toLowerCase()
     const commentPresent = Boolean(hasComment || generatedComment)
-    if (commentPresent || normalizedStatus === "completed") {
-      return { code: "completed", label: "Completed", chipClass: "completed", buttonLabel: "Regenerate", inFlight: false }
+    if (normalizedStatus === "failed" || normalizedStatus === "error") {
+      return { code: "failed", label: "Failed", chipClass: "failed", buttonLabel: "Generate", inFlight: false }
     }
     if (normalizedStatus === "queued") {
       return { code: "queued", label: "Queued", chipClass: "queued", buttonLabel: "Queued", inFlight: true }
     }
-    if (normalizedStatus === "running" || normalizedStatus === "started") {
+    if (normalizedStatus === "processing" || normalizedStatus === "running" || normalizedStatus === "started") {
       return { code: "in_progress", label: "In Progress", chipClass: "in-progress", buttonLabel: "In Progress", inFlight: true }
     }
-    if (normalizedStatus === "failed" || normalizedStatus === "error") {
-      return { code: "failed", label: "Failed", chipClass: "failed", buttonLabel: "Generate", inFlight: false }
+    if (normalizedStatus === "partial") {
+      return { code: "partial", label: "Partial", chipClass: "in-progress", buttonLabel: "Regenerate", inFlight: false }
+    }
+    if (commentPresent || normalizedStatus === "completed") {
+      return { code: "completed", label: "Completed", chipClass: "completed", buttonLabel: "Regenerate", inFlight: false }
     }
     if (normalizedStatus === "skipped") {
       return { code: "skipped", label: "Skipped", chipClass: "skipped", buttonLabel: "Generate", inFlight: false }

@@ -45,29 +45,7 @@ module EnhancedJobRetryStrategies
     }
   }.freeze
 
-  included do
-    # Apply enhanced retry strategies based on error categories
-    retry_on Net::ReadTimeout, Net::OpenTimeout, wait: :exponentially_longer, attempts: 5 do |job, error|
-      handle_network_retry(job, error)
-    end
-    
-    retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :exponentially_longer, attempts: 5 do |job, error|
-      handle_network_retry(job, error)
-    end
-    
-    retry_on ActiveRecord::ConnectionTimeoutError, wait: :exponentially_longer, attempts: 4 do |job, error|
-      handle_database_retry(job, error)
-    end
-    
-    retry_on ActiveRecord::LockWaitTimeout, wait: 2.seconds, attempts: 3 do |job, error|
-      handle_database_retry(job, error)
-    end
-    
-    # AI service specific retries
-    retry_on Timeout::Error, wait: :exponentially_longer, attempts: 3 do |job, error|
-      handle_ai_service_retry(job, error)
-    end
-  end
+  # Retry declarations moved to JobRetryPolicy for a single, centralized policy.
 
   class_methods do
     # Calculate retry delay with jitter

@@ -253,6 +253,97 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
     assert_includes post.metadata.dig("ai_pipeline", "steps", "metadata", "error").to_s, "core_dependencies_failed"
   end
 
+  it "enqueues secondary face analysis on the low-priority queue for ambiguous primary confidence" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "profile_#{SecureRandom.hex(4)}",
+      followers_count: 900
+    )
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "post_#{SecureRandom.hex(4)}",
+      ai_status: "running",
+      analysis: { "confidence" => 0.5, "image_description" => "Friends at a cafe." },
+      metadata: {}
+    )
+
+    state = Ai::PostAnalysisPipelineState.new(post: post)
+    run_id = state.start!(
+      task_flags: {
+        analyze_visual: true,
+        analyze_faces: false,
+        secondary_face_analysis: true,
+        secondary_only_on_ambiguous: true,
+        run_ocr: false,
+        run_video: false,
+        run_metadata: false
+      },
+      source_job: "spec"
+    )
+    state.mark_step_completed!(run_id: run_id, step: "visual", status: "succeeded", result: { provider: "local" })
+
+    FinalizePostAnalysisPipelineJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id,
+      attempts: 0
+    )
+
+    face_jobs = enqueued_jobs.select { |row| row[:job] == ProcessPostFaceAnalysisJob }
+    assert_operator face_jobs.length, :>=, 1
+    assert_equal "ai_face_secondary_queue", face_jobs.last[:queue]
+
+    post.reload
+    assert_equal "queued", post.metadata.dig("ai_pipeline", "steps", "face", "status")
+    assert_equal "secondary_face_enqueued", post.metadata.dig("ai_pipeline", "steps", "face", "result", "reason")
+  end
+
+  it "skips secondary face analysis when primary confidence is high" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(
+      username: "profile_#{SecureRandom.hex(4)}",
+      followers_count: 900
+    )
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "post_#{SecureRandom.hex(4)}",
+      ai_status: "running",
+      analysis: { "confidence" => 0.92, "image_description" => "Owner selfie at home." },
+      caption: "@friend #weekend",
+      metadata: {}
+    )
+
+    state = Ai::PostAnalysisPipelineState.new(post: post)
+    run_id = state.start!(
+      task_flags: {
+        analyze_visual: true,
+        analyze_faces: false,
+        secondary_face_analysis: true,
+        secondary_only_on_ambiguous: true,
+        run_ocr: false,
+        run_video: false,
+        run_metadata: false
+      },
+      source_job: "spec"
+    )
+    state.mark_step_completed!(run_id: run_id, step: "visual", status: "succeeded", result: { provider: "local" })
+
+    assert_no_enqueued_jobs only: ProcessPostFaceAnalysisJob do
+      FinalizePostAnalysisPipelineJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        pipeline_run_id: run_id,
+        attempts: 0
+      )
+    end
+
+    post.reload
+    assert_equal "skipped", post.metadata.dig("ai_pipeline", "steps", "face", "status")
+    assert_equal "secondary_face_not_needed", post.metadata.dig("ai_pipeline", "steps", "face", "result", "reason")
+  end
+
   def build_pipeline_with_visual_status(status:, pipeline_status: "running")
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(

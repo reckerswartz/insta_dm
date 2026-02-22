@@ -1788,6 +1788,66 @@ pre {
   gap: 8px;
 }
 
+.ai-runtime-grid {
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+
+.ai-runtime-table .runtime-row-active {
+  background: rgba(46, 204, 143, 0.08);
+}
+
+.ai-runtime-table .runtime-row-idle {
+  background: rgba(255, 221, 87, 0.06);
+}
+
+.runtime-note {
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(8, 15, 30, 0.55);
+  padding: 10px;
+}
+
+.runtime-note.warning {
+  border-color: rgba(255, 193, 7, 0.5);
+  background: rgba(255, 193, 7, 0.08);
+}
+
+.runtime-candidate-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.runtime-candidate {
+  border: 1px solid var(--line-soft);
+  border-radius: 11px;
+  background: rgba(8, 15, 30, 0.55);
+  padding: 11px;
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-candidate-head {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.runtime-candidate.candidate-remove {
+  border-color: rgba(46, 204, 143, 0.45);
+  background: rgba(46, 204, 143, 0.1);
+}
+
+.runtime-candidate.candidate-tune {
+  border-color: rgba(255, 193, 7, 0.5);
+  background: rgba(255, 193, 7, 0.08);
+}
+
+.runtime-candidate.candidate-keep {
+  border-color: rgba(102, 157, 245, 0.4);
+}
+
 .technical-details-body {
   display: grid;
   gap: 10px;

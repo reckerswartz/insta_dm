@@ -33,6 +33,7 @@ class SpeechTranscriptionService
   private
 
   def transcribe_with_microservice(audio_bytes, story_id)
+    started_at = monotonic_started_at
     Tempfile.create([ "story_audio_#{story_id}", ".wav" ]) do |audio_file|
       audio_file.binmode
       audio_file.write(audio_bytes)
@@ -68,6 +69,18 @@ class SpeechTranscriptionService
       body = JSON.parse(response.body.to_s.presence || "{}")
       
       if response.is_a?(Net::HTTPSuccess) && body["success"]
+        Ai::ApiUsageTracker.track_success(
+          provider: "local_microservice",
+          operation: "transcribe_audio",
+          category: "other",
+          started_at: started_at,
+          http_status: response.code.to_i,
+          metadata: {
+            source: "speech_transcription_service",
+            model: @whisper_model,
+            story_id: story_id.to_s
+          }
+        )
         {
           transcript: body["transcript"],
           metadata: {
@@ -77,14 +90,40 @@ class SpeechTranscriptionService
           }
         }
       else
+        Ai::ApiUsageTracker.track_failure(
+          provider: "local_microservice",
+          operation: "transcribe_audio",
+          category: "other",
+          started_at: started_at,
+          http_status: response.code.to_i,
+          error: body.dig("error").to_s.presence || "microservice_transcription_failed",
+          metadata: {
+            source: "speech_transcription_service",
+            model: @whisper_model,
+            story_id: story_id.to_s
+          }
+        )
         empty_result("microservice_error", stderr: body.dig("error"))
       end
     end
   rescue StandardError => e
+    Ai::ApiUsageTracker.track_failure(
+      provider: "local_microservice",
+      operation: "transcribe_audio",
+      category: "other",
+      started_at: started_at || monotonic_started_at,
+      error: "#{e.class}: #{e.message}",
+      metadata: {
+        source: "speech_transcription_service",
+        model: @whisper_model,
+        story_id: story_id.to_s
+      }
+    )
     empty_result("microservice_error", stderr: e.message)
   end
 
   def transcribe_with_binary(audio_bytes, story_id)
+    started_at = monotonic_started_at
     Tempfile.create([ "story_audio_#{story_id}", ".wav" ]) do |audio_file|
       audio_file.binmode
       audio_file.write(audio_bytes)
@@ -108,6 +147,18 @@ class SpeechTranscriptionService
         text = File.read(txt_path).to_s.strip
         return empty_result("transcript_empty") if text.blank?
 
+        Ai::ApiUsageTracker.track_success(
+          provider: "local_whisper_binary",
+          operation: "transcribe_audio",
+          category: "other",
+          started_at: started_at,
+          metadata: {
+            source: "speech_transcription_service",
+            model: @whisper_model,
+            story_id: story_id.to_s
+          }
+        )
+
         {
           transcript: text,
           metadata: {
@@ -117,6 +168,20 @@ class SpeechTranscriptionService
         }
       end
     end
+  rescue StandardError => e
+    Ai::ApiUsageTracker.track_failure(
+      provider: "local_whisper_binary",
+      operation: "transcribe_audio",
+      category: "other",
+      started_at: started_at || monotonic_started_at,
+      error: "#{e.class}: #{e.message}",
+      metadata: {
+        source: "speech_transcription_service",
+        model: @whisper_model,
+        story_id: story_id.to_s
+      }
+    )
+    raise
   end
 
   def command_available?(command)
@@ -132,5 +197,11 @@ class SpeechTranscriptionService
         stderr: stderr.to_s.presence
       }.compact
     }
+  end
+
+  def monotonic_started_at
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  rescue StandardError
+    Time.current.to_f
   end
 end

@@ -25,19 +25,6 @@ module Ops
 
     SERVICE_ROWS = [
       {
-        key: "legacy_ai_default",
-        name: "Legacy AI default",
-        queue_name: "ai",
-        job_classes: [],
-        description: "Compatibility lane for previously enqueued AI jobs.",
-        category: "compatibility",
-        capsule_name: "ai_legacy_lane",
-        concurrency_env: "SIDEKIQ_AI_CONCURRENCY",
-        concurrency_default: 1,
-        concurrency_min: 1,
-        concurrency_max: 4
-      },
-      {
         key: "profile_analysis_runner",
         name: "Profile analysis",
         queue_name: "ai_profile_analysis_queue",
@@ -59,7 +46,7 @@ module Ops
         category: "analysis",
         capsule_name: "ai_post_analysis_lane",
         concurrency_env: "SIDEKIQ_AI_POST_ANALYSIS_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 6
       },
@@ -85,7 +72,7 @@ module Ops
         category: "generation",
         capsule_name: "ai_llm_comment_lane",
         concurrency_env: "SIDEKIQ_AI_LLM_COMMENT_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 6
       },
@@ -137,7 +124,7 @@ module Ops
         category: "analysis",
         capsule_name: "ai_visual_lane",
         concurrency_env: "SIDEKIQ_AI_VISUAL_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 5
       },
@@ -150,9 +137,22 @@ module Ops
         category: "analysis",
         capsule_name: "ai_face_lane",
         concurrency_env: "SIDEKIQ_AI_FACE_CONCURRENCY",
-        concurrency_default: 2,
+        concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 5
+      },
+      {
+        key: "face_analysis_secondary",
+        name: "Face analysis (secondary)",
+        queue_name: "ai_face_secondary_queue",
+        job_classes: [],
+        description: "Runs optional, confidence-boost face matching after primary analysis completes.",
+        category: "analysis",
+        capsule_name: "ai_face_secondary_lane",
+        concurrency_env: "SIDEKIQ_AI_FACE_SECONDARY_CONCURRENCY",
+        concurrency_default: 1,
+        concurrency_min: 1,
+        concurrency_max: 3
       },
       {
         key: "face_refresh",
@@ -215,6 +215,19 @@ module Ops
         category: "analysis",
         capsule_name: "story_analysis_lane",
         concurrency_env: "SIDEKIQ_STORY_ANALYSIS_CONCURRENCY",
+        concurrency_default: 1,
+        concurrency_min: 1,
+        concurrency_max: 4
+      },
+      {
+        key: "story_engagement_actions",
+        name: "Story engagement actions",
+        queue_name: "story_engagement_actions",
+        job_classes: [ "SendStoryReplyEngagementJob" ],
+        description: "Runs async eligibility-check and story reply send actions.",
+        category: "engagement",
+        capsule_name: "story_engagement_actions_lane",
+        concurrency_env: "SIDEKIQ_STORY_ENGAGEMENT_ACTIONS_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
         concurrency_max: 4

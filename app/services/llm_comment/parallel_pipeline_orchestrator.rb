@@ -2,12 +2,7 @@
 
 module LlmComment
   class ParallelPipelineOrchestrator
-    STAGE_JOB_MAP = {
-      "ocr_analysis" => ProcessStoryCommentOcrJob,
-      "vision_detection" => ProcessStoryCommentVisionJob,
-      "face_recognition" => ProcessStoryCommentFaceJob,
-      "metadata_extraction" => ProcessStoryCommentMetadataJob
-    }.freeze
+    STAGE_JOB_MAP = LlmComment::StepRegistry.stage_job_map.freeze
 
     def initialize(event:, provider:, model:, requested_by:, source_job_id:, regenerate_all: false)
       @event = event
@@ -168,14 +163,7 @@ module LlmComment
     end
 
     def queued_progress_for(stage)
-      case stage.to_s
-      when "ocr_analysis" then 8
-      when "vision_detection" then 9
-      when "face_recognition" then 10
-      when "metadata_extraction" then 11
-      else
-        8
-      end
+      LlmComment::StepRegistry.progress_for(step: stage, state: :queued)
     end
 
     def human_stage(stage)

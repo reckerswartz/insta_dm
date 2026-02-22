@@ -300,7 +300,7 @@ export default class extends Controller {
         const statusEl = section.querySelector("[data-role='llm-status']")
         if (statusEl) {
           statusEl.textContent = state.label
-          statusEl.classList.remove("queued", "in-progress", "completed", "failed", "skipped", "idle")
+          statusEl.classList.remove("queued", "in-progress", "completed", "failed", "skipped", "idle", "partial")
           statusEl.classList.add(state.chipClass)
         }
 
@@ -318,13 +318,16 @@ export default class extends Controller {
 
   resolveUiState(status) {
     const normalizedStatus = String(status || "").toLowerCase()
-    if (normalizedStatus === "completed") {
+    if (normalizedStatus === "completed" || normalizedStatus === "ready") {
       return { code: "completed", label: "Completed", chipClass: "completed" }
+    }
+    if (normalizedStatus === "partial") {
+      return { code: "partial", label: "Partial", chipClass: "in-progress" }
     }
     if (normalizedStatus === "queued") {
       return { code: "queued", label: "Queued", chipClass: "queued" }
     }
-    if (normalizedStatus === "running" || normalizedStatus === "started") {
+    if (normalizedStatus === "running" || normalizedStatus === "started" || normalizedStatus === "processing") {
       return { code: "in_progress", label: "In Progress", chipClass: "in-progress" }
     }
     if (normalizedStatus === "failed" || normalizedStatus === "error") {
@@ -409,6 +412,8 @@ export default class extends Controller {
       ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "face_recognition", "metadata_extraction"]],
       ["context", ["context_matching", "prompt_construction"]],
       ["generation", ["llm_generation", "relevance_scoring"]],
+      ["eligibility", ["engagement_eligibility"]],
+      ["send", ["reply_send_action"]],
     ]
 
     return phases.map(([, keys]) => {
@@ -479,6 +484,8 @@ export default class extends Controller {
       prompt_construction: 50,
       llm_generation: 60,
       relevance_scoring: 70,
+      engagement_eligibility: 80,
+      reply_send_action: 90,
     }
     return Number(order[String(stageKey)] || 900)
   }
@@ -552,7 +559,7 @@ export default class extends Controller {
     if (!key) return null
 
     const stageMap = this.extractStageMap(data)
-    const normalizedStatus = this.normalizeArchiveStatus(data?.status)
+    const normalizedStatus = this.normalizeArchiveStatus(data?.llm_workflow_status || data?.status)
     const rankedFromResult = Array.isArray(data?.generation_result?.ranked_candidates) ? data.generation_result.ranked_candidates : []
     const rankedCandidates = Array.isArray(data?.llm_ranked_candidates) ? data.llm_ranked_candidates : rankedFromResult
     const comment = [data?.llm_generated_comment, data?.comment, data?.generation_result?.selected_comment]
@@ -589,6 +596,8 @@ export default class extends Controller {
       patch.llm_comment_last_error = null
       patch.llm_comment_last_error_preview = null
     }
+    if (String(data?.llm_workflow_status || "").trim().length > 0) patch.llm_workflow_status = String(data.llm_workflow_status)
+    if (data?.llm_workflow_progress && typeof data.llm_workflow_progress === "object") patch.llm_workflow_progress = data.llm_workflow_progress
 
     return { eventId: key, patch, status: normalizedStatus }
   }
@@ -614,7 +623,7 @@ export default class extends Controller {
     const normalized = String(status || "").toLowerCase()
     if (normalized === "started") return "running"
     if (normalized === "error") return "failed"
-    if (["queued", "running", "completed", "failed", "skipped"].includes(normalized)) return normalized
+    if (["queued", "running", "completed", "failed", "skipped", "processing", "partial", "ready"].includes(normalized)) return normalized
     return normalized || "not_requested"
   }
 
@@ -630,6 +639,8 @@ export default class extends Controller {
       prompt_construction: { label: "Prompt Construction", state: "pending", progress: 0, order: 50 },
       llm_generation: { label: "Comment Generation", state: "pending", progress: 0, order: 60 },
       relevance_scoring: { label: "Relevance Scoring", state: "pending", progress: 0, order: 70 },
+      engagement_eligibility: { label: "Engagement Eligibility", state: "pending", progress: 0, order: 80 },
+      reply_send_action: { label: "Reply Send Action", state: "pending", progress: 0, order: 90 },
     }
   }
 

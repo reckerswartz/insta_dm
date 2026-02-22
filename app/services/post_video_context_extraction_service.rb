@@ -7,8 +7,20 @@ class PostVideoContextExtractionService
   TOPIC_LIMIT = ENV.fetch("POST_VIDEO_TOPIC_LIMIT", 30).to_i
   SIGNAL_LIMIT = ENV.fetch("POST_VIDEO_SIGNAL_LIMIT", 40).to_i
   VISION_FRAME_SAMPLE_LIMIT = ENV.fetch("POST_VIDEO_VISION_FRAME_SAMPLE_LIMIT", 3).to_i.clamp(1, 8)
-  ENABLE_LEGACY_VIDEO_INTELLIGENCE = ActiveModel::Type::Boolean.new.cast(
-    ENV.fetch("POST_VIDEO_ENABLE_LEGACY_INTELLIGENCE", "false")
+  LIGHTWEIGHT_MODE = ActiveModel::Type::Boolean.new.cast(ENV.fetch("POST_VIDEO_LIGHTWEIGHT_MODE", "true"))
+  AUDIO_PRIORITY_MIN_WORDS = ENV.fetch("POST_VIDEO_AUDIO_PRIORITY_MIN_WORDS", "10").to_i.clamp(4, 80)
+  MIN_STRUCTURED_SIGNALS_FOR_SKIP = ENV.fetch("POST_VIDEO_MIN_STRUCTURED_SIGNALS_FOR_SKIP", "3").to_i.clamp(1, 24)
+  SKIP_DYNAMIC_VISION_WHEN_AUDIO_PRESENT = ActiveModel::Type::Boolean.new.cast(
+    ENV.fetch("POST_VIDEO_SKIP_DYNAMIC_VISION_WHEN_AUDIO_PRESENT", "true")
+  )
+  DYNAMIC_KEYFRAME_LIMIT = ENV.fetch("POST_VIDEO_DYNAMIC_KEYFRAME_LIMIT", "2").to_i.clamp(1, 8)
+  DYNAMIC_FRAME_INTERVAL_SECONDS = ENV.fetch("POST_VIDEO_DYNAMIC_FRAME_INTERVAL_SECONDS", "4.0").to_f.clamp(1.0, 20.0)
+  ENABLE_LOCAL_VIDEO_INTELLIGENCE = ActiveModel::Type::Boolean.new.cast(
+    if ENV.key?("POST_VIDEO_ENABLE_LOCAL_VIDEO_INTELLIGENCE")
+      ENV.fetch("POST_VIDEO_ENABLE_LOCAL_VIDEO_INTELLIGENCE", "false")
+    else
+      ENV.fetch("POST_VIDEO_ENABLE_LEGACY_INTELLIGENCE", "false")
+    end
   )
 
   def initialize(
@@ -90,17 +102,28 @@ class PostVideoContextExtractionService
     hashtags = normalize_string_array(understanding[:hashtags], limit: SIGNAL_LIMIT)
     mentions = normalize_string_array(understanding[:mentions], limit: SIGNAL_LIMIT)
     profile_handles = normalize_string_array(understanding[:profile_handles], limit: SIGNAL_LIMIT)
-    vision_understanding = enrich_with_vision_model(
-      bytes: bytes,
-      mode: mode,
-      reference_id: reference_id,
-      content_type: content_type,
+    vision_precheck = lightweight_vision_precheck(
       static_video: static_video,
-      semantic_route: semantic_route,
       transcript_text: transcript_text,
       topics: topics,
       objects: objects
     )
+    vision_understanding =
+      if ActiveModel::Type::Boolean.new.cast(vision_precheck[:skip])
+        skipped_vision_result(reason: vision_precheck[:reason], precheck: vision_precheck)
+      else
+        enrich_with_vision_model(
+          bytes: bytes,
+          mode: mode,
+          reference_id: reference_id,
+          content_type: content_type,
+          static_video: static_video,
+          semantic_route: semantic_route,
+          transcript_text: transcript_text,
+          topics: topics,
+          objects: objects
+        )
+      end
     topics = merge_unique_strings(topics, vision_understanding[:topics], limit: TOPIC_LIMIT)
     objects = merge_unique_strings(objects, vision_understanding[:objects], limit: SIGNAL_LIMIT)
     context_summary_text = vision_understanding[:summary].to_s.presence || context_summary(
@@ -138,6 +161,7 @@ class PostVideoContextExtractionService
         static_frame_intelligence: static_frame_intelligence[:metadata],
         local_video_intelligence: local_video_intelligence[:metadata],
         parallel_execution: parallel_branches[:parallel_execution],
+        lightweight_preanalysis: vision_precheck,
         vision_understanding: vision_understanding[:metadata]
       }
     }
@@ -309,10 +333,10 @@ class PostVideoContextExtractionService
   end
 
   def extract_local_video_intelligence_if_allowed(bytes:, reference_id:, static_video:)
-    unless ENABLE_LEGACY_VIDEO_INTELLIGENCE
+    unless ENABLE_LOCAL_VIDEO_INTELLIGENCE
       return {
         data: {},
-        metadata: { reason: "legacy_dynamic_intelligence_disabled" }
+        metadata: { reason: "local_dynamic_intelligence_disabled" }
       }
     end
 
@@ -353,10 +377,10 @@ class PostVideoContextExtractionService
   end
 
   def extract_static_frame_intelligence_if_available(mode:, reference_id:, static_video:)
-    unless ENABLE_LEGACY_VIDEO_INTELLIGENCE
+    unless ENABLE_LOCAL_VIDEO_INTELLIGENCE
       return {
         data: {},
-        metadata: { reason: "legacy_static_frame_intelligence_disabled" }
+        metadata: { reason: "local_static_frame_intelligence_disabled" }
       }
     end
 
@@ -517,6 +541,62 @@ class PostVideoContextExtractionService
     }
   end
 
+  def lightweight_vision_precheck(static_video:, transcript_text:, topics:, objects:)
+    transcript_words = word_count(transcript_text)
+    structured_signal_count = normalize_string_array(Array(topics) + Array(objects), limit: SIGNAL_LIMIT).length
+
+    skip = false
+    reason = nil
+
+    if !LIGHTWEIGHT_MODE
+      reason = "lightweight_mode_disabled"
+    elsif static_video
+      reason = "static_video_visual_enrichment_allowed"
+    elsif structured_signal_count >= MIN_STRUCTURED_SIGNALS_FOR_SKIP
+      skip = true
+      reason = "structured_signals_sufficient"
+    elsif SKIP_DYNAMIC_VISION_WHEN_AUDIO_PRESENT && transcript_words >= AUDIO_PRIORITY_MIN_WORDS
+      skip = true
+      reason = "audio_priority_sufficient"
+    end
+
+    {
+      skip: skip,
+      reason: reason,
+      lightweight_mode: LIGHTWEIGHT_MODE,
+      static_video: ActiveModel::Type::Boolean.new.cast(static_video),
+      transcript_word_count: transcript_words,
+      structured_signal_count: structured_signal_count,
+      audio_priority_threshold_words: AUDIO_PRIORITY_MIN_WORDS,
+      structured_signal_threshold: MIN_STRUCTURED_SIGNALS_FOR_SKIP,
+      skip_dynamic_vision_when_audio_present: SKIP_DYNAMIC_VISION_WHEN_AUDIO_PRESENT
+    }
+  rescue StandardError
+    {
+      skip: false,
+      reason: "lightweight_precheck_error",
+      lightweight_mode: LIGHTWEIGHT_MODE
+    }
+  end
+
+  def skipped_vision_result(reason:, precheck:)
+    {
+      summary: nil,
+      topics: [],
+      objects: [],
+      metadata: {
+        status: "skipped",
+        source: "ollama_vision",
+        reason: reason.to_s.presence || "lightweight_preanalysis_skip",
+        precheck: precheck
+      }.compact
+    }
+  end
+
+  def word_count(value)
+    value.to_s.scan(/[a-zA-Z0-9']+/).length
+  end
+
   def vision_frame_payload(bytes:, mode:, reference_id:, content_type:, static_video:)
     if static_video
       frame = static_frame_bytes(mode)
@@ -529,18 +609,35 @@ class PostVideoContextExtractionService
       } if frame.present?
     end
 
+    duration_seconds = mode[:duration_seconds].to_f
+    keyframe_limit = [ VISION_FRAME_SAMPLE_LIMIT, DYNAMIC_KEYFRAME_LIMIT ].min
+    keyframe_timestamps = dynamic_vision_timestamps(duration_seconds: duration_seconds, limit: keyframe_limit)
     extracted = @video_frame_extraction_service.extract(
       video_bytes: bytes,
       story_id: reference_id.to_s,
-      content_type: content_type
+      content_type: content_type,
+      max_frames: VISION_FRAME_SAMPLE_LIMIT,
+      interval_seconds: DYNAMIC_FRAME_INTERVAL_SECONDS,
+      timestamps_seconds: keyframe_timestamps,
+      key_frames_only: true
     )
     extraction_metadata = extracted[:metadata].is_a?(Hash) ? extracted[:metadata] : {}
-    frames = Array(extracted[:frames]).filter_map do |row|
-      payload = row.is_a?(Hash) ? row : {}
-      frame = payload[:image_bytes].to_s.b
-      frame = payload["image_bytes"].to_s.b if frame.blank?
-      frame.presence
-    end.first(VISION_FRAME_SAMPLE_LIMIT)
+    frames = frame_bytes_from_extraction(extracted).first(VISION_FRAME_SAMPLE_LIMIT)
+
+    if frames.empty?
+      fallback = @video_frame_extraction_service.extract(
+        video_bytes: bytes,
+        story_id: reference_id.to_s,
+        content_type: content_type,
+        max_frames: VISION_FRAME_SAMPLE_LIMIT,
+        interval_seconds: DYNAMIC_FRAME_INTERVAL_SECONDS
+      )
+      fallback_metadata = fallback[:metadata].is_a?(Hash) ? fallback[:metadata] : {}
+      frames = frame_bytes_from_extraction(fallback).first(VISION_FRAME_SAMPLE_LIMIT)
+      extraction_metadata = extraction_metadata.merge(
+        fallback: fallback_metadata
+      ).compact
+    end
 
     {
       frames: frames,
@@ -559,6 +656,35 @@ class PostVideoContextExtractionService
         error_message: e.message.to_s
       }
     }
+  end
+
+  def frame_bytes_from_extraction(extracted)
+    Array(extracted[:frames]).filter_map do |row|
+      payload = row.is_a?(Hash) ? row : {}
+      frame = payload[:image_bytes].to_s.b
+      frame = payload["image_bytes"].to_s.b if frame.blank?
+      frame.presence
+    end
+  end
+
+  def dynamic_vision_timestamps(duration_seconds:, limit:)
+    count = limit.to_i.clamp(1, 8)
+    duration = duration_seconds.to_f
+    return [ 0.0 ].first(count) if duration <= 0.0
+
+    candidates = [ 0.0 ]
+    candidates << (duration / 2.0)
+    candidates << [ duration - 0.25, 0.0 ].max
+    while candidates.length < count
+      offset = (DYNAMIC_FRAME_INTERVAL_SECONDS * candidates.length.to_f)
+      candidates << [ offset, [ duration - 0.25, 0.0 ].max ].min
+    end
+    candidates
+      .map { |value| value.round(3) }
+      .uniq
+      .first(count)
+  rescue StandardError
+    [ 0.0 ].first(limit.to_i.clamp(1, 8))
   end
 
   def static_frame_bytes(mode)

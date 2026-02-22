@@ -1,164 +1,100 @@
 require "timeout"
 
-class ProcessPostVideoAnalysisJob < PostAnalysisPipelineJob
+class ProcessPostVideoAnalysisJob < PostAnalysisStepJob
   queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:video_analysis)
 
   MAX_DEFER_ATTEMPTS = ENV.fetch("AI_VIDEO_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)
+  VIDEO_EXTRACTION_PROFILE = ENV.fetch("POST_VIDEO_EXTRACTION_PROFILE", "lightweight_v1").to_s
 
   retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
 
-  def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, defer_attempt: 0)
-    enqueue_finalizer = true
-    context = load_pipeline_context!(
-      instagram_account_id: instagram_account_id,
-      instagram_profile_id: instagram_profile_id,
-      instagram_profile_post_id: instagram_profile_post_id,
-      pipeline_run_id: pipeline_run_id
-    )
-    return unless context
+  private
 
-    pipeline_state = context[:pipeline_state]
-    if pipeline_state.pipeline_terminal?(run_id: pipeline_run_id) || pipeline_state.step_terminal?(run_id: pipeline_run_id, step: "video")
-      enqueue_finalizer = false
-      Ops::StructuredLogger.info(
-        event: "ai.video_analysis.skipped_terminal",
-        payload: {
-          active_job_id: job_id,
-          instagram_account_id: context[:account].id,
-          instagram_profile_id: context[:profile].id,
-          instagram_profile_post_id: context[:post].id,
-          pipeline_run_id: pipeline_run_id
-        }
-      )
-      return
-    end
+  def step_key
+    "video"
+  end
 
-    unless resource_available?(defer_attempt: defer_attempt, context: context, pipeline_run_id: pipeline_run_id)
-      return
-    end
+  def resource_task_name
+    "video"
+  end
 
+  def max_defer_attempts
+    MAX_DEFER_ATTEMPTS
+  end
+
+  def timeout_seconds
+    video_timeout_seconds
+  end
+
+  def step_failure_reason
+    "video_analysis_failed"
+  end
+
+  def perform_step!(context:, pipeline_run_id:, options: {})
     profile = context[:profile]
     post = context[:post]
 
-    pipeline_state.mark_step_running!(
-      run_id: pipeline_run_id,
-      step: "video",
-      queue_name: queue_name,
-      active_job_id: job_id
-    )
-
     builder = Ai::PostAnalysisContextBuilder.new(profile: profile, post: post)
     payload = builder.video_payload
+    media_fingerprint = builder.media_fingerprint(media: payload)
 
     if ActiveModel::Type::Boolean.new.cast(payload[:skipped])
-      persist_video_analysis!(post: post, result: payload)
-      pipeline_state.mark_step_completed!(
-        run_id: pipeline_run_id,
-        step: "video",
-        status: "succeeded",
-        result: {
-          skipped: true,
-          reason: payload[:reason].to_s
-        }
+      persist_video_analysis!(
+        post: post,
+        result: payload,
+        media_fingerprint: media_fingerprint,
+        cache_hit: false,
+        cache_source: "skipped"
       )
-      return
+      return payload.merge(cache_hit: false)
     end
 
-    result = Timeout.timeout(video_timeout_seconds) do
-      PostVideoContextExtractionService.new.extract(
-        video_bytes: payload[:video_bytes],
-        reference_id: payload[:reference_id].to_s.presence || "post_media_#{post.id}",
-        content_type: payload[:content_type]
+    cached = reusable_video_analysis_for(post: post, media_fingerprint: media_fingerprint)
+    if cached
+      cached_result = cached[:result].merge(cache_hit: true)
+      persist_video_analysis!(
+        post: post,
+        result: cached_result,
+        media_fingerprint: media_fingerprint,
+        cache_hit: true,
+        cache_source: cached[:source]
       )
+      return cached_result
     end
 
-    persist_video_analysis!(post: post, result: result)
-
-    pipeline_state.mark_step_completed!(
-      run_id: pipeline_run_id,
-      step: "video",
-      status: "succeeded",
-      result: {
-        skipped: ActiveModel::Type::Boolean.new.cast(result[:skipped]),
-        processing_mode: result[:processing_mode].to_s,
-        static: ActiveModel::Type::Boolean.new.cast(result[:static]),
-        semantic_route: result[:semantic_route].to_s.presence,
-        duration_seconds: result[:duration_seconds],
-        has_audio: ActiveModel::Type::Boolean.new.cast(result[:has_audio]),
-        transcript_present: result[:transcript].to_s.present?,
-        topics_count: Array(result[:topics]).length
-      }
+    result = PostVideoContextExtractionService.new.extract(
+      video_bytes: payload[:video_bytes],
+      reference_id: payload[:reference_id].to_s.presence || "post_media_#{post.id}",
+      content_type: payload[:content_type]
     )
-  rescue StandardError => e
-    context&.dig(:pipeline_state)&.mark_step_completed!(
-      run_id: pipeline_run_id,
-      step: "video",
-      status: "failed",
-      error: format_error(e),
-      result: {
-        reason: "video_analysis_failed"
-      }
+
+    result_with_cache = result.merge(cache_hit: false)
+    persist_video_analysis!(
+      post: post,
+      result: result_with_cache,
+      media_fingerprint: media_fingerprint,
+      cache_hit: false,
+      cache_source: "fresh_extraction"
     )
-    raise
-  ensure
-    if context && enqueue_finalizer
-      enqueue_pipeline_finalizer(
-        account: context[:account],
-        profile: context[:profile],
-        post: context[:post],
-        pipeline_run_id: pipeline_run_id
-      )
-    end
+    result_with_cache
   end
 
-  private
-
-  def resource_available?(defer_attempt:, context:, pipeline_run_id:)
-    guard = Ops::ResourceGuard.allow_ai_task?(task: "video", queue_name: queue_name, critical: false)
-    return true if ActiveModel::Type::Boolean.new.cast(guard[:allow])
-
-    if defer_attempt.to_i >= MAX_DEFER_ATTEMPTS
-      context[:pipeline_state].mark_step_completed!(
-        run_id: pipeline_run_id,
-        step: "video",
-        status: "failed",
-        error: "resource_guard_exhausted: #{guard[:reason]}",
-        result: {
-          reason: "resource_constraints",
-          snapshot: guard[:snapshot]
-        }
-      )
-      return false
-    end
-
-    retry_seconds = guard[:retry_in_seconds].to_i
-    retry_seconds = 20 if retry_seconds <= 0
-
-    context[:pipeline_state].mark_step_queued!(
-      run_id: pipeline_run_id,
-      step: "video",
-      queue_name: queue_name,
-      active_job_id: job_id,
-      result: {
-        reason: "resource_constrained",
-        defer_attempt: defer_attempt.to_i,
-        retry_in_seconds: retry_seconds,
-        snapshot: guard[:snapshot]
-      }
-    )
-
-    self.class.set(wait: retry_seconds.seconds).perform_later(
-      instagram_account_id: context[:account].id,
-      instagram_profile_id: context[:profile].id,
-      instagram_profile_post_id: context[:post].id,
-      pipeline_run_id: pipeline_run_id,
-      defer_attempt: defer_attempt.to_i + 1
-    )
-
-    false
+  def step_completion_result(raw_result:, context:, options: {})
+    {
+      skipped: ActiveModel::Type::Boolean.new.cast(raw_result[:skipped]),
+      processing_mode: raw_result[:processing_mode].to_s,
+      static: ActiveModel::Type::Boolean.new.cast(raw_result[:static]),
+      semantic_route: raw_result[:semantic_route].to_s.presence,
+      duration_seconds: raw_result[:duration_seconds],
+      has_audio: ActiveModel::Type::Boolean.new.cast(raw_result[:has_audio]),
+      transcript_present: raw_result[:transcript].to_s.present?,
+      topics_count: Array(raw_result[:topics]).length,
+      cache_hit: ActiveModel::Type::Boolean.new.cast(raw_result[:cache_hit]),
+      reason: raw_result[:reason].to_s.presence
+    }.compact
   end
 
-  def persist_video_analysis!(post:, result:)
+  def persist_video_analysis!(post:, result:, media_fingerprint:, cache_hit:, cache_source:)
     normalized = normalize_video_result(result)
     post.with_lock do
       post.reload
@@ -179,6 +115,8 @@ class ProcessPostVideoAnalysisJob < PostAnalysisPipelineJob
       analysis["video_profile_handles"] = normalized[:profile_handles] if normalized[:profile_handles].is_a?(Array)
       analysis["video_ocr_text"] = normalized[:ocr_text].to_s if normalized[:ocr_text].to_s.present?
       analysis["video_ocr_blocks"] = normalized[:ocr_blocks] if normalized[:ocr_blocks].is_a?(Array)
+      analysis["video_media_fingerprint"] = media_fingerprint.to_s if media_fingerprint.to_s.present?
+      analysis["video_extraction_profile"] = VIDEO_EXTRACTION_PROFILE
 
       analysis["topics"] = merge_strings(analysis["topics"], normalized[:topics], limit: 40)
       analysis["objects"] = merge_strings(analysis["objects"], normalized[:objects], limit: 50)
@@ -210,11 +148,61 @@ class ProcessPostVideoAnalysisJob < PostAnalysisPipelineJob
         "ocr_blocks" => normalized[:ocr_blocks],
         "context_summary" => normalized[:context_summary].to_s.presence,
         "metadata" => normalized[:metadata],
+        "media_fingerprint" => media_fingerprint.to_s.presence,
+        "extraction_profile" => VIDEO_EXTRACTION_PROFILE,
+        "cache" => {
+          "hit" => ActiveModel::Type::Boolean.new.cast(cache_hit),
+          "source" => cache_source.to_s.presence || "unknown",
+          "updated_at" => Time.current.iso8601(3)
+        },
         "updated_at" => Time.current.iso8601(3)
       }.compact
 
       post.update!(analysis: analysis, metadata: metadata)
     end
+  end
+
+  def reusable_video_analysis_for(post:, media_fingerprint:)
+    return nil if media_fingerprint.to_s.blank?
+
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    video_meta = metadata["video_processing"]
+    return nil unless video_meta.is_a?(Hash)
+    return nil unless video_meta["media_fingerprint"].to_s == media_fingerprint.to_s
+    return nil unless video_meta["extraction_profile"].to_s == VIDEO_EXTRACTION_PROFILE
+    return nil if video_meta["processing_mode"].to_s.blank?
+
+    {
+      source: "post_metadata_video_processing",
+      result: {
+        skipped: ActiveModel::Type::Boolean.new.cast(video_meta["skipped"]),
+        processing_mode: video_meta["processing_mode"].to_s,
+        static: ActiveModel::Type::Boolean.new.cast(video_meta["static"]),
+        semantic_route: video_meta["semantic_route"].to_s.presence,
+        duration_seconds: video_meta["duration_seconds"],
+        has_audio: ActiveModel::Type::Boolean.new.cast(video_meta["has_audio"]),
+        transcript: video_meta["transcript"].to_s.presence,
+        topics: Array(video_meta["topics"]).map(&:to_s),
+        objects: Array(video_meta["objects"]).map(&:to_s),
+        scenes: Array(video_meta["scenes"]).select { |row| row.is_a?(Hash) },
+        hashtags: Array(video_meta["hashtags"]).map(&:to_s),
+        mentions: Array(video_meta["mentions"]).map(&:to_s),
+        profile_handles: Array(video_meta["profile_handles"]).map(&:to_s),
+        ocr_text: video_meta["ocr_text"].to_s.presence,
+        ocr_blocks: Array(video_meta["ocr_blocks"]).select { |row| row.is_a?(Hash) },
+        context_summary: video_meta["context_summary"].to_s.presence,
+        metadata: begin
+          source = video_meta["metadata"].is_a?(Hash) ? video_meta["metadata"].deep_dup : {}
+          source["cache"] = {
+            "reused" => true,
+            "source" => "post_metadata_video_processing"
+          }
+          source
+        end
+      }
+    }
+  rescue StandardError
+    nil
   end
 
   def normalize_video_result(result)

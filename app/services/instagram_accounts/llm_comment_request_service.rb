@@ -65,7 +65,9 @@ module InstagramAccounts
           llm_pipeline_timing: pipeline_timing(event),
           llm_last_stage: merged_llm_last_stage(event),
           llm_manual_review_reason: llm_meta["manual_review_reason"].to_s.presence,
-          llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(llm_meta["auto_post_allowed"])
+          llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(llm_meta["auto_post_allowed"]),
+          llm_workflow_status: workflow_status_for(event),
+          llm_workflow_progress: workflow_progress_for(event)
         },
         status: :ok
       )
@@ -126,6 +128,8 @@ module InstagramAccounts
             queue_size: ai_queue_size,
             llm_processing_stages: merged_llm_processing_stages(event),
             llm_last_stage: merged_llm_last_stage(event),
+            llm_workflow_status: workflow_status_for(event),
+            llm_workflow_progress: workflow_progress_for(event),
             forced: force,
             regenerate_all: regenerate_all
           },
@@ -175,7 +179,9 @@ module InstagramAccounts
           llm_processing_log: merged_llm_processing_log(event),
           llm_pipeline_step_rollup: pipeline_step_rollup(event),
           llm_pipeline_timing: pipeline_timing(event),
-          llm_last_stage: merged_llm_last_stage(event)
+          llm_last_stage: merged_llm_last_stage(event),
+          llm_workflow_status: workflow_status_for(event),
+          llm_workflow_progress: workflow_progress_for(event)
         },
         status: :accepted
       )
@@ -193,7 +199,9 @@ module InstagramAccounts
           llm_processing_log: merged_llm_processing_log(event),
           llm_pipeline_step_rollup: pipeline_step_rollup(event),
           llm_pipeline_timing: pipeline_timing(event),
-          llm_last_stage: merged_llm_last_stage(event)
+          llm_last_stage: merged_llm_last_stage(event),
+          llm_workflow_status: workflow_status_for(event),
+          llm_workflow_progress: workflow_progress_for(event)
         },
         status: :ok
       )
@@ -217,7 +225,9 @@ module InstagramAccounts
           llm_processing_log: merged_llm_processing_log(event),
           llm_pipeline_step_rollup: pipeline_step_rollup(event),
           llm_pipeline_timing: pipeline_timing(event),
-          llm_last_stage: merged_llm_last_stage(event)
+          llm_last_stage: merged_llm_last_stage(event),
+          llm_workflow_status: workflow_status_for(event),
+          llm_workflow_progress: workflow_progress_for(event)
         },
         status: :ok
       )
@@ -383,6 +393,20 @@ module InstagramAccounts
       ((end_time.to_f - start_time.to_f) * 1000.0).round
     rescue StandardError
       nil
+    end
+
+    def workflow_status_for(event)
+      serializer = InstagramAccounts::StoryArchiveItemSerializer.new(event: event)
+      serializer.send(:llm_workflow_status, event: event, llm_meta: (event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}), manual_send_status: serializer.send(:manual_send_status, event.metadata.is_a?(Hash) ? event.metadata : {}))
+    rescue StandardError
+      "queued"
+    end
+
+    def workflow_progress_for(event)
+      serializer = InstagramAccounts::StoryArchiveItemSerializer.new(event: event)
+      serializer.send(:llm_workflow_progress, event: event, llm_meta: (event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}), manual_send_status: serializer.send(:manual_send_status, event.metadata.is_a?(Hash) ? event.metadata : {}))
+    rescue StandardError
+      { completed: 0, total: 5, summary: "0/5 completed" }
     end
   end
 end

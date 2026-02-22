@@ -310,6 +310,98 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     assert_includes result[:objects], "backpack"
     assert_equal "Friends hiking a mountain trail outdoors.", result[:context_summary]
     assert_equal "llama3.2-vision:11b", result.dig(:metadata, :vision_understanding, :model)
-    assert_equal "legacy_dynamic_intelligence_disabled", result.dig(:metadata, :local_video_intelligence, :reason)
+    assert_equal "local_dynamic_intelligence_disabled", result.dig(:metadata, :local_video_intelligence, :reason)
+  end
+
+  it "skips dynamic LLM vision when transcript signals are sufficient in lightweight mode" do
+    detector = StubFrameChangeDetector.new(
+      result: {
+        static: false,
+        processing_mode: "dynamic_video",
+        duration_seconds: 9.0,
+        metadata: {
+          video_probe: {
+            source: "ffprobe",
+            has_audio: true
+          }
+        }
+      }
+    )
+    probe = StubVideoMetadataProbe.new(
+      result: {
+        duration_seconds: 9.0,
+        metadata: { source: "ffprobe", has_audio: true }
+      }
+    )
+    audio = StubAudioExtractor.new(
+      result: {
+        audio_bytes: "wav-audio",
+        content_type: "audio/wav",
+        metadata: { source: "ffmpeg" }
+      }
+    )
+    transcriber = StubTranscriber.new(
+      result: {
+        transcript: "morning routine update with coffee and planning before heading into work now",
+        metadata: { source: "whisper" }
+      }
+    )
+    local_client = StubLocalVideoClient.new(result: {}, raise_on_call: true)
+    understanding = StubContentUnderstanding.new(
+      result: {
+        topics: [],
+        objects: [],
+        scenes: [],
+        hashtags: [],
+        mentions: [],
+        profile_handles: [],
+        ocr_text: nil,
+        ocr_blocks: []
+      }
+    )
+    frame_extractor = StubFrameExtractor.new(
+      result: {
+        frames: [ { image_bytes: "frame-a" } ],
+        metadata: { source: "ffmpeg", extracted_frames: 1 }
+      }
+    )
+    vision = StubVisionUnderstanding.new(
+      result: {
+        ok: true,
+        model: "llava:7b",
+        summary: "unused",
+        topics: [ "unused" ],
+        objects: [ "unused" ],
+        metadata: { status: "completed", source: "ollama_vision" }
+      },
+      enabled: true
+    )
+
+    service = PostVideoContextExtractionService.new(
+      video_frame_change_detector_service: detector,
+      video_metadata_service: probe,
+      video_audio_extraction_service: audio,
+      speech_transcription_service: transcriber,
+      local_microservice_client: local_client,
+      content_understanding_service: understanding,
+      video_frame_extraction_service: frame_extractor,
+      vision_understanding_service: vision
+    )
+
+    result = service.extract(
+      video_bytes: "video-binary",
+      reference_id: "post_3",
+      content_type: "video/mp4"
+    )
+
+    assert_equal false, ActiveModel::Type::Boolean.new.cast(result[:skipped])
+    assert_equal "dynamic_video", result[:processing_mode]
+    assert_equal 0, frame_extractor.calls
+    assert_equal 0, vision.calls.length
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(result.dig(:metadata, :lightweight_preanalysis, :skip))
+    assert_equal "audio_priority_sufficient", result.dig(:metadata, :vision_understanding, :reason)
+    assert_equal 1, audio.calls
+    assert_equal 1, transcriber.calls
+    assert_includes result[:context_summary].to_s.downcase, "audio transcript"
   end
 end

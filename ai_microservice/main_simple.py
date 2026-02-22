@@ -225,7 +225,7 @@ async def analyze_image(
 @app.post("/transcribe/audio")
 async def transcribe_audio(
     file: UploadFile = File(...),
-    model: Optional[str] = "base"
+    model: Optional[str] = os.getenv("LOCAL_WHISPER_MODEL", "tiny")
 ):
     """
     Transcribe audio using local Whisper

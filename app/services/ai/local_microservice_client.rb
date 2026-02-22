@@ -13,46 +13,51 @@ module Ai
     MAX_VIDEO_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MAX_VIDEO_UPLOAD_BYTES", 80 * 1024 * 1024).to_i
     MIN_IMAGE_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MIN_IMAGE_UPLOAD_BYTES", 128).to_i
     MIN_VIDEO_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MIN_VIDEO_UPLOAD_BYTES", 1024).to_i
+    VIDEO_SAMPLE_RATE_SECONDS = ENV.fetch("LOCAL_AI_VIDEO_SAMPLE_RATE_SECONDS", 3).to_i.clamp(1, 12)
     
     def initialize(service_url: nil)
       @base_url = service_url || BASE_URL
     end
     
     def test_connection!
-      response = get_json("/health")
-      raise "Local AI service unavailable" unless response["status"] == "healthy"
-      
-      {
-        ok: true,
-        message: "Local AI service is healthy",
-        services: response["services"]
-      }
+      with_usage_tracking(operation: "health_check", category: "healthcheck") do
+        response = get_json("/health")
+        raise "Local AI service unavailable" unless response["status"] == "healthy"
+
+        {
+          ok: true,
+          message: "Local AI service is healthy",
+          services: response["services"]
+        }
+      end
     rescue StandardError => e
       { ok: false, message: e.message.to_s }
     end
     
     def analyze_image_bytes!(bytes, features:, usage_category: "image_analysis", usage_context: nil)
-      bytes_data = bytes.to_s.b
-      validate_image_bytes!(bytes_data)
+      with_usage_tracking(operation: "analyze_image_bytes", category: usage_category, usage_context: usage_context) do
+        bytes_data = bytes.to_s.b
+        validate_image_bytes!(bytes_data)
 
-      # Convert feature names to match microservice expectations
-      service_features = convert_features(features)
-      
-      # Create temporary file for upload
-      temp_file = Tempfile.new(["image_analysis", ".jpg"])
-      begin
-        temp_file.binmode
-        temp_file.write(bytes_data)
-        temp_file.flush
-        
-        # Upload to microservice
-        response = upload_file("/analyze/image", temp_file.path, { features: service_features.join(",") })
-        
-        # Convert response to match Google Vision format
-        convert_vision_response(response)
-      ensure
-        temp_file.close
-        temp_file.unlink
+        # Convert feature names to match microservice expectations
+        service_features = convert_features(features)
+
+        # Create temporary file for upload
+        temp_file = Tempfile.new(["image_analysis", ".jpg"])
+        begin
+          temp_file.binmode
+          temp_file.write(bytes_data)
+          temp_file.flush
+
+          # Upload to microservice
+          response = upload_file("/analyze/image", temp_file.path, { features: service_features.join(",") })
+
+          # Convert response to match Google Vision format
+          convert_vision_response(response)
+        ensure
+          temp_file.close
+          temp_file.unlink
+        end
       end
     end
     
@@ -71,25 +76,27 @@ module Ai
     end
     
     def analyze_video_bytes!(bytes, features:, usage_context: nil)
-      bytes_data = bytes.to_s.b
-      validate_video_bytes!(bytes_data)
-      service_features = convert_video_features(features)
-      
-      temp_file = Tempfile.new(["video_analysis", ".mp4"])
-      begin
-        temp_file.binmode
-        temp_file.write(bytes_data)
-        temp_file.flush
-        
-        response = upload_file("/analyze/video", temp_file.path, { 
-          features: service_features.join(","),
-          sample_rate: 2  # Sample every 2 seconds
-        })
-        
-        convert_video_response(response)
-      ensure
-        temp_file.close
-        temp_file.unlink
+      with_usage_tracking(operation: "analyze_video_bytes", category: "video_analysis", usage_context: usage_context) do
+        bytes_data = bytes.to_s.b
+        validate_video_bytes!(bytes_data)
+        service_features = convert_video_features(features)
+
+        temp_file = Tempfile.new(["video_analysis", ".mp4"])
+        begin
+          temp_file.binmode
+          temp_file.write(bytes_data)
+          temp_file.flush
+
+          response = upload_file("/analyze/video", temp_file.path, {
+            features: service_features.join(","),
+            sample_rate: VIDEO_SAMPLE_RATE_SECONDS
+          })
+
+          convert_video_response(response)
+        ensure
+          temp_file.close
+          temp_file.unlink
+        end
       end
     end
     
@@ -138,124 +145,126 @@ module Ai
     # - mentions: ["@user"]
     # - hashtags: ["#tag"]
     def detect_faces_and_ocr!(image_bytes:, usage_context: nil)
-      bytes_data = image_bytes.to_s.b
-      validate_image_bytes!(bytes_data)
+      with_usage_tracking(operation: "detect_faces_and_ocr", category: "image_analysis", usage_context: usage_context) do
+        bytes_data = image_bytes.to_s.b
+        validate_image_bytes!(bytes_data)
 
-      temp_file = Tempfile.new(["story_intel", ".jpg"])
-      begin
-        temp_file.binmode
-        temp_file.write(bytes_data)
-        temp_file.flush
-
-        ocr_warning = nil
+        temp_file = Tempfile.new(["story_intel", ".jpg"])
         begin
-          response = upload_file("/analyze/image", temp_file.path, { features: "labels,text,faces" })
-          payload, results = unpack_response_payload!(
-            response: response,
-            operation: "detect_faces_and_ocr",
-            expected_keys: %w[labels text faces]
-          )
-        rescue StandardError => e
-          ocr_warning = {
-            "feature" => "text",
-            "error_class" => e.class.name.to_s,
-            "error_message" => e.message.to_s.byteslice(0, 260),
-            "fallback" => "labels_faces_only"
-          }
-          fallback_response = upload_file("/analyze/image", temp_file.path, { features: "labels,faces" })
-          payload, results = unpack_response_payload!(
-            response: fallback_response,
-            operation: "detect_faces_without_text",
-            expected_keys: %w[labels faces]
-          )
-        end
+          temp_file.binmode
+          temp_file.write(bytes_data)
+          temp_file.flush
 
-        text_rows = Array(results["text"])
-        text_rows = text_rows.map do |row|
-          if row.is_a?(Hash)
-            source_name = row["source"].to_s.presence || "ocr"
-            variant_name = row["variant"].to_s.presence
-            {
-              "text" => row["text"].to_s,
-              "confidence" => row["confidence"],
-              "bbox" => normalize_bounding_box(row["bbox"]),
-              "source" => [source_name, variant_name].compact.join(":"),
-              "variant" => variant_name
+          ocr_warning = nil
+          begin
+            response = upload_file("/analyze/image", temp_file.path, { features: "labels,text,faces" })
+            payload, results = unpack_response_payload!(
+              response: response,
+              operation: "detect_faces_and_ocr",
+              expected_keys: %w[labels text faces]
+            )
+          rescue StandardError => e
+            ocr_warning = {
+              "feature" => "text",
+              "error_class" => e.class.name.to_s,
+              "error_message" => e.message.to_s.byteslice(0, 260),
+              "fallback" => "labels_faces_only"
             }
-          else
-            { "text" => row.to_s, "confidence" => nil, "bbox" => {}, "source" => "ocr", "variant" => nil }
+            fallback_response = upload_file("/analyze/image", temp_file.path, { features: "labels,faces" })
+            payload, results = unpack_response_payload!(
+              response: fallback_response,
+              operation: "detect_faces_without_text",
+              expected_keys: %w[labels faces]
+            )
           end
-        end
-        ocr_blocks = text_rows
-          .map do |row|
-            {
-              "text" => row["text"].to_s.strip,
-              "confidence" => row["confidence"].to_f,
-              "bbox" => row["bbox"].is_a?(Hash) ? row["bbox"] : {},
-              "source" => row["source"].to_s.presence || "ocr",
-              "variant" => row["variant"].to_s.presence
-            }
-          end
-          .reject { |row| row["text"].blank? }
-          .first(80)
-        ocr_text = ocr_blocks.map { |row| row["text"] }.uniq.join("\n").presence
 
-        object_detections = Array(results["labels"])
-          .map do |row|
+          text_rows = Array(results["text"])
+          text_rows = text_rows.map do |row|
             if row.is_a?(Hash)
+              source_name = row["source"].to_s.presence || "ocr"
+              variant_name = row["variant"].to_s.presence
               {
-                "label" => (row["label"] || row["description"]).to_s,
-                "confidence" => (row["confidence"] || row["score"]).to_f,
-                "bbox" => normalize_bounding_box(row["bbox"])
+                "text" => row["text"].to_s,
+                "confidence" => row["confidence"],
+                "bbox" => normalize_bounding_box(row["bbox"]),
+                "source" => [source_name, variant_name].compact.join(":"),
+                "variant" => variant_name
               }
             else
-              { "label" => row.to_s, "confidence" => nil, "bbox" => {} }
+              { "text" => row.to_s, "confidence" => nil, "bbox" => {}, "source" => "ocr", "variant" => nil }
             end
           end
-          .reject { |row| row["label"].blank? }
-          .first(80)
+          ocr_blocks = text_rows
+            .map do |row|
+              {
+                "text" => row["text"].to_s.strip,
+                "confidence" => row["confidence"].to_f,
+                "bbox" => row["bbox"].is_a?(Hash) ? row["bbox"] : {},
+                "source" => row["source"].to_s.presence || "ocr",
+                "variant" => row["variant"].to_s.presence
+              }
+            end
+            .reject { |row| row["text"].blank? }
+            .first(80)
+          ocr_text = ocr_blocks.map { |row| row["text"] }.uniq.join("\n").presence
 
-        labels = object_detections
-          .map { |row| row["label"] }
-          .map(&:to_s)
-          .map(&:strip)
-          .reject(&:blank?)
-          .uniq
-          .first(40)
+          object_detections = Array(results["labels"])
+            .map do |row|
+              if row.is_a?(Hash)
+                {
+                  "label" => (row["label"] || row["description"]).to_s,
+                  "confidence" => (row["confidence"] || row["score"]).to_f,
+                  "bbox" => normalize_bounding_box(row["bbox"])
+                }
+              else
+                { "label" => row.to_s, "confidence" => nil, "bbox" => {} }
+              end
+            end
+            .reject { |row| row["label"].blank? }
+            .first(80)
 
-        faces = Array(results["faces"]).map { |face| normalize_face(face) }
-        mentions = ocr_text.to_s.scan(/@[a-zA-Z0-9._]+/).map(&:downcase).uniq.first(40)
-        hashtags = ocr_text.to_s.scan(/#[a-zA-Z0-9_]+/).map(&:downcase).uniq.first(40)
-        profile_handles = ocr_blocks
-          .flat_map { |row| row["text"].to_s.scan(/\b([a-zA-Z0-9._]{3,30})\b/) }
-          .map { |match| match.is_a?(Array) ? match.first.to_s.downcase : match.to_s.downcase }
-          .select { |token| token.include?("_") || token.include?(".") }
-          .reject { |token| token.include?("instagram.com") }
-          .uniq
-          .first(40)
+          labels = object_detections
+            .map { |row| row["label"] }
+            .map(&:to_s)
+            .map(&:strip)
+            .reject(&:blank?)
+            .uniq
+            .first(40)
 
-        {
-          "faces" => faces,
-          "ocr_text" => ocr_text,
-          "ocr_blocks" => ocr_blocks,
-          "location_tags" => [],
-          "content_labels" => labels,
-          "object_detections" => object_detections,
-          "mentions" => mentions,
-          "hashtags" => hashtags,
-          "profile_handles" => profile_handles,
-          "metadata" => {
-            "source" => "local_microservice",
-            "usage_context" => usage_context.to_h,
-            "warnings" => (
-              Array(payload.dig("metadata", "warnings")) +
-              Array(ocr_warning)
-            ).first(20)
+          faces = Array(results["faces"]).map { |face| normalize_face(face) }
+          mentions = ocr_text.to_s.scan(/@[a-zA-Z0-9._]+/).map(&:downcase).uniq.first(40)
+          hashtags = ocr_text.to_s.scan(/#[a-zA-Z0-9_]+/).map(&:downcase).uniq.first(40)
+          profile_handles = ocr_blocks
+            .flat_map { |row| row["text"].to_s.scan(/\b([a-zA-Z0-9._]{3,30})\b/) }
+            .map { |match| match.is_a?(Array) ? match.first.to_s.downcase : match.to_s.downcase }
+            .select { |token| token.include?("_") || token.include?(".") }
+            .reject { |token| token.include?("instagram.com") }
+            .uniq
+            .first(40)
+
+          {
+            "faces" => faces,
+            "ocr_text" => ocr_text,
+            "ocr_blocks" => ocr_blocks,
+            "location_tags" => [],
+            "content_labels" => labels,
+            "object_detections" => object_detections,
+            "mentions" => mentions,
+            "hashtags" => hashtags,
+            "profile_handles" => profile_handles,
+            "metadata" => {
+              "source" => "local_microservice",
+              "usage_context" => normalize_usage_context(usage_context),
+              "warnings" => (
+                Array(payload.dig("metadata", "warnings")) +
+                Array(ocr_warning)
+              ).first(20)
+            }
           }
-        }
-      ensure
-        temp_file.close
-        temp_file.unlink
+        ensure
+          temp_file.close
+          temp_file.unlink
+        end
       end
     end
 
@@ -266,93 +275,95 @@ module Ai
     # - ocr_text / ocr_blocks
     # - faces: [{ first_seen:, last_seen:, detection_count: }]
     # - mentions / hashtags
-    def analyze_video_story_intelligence!(video_bytes:, sample_rate: 2, usage_context: nil)
-      bytes_data = video_bytes.to_s.b
-      validate_video_bytes!(bytes_data)
+    def analyze_video_story_intelligence!(video_bytes:, sample_rate: VIDEO_SAMPLE_RATE_SECONDS, usage_context: nil)
+      with_usage_tracking(operation: "analyze_video_story_intelligence", category: "video_analysis", usage_context: usage_context) do
+        bytes_data = video_bytes.to_s.b
+        validate_video_bytes!(bytes_data)
 
-      temp_file = Tempfile.new(["story_video_intel", ".mp4"])
-      begin
-        temp_file.binmode
-        temp_file.write(bytes_data)
-        temp_file.flush
+        temp_file = Tempfile.new(["story_video_intel", ".mp4"])
+        begin
+          temp_file.binmode
+          temp_file.write(bytes_data)
+          temp_file.flush
 
-        response = upload_file("/analyze/video", temp_file.path, {
-          features: "labels,faces,scenes,text",
-          sample_rate: sample_rate.to_i.clamp(1, 5)
-        })
-        payload, results = unpack_response_payload!(
-          response: response,
-          operation: "analyze_video_story_intelligence",
-          expected_keys: %w[labels faces scenes text]
-        )
+          response = upload_file("/analyze/video", temp_file.path, {
+            features: "labels,faces,scenes,text",
+            sample_rate: sample_rate.to_i.clamp(1, 12)
+          })
+          payload, results = unpack_response_payload!(
+            response: response,
+            operation: "analyze_video_story_intelligence",
+            expected_keys: %w[labels faces scenes text]
+          )
 
-        scenes = Array(results["scenes"]).map do |row|
-          next unless row.is_a?(Hash)
+          scenes = Array(results["scenes"]).map do |row|
+            next unless row.is_a?(Hash)
+            {
+              "timestamp" => row["timestamp"],
+              "type" => row["type"].to_s.presence || "scene_change",
+              "correlation" => row["correlation"]
+            }.compact
+          end.compact.first(80)
+
+          object_detections = Array(results["labels"]).map do |row|
+            next unless row.is_a?(Hash)
+            label = (row["label"] || row["description"]).to_s.strip
+            next if label.blank?
+
+            {
+              "label" => label,
+              "confidence" => (row["max_confidence"] || row["confidence"]).to_f,
+              "timestamps" => Array(row["timestamps"]).map(&:to_f).first(80)
+            }
+          end.compact.first(80)
+          content_labels = object_detections.map { |row| row["label"].to_s.downcase }.uniq.first(50)
+
+          ocr_blocks = Array(results["text"]).map do |row|
+            next unless row.is_a?(Hash)
+            text = row["text"].to_s.strip
+            next if text.blank?
+
+            {
+              "text" => text,
+              "confidence" => row["confidence"].to_f,
+              "timestamp" => row["timestamp"],
+              "bbox" => normalize_bounding_box(row["bbox"]),
+              "source" => row["source"].to_s.presence || "ocr_video"
+            }.compact
+          end.compact.first(120)
+          ocr_text = ocr_blocks.map { |row| row["text"] }.uniq.join("\n").presence
+
+          faces = Array(results["faces"]).map do |row|
+            next unless row.is_a?(Hash)
+            {
+              "first_seen" => row["first_seen"],
+              "last_seen" => row["last_seen"],
+              "detection_count" => row["detection_count"].to_i
+            }.compact
+          end.compact.first(60)
+
+          mentions = ocr_text.to_s.scan(/@[a-zA-Z0-9._]+/).map(&:downcase).uniq.first(40)
+          hashtags = ocr_text.to_s.scan(/#[a-zA-Z0-9_]+/).map(&:downcase).uniq.first(40)
+
           {
-            "timestamp" => row["timestamp"],
-            "type" => row["type"].to_s.presence || "scene_change",
-            "correlation" => row["correlation"]
-          }.compact
-        end.compact.first(80)
-
-        object_detections = Array(results["labels"]).map do |row|
-          next unless row.is_a?(Hash)
-          label = (row["label"] || row["description"]).to_s.strip
-          next if label.blank?
-
-          {
-            "label" => label,
-            "confidence" => (row["max_confidence"] || row["confidence"]).to_f,
-            "timestamps" => Array(row["timestamps"]).map(&:to_f).first(80)
+            "scenes" => scenes,
+            "content_labels" => content_labels,
+            "object_detections" => object_detections,
+            "ocr_text" => ocr_text,
+            "ocr_blocks" => ocr_blocks,
+            "faces" => faces,
+            "mentions" => mentions,
+            "hashtags" => hashtags,
+            "metadata" => {
+              "source" => "local_microservice_video",
+              "usage_context" => normalize_usage_context(usage_context),
+              "warnings" => Array(payload.dig("metadata", "warnings")).first(20)
+            }
           }
-        end.compact.first(80)
-        content_labels = object_detections.map { |row| row["label"].to_s.downcase }.uniq.first(50)
-
-        ocr_blocks = Array(results["text"]).map do |row|
-          next unless row.is_a?(Hash)
-          text = row["text"].to_s.strip
-          next if text.blank?
-
-          {
-            "text" => text,
-            "confidence" => row["confidence"].to_f,
-            "timestamp" => row["timestamp"],
-            "bbox" => normalize_bounding_box(row["bbox"]),
-            "source" => row["source"].to_s.presence || "ocr_video"
-          }.compact
-        end.compact.first(120)
-        ocr_text = ocr_blocks.map { |row| row["text"] }.uniq.join("\n").presence
-
-        faces = Array(results["faces"]).map do |row|
-          next unless row.is_a?(Hash)
-          {
-            "first_seen" => row["first_seen"],
-            "last_seen" => row["last_seen"],
-            "detection_count" => row["detection_count"].to_i
-          }.compact
-        end.compact.first(60)
-
-        mentions = ocr_text.to_s.scan(/@[a-zA-Z0-9._]+/).map(&:downcase).uniq.first(40)
-        hashtags = ocr_text.to_s.scan(/#[a-zA-Z0-9_]+/).map(&:downcase).uniq.first(40)
-
-        {
-          "scenes" => scenes,
-          "content_labels" => content_labels,
-          "object_detections" => object_detections,
-          "ocr_text" => ocr_text,
-          "ocr_blocks" => ocr_blocks,
-          "faces" => faces,
-          "mentions" => mentions,
-          "hashtags" => hashtags,
-          "metadata" => {
-            "source" => "local_microservice_video",
-            "usage_context" => usage_context.to_h,
-            "warnings" => Array(payload.dig("metadata", "warnings")).first(20)
-          }
-        }
-      ensure
-        temp_file.close
-        temp_file.unlink
+        ensure
+          temp_file.close
+          temp_file.unlink
+        end
       end
     end
     
@@ -722,6 +733,48 @@ module Ai
       else
         value
       end
+    end
+
+    def normalize_usage_context(value)
+      return value.to_h if value.respond_to?(:to_h)
+
+      {}
+    rescue StandardError
+      {}
+    end
+
+    def monotonic_started_at
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    rescue StandardError
+      Time.current.to_f
+    end
+
+    def with_usage_tracking(operation:, category:, usage_context: nil)
+      started_at = monotonic_started_at
+      usage_meta = {
+        service_url: @base_url,
+        usage_context: normalize_usage_context(usage_context)
+      }
+
+      result = yield
+      Ai::ApiUsageTracker.track_success(
+        provider: "local_microservice",
+        operation: operation,
+        category: category.to_s.in?(AiApiCall::CATEGORIES) ? category.to_s : "other",
+        started_at: started_at,
+        metadata: usage_meta
+      )
+      result
+    rescue StandardError => e
+      Ai::ApiUsageTracker.track_failure(
+        provider: "local_microservice",
+        operation: operation,
+        category: category.to_s.in?(AiApiCall::CATEGORIES) ? category.to_s : "other",
+        started_at: started_at,
+        error: "#{e.class}: #{e.message}",
+        metadata: usage_meta
+      )
+      raise
     end
   end
 end

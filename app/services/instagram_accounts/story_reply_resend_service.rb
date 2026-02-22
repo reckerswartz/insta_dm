@@ -32,6 +32,13 @@ module InstagramAccounts
         reason: "manual_send_requested",
         message: "Sending comment..."
       )
+      record_engagement_stage!(
+        event: event,
+        stage: "engagement_eligibility",
+        state: "running",
+        progress: 97,
+        message: "Checking engagement eligibility."
+      )
       broadcast_status!(
         event: event,
         story_id: story_id,
@@ -51,6 +58,25 @@ module InstagramAccounts
           eligibility: eligibility
         )
       end
+
+      record_engagement_stage!(
+        event: event,
+        stage: "engagement_eligibility",
+        state: "completed",
+        progress: 98,
+        message: "Engagement eligibility check passed.",
+        details: {
+          story_id: story_id,
+          reason_code: eligibility[:reason_code].to_s.presence
+        }.compact
+      )
+      record_engagement_stage!(
+        event: event,
+        stage: "reply_send_action",
+        state: "running",
+        progress: 99,
+        message: "Sending story reply asynchronously."
+      )
 
       response = instagram_client.send_story_reply_via_api!(
         story_id: story_id,
@@ -95,6 +121,13 @@ module InstagramAccounts
         comment_text: message_text,
         reason: "comment_posted",
         message: "Comment sent successfully."
+      )
+      record_engagement_stage!(
+        event: event,
+        stage: "reply_send_action",
+        state: "completed",
+        progress: 100,
+        message: "Story reply sent."
       )
       broadcast_status!(
         event: event,
@@ -233,6 +266,21 @@ module InstagramAccounts
       status = eligibility[:status].to_s
 
       if status == "sent" && reason == "already_posted"
+        record_engagement_stage!(
+          event: event,
+          stage: "engagement_eligibility",
+          state: "completed",
+          progress: 98,
+          message: "Engagement eligibility check passed.",
+          details: { story_id: story_id, reason_code: reason }
+        )
+        record_engagement_stage!(
+          event: event,
+          stage: "reply_send_action",
+          state: "completed",
+          progress: 100,
+          message: "Comment already posted."
+        )
         update_manual_send_state!(
           event: event,
           status: "sent",
@@ -262,6 +310,14 @@ module InstagramAccounts
       end
 
       if status == "expired_removed" && reason_indicates_story_expired?(reason, event: event)
+        record_engagement_stage!(
+          event: event,
+          stage: "engagement_eligibility",
+          state: "failed",
+          progress: 98,
+          message: "Engagement check failed: story unavailable.",
+          details: { story_id: story_id, reason_code: reason }
+        )
         update_manual_send_state!(
           event: event,
           status: "expired_removed",
@@ -306,7 +362,8 @@ module InstagramAccounts
         error_class: "EligibilityError",
         reason: reason,
         profile: profile,
-        message_text: message_text
+        message_text: message_text,
+        stage: "engagement_eligibility"
       )
       Result.new(
         payload: {
@@ -324,6 +381,14 @@ module InstagramAccounts
 
     def send_failure_result(event:, profile:, story_id:, message_text:, reason:, api_response:)
       if reason_indicates_story_expired?(reason, event: event)
+        record_engagement_stage!(
+          event: event,
+          stage: "reply_send_action",
+          state: "failed",
+          progress: 99,
+          message: "Reply send failed: story unavailable.",
+          details: { story_id: story_id, reason_code: reason }
+        )
         update_manual_send_state!(
           event: event,
           status: "expired_removed",
@@ -387,7 +452,20 @@ module InstagramAccounts
       )
     end
 
-    def mark_failed!(event:, story_id:, error_message:, error_class:, reason:, profile: nil, message_text: nil, api_response: nil)
+    def mark_failed!(event:, story_id:, error_message:, error_class:, reason:, profile: nil, message_text: nil, api_response: nil, stage: "reply_send_action")
+      record_engagement_stage!(
+        event: event,
+        stage: stage,
+        state: "failed",
+        progress: stage.to_s == "engagement_eligibility" ? 98 : 99,
+        message: stage.to_s == "engagement_eligibility" ? "Engagement check failed." : "Reply send action failed.",
+        details: {
+          story_id: story_id,
+          reason_code: reason,
+          error_class: error_class.to_s,
+          error_message: error_message.to_s.byteslice(0, 200)
+        }.compact
+      )
       prof = profile || event.instagram_profile
       text = message_text.presence || resolved_message_text(event: event)
       update_manual_send_state!(
@@ -679,6 +757,25 @@ module InstagramAccounts
 
     def instagram_client
       @instagram_client ||= Instagram::Client.new(account: account)
+    end
+
+    def record_engagement_stage!(event:, stage:, state:, progress:, message:, details: nil)
+      event.record_llm_processing_stage!(
+        stage: stage,
+        state: state,
+        progress: progress,
+        message: message,
+        details: details
+      )
+      event.broadcast_llm_comment_generation_progress(
+        stage: stage,
+        message: message,
+        progress: progress,
+        details: details,
+        stage_statuses: event.llm_processing_stages
+      )
+    rescue StandardError
+      nil
     end
   end
 end

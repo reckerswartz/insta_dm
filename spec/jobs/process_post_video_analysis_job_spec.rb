@@ -116,6 +116,55 @@ RSpec.describe "ProcessPostVideoAnalysisJobTest" do
     assert_equal true, ActiveModel::Type::Boolean.new.cast(post.metadata.dig("ai_pipeline", "steps", "video", "result", "skipped"))
   end
 
+  it "reuses cached video extraction for matching media fingerprint" do
+    account, profile, post, run_id = build_video_pipeline_post
+    builder = Ai::PostAnalysisContextBuilder.new(profile: profile, post: post)
+    payload = builder.video_payload
+    fingerprint = builder.media_fingerprint(media: payload)
+
+    metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    metadata["video_processing"] = {
+      "skipped" => false,
+      "processing_mode" => "dynamic_video",
+      "static" => false,
+      "semantic_route" => "video",
+      "duration_seconds" => 8.5,
+      "has_audio" => true,
+      "transcript" => "Already cached transcript",
+      "topics" => [ "cached_topic" ],
+      "objects" => [ "cached_object" ],
+      "scenes" => [ { "type" => "scene_change" } ],
+      "hashtags" => [ "#cached" ],
+      "mentions" => [ "@cached" ],
+      "profile_handles" => [ "cached.profile" ],
+      "ocr_text" => "CACHED",
+      "ocr_blocks" => [ { "text" => "CACHED" } ],
+      "context_summary" => "Cached summary",
+      "metadata" => { "source" => "cached" },
+      "media_fingerprint" => fingerprint,
+      "extraction_profile" => ProcessPostVideoAnalysisJob::VIDEO_EXTRACTION_PROFILE
+    }
+    post.update!(metadata: metadata)
+
+    extractor = instance_double(PostVideoContextExtractionService)
+    allow(PostVideoContextExtractionService).to receive(:new).and_return(extractor)
+    expect(extractor).not_to receive(:extract)
+
+    ProcessPostVideoAnalysisJob.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      instagram_profile_post_id: post.id,
+      pipeline_run_id: run_id
+    )
+
+    post.reload
+    assert_equal "Already cached transcript", post.metadata.dig("video_processing", "transcript")
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(post.metadata.dig("video_processing", "cache", "hit"))
+    assert_equal "post_metadata_video_processing", post.metadata.dig("video_processing", "cache", "source")
+    assert_equal "succeeded", post.metadata.dig("ai_pipeline", "steps", "video", "status")
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(post.metadata.dig("ai_pipeline", "steps", "video", "result", "cache_hit"))
+  end
+
   def build_video_pipeline_post
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(

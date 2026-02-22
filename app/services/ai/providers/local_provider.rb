@@ -1,9 +1,18 @@
 module Ai
   module Providers
     class LocalProvider < BaseProvider
-      VISION_FRAME_SAMPLE_LIMIT = ENV.fetch("OLLAMA_VISION_MAX_IMAGES", "4").to_i.clamp(1, 8)
-      ENABLE_LEGACY_MEDIA_ANALYSIS = ActiveModel::Type::Boolean.new.cast(
-        ENV.fetch("LOCAL_PROVIDER_ENABLE_LEGACY_MEDIA_ANALYSIS", "false")
+      VISION_FRAME_SAMPLE_LIMIT = ENV.fetch("OLLAMA_VISION_MAX_IMAGES", "2").to_i.clamp(1, 8)
+      VISION_DYNAMIC_KEYFRAME_LIMIT = ENV.fetch("LOCAL_PROVIDER_DYNAMIC_KEYFRAME_LIMIT", "2").to_i.clamp(1, 8)
+      LIGHTWEIGHT_VISION_MODE = ActiveModel::Type::Boolean.new.cast(
+        ENV.fetch("LOCAL_PROVIDER_LIGHTWEIGHT_MODE", "true")
+      )
+      MIN_LOCAL_SIGNALS_FOR_VISION_SKIP = ENV.fetch("LOCAL_PROVIDER_MIN_LOCAL_SIGNALS_FOR_VISION_SKIP", "3").to_i.clamp(1, 24)
+      ENABLE_LOCAL_MEDIA_PREANALYSIS = ActiveModel::Type::Boolean.new.cast(
+        if ENV.key?("LOCAL_PROVIDER_ENABLE_LOCAL_MEDIA_PREANALYSIS")
+          ENV.fetch("LOCAL_PROVIDER_ENABLE_LOCAL_MEDIA_PREANALYSIS", "false")
+        else
+          ENV.fetch("LOCAL_PROVIDER_ENABLE_LEGACY_MEDIA_ANALYSIS", "false")
+        end
       )
 
       def initialize(
@@ -162,7 +171,7 @@ module Ai
 
         case media_hash[:type].to_s
         when "image"
-          if should_run_legacy_media_analysis?(options: options)
+          if should_run_local_media_preanalysis?(options: options)
             vision, vision_warning = safe_media_analysis(stage: "image_analysis", media_type: "image") do
               analyze_image_media(media_hash, provider_options: options)
             end
@@ -180,7 +189,7 @@ module Ai
                 "Image analysis unavailable."
               end
           else
-            raw[:legacy_media_analysis] = {
+            raw[:local_media_preanalysis] = {
               status: "skipped",
               reason: "llm_vision_primary"
             }
@@ -195,7 +204,7 @@ module Ai
             duration_seconds: mode[:duration_seconds]
           ).compact
           if mode[:processing_mode].to_s == "static_image" && mode[:frame_bytes].present?
-            if should_run_legacy_media_analysis?(options: options)
+            if should_run_local_media_preanalysis?(options: options)
               static_media = {
                 type: "image",
                 content_type: mode[:frame_content_type].to_s.presence || "image/jpeg",
@@ -218,7 +227,7 @@ module Ai
                   "Static video detected, but frame analysis was unavailable."
                 end
             else
-              raw[:legacy_media_analysis] = {
+              raw[:local_media_preanalysis] = {
                 status: "skipped",
                 reason: "llm_vision_primary"
               }
@@ -226,7 +235,7 @@ module Ai
               image_description = "Static video detected; summarizing representative frame with LLM vision."
             end
           else
-            if should_run_legacy_media_analysis?(options: options)
+            if should_run_local_media_preanalysis?(options: options)
               video, video_warning = safe_media_analysis(stage: "video_analysis", media_type: "video") do
                 analyze_video_media(media_hash, provider_options: options)
               end
@@ -244,7 +253,7 @@ module Ai
                   "Video analysis unavailable."
                 end
             else
-              raw[:legacy_media_analysis] = {
+              raw[:local_media_preanalysis] = {
                 status: "skipped",
                 reason: "llm_vision_primary"
               }
@@ -261,7 +270,8 @@ module Ai
           media_hash: media_hash,
           mode: mode,
           labels: labels,
-          image_description: image_description
+          image_description: image_description,
+          provider_options: options
         )
         labels = vision_enrichment[:labels]
         image_description = vision_enrichment[:image_description]
@@ -457,12 +467,13 @@ module Ai
         }
       end
 
-      def should_run_legacy_media_analysis?(options:)
+      def should_run_local_media_preanalysis?(options:)
         opts = options.is_a?(Hash) ? options : {}
         return true if ActiveModel::Type::Boolean.new.cast(opts[:include_faces] || opts["include_faces"])
         return true if ActiveModel::Type::Boolean.new.cast(opts[:include_ocr] || opts["include_ocr"])
+        return true if LIGHTWEIGHT_VISION_MODE && ActiveModel::Type::Boolean.new.cast(opts[:visual_only] || opts["visual_only"])
 
-        ENABLE_LEGACY_MEDIA_ANALYSIS
+        ENABLE_LOCAL_MEDIA_PREANALYSIS
       end
 
       def classify_video_processing(media)
@@ -754,7 +765,28 @@ module Ai
                                  Ai::ModelDefaults.vision_model
       end
 
-      def enrich_visual_understanding(media_hash:, mode:, labels:, image_description:)
+      def enrich_visual_understanding(media_hash:, mode:, labels:, image_description:, provider_options:)
+        run_vision = should_run_vision_enrichment?(
+          media_hash: media_hash,
+          labels: labels,
+          image_description: image_description,
+          provider_options: provider_options
+        )
+        unless run_vision[:run]
+          return {
+            labels: labels,
+            image_description: image_description,
+            metadata: {
+              status: "skipped",
+              source: "ollama_vision",
+              reason: run_vision[:reason],
+              lightweight_mode: LIGHTWEIGHT_VISION_MODE,
+              visual_only: ActiveModel::Type::Boolean.new.cast(provider_options[:visual_only]),
+              local_signal_count: run_vision[:local_signal_count]
+            }.compact
+          }
+        end
+
         unless vision_understanding_service.respond_to?(:enabled?) && vision_understanding_service.enabled?
           return {
             labels: labels,
@@ -838,17 +870,31 @@ module Ai
             reason: "video_bytes_missing"
           } if video_bytes.blank?
 
+          duration_seconds = mode.is_a?(Hash) ? mode[:duration_seconds].to_f : 0.0
+          timestamp_limit = [ VISION_FRAME_SAMPLE_LIMIT, VISION_DYNAMIC_KEYFRAME_LIMIT ].min
+          keyframe_timestamps = vision_keyframe_timestamps(
+            duration_seconds: duration_seconds,
+            limit: timestamp_limit
+          )
           extraction = @video_frame_extraction_service.extract(
             video_bytes: video_bytes,
             story_id: media_hash[:reference_id].to_s.presence || "local_provider_video",
-            content_type: media_hash[:content_type]
+            content_type: media_hash[:content_type],
+            max_frames: VISION_FRAME_SAMPLE_LIMIT,
+            timestamps_seconds: keyframe_timestamps,
+            key_frames_only: true
           )
-          frames = Array(extraction[:frames]).filter_map do |row|
-            payload = row.is_a?(Hash) ? row : {}
-            bytes = payload[:image_bytes].to_s.b
-            bytes = payload["image_bytes"].to_s.b if bytes.blank?
-            bytes.presence
-          end.first(VISION_FRAME_SAMPLE_LIMIT)
+          frames = extract_frame_bytes(extraction).first(VISION_FRAME_SAMPLE_LIMIT)
+          if frames.empty?
+            fallback = @video_frame_extraction_service.extract(
+              video_bytes: video_bytes,
+              story_id: media_hash[:reference_id].to_s.presence || "local_provider_video",
+              content_type: media_hash[:content_type],
+              max_frames: VISION_FRAME_SAMPLE_LIMIT,
+              interval_seconds: 3.0
+            )
+            frames = extract_frame_bytes(fallback).first(VISION_FRAME_SAMPLE_LIMIT)
+          end
 
           return {
             images: frames,
@@ -868,6 +914,66 @@ module Ai
           source: "ffmpeg_video_frames",
           reason: "frame_extraction_error:#{e.class.name}"
         }
+      end
+
+      def extract_frame_bytes(extraction)
+        Array(extraction[:frames]).filter_map do |row|
+          payload = row.is_a?(Hash) ? row : {}
+          bytes = payload[:image_bytes].to_s.b
+          bytes = payload["image_bytes"].to_s.b if bytes.blank?
+          bytes.presence
+        end
+      end
+
+      def should_run_vision_enrichment?(media_hash:, labels:, image_description:, provider_options:)
+        local_signal_count = meaningful_visual_labels(labels).length
+        return { run: true, local_signal_count: local_signal_count } unless LIGHTWEIGHT_VISION_MODE
+
+        media_type = media_hash[:type].to_s
+        options = provider_options.is_a?(Hash) ? provider_options : {}
+
+        if ActiveModel::Type::Boolean.new.cast(options[:visual_only]) &&
+            !ActiveModel::Type::Boolean.new.cast(options[:include_comment_generation]) &&
+            local_signal_count >= MIN_LOCAL_SIGNALS_FOR_VISION_SKIP
+          return {
+            run: false,
+            reason: "lightweight_visual_only_sufficient",
+            local_signal_count: local_signal_count
+          }
+        end
+
+        if media_type == "video" &&
+            !ActiveModel::Type::Boolean.new.cast(options[:include_comment_generation]) &&
+            local_signal_count >= MIN_LOCAL_SIGNALS_FOR_VISION_SKIP &&
+            image_description.to_s.present?
+          return {
+            run: false,
+            reason: "lightweight_video_signals_sufficient",
+            local_signal_count: local_signal_count
+          }
+        end
+
+        { run: true, local_signal_count: local_signal_count }
+      rescue StandardError
+        { run: true, local_signal_count: 0 }
+      end
+
+      def vision_keyframe_timestamps(duration_seconds:, limit:)
+        count = limit.to_i.clamp(1, 8)
+        duration = duration_seconds.to_f
+        return [ 0.0 ].first(count) if duration <= 0.0
+
+        timestamps = [ 0.0, (duration / 2.0), [ duration - 0.25, 0.0 ].max ]
+        while timestamps.length < count
+          ratio = timestamps.length.to_f / count.to_f
+          timestamps << (duration * ratio)
+        end
+        timestamps
+          .map { |value| value.round(3) }
+          .uniq
+          .first(count)
+      rescue StandardError
+        [ 0.0 ].first(limit.to_i.clamp(1, 8))
       end
 
       def merge_visual_labels(*rows)

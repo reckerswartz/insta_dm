@@ -47,7 +47,7 @@ RSpec.describe Ai::VisionUnderstandingService do
       media_type: "video"
     )
 
-    expect(client.image_counts).to eq([ 3, 1 ])
+    expect(client.image_counts).to eq([ described_class::MAX_IMAGES, 1 ])
     expect(result[:ok]).to eq(true)
     expect(result[:summary]).to include("skateboard")
     expect(result[:topics]).to include("fitness")
