@@ -7,6 +7,12 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
   SECONDARY_FACE_QUEUE = Ops::AiServiceQueueRegistry.queue_name_for(:face_analysis_secondary).presence || "ai_face_secondary_queue"
   SECONDARY_FACE_MIN_CONFIDENCE = ENV.fetch("AI_SECONDARY_FACE_AMBIGUITY_MIN_CONFIDENCE", "0.35").to_f.clamp(0.0, 1.0)
   SECONDARY_FACE_MAX_CONFIDENCE = ENV.fetch("AI_SECONDARY_FACE_AMBIGUITY_MAX_CONFIDENCE", "0.68").to_f.clamp(0.0, 1.0)
+  VIDEO_FAILURE_FALLBACK_ENABLED = ActiveModel::Type::Boolean.new.cast(
+    ENV.fetch("AI_PIPELINE_VIDEO_FAILURE_FALLBACK_ENABLED", "true")
+  )
+  VIDEO_FAILURE_FALLBACK_REQUIRE_VISUAL_SUCCESS = ActiveModel::Type::Boolean.new.cast(
+    ENV.fetch("AI_PIPELINE_VIDEO_FAILURE_FALLBACK_REQUIRE_VISUAL_SUCCESS", "true")
+  )
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, attempts: 0)
     context = load_pipeline_context!(
@@ -38,6 +44,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     return unless acquire_finalizer_slot?(post: post, pipeline_run_id: pipeline_run_id, attempts: attempts)
 
     mark_stalled_steps_failed!(context: context, pipeline_run_id: pipeline_run_id)
+    apply_video_failure_fallback!(context: context, pipeline_run_id: pipeline_run_id)
     return if reinitialize_failed_core_steps!(context: context, pipeline_run_id: pipeline_run_id)
     maybe_enqueue_metadata_step!(context: context, pipeline_run_id: pipeline_run_id)
 
@@ -256,6 +263,98 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     true
   rescue StandardError
     false
+  end
+
+  def apply_video_failure_fallback!(context:, pipeline_run_id:)
+    return unless VIDEO_FAILURE_FALLBACK_ENABLED
+
+    pipeline_state = context[:pipeline_state]
+    pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
+    return unless pipeline.is_a?(Hash)
+
+    required_steps = Array(pipeline["required_steps"]).map(&:to_s)
+    return unless required_steps.include?("video")
+
+    video_step = pipeline.dig("steps", "video")
+    return unless video_step.is_a?(Hash)
+    return unless video_step["status"].to_s == "failed"
+
+    if VIDEO_FAILURE_FALLBACK_REQUIRE_VISUAL_SUCCESS
+      visual_status = pipeline.dig("steps", "visual", "status").to_s
+      return unless visual_status == "succeeded"
+    end
+
+    fallback_result = build_video_fallback_result(post: context[:post], video_step: video_step)
+    pipeline_state.mark_step_completed!(
+      run_id: pipeline_run_id,
+      step: "video",
+      status: "succeeded",
+      result: fallback_result
+    )
+    persist_video_fallback_metadata!(
+      post: context[:post],
+      fallback_result: fallback_result,
+      previous_error: video_step["error"]
+    )
+
+    Ops::StructuredLogger.warn(
+      event: "ai.pipeline.video_fallback_applied",
+      payload: {
+        active_job_id: job_id,
+        instagram_account_id: context[:account].id,
+        instagram_profile_id: context[:profile].id,
+        instagram_profile_post_id: context[:post].id,
+        pipeline_run_id: pipeline_run_id,
+        fallback_reason: fallback_result[:reason].to_s,
+        reused_existing_context: ActiveModel::Type::Boolean.new.cast(fallback_result[:reused_existing_context]),
+        previous_error: video_step["error"].to_s.byteslice(0, 200)
+      }.compact
+    )
+  rescue StandardError
+    nil
+  end
+
+  def build_video_fallback_result(post:, video_step:)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    video_meta = metadata["video_processing"].is_a?(Hash) ? metadata["video_processing"] : {}
+    reused_existing_context =
+      video_meta["context_summary"].to_s.present? ||
+      video_meta["transcript"].to_s.present? ||
+      Array(video_meta["topics"]).any? ||
+      Array(video_meta["objects"]).any?
+
+    {
+      reason: "video_step_failed_fallback_to_visual_metadata",
+      fallback_applied: true,
+      reused_existing_context: reused_existing_context,
+      previous_error: video_step["error"].to_s.presence,
+      previous_status: video_step["status"].to_s,
+      processing_mode: video_meta["processing_mode"].to_s.presence || "dynamic_video",
+      transcript_present: video_meta["transcript"].to_s.present?
+    }.compact
+  end
+
+  def persist_video_fallback_metadata!(post:, fallback_result:, previous_error:)
+    post.with_lock do
+      post.reload
+      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+      video_meta = metadata["video_processing"].is_a?(Hash) ? metadata["video_processing"].deep_dup : {}
+
+      video_meta["skipped"] = true if video_meta["skipped"].nil?
+      video_meta["processing_mode"] = fallback_result[:processing_mode].to_s.presence || "dynamic_video"
+      video_meta["context_summary"] ||= "Video deep analysis was skipped to keep pipeline latency low; visual and metadata signals were used."
+      video_meta["fallback"] = {
+        "applied" => true,
+        "reason" => fallback_result[:reason].to_s,
+        "reused_existing_context" => ActiveModel::Type::Boolean.new.cast(fallback_result[:reused_existing_context]),
+        "previous_error" => previous_error.to_s.presence,
+        "applied_at" => Time.current.iso8601(3)
+      }.compact
+      video_meta["updated_at"] = Time.current.iso8601(3)
+
+      metadata["video_processing"] = video_meta
+      post.update!(metadata: metadata)
+    end
   end
 
   def finalize_post_record!(post:, pipeline:, overall_status:)

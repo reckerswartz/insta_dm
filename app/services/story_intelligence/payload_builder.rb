@@ -279,6 +279,12 @@ module StoryIntelligence
     def extract_live_intelligence(story_id)
       content_type = event.media&.blob&.content_type.to_s
       return {} if content_type.blank?
+      unless local_microservice_enabled?
+        return unavailable_live_intelligence(reason: "local_microservice_disabled")
+      end
+      if Ai::LocalMicroserviceClient.service_backoff_active?
+        return unavailable_live_intelligence(reason: "local_microservice_backoff_active")
+      end
 
       if content_type.start_with?("image/")
         extract_image_intelligence(story_id)
@@ -287,8 +293,11 @@ module StoryIntelligence
       else
         {}
       end
-    rescue StandardError
-      {}
+    rescue StandardError => e
+      unavailable_live_intelligence(
+        reason: "local_microservice_unavailable",
+        error: "#{e.class}: #{e.message}".byteslice(0, 240)
+      )
     end
 
     def extract_image_intelligence(story_id)
@@ -608,6 +617,20 @@ module StoryIntelligence
         object_detections: [],
         source: "unavailable"
       }
+    end
+
+    def local_microservice_enabled?
+      ActiveModel::Type::Boolean.new.cast(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "false"))
+    rescue StandardError
+      false
+    end
+
+    def unavailable_live_intelligence(reason:, error: nil)
+      {
+        source: "unavailable",
+        reason: reason.to_s.presence || "local_ai_unavailable",
+        error: error.to_s.presence
+      }.compact
     end
 
     # Helper methods (these would be extracted to a utility module)

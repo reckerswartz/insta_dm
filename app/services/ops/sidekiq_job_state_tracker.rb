@@ -175,8 +175,9 @@ module Ops
       def call(_worker_class, msg, queue, _redis_pool)
         now = SidekiqJobStateTracker.now_ms
         SidekiqJobStateTracker.mark_queued!(msg: msg, queue: queue, now_ms: now)
-        yield
+        result = yield
         SidekiqJobStateTracker.log_transition(state: :queued, msg: msg, queue: queue, now_ms: now)
+        result
       end
     end
 

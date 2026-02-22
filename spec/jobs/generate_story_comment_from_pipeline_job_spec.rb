@@ -69,4 +69,47 @@ RSpec.describe GenerateStoryCommentFromPipelineJob do
     )
     expect(generator).to have_received(:call).once
   end
+
+  it "marks pipeline skipped when story intelligence is unavailable" do
+    event = create_story_event
+    run_id = "run-story-generation-skip-1"
+    state = prepare_pipeline(event: event, run_id: run_id)
+    LlmComment::ParallelPipelineState::STEP_KEYS.each do |step|
+      state.mark_step_completed!(
+        run_id: run_id,
+        step: step,
+        status: "succeeded",
+        result: { ok: true }
+      )
+    end
+
+    resolver = instance_double(LlmComment::StoryIntelligencePayloadResolver, fetch!: { source: "unavailable", reason: "local_ai_extraction_empty" })
+    unavailable_error = InstagramProfileEvent::LocalStoryIntelligence::LocalStoryIntelligenceUnavailableError.new(
+      "Local story intelligence unavailable (reason: local_ai_extraction_empty, source: unavailable).",
+      reason: "local_ai_extraction_empty",
+      source: "unavailable"
+    )
+    generator = instance_double(LlmComment::EventGenerationPipeline)
+    allow(generator).to receive(:call).and_raise(unavailable_error)
+    allow(LlmComment::StoryIntelligencePayloadResolver).to receive(:new).and_return(resolver)
+    allow(LlmComment::EventGenerationPipeline).to receive(:new).and_return(generator)
+
+    expect do
+      described_class.new.perform(
+        instagram_profile_event_id: event.id,
+        pipeline_run_id: run_id,
+        provider: "local",
+        model: "llama3.2-vision:11b",
+        requested_by: "spec"
+      )
+    end.not_to raise_error
+
+    event.reload
+    pipeline = event.llm_comment_metadata["parallel_pipeline"]
+    expect(pipeline["status"]).to eq("completed")
+    expect(pipeline.dig("details", "skipped")).to eq(true)
+    expect(pipeline.dig("details", "skip_reason")).to eq("local_ai_extraction_empty")
+    expect(event.llm_comment_status).to eq("skipped")
+    expect(event.llm_comment_last_error).to include("Local story intelligence unavailable")
+  end
 end

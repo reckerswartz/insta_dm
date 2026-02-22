@@ -206,7 +206,11 @@ module Ai
         row["finished_at"] = finished_at if finished_at.present?
         row["attempts"] = attempts
         row["result"] = result if result.is_a?(Hash)
-        row["error"] = error.to_s if error.present?
+        if error.present?
+          row["error"] = error.to_s
+        elsif status.to_s.in?(%w[succeeded skipped pending queued running])
+          row["error"] = nil
+        end
 
         steps[key] = row
         pipeline["steps"] = steps

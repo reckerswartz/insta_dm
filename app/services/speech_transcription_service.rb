@@ -4,9 +4,63 @@ require "tempfile"
 require "tmpdir"
 require "net/http"
 require "json"
+require "securerandom"
 
 class SpeechTranscriptionService
-  def initialize(whisper_bin: ENV.fetch("WHISPER_BIN", "whisper"), whisper_model: ENV.fetch("WHISPER_MODEL", "base"), use_microservice: ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "true") == "true")
+  MICROSERVICE_OPEN_TIMEOUT_SECONDS = ENV.fetch("LOCAL_AI_TRANSCRIBE_OPEN_TIMEOUT_SECONDS", "3").to_i.clamp(1, 30)
+  MICROSERVICE_READ_TIMEOUT_SECONDS = ENV.fetch("LOCAL_AI_TRANSCRIBE_READ_TIMEOUT_SECONDS", "25").to_i.clamp(5, 180)
+  MICROSERVICE_FAILURE_COOLDOWN_SECONDS = ENV.fetch("LOCAL_AI_TRANSCRIBE_FAILURE_COOLDOWN_SECONDS", "120").to_i.clamp(10, 900)
+
+  @microservice_backoff_until = Time.at(0)
+  @microservice_backoff_reason = nil
+  @microservice_backoff_mutex = Mutex.new
+
+  class << self
+    def microservice_backoff_active?
+      snapshot = microservice_backoff_snapshot
+      ActiveModel::Type::Boolean.new.cast(snapshot[:active])
+    end
+
+    def microservice_backoff_snapshot
+      with_microservice_backoff_lock do
+        now = Time.current
+        until_at = @microservice_backoff_until || Time.at(0)
+        remaining = until_at > now ? (until_at - now).to_i : 0
+        {
+          active: remaining.positive?,
+          remaining_seconds: remaining,
+          reason: @microservice_backoff_reason.to_s.presence
+        }
+      end
+    end
+
+    def mark_microservice_backoff!(reason:)
+      with_microservice_backoff_lock do
+        @microservice_backoff_until = Time.current + MICROSERVICE_FAILURE_COOLDOWN_SECONDS.seconds
+        @microservice_backoff_reason = reason.to_s.byteslice(0, 220)
+      end
+    rescue StandardError
+      nil
+    end
+
+    def clear_microservice_backoff!
+      with_microservice_backoff_lock do
+        @microservice_backoff_until = Time.at(0)
+        @microservice_backoff_reason = nil
+      end
+    rescue StandardError
+      nil
+    end
+
+    private
+
+    def with_microservice_backoff_lock
+      @microservice_backoff_mutex ||= Mutex.new
+      @microservice_backoff_mutex.synchronize { yield }
+    end
+  end
+
+  def initialize(whisper_bin: ENV.fetch("WHISPER_BIN", "whisper"), whisper_model: ENV.fetch("WHISPER_MODEL", "base"), use_microservice: ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "false") == "true")
     @whisper_bin = whisper_bin.to_s
     @whisper_model = whisper_model.to_s
     @use_microservice = use_microservice
@@ -15,19 +69,29 @@ class SpeechTranscriptionService
 
   def transcribe(audio_bytes:, story_id:)
     return empty_result("audio_bytes_missing") if audio_bytes.blank?
+    fallback_reasons = []
 
-    # Try microservice first if enabled
+    # Try microservice first if enabled and not in temporary backoff.
     if @use_microservice
-      microservice_result = transcribe_with_microservice(audio_bytes, story_id)
-      return microservice_result if microservice_result[:transcript].present?
+      if self.class.microservice_backoff_active?
+        snapshot = self.class.microservice_backoff_snapshot
+        fallback_reasons << "microservice_backoff_active:#{snapshot[:remaining_seconds]}s"
+      else
+        microservice_result = transcribe_with_microservice(audio_bytes, story_id)
+        return microservice_result if microservice_result[:transcript].present?
+
+        microservice_reason = microservice_result.dig(:metadata, :reason).to_s.presence
+        fallback_reasons << (microservice_reason || "microservice_unavailable")
+      end
     end
 
     # Fallback to local Whisper binary
-    return empty_result("whisper_missing") unless command_available?(@whisper_bin)
+    return empty_result("whisper_missing", fallback_reasons: fallback_reasons) unless command_available?(@whisper_bin)
 
-    transcribe_with_binary(audio_bytes, story_id)
+    result = transcribe_with_binary(audio_bytes, story_id)
+    append_fallback_reasons(result: result, fallback_reasons: fallback_reasons)
   rescue StandardError => e
-    empty_result("transcription_error", stderr: e.message)
+    empty_result("transcription_error", stderr: e.message, fallback_reasons: fallback_reasons)
   end
 
   private
@@ -57,8 +121,8 @@ class SpeechTranscriptionService
       post_body << "--#{boundary}--\r\n"
       
       http = Net::HTTP.new(uri.host, uri.port)
-      http.open_timeout = 30
-      http.read_timeout = 120
+      http.open_timeout = MICROSERVICE_OPEN_TIMEOUT_SECONDS
+      http.read_timeout = MICROSERVICE_READ_TIMEOUT_SECONDS
       
       request = Net::HTTP::Post.new(uri.request_uri)
       request["Content-Type"] = "multipart/form-data; boundary=#{boundary}"
@@ -69,6 +133,7 @@ class SpeechTranscriptionService
       body = JSON.parse(response.body.to_s.presence || "{}")
       
       if response.is_a?(Net::HTTPSuccess) && body["success"]
+        self.class.clear_microservice_backoff!
         Ai::ApiUsageTracker.track_success(
           provider: "local_microservice",
           operation: "transcribe_audio",
@@ -90,6 +155,9 @@ class SpeechTranscriptionService
           }
         }
       else
+        self.class.mark_microservice_backoff!(
+          reason: "HTTP #{response.code}: #{body.dig('error').to_s.presence || body['detail'].to_s.presence || 'transcription_failed'}"
+        )
         Ai::ApiUsageTracker.track_failure(
           provider: "local_microservice",
           operation: "transcribe_audio",
@@ -107,6 +175,7 @@ class SpeechTranscriptionService
       end
     end
   rescue StandardError => e
+    self.class.mark_microservice_backoff!(reason: "#{e.class}: #{e.message}")
     Ai::ApiUsageTracker.track_failure(
       provider: "local_microservice",
       operation: "transcribe_audio",
@@ -188,13 +257,28 @@ class SpeechTranscriptionService
     system("command -v #{Shellwords.escape(command)} >/dev/null 2>&1")
   end
 
-  def empty_result(reason, stderr: nil)
+  def append_fallback_reasons(result:, fallback_reasons:)
+    payload = result.is_a?(Hash) ? result.dup : {}
+    metadata = payload[:metadata].is_a?(Hash) ? payload[:metadata].dup : {}
+    reasons = Array(fallback_reasons).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+    return payload if reasons.empty?
+
+    metadata[:fallback_reasons] = reasons
+    payload[:metadata] = metadata
+    payload
+  rescue StandardError
+    result
+  end
+
+  def empty_result(reason, stderr: nil, fallback_reasons: nil)
+    reasons = Array(fallback_reasons).map(&:to_s).map(&:strip).reject(&:blank?).uniq
     {
       transcript: nil,
       metadata: {
         source: "local_whisper",
         reason: reason,
-        stderr: stderr.to_s.presence
+        stderr: stderr.to_s.presence,
+        fallback_reasons: reasons.presence
       }.compact
     }
   end

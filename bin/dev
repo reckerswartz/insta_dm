@@ -67,7 +67,7 @@ def local_ai_required?
   return false if mode == "disabled"
   return true if mode == "enabled"
 
-  bool_env(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "true"), default: true)
+  bool_env(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "false"), default: false)
 end
 
 def process_alive?(pid)

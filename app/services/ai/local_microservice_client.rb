@@ -7,13 +7,74 @@ require "securerandom"
 module Ai
   class LocalMicroserviceClient
     BASE_URL = ENV.fetch("LOCAL_AI_SERVICE_URL", "http://localhost:8000").freeze
-    HTTP_OPEN_TIMEOUT_SECONDS = ENV.fetch("LOCAL_AI_HTTP_OPEN_TIMEOUT_SECONDS", 20).to_i.clamp(3, 120)
-    HTTP_READ_TIMEOUT_SECONDS = ENV.fetch("LOCAL_AI_HTTP_READ_TIMEOUT_SECONDS", 120).to_i.clamp(10, 600)
+    HTTP_OPEN_TIMEOUT_SECONDS = ENV.fetch("LOCAL_AI_HTTP_OPEN_TIMEOUT_SECONDS", 4).to_i.clamp(1, 120)
+    HTTP_READ_TIMEOUT_SECONDS = ENV.fetch("LOCAL_AI_HTTP_READ_TIMEOUT_SECONDS", 45).to_i.clamp(5, 600)
     MAX_IMAGE_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MAX_IMAGE_UPLOAD_BYTES", 20 * 1024 * 1024).to_i
     MAX_VIDEO_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MAX_VIDEO_UPLOAD_BYTES", 80 * 1024 * 1024).to_i
     MIN_IMAGE_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MIN_IMAGE_UPLOAD_BYTES", 128).to_i
     MIN_VIDEO_UPLOAD_BYTES = ENV.fetch("LOCAL_AI_MIN_VIDEO_UPLOAD_BYTES", 1024).to_i
     VIDEO_SAMPLE_RATE_SECONDS = ENV.fetch("LOCAL_AI_VIDEO_SAMPLE_RATE_SECONDS", 3).to_i.clamp(1, 12)
+    SERVICE_UNAVAILABLE_COOLDOWN_SECONDS = ENV.fetch("LOCAL_AI_UNAVAILABLE_COOLDOWN_SECONDS", 90).to_i.clamp(5, 900)
+    TRANSIENT_NETWORK_ERRORS = [
+      Errno::ECONNREFUSED,
+      Errno::ECONNRESET,
+      Net::OpenTimeout,
+      Net::ReadTimeout,
+      SocketError,
+      EOFError,
+      IOError,
+      Timeout::Error
+    ].freeze
+
+    class ServiceUnavailableError < StandardError; end
+
+    @service_backoff_until = Time.at(0)
+    @service_backoff_reason = nil
+    @service_backoff_mutex = Mutex.new
+
+    class << self
+      def service_backoff_snapshot
+        with_service_backoff_lock do
+          now = Time.current
+          until_at = @service_backoff_until || Time.at(0)
+          remaining = until_at > now ? (until_at - now).to_i : 0
+          {
+            active: remaining.positive?,
+            remaining_seconds: remaining,
+            reason: @service_backoff_reason.to_s.presence
+          }
+        end
+      end
+
+      def service_backoff_active?
+        ActiveModel::Type::Boolean.new.cast(service_backoff_snapshot[:active])
+      end
+
+      def mark_service_backoff!(reason:)
+        with_service_backoff_lock do
+          @service_backoff_until = Time.current + SERVICE_UNAVAILABLE_COOLDOWN_SECONDS.seconds
+          @service_backoff_reason = reason.to_s.byteslice(0, 220)
+        end
+      rescue StandardError
+        nil
+      end
+
+      def clear_service_backoff!
+        with_service_backoff_lock do
+          @service_backoff_until = Time.at(0)
+          @service_backoff_reason = nil
+        end
+      rescue StandardError
+        nil
+      end
+
+      private
+
+      def with_service_backoff_lock
+        @service_backoff_mutex ||= Mutex.new
+        @service_backoff_mutex.synchronize { yield }
+      end
+    end
     
     def initialize(service_url: nil)
       @base_url = service_url || BASE_URL
@@ -368,6 +429,15 @@ module Ai
     end
     
     private
+
+    def guard_service_availability!
+      return unless self.class.service_backoff_active?
+
+      snapshot = self.class.service_backoff_snapshot
+      reason = snapshot[:reason].to_s.presence || "recent_network_errors"
+      remaining = snapshot[:remaining_seconds].to_i
+      raise ServiceUnavailableError, "Local AI service temporarily unavailable (#{remaining}s cooldown): #{reason}"
+    end
     
     def convert_features(google_features)
       # Convert Google Vision feature names to local service names
@@ -593,6 +663,7 @@ module Ai
     end
     
     def get_json(endpoint)
+      guard_service_availability!
       uri = URI.parse("#{@base_url}#{endpoint}")
       http = Net::HTTP.new(uri.host, uri.port)
       http.open_timeout = HTTP_OPEN_TIMEOUT_SECONDS
@@ -600,19 +671,29 @@ module Ai
       
       request = Net::HTTP::Get.new(uri.request_uri)
       request["Accept"] = "application/json"
-      
+
       response = http.request(request)
-      body = JSON.parse(response.body.to_s.presence || "{}")
-      
+      body_text = response.body.to_s
+      body = JSON.parse(body_text.presence || "{}")
+
+      self.class.clear_service_backoff!
       return body if response.is_a?(Net::HTTPSuccess)
-      
+
+      self.class.mark_service_backoff!(reason: "http_#{response.code}") if response.code.to_i >= 500
       error = extract_http_error_message(body: body, raw_body: response.body)
       raise "Local AI service error: HTTP #{response.code} #{response.message} - #{error}"
-    rescue JSON::ParserError
-      raise "Local AI service error: HTTP #{response.code} #{response.message} - #{response.body.to_s.byteslice(0, 500)}"
+    rescue *TRANSIENT_NETWORK_ERRORS => e
+      self.class.mark_service_backoff!(reason: "#{e.class}: #{e.message}")
+      raise
+    rescue JSON::ParserError => e
+      self.class.mark_service_backoff!(reason: "json_parse_error:#{e.class}")
+      message = response.respond_to?(:code) ? "HTTP #{response.code} #{response.message}" : "response_unavailable"
+      body = response.respond_to?(:body) ? response.body.to_s.byteslice(0, 500) : e.message.to_s.byteslice(0, 500)
+      raise "Local AI service error: #{message} - #{body}"
     end
     
     def upload_file(endpoint, file_path, params = {})
+      guard_service_availability!
       uri = URI.parse("#{@base_url}#{endpoint}")
       
       # Create multipart form data
@@ -649,14 +730,23 @@ module Ai
       request.body = post_body.join
       
       response = http.request(request)
-      body = JSON.parse(response.body.to_s.presence || "{}")
-      
+      body_text = response.body.to_s
+      body = JSON.parse(body_text.presence || "{}")
+
+      self.class.clear_service_backoff!
       return body if response.is_a?(Net::HTTPSuccess)
-      
+
+      self.class.mark_service_backoff!(reason: "http_#{response.code}") if response.code.to_i >= 500
       error = extract_http_error_message(body: body, raw_body: response.body)
       raise "Local AI service error: HTTP #{response.code} #{response.message} - #{error}"
-    rescue JSON::ParserError
-      raise "Local AI service error: HTTP #{response.code} #{response.message} - #{response.body.to_s.byteslice(0, 500)}"
+    rescue *TRANSIENT_NETWORK_ERRORS => e
+      self.class.mark_service_backoff!(reason: "#{e.class}: #{e.message}")
+      raise
+    rescue JSON::ParserError => e
+      self.class.mark_service_backoff!(reason: "json_parse_error:#{e.class}")
+      message = response.respond_to?(:code) ? "HTTP #{response.code} #{response.message}" : "response_unavailable"
+      body = response.respond_to?(:body) ? response.body.to_s.byteslice(0, 500) : e.message.to_s.byteslice(0, 500)
+      raise "Local AI service error: #{message} - #{body}"
     end
 
     def unpack_response_payload!(response:, operation:, expected_keys:)

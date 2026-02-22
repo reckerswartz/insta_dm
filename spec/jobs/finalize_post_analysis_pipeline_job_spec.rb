@@ -212,6 +212,46 @@ RSpec.describe "FinalizePostAnalysisPipelineJobTest" do
     assert_equal "step_reinitialized", ocr_step.dig("result", "reason")
   end
 
+  it "falls back failed video step to keep metadata flow responsive" do
+    account, profile, post, run_id = build_pipeline_with_visual_status(status: "succeeded")
+    metadata = post.metadata.deep_dup
+    metadata["ai_pipeline"]["required_steps"] = ["visual", "video", "metadata"]
+    metadata["ai_pipeline"]["steps"]["video"] = {
+      "status" => "failed",
+      "attempts" => 1,
+      "queue_name" => "video_processing_queue",
+      "active_job_id" => "failed-video-job",
+      "result" => { "reason" => "video_analysis_failed" },
+      "error" => "Timeout::Error: execution expired",
+      "created_at" => 3.minutes.ago.iso8601(3),
+      "finished_at" => 2.minutes.ago.iso8601(3)
+    }
+    metadata["ai_pipeline"]["steps"]["metadata"] = {
+      "status" => "pending",
+      "attempts" => 0,
+      "result" => {},
+      "created_at" => Time.current.iso8601(3)
+    }
+    post.update!(metadata: metadata, ai_status: "running")
+
+    assert_no_enqueued_jobs only: ProcessPostVideoAnalysisJob do
+      assert_enqueued_jobs 1, only: ProcessPostMetadataTaggingJob do
+        FinalizePostAnalysisPipelineJob.perform_now(
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          instagram_profile_post_id: post.id,
+          pipeline_run_id: run_id,
+          attempts: 0
+        )
+      end
+    end
+
+    post.reload
+    assert_equal "succeeded", post.metadata.dig("ai_pipeline", "steps", "video", "status")
+    assert_equal "video_step_failed_fallback_to_visual_metadata", post.metadata.dig("ai_pipeline", "steps", "video", "result", "reason")
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(post.metadata.dig("video_processing", "fallback", "applied"))
+  end
+
   it "fails metadata dependency step when core extraction outputs cannot be recovered" do
     account, profile, post, run_id = build_pipeline_with_visual_status(status: "succeeded")
     metadata = post.metadata.deep_dup

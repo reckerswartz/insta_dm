@@ -1,6 +1,7 @@
 <% content_for :title, "AI Services" %>
 <% runtime_audit = @runtime_audit.is_a?(Hash) ? @runtime_audit : {} %>
 <% architecture = runtime_audit[:architecture].is_a?(Hash) ? runtime_audit[:architecture] : {} %>
+<% host_services = Array(runtime_audit[:host_services]) %>
 <% concurrent_services = Array(runtime_audit[:concurrent_services]) %>
 <% cleanup_candidates = Array(runtime_audit[:cleanup_candidates]) %>
 <% totals = runtime_audit[:totals].is_a?(Hash) ? runtime_audit[:totals] : {} %>
@@ -143,6 +144,51 @@
         <strong>Unused local models detected:</strong>
         <%= unused_models.join(", ") %>
       </div>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Background Runtime Services</h2>
+    <p class="meta mb-1">
+      Host services active: <strong><%= totals[:host_services_active].to_i %>/<%= totals[:host_services_total].to_i %></strong>
+      | Required missing: <strong><%= totals[:host_services_required_missing].to_i %></strong>
+    </p>
+    <% if host_services.any? %>
+      <div class="table-scroll">
+        <table class="table ai-runtime-table">
+          <thead>
+            <tr>
+              <th>Service</th>
+              <th>Status</th>
+              <th>Required</th>
+              <th>Port</th>
+              <th>Process Matches</th>
+              <th>Impact</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% host_services.each do |row| %>
+              <tr class="<%= row[:active] ? "runtime-row-active" : "runtime-row-idle" %>">
+                <td><strong><%= row[:service_name] %></strong></td>
+                <td><span class="pill"><%= row[:status].to_s.humanize %></span></td>
+                <td><%= row[:required] ? "yes" : "optional" %></td>
+                <td>
+                  <% if row[:port].present? %>
+                    <code><%= row[:port] %></code>
+                    <span class="meta">(<%= row[:port_open] ? "open" : "closed" %>)</span>
+                  <% else %>
+                    <span class="meta">-</span>
+                  <% end %>
+                </td>
+                <td><%= row[:process_count].to_i %></td>
+                <td class="meta"><%= row[:impact] %></td>
+              </tr>
+            <% end %>
+          </tbody>
+        </table>
+      </div>
+    <% else %>
+      <p class="meta">No runtime service snapshot available.</p>
     <% end %>
   </section>
 

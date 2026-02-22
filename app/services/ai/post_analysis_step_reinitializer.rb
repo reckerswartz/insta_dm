@@ -8,6 +8,7 @@ module Ai
       "metadata" => ProcessPostMetadataTaggingJob
     }.freeze
     DEFAULT_MAX_REINITIALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_STEP_REINITIALIZE_ATTEMPTS", 2).to_i.clamp(1, 6)
+    VIDEO_MAX_REINITIALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_VIDEO_REINITIALIZE_ATTEMPTS", 0).to_i.clamp(0, 6)
 
     class << self
       def reinitialize_failed_steps!(account:, profile:, post:, pipeline_state:, pipeline_run_id:, steps:, source_job_id:)
@@ -29,7 +30,7 @@ module Ai
           end
 
           reinit_attempts = step_state.dig("result", "reinitialize_attempts").to_i
-          if reinit_attempts >= DEFAULT_MAX_REINITIALIZE_ATTEMPTS
+          if reinit_attempts >= max_reinitialize_attempts_for(step)
             skipped << step
             next
           end
@@ -66,6 +67,14 @@ module Ai
         end
 
         { enqueued: enqueued, skipped: skipped }
+      end
+
+      private
+
+      def max_reinitialize_attempts_for(step)
+        return VIDEO_MAX_REINITIALIZE_ATTEMPTS if step.to_s == "video"
+
+        DEFAULT_MAX_REINITIALIZE_ATTEMPTS
       end
     end
   end

@@ -36,71 +36,102 @@ Sidekiq.configure_server do |config|
 
   # Isolate local compute-heavy workloads from general queue throughput.
   if config.respond_to?(:capsule)
-    frame_concurrency = ENV.fetch("SIDEKIQ_FRAME_CONCURRENCY", 1).to_i.clamp(1, 4)
-    story_auto_reply_orchestration_concurrency = ENV.fetch("SIDEKIQ_STORY_AUTO_REPLY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 4)
-    profile_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_PROFILE_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 4)
-    home_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 3)
-    home_story_sync_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_SYNC_CONCURRENCY", 1).to_i.clamp(1, 4)
-    story_processing_concurrency = ENV.fetch("SIDEKIQ_STORY_PROCESSING_CONCURRENCY", 1).to_i.clamp(1, 4)
-    story_preview_generation_concurrency = ENV.fetch("SIDEKIQ_STORY_PREVIEW_GENERATION_CONCURRENCY", 1).to_i.clamp(1, 4)
-    story_replies_concurrency = ENV.fetch("SIDEKIQ_STORY_REPLIES_CONCURRENCY", 1).to_i.clamp(1, 4)
-    profile_reevaluation_concurrency = ENV.fetch("SIDEKIQ_PROFILE_REEVALUATION_CONCURRENCY", 1).to_i.clamp(1, 2)
-    story_validation_concurrency = ENV.fetch("SIDEKIQ_STORY_VALIDATION_CONCURRENCY", 1).to_i.clamp(1, 4)
-    Ops::AiServiceQueueRegistry.sidekiq_capsules.each do |capsule|
-      config.capsule(capsule[:capsule_name]) do |cap|
-        cap.concurrency = capsule[:concurrency].to_i
-        cap.queues = [ capsule[:queue_name].to_s ]
+    compact_capsules = ActiveModel::Type::Boolean.new.cast(
+      ENV.fetch("SIDEKIQ_COMPACT_CAPSULES", Rails.env.development? ? "true" : "false")
+    )
+    if compact_capsules
+      ai_compact_concurrency = ENV.fetch("SIDEKIQ_AI_COMPACT_CONCURRENCY", 2).to_i.clamp(1, 8)
+      background_compact_concurrency = ENV.fetch("SIDEKIQ_BACKGROUND_COMPACT_CONCURRENCY", 2).to_i.clamp(1, 6)
+      background_compact_queues = %w[
+        frame_generation
+        story_auto_reply_orchestration
+        profile_story_orchestration
+        home_story_orchestration
+        home_story_sync
+        story_processing
+        story_preview_generation
+        story_replies
+        profile_reevaluation
+        story_validation
+      ]
+
+      config.capsule("ai_compact_lane") do |cap|
+        cap.concurrency = ai_compact_concurrency
+        cap.queues = Ops::AiServiceQueueRegistry.ai_queue_names
       end
-    end
 
-    config.capsule("frame_generation_lane") do |cap|
-      cap.concurrency = frame_concurrency
-      cap.queues = %w[frame_generation]
-    end
+      config.capsule("background_compact_lane") do |cap|
+        cap.concurrency = background_compact_concurrency
+        cap.queues = background_compact_queues
+      end
+    else
+      frame_concurrency = ENV.fetch("SIDEKIQ_FRAME_CONCURRENCY", 1).to_i.clamp(1, 4)
+      story_auto_reply_orchestration_concurrency = ENV.fetch("SIDEKIQ_STORY_AUTO_REPLY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 4)
+      profile_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_PROFILE_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 4)
+      home_story_orchestration_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_ORCHESTRATION_CONCURRENCY", 1).to_i.clamp(1, 3)
+      home_story_sync_concurrency = ENV.fetch("SIDEKIQ_HOME_STORY_SYNC_CONCURRENCY", 1).to_i.clamp(1, 4)
+      story_processing_concurrency = ENV.fetch("SIDEKIQ_STORY_PROCESSING_CONCURRENCY", 1).to_i.clamp(1, 4)
+      story_preview_generation_concurrency = ENV.fetch("SIDEKIQ_STORY_PREVIEW_GENERATION_CONCURRENCY", 1).to_i.clamp(1, 4)
+      story_replies_concurrency = ENV.fetch("SIDEKIQ_STORY_REPLIES_CONCURRENCY", 1).to_i.clamp(1, 4)
+      profile_reevaluation_concurrency = ENV.fetch("SIDEKIQ_PROFILE_REEVALUATION_CONCURRENCY", 1).to_i.clamp(1, 2)
+      story_validation_concurrency = ENV.fetch("SIDEKIQ_STORY_VALIDATION_CONCURRENCY", 1).to_i.clamp(1, 4)
 
-    config.capsule("story_auto_reply_orchestration_lane") do |cap|
-      cap.concurrency = story_auto_reply_orchestration_concurrency
-      cap.queues = %w[story_auto_reply_orchestration]
-    end
+      Ops::AiServiceQueueRegistry.sidekiq_capsules.each do |capsule|
+        config.capsule(capsule[:capsule_name]) do |cap|
+          cap.concurrency = capsule[:concurrency].to_i
+          cap.queues = [ capsule[:queue_name].to_s ]
+        end
+      end
 
-    config.capsule("profile_story_orchestration_lane") do |cap|
-      cap.concurrency = profile_story_orchestration_concurrency
-      cap.queues = %w[profile_story_orchestration]
-    end
+      config.capsule("frame_generation_lane") do |cap|
+        cap.concurrency = frame_concurrency
+        cap.queues = %w[frame_generation]
+      end
 
-    config.capsule("home_story_orchestration_lane") do |cap|
-      cap.concurrency = home_story_orchestration_concurrency
-      cap.queues = %w[home_story_orchestration]
-    end
+      config.capsule("story_auto_reply_orchestration_lane") do |cap|
+        cap.concurrency = story_auto_reply_orchestration_concurrency
+        cap.queues = %w[story_auto_reply_orchestration]
+      end
 
-    config.capsule("home_story_sync_lane") do |cap|
-      cap.concurrency = home_story_sync_concurrency
-      cap.queues = %w[home_story_sync]
-    end
+      config.capsule("profile_story_orchestration_lane") do |cap|
+        cap.concurrency = profile_story_orchestration_concurrency
+        cap.queues = %w[profile_story_orchestration]
+      end
 
-    config.capsule("story_processing_lane") do |cap|
-      cap.concurrency = story_processing_concurrency
-      cap.queues = %w[story_processing]
-    end
+      config.capsule("home_story_orchestration_lane") do |cap|
+        cap.concurrency = home_story_orchestration_concurrency
+        cap.queues = %w[home_story_orchestration]
+      end
 
-    config.capsule("story_preview_generation_lane") do |cap|
-      cap.concurrency = story_preview_generation_concurrency
-      cap.queues = %w[story_preview_generation]
-    end
+      config.capsule("home_story_sync_lane") do |cap|
+        cap.concurrency = home_story_sync_concurrency
+        cap.queues = %w[home_story_sync]
+      end
 
-    config.capsule("story_replies_lane") do |cap|
-      cap.concurrency = story_replies_concurrency
-      cap.queues = %w[story_replies]
-    end
+      config.capsule("story_processing_lane") do |cap|
+        cap.concurrency = story_processing_concurrency
+        cap.queues = %w[story_processing]
+      end
 
-    config.capsule("profile_reevaluation_lane") do |cap|
-      cap.concurrency = profile_reevaluation_concurrency
-      cap.queues = %w[profile_reevaluation]
-    end
+      config.capsule("story_preview_generation_lane") do |cap|
+        cap.concurrency = story_preview_generation_concurrency
+        cap.queues = %w[story_preview_generation]
+      end
 
-    config.capsule("story_validation_lane") do |cap|
-      cap.concurrency = story_validation_concurrency
-      cap.queues = %w[story_validation]
+      config.capsule("story_replies_lane") do |cap|
+        cap.concurrency = story_replies_concurrency
+        cap.queues = %w[story_replies]
+      end
+
+      config.capsule("profile_reevaluation_lane") do |cap|
+        cap.concurrency = profile_reevaluation_concurrency
+        cap.queues = %w[profile_reevaluation]
+      end
+
+      config.capsule("story_validation_lane") do |cap|
+        cap.concurrency = story_validation_concurrency
+        cap.queues = %w[story_validation]
+      end
     end
   end
 

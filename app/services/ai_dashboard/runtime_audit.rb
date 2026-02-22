@@ -1,9 +1,51 @@
 # frozen_string_literal: true
+require "open3"
+require "socket"
 
 module AiDashboard
   class RuntimeAudit
-    LEGACY_QUEUE_KEY = "legacy_ai_default"
     SECONDARY_FACE_KEY = "face_analysis_secondary"
+    HOST_SERVICE_ROWS = [
+      {
+        key: "rails_web",
+        service_name: "Rails Web",
+        required: true,
+        port: 3000,
+        process_pattern: "puma",
+        impact: "Serves authenticated UI and control actions."
+      },
+      {
+        key: "sidekiq_worker",
+        service_name: "Sidekiq Worker",
+        required: true,
+        process_pattern: "sidekiq",
+        impact: "Runs post/story/background pipelines and retries."
+      },
+      {
+        key: "redis",
+        service_name: "Redis",
+        required: true,
+        port: 6379,
+        process_pattern: "redis-server",
+        impact: "Queue backend and short-lived cache coordination."
+      },
+      {
+        key: "ollama",
+        service_name: "Ollama",
+        required: true,
+        port: 11434,
+        process_pattern: "ollama serve",
+        impact: "Primary local LLM inference engine."
+      },
+      {
+        key: "local_microservice",
+        service_name: "Local AI Microservice",
+        required: false,
+        port: 8000,
+        process_pattern: "ai_microservice/main.py",
+        impact: "Optional CV/OCR/Whisper endpoints used by selected steps."
+      }
+    ].freeze
 
     def initialize(service_status:, queue_metrics:)
       @service_status = service_status.is_a?(Hash) ? service_status.deep_symbolize_keys : {}
@@ -13,19 +55,22 @@ module AiDashboard
 
     def call
       metrics_by_key = queue_metrics_by_key
-      concurrent_services = build_concurrent_services(metrics_by_key: metrics_by_key)
       architecture = architecture_snapshot
+      host_services = build_host_services(architecture: architecture)
+      concurrent_services = build_concurrent_services(metrics_by_key: metrics_by_key)
 
       {
         captured_at: Time.current.iso8601(3),
         queue_backend: @queue_backend,
         architecture: architecture,
+        host_services: host_services,
         concurrent_services: concurrent_services,
-        totals: totals(concurrent_services: concurrent_services),
+        totals: totals(concurrent_services: concurrent_services, host_services: host_services),
         cleanup_candidates: cleanup_candidates(
           architecture: architecture,
           metrics_by_key: metrics_by_key,
-          concurrent_services: concurrent_services
+          concurrent_services: concurrent_services,
+          host_services: host_services
         )
       }
     rescue StandardError => e
@@ -33,6 +78,7 @@ module AiDashboard
         captured_at: Time.current.iso8601(3),
         queue_backend: @queue_backend,
         architecture: {},
+        host_services: [],
         concurrent_services: [],
         totals: {},
         cleanup_candidates: [
@@ -75,6 +121,40 @@ module AiDashboard
       end
     end
 
+    def build_host_services(architecture:)
+      microservice_enabled = ActiveModel::Type::Boolean.new.cast(architecture[:microservice_enabled])
+      microservice_required = ActiveModel::Type::Boolean.new.cast(architecture[:microservice_required])
+
+      HOST_SERVICE_ROWS.map do |row|
+        port = row[:port]
+        process_pattern = row[:process_pattern].to_s
+        process_count = process_pattern.present? ? process_count_for(pattern: process_pattern) : 0
+        port_open = port.present? ? port_open?(port: port.to_i) : nil
+        active = ActiveModel::Type::Boolean.new.cast(port_open) || process_count.positive?
+        required =
+          if row[:key].to_s == "local_microservice"
+            microservice_enabled || microservice_required
+          else
+            ActiveModel::Type::Boolean.new.cast(row[:required])
+          end
+
+        {
+          service_key: row[:key].to_s,
+          service_name: row[:service_name].to_s,
+          required: required,
+          active: active,
+          status: active ? "running" : (required ? "missing" : "optional_off"),
+          port: port,
+          port_open: port_open,
+          process_pattern: process_pattern,
+          process_count: process_count,
+          impact: row[:impact].to_s
+        }.compact
+      end
+    rescue StandardError
+      []
+    end
+
     def architecture_snapshot
       details = @service_status[:details].is_a?(Hash) ? @service_status[:details].deep_symbolize_keys : {}
       microservice = details[:microservice].is_a?(Hash) ? details[:microservice] : {}
@@ -110,34 +190,14 @@ module AiDashboard
       }
     end
 
-    def cleanup_candidates(architecture:, metrics_by_key:, concurrent_services:)
+    def cleanup_candidates(architecture:, metrics_by_key:, concurrent_services:, host_services:)
       rows = []
-      rows << legacy_queue_candidate(metrics_by_key: metrics_by_key)
       rows << secondary_face_queue_candidate(metrics_by_key: metrics_by_key)
       rows << deprecated_queue_config_candidate
       rows << unused_models_candidate(architecture: architecture)
+      rows.concat(host_service_candidates(host_services: host_services, architecture: architecture))
       rows.concat(idle_lane_candidates(concurrent_services: concurrent_services))
       rows.compact
-    end
-
-    def legacy_queue_candidate(metrics_by_key:)
-      legacy_service = Ops::AiServiceQueueRegistry.service_for(LEGACY_QUEUE_KEY)
-      return nil unless legacy_service
-
-      metric = metrics_by_key[LEGACY_QUEUE_KEY] || {}
-      pending = metric[:queue_pending].to_i
-      api_calls = metric[:api_calls_24h].to_i
-
-      safe_to_remove = pending.zero? && api_calls.zero?
-      {
-        id: LEGACY_QUEUE_KEY,
-        status: safe_to_remove ? "safe_to_remove" : "keep_temporarily",
-        title: "Legacy default AI queue lane",
-        evidence: "queue=#{pending}, api_calls_24h=#{api_calls}",
-        recommended_action: safe_to_remove ?
-          "Remove `legacy_ai_default` from `Ops::AiServiceQueueRegistry::SERVICE_ROWS` and drop capsule `ai_legacy_lane`." :
-          "Keep temporarily for backward-compatibility with older queued jobs."
-      }
     end
 
     def secondary_face_queue_candidate(metrics_by_key:)
@@ -204,6 +264,44 @@ module AiDashboard
       }
     end
 
+    def host_service_candidates(host_services:, architecture:)
+      rows = []
+      microservice = Array(host_services).find { |row| row[:service_key].to_s == "local_microservice" }
+      if microservice.is_a?(Hash)
+        microservice_enabled = ActiveModel::Type::Boolean.new.cast(architecture[:microservice_enabled])
+        if !microservice_enabled && ActiveModel::Type::Boolean.new.cast(microservice[:active])
+          rows << {
+            id: "orphan_local_microservice",
+            status: "safe_to_remove",
+            title: "Local AI microservice is running but disabled in policy",
+            evidence: "active=#{microservice[:active]}, required=#{microservice[:required]}, port_open=#{microservice[:port_open]}",
+            recommended_action: "Stop microservice process to free CPU/RAM, or set `USE_LOCAL_AI_MICROSERVICE=true` if required."
+          }
+        elsif microservice_enabled && !ActiveModel::Type::Boolean.new.cast(microservice[:active])
+          rows << {
+            id: "missing_local_microservice",
+            status: "review",
+            title: "Local AI microservice is enabled but not running",
+            evidence: "active=#{microservice[:active]}, required=#{microservice[:required]}, port_open=#{microservice[:port_open]}",
+            recommended_action: "Start microservice (`bin/local_ai_services start`) or disable it with `USE_LOCAL_AI_MICROSERVICE=false`."
+          }
+        end
+      end
+
+      sidekiq = Array(host_services).find { |row| row[:service_key].to_s == "sidekiq_worker" }
+      if sidekiq.is_a?(Hash) && sidekiq[:process_count].to_i > 1
+        rows << {
+          id: "multiple_sidekiq_processes",
+          status: "tune_concurrency",
+          title: "Multiple Sidekiq worker processes detected",
+          evidence: "process_count=#{sidekiq[:process_count]}",
+          recommended_action: "Keep one worker process for local machines unless you intentionally run a multi-worker setup."
+        }
+      end
+
+      rows
+    end
+
     def idle_lane_candidates(concurrent_services:)
       concurrent_services
         .select do |row|
@@ -211,7 +309,7 @@ module AiDashboard
             row[:queue_pending].to_i.zero? &&
             row[:api_calls_24h].to_i.zero? &&
             row[:recent_failures_24h].to_i.zero? &&
-            row[:service_key].to_s != LEGACY_QUEUE_KEY
+            row[:service_key].to_s != SECONDARY_FACE_KEY
         end
         .first(4)
         .map do |row|
@@ -225,14 +323,22 @@ module AiDashboard
         end
     end
 
-    def totals(concurrent_services:)
+    def totals(concurrent_services:, host_services:)
       total = concurrent_services.length
       active = concurrent_services.count { |row| ActiveModel::Type::Boolean.new.cast(row[:active]) }
+      host_total = Array(host_services).length
+      host_active = Array(host_services).count { |row| ActiveModel::Type::Boolean.new.cast(row[:active]) }
+      host_required_missing = Array(host_services).count do |row|
+        ActiveModel::Type::Boolean.new.cast(row[:required]) && !ActiveModel::Type::Boolean.new.cast(row[:active])
+      end
 
       {
         total_lanes: total,
         active_lanes: active,
-        idle_lanes: [total - active, 0].max
+        idle_lanes: [total - active, 0].max,
+        host_services_total: host_total,
+        host_services_active: host_active,
+        host_services_required_missing: host_required_missing
       }
     end
 
@@ -278,6 +384,28 @@ module AiDashboard
       ENV.fetch(key.to_s, default).to_i
     rescue StandardError
       default.to_i
+    end
+
+    def port_open?(port:)
+      Socket.tcp("127.0.0.1", port.to_i, connect_timeout: 0.25) do |socket|
+        socket.close
+      end
+      true
+    rescue StandardError
+      false
+    end
+
+    def process_count_for(pattern:)
+      needle = pattern.to_s.strip
+      return 0 if needle.blank?
+
+      stdout, _status = Open3.capture2("ps", "-eo", "args")
+      stdout.to_s.each_line.count do |line|
+        row = line.to_s
+        row.include?(needle) && !row.include?("ps -eo args")
+      end
+    rescue StandardError
+      0
     end
 
     def detect_queue_backend

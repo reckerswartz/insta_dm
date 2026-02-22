@@ -51,43 +51,54 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
     )
 
     generation_result = nil
-    with_pipeline_heartbeat(
-      event: event,
-      pipeline_state: pipeline_state,
-      pipeline_run_id: pipeline_run_id,
-      step: "llm_generation",
-      interval_seconds: 20,
-      progress: 68,
-      # Local model inference can be slow under CPU/GPU pressure; heartbeats make
-      # prolonged processing explicit so operators can distinguish progress vs. failure.
-      message: "LLM is still processing on local resources; large-model inference may take several minutes."
-    ) do
-      payload = LlmComment::StoryIntelligencePayloadResolver.new(
+    begin
+      with_pipeline_heartbeat(
         event: event,
         pipeline_state: pipeline_state,
         pipeline_run_id: pipeline_run_id,
-        active_job_id: job_id
-      ).fetch!
-
-      event.persist_local_story_intelligence!(payload)
-      report_stage!(
-        event: event,
-        stage: "context_matching",
-        state: "completed",
-        progress: 46,
-        message: "Context matching completed.",
-        details: {
+        step: "llm_generation",
+        interval_seconds: 20,
+        progress: 68,
+        # Local model inference can be slow under CPU/GPU pressure; heartbeats make
+        # prolonged processing explicit so operators can distinguish progress vs. failure.
+        message: "LLM is still processing on local resources; large-model inference may take several minutes."
+      ) do
+        payload = LlmComment::StoryIntelligencePayloadResolver.new(
+          event: event,
+          pipeline_state: pipeline_state,
           pipeline_run_id: pipeline_run_id,
-          source: payload[:source].to_s.presence
-        }
-      )
+          active_job_id: job_id
+        ).fetch!
 
-      generation_result = LlmComment::EventGenerationPipeline.new(
+        event.persist_local_story_intelligence!(payload)
+        report_stage!(
+          event: event,
+          stage: "context_matching",
+          state: "completed",
+          progress: 46,
+          message: "Context matching completed.",
+          details: {
+            pipeline_run_id: pipeline_run_id,
+            source: payload[:source].to_s.presence
+          }
+        )
+
+        generation_result = LlmComment::EventGenerationPipeline.new(
+          event: event,
+          provider: provider,
+          model: model,
+          skip_media_stage_reporting: true
+        ).call
+      end
+    rescue InstagramProfileEvent::LocalStoryIntelligence::LocalStoryIntelligenceUnavailableError => e
+      mark_story_pipeline_skipped!(
         event: event,
-        provider: provider,
-        model: model,
-        skip_media_stage_reporting: true
-      ).call
+        pipeline_state: pipeline_state,
+        pipeline_run_id: pipeline_run_id,
+        error: e,
+        active_job_id: job_id
+      )
+      return
     end
 
     pipeline_state.mark_pipeline_finished!(
@@ -149,4 +160,60 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
 
   private
 
+  def mark_story_pipeline_skipped!(event:, pipeline_state:, pipeline_run_id:, error:, active_job_id: nil)
+    step_rollup = pipeline_step_rollup(pipeline_state: pipeline_state, run_id: pipeline_run_id)
+
+    pipeline_state.mark_pipeline_finished!(
+      run_id: pipeline_run_id,
+      status: "completed",
+      details: {
+        completed_by: self.class.name,
+        active_job_id: active_job_id.to_s.presence || job_id,
+        completed_at: Time.current.iso8601(3),
+        skipped: true,
+        skip_reason: error.reason.to_s.presence || "local_story_intelligence_unavailable",
+        skip_source: error.source.to_s.presence,
+        skip_message: error.message.to_s,
+        step_rollup: step_rollup
+      }.compact
+    )
+    timing_rollup = pipeline_timing_rollup(pipeline_state: pipeline_state, run_id: pipeline_run_id)
+
+    event.mark_llm_comment_skipped!(
+      message: error.message.to_s,
+      reason: error.reason,
+      source: error.source
+    )
+
+    report_stage!(
+      event: event,
+      stage: "llm_generation",
+      state: "completed_with_warnings",
+      progress: 100,
+      message: "Comment generation skipped due to unavailable story intelligence.",
+      details: {
+        pipeline_run_id: pipeline_run_id,
+        reason: error.reason.to_s.presence || "local_story_intelligence_unavailable",
+        source: error.source.to_s.presence,
+        step_rollup: step_rollup
+      }.merge(timing_rollup)
+    )
+
+    Ops::StructuredLogger.warn(
+      event: "llm_comment.pipeline.skipped",
+      payload: {
+        event_id: event.id,
+        instagram_profile_id: event.instagram_profile_id,
+        pipeline_run_id: pipeline_run_id,
+        active_job_id: active_job_id.to_s.presence || job_id,
+        provider: provider,
+        model: model,
+        reason: error.reason.to_s.presence || "local_story_intelligence_unavailable",
+        source: error.source.to_s.presence,
+        message: error.message.to_s
+      }.merge(timing_rollup)
+    )
+  rescue StandardError
+    nil
+  end
 end

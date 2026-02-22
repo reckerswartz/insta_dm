@@ -1,6 +1,6 @@
 # Post Analysis Pipeline
 
-Last updated: 2026-02-20
+Last updated: 2026-02-22
 
 ## Scope
 
@@ -82,9 +82,10 @@ Responsibilities:
 1. Acquire short-lived finalizer lock in post metadata to avoid duplicate concurrent finalizers.
 2. Enqueue `metadata` step only after core steps are terminal.
 3. Mark stalled queued/running steps failed after timeout.
-4. Poll until all required steps are terminal or max finalize attempts are exhausted.
-5. Consolidate OCR/video metadata into canonical `post.analysis`.
-6. Mark post `ai_status`:
+4. In lightweight mode, degrade failed `video` step to a metadata-backed fallback when visual context is already available (instead of looping expensive retries).
+5. Poll until all required steps are terminal or max finalize attempts are exhausted.
+6. Consolidate OCR/video metadata into canonical `post.analysis`.
+7. Mark post `ai_status`:
    - `analyzed` when completion criteria are met
    - `failed` on degraded/failed terminal state
 
@@ -119,8 +120,9 @@ Comment generation is not always part of the first pass.
 
 ## 7) Failure and Retry Characteristics
 
-- Network and timeout errors are retried at step-job level (`retry_on` policies).
+- Video step timeout retries are fast-failed by default to prevent 10+ minute loops on constrained hardware.
 - OCR/video can defer under resource pressure and requeue themselves.
+- Video reinitialization attempts are configurable per-step, with `video` defaulting to no automatic reinitialize attempts.
 - Video context extraction avoids repeated heavy work by reusing fingerprint-matched cached results.
 - `Jobs::FailureRetry` avoids retrying pipeline step jobs when the underlying pipeline/step is already terminal.
 

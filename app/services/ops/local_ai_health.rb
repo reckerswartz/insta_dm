@@ -112,7 +112,7 @@ module Ops
       end
 
       def local_microservice_enabled?
-        ActiveModel::Type::Boolean.new.cast(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "true"))
+        ActiveModel::Type::Boolean.new.cast(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "false"))
       end
 
       def local_microservice_required?

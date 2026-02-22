@@ -3,10 +3,11 @@ require "timeout"
 class ProcessPostVideoAnalysisJob < PostAnalysisStepJob
   queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:video_analysis)
 
-  MAX_DEFER_ATTEMPTS = ENV.fetch("AI_VIDEO_MAX_DEFER_ATTEMPTS", 4).to_i.clamp(1, 12)
+  MAX_DEFER_ATTEMPTS = ENV.fetch("AI_VIDEO_MAX_DEFER_ATTEMPTS", 3).to_i.clamp(1, 12)
   VIDEO_EXTRACTION_PROFILE = ENV.fetch("POST_VIDEO_EXTRACTION_PROFILE", "lightweight_v1").to_s
-
-  retry_on Timeout::Error, wait: :polynomially_longer, attempts: 2
+  FAST_FAIL_ON_TIMEOUT = ActiveModel::Type::Boolean.new.cast(
+    ENV.fetch("AI_VIDEO_FAST_FAIL_ON_TIMEOUT", "true")
+  )
 
   private
 
@@ -243,7 +244,13 @@ class ProcessPostVideoAnalysisJob < PostAnalysisStepJob
     nil
   end
 
+  def retryable_step_error?(error)
+    return false if FAST_FAIL_ON_TIMEOUT && error.is_a?(Timeout::Error)
+
+    true
+  end
+
   def video_timeout_seconds
-    ENV.fetch("AI_VIDEO_TIMEOUT_SECONDS", 180).to_i.clamp(20, 420)
+    ENV.fetch("AI_VIDEO_TIMEOUT_SECONDS", 120).to_i.clamp(20, 420)
   end
 end

@@ -31,6 +31,9 @@ RSpec.describe Ops::LocalAiHealth do
   end
 
   it "performs a live check when forced" do
+    original_use_microservice = ENV["USE_LOCAL_AI_MICROSERVICE"]
+    ENV["USE_LOCAL_AI_MICROSERVICE"] = "true"
+
     allow(Rails.cache).to receive(:read).with(Ops::LocalAiHealth::CACHE_KEY).and_return(nil)
     allow(Rails.cache).to receive(:write)
 
@@ -46,6 +49,8 @@ RSpec.describe Ops::LocalAiHealth do
     assert_equal true, status[:ok]
     assert_equal "live", status[:source]
     assert_equal false, ActiveModel::Type::Boolean.new.cast(status[:stale])
+  ensure
+    ENV["USE_LOCAL_AI_MICROSERVICE"] = original_use_microservice
   end
 
   it "treats microservice as optional when disabled by env" do
