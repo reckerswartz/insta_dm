@@ -1222,7 +1222,7 @@ export default class extends Controller {
     entries.forEach((entry) => stateByKey.set(String(entry.key), String(entry.state || "pending").toLowerCase()))
 
     const phases = [
-      ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "face_recognition", "metadata_extraction"]],
+      ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "metadata_extraction"]],
       ["context", ["context_matching", "prompt_construction"]],
       ["generation", ["llm_generation", "relevance_scoring"]],
       ["eligibility", ["engagement_eligibility"]],

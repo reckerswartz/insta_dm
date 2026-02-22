@@ -409,7 +409,7 @@ export default class extends Controller {
     entries.forEach((entry) => stateByKey.set(String(entry.key), String(entry.state || "pending").toLowerCase()))
 
     const phases = [
-      ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "face_recognition", "metadata_extraction"]],
+      ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "metadata_extraction"]],
       ["context", ["context_matching", "prompt_construction"]],
       ["generation", ["llm_generation", "relevance_scoring"]],
       ["eligibility", ["engagement_eligibility"]],
@@ -663,7 +663,7 @@ export default class extends Controller {
       parallel_services: { label: "Parallel Stage Jobs", state: "pending", progress: 0, order: 10 },
       ocr_analysis: { label: "OCR Analysis", state: "pending", progress: 0, order: 20 },
       vision_detection: { label: "Video/Image Analysis", state: "pending", progress: 0, order: 24 },
-      face_recognition: { label: "Face Recognition", state: "pending", progress: 0, order: 28 },
+      face_recognition: { label: "Face Recognition (Deferred)", state: "pending", progress: 0, order: 28 },
       metadata_extraction: { label: "Metadata Extraction", state: "pending", progress: 0, order: 32 },
       context_matching: { label: "Context Matching", state: "pending", progress: 0, order: 40 },
       prompt_construction: { label: "Prompt Construction", state: "pending", progress: 0, order: 50 },

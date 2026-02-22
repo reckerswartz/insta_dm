@@ -245,4 +245,33 @@ RSpec.describe LlmComment::ParallelPipelineState do
     expect(state.pipeline_for(run_id: "run-resumed-1").dig("steps", "ocr_analysis", "status")).to eq("succeeded")
     expect(state.steps_requiring_execution(run_id: "run-resumed-1")).to include("vision_detection")
   end
+
+  it "treats deferred steps as non-blocking for generation readiness" do
+    event = create_story_event
+    state = described_class.new(event: event)
+    run_id = "run-required-only-1"
+
+    state.start!(
+      provider: "local",
+      model: "llama3.2-vision:11b",
+      requested_by: "spec",
+      source_job: "spec",
+      active_job_id: "source-job",
+      run_id: run_id
+    )
+
+    %w[ocr_analysis vision_detection metadata_extraction].each do |step|
+      state.mark_step_completed!(
+        run_id: run_id,
+        step: step,
+        status: "succeeded",
+        result: { ok: true }
+      )
+    end
+
+    expect(state.required_steps(run_id: run_id)).to match_array(%w[ocr_analysis vision_detection metadata_extraction])
+    expect(state.required_steps_terminal?(run_id: run_id)).to eq(true)
+    expect(state.all_steps_terminal?(run_id: run_id)).to eq(true)
+    expect(state.step_state(run_id: run_id, step: "face_recognition").to_h["status"]).to eq("pending")
+  end
 end

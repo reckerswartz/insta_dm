@@ -26,15 +26,17 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
     end
 
     failed_steps = pipeline_state.failed_steps(run_id: pipeline_run_id)
+    failed_required_steps = pipeline_state.failed_required_steps(run_id: pipeline_run_id)
     step_rollup = pipeline_step_rollup(pipeline_state: pipeline_state, run_id: pipeline_run_id)
     report_stage!(
       event: event,
       stage: "parallel_services",
-      state: failed_steps.empty? ? "completed" : "completed_with_warnings",
+      state: failed_required_steps.empty? ? "completed" : "completed_with_warnings",
       progress: 40,
-      message: failed_steps.empty? ? "Parallel analysis jobs completed." : "Parallel analysis jobs completed with warnings.",
+      message: failed_required_steps.empty? ? "Parallel analysis jobs completed." : "Parallel analysis jobs completed with warnings.",
       details: {
         pipeline_run_id: pipeline_run_id,
+        failed_required_steps: failed_required_steps,
         failed_steps: failed_steps,
         step_rollup: step_rollup
       }
@@ -112,6 +114,14 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
         step_rollup: step_rollup
       }
     )
+    enqueue_deferred_steps(
+      event: event,
+      pipeline_state: pipeline_state,
+      pipeline_run_id: pipeline_run_id,
+      provider: provider,
+      model: model,
+      requested_by: requested_by
+    )
     timing_rollup = pipeline_timing_rollup(pipeline_state: pipeline_state, run_id: pipeline_run_id)
 
     Ops::StructuredLogger.info(
@@ -124,6 +134,7 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
         provider: provider,
         model: model,
         requested_by: requested_by,
+        failed_required_steps: failed_required_steps,
         failed_steps: failed_steps,
         step_rollup: step_rollup,
         selected_comment: generation_result[:selected_comment].to_s.byteslice(0, 180),
@@ -213,6 +224,90 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
         message: error.message.to_s
       }.merge(timing_rollup)
     )
+  rescue StandardError
+    nil
+  end
+
+  def enqueue_deferred_steps(event:, pipeline_state:, pipeline_run_id:, provider:, model:, requested_by:)
+    pending_steps = pipeline_state.steps_requiring_execution(run_id: pipeline_run_id)
+    deferred_steps = pipeline_state.deferred_steps(run_id: pipeline_run_id)
+    steps = pending_steps.select { |step| deferred_steps.include?(step) }
+    return if steps.empty?
+
+    stage_job_map = LlmComment::StepRegistry.stage_job_map
+    steps.each do |step|
+      job_class = stage_job_map[step]
+      next unless job_class
+
+      job = job_class.perform_later(
+        instagram_profile_event_id: event.id,
+        pipeline_run_id: pipeline_run_id,
+        provider: provider,
+        model: model,
+        requested_by: requested_by
+      )
+
+      pipeline_state.mark_step_queued!(
+        run_id: pipeline_run_id,
+        step: step,
+        queue_name: job.queue_name,
+        active_job_id: job.job_id,
+        result: {
+          enqueued_by: self.class.name,
+          deferred: true,
+          enqueued_at: Time.current.iso8601(3)
+        }
+      )
+
+      report_stage!(
+        event: event,
+        stage: step,
+        state: "queued",
+        progress: step_progress(step, :queued),
+        message: "Deferred enrichment queued.",
+        details: {
+          pipeline_run_id: pipeline_run_id,
+          active_job_id: job.job_id,
+          queue_name: job.queue_name,
+          deferred: true
+        }
+      )
+      Ops::StructuredLogger.info(
+        event: "llm_comment.pipeline.deferred_step_queued",
+        payload: {
+          event_id: event.id,
+          instagram_profile_id: event.instagram_profile_id,
+          pipeline_run_id: pipeline_run_id,
+          step: step,
+          active_job_id: job_id,
+          deferred_job_id: job.job_id,
+          deferred_queue_name: job.queue_name
+        }
+      )
+    rescue StandardError => e
+      pipeline_state.mark_step_completed!(
+        run_id: pipeline_run_id,
+        step: step,
+        status: "failed",
+        error: "deferred_enqueue_failed: #{e.class}: #{e.message}".byteslice(0, 320),
+        result: {
+          reason: "deferred_enqueue_failed"
+        }
+      )
+      report_stage!(
+        event: event,
+        stage: step,
+        state: "failed",
+        progress: step_progress(step, :failed),
+        message: "Deferred enrichment enqueue failed.",
+        details: {
+          pipeline_run_id: pipeline_run_id,
+          error_class: e.class.name,
+          error_message: e.message.to_s.byteslice(0, 220),
+          deferred: true
+        }
+      )
+    end
   rescue StandardError
     nil
   end

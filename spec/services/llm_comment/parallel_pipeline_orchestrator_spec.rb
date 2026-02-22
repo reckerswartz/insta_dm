@@ -20,13 +20,12 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     event = create_story_event
     ocr_job = instance_double(ActiveJob::Base, job_id: "ocr-job-1", queue_name: "ai_ocr_queue")
     vision_job = instance_double(ActiveJob::Base, job_id: "vision-job-1", queue_name: "ai_visual_queue")
-    face_job = instance_double(ActiveJob::Base, job_id: "face-job-1", queue_name: "ai_face_queue")
     metadata_job = instance_double(ActiveJob::Base, job_id: "meta-job-1", queue_name: "ai_metadata_queue")
     finalizer_job = instance_double(ActiveJob::Base, job_id: "finalizer-job-1", queue_name: "ai_pipeline_orchestration_queue")
 
     allow(ProcessStoryCommentOcrJob).to receive(:perform_later).and_return(ocr_job)
     allow(ProcessStoryCommentVisionJob).to receive(:perform_later).and_return(vision_job)
-    allow(ProcessStoryCommentFaceJob).to receive(:perform_later).and_return(face_job)
+    allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
     allow(ProcessStoryCommentMetadataJob).to receive(:perform_later).and_return(metadata_job)
     allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later).and_return(finalizer_job)
 
@@ -44,7 +43,7 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
 
     expect(ProcessStoryCommentOcrJob).to have_received(:perform_later).once
     expect(ProcessStoryCommentVisionJob).to have_received(:perform_later).once
-    expect(ProcessStoryCommentFaceJob).to have_received(:perform_later).once
+    expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
     expect(ProcessStoryCommentMetadataJob).to have_received(:perform_later).once
     expect(FinalizeStoryCommentPipelineJob).to have_received(:perform_later).once
 
@@ -52,9 +51,10 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     expect(pipeline).to be_a(Hash)
     expect(pipeline["run_id"]).to eq(result[:run_id])
     expect(pipeline["status"]).to eq("running")
+    expect(result[:stage_jobs_requested]).to match_array(%w[ocr_analysis vision_detection metadata_extraction])
     expect(pipeline.dig("steps", "ocr_analysis", "status")).to eq("queued")
     expect(pipeline.dig("steps", "vision_detection", "status")).to eq("queued")
-    expect(pipeline.dig("steps", "face_recognition", "status")).to eq("queued")
+    expect(pipeline.dig("steps", "face_recognition", "status")).to eq("pending")
     expect(pipeline.dig("steps", "metadata_extraction", "status")).to eq("queued")
   end
 
@@ -65,6 +65,8 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
         "parallel_pipeline" => {
           "run_id" => "run-existing-1",
           "status" => "running",
+          "created_at" => 30.seconds.ago.iso8601,
+          "updated_at" => Time.current.iso8601,
           "steps" => {}
         }
       }

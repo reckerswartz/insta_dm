@@ -29,11 +29,11 @@ RSpec.describe GenerateStoryCommentFromPipelineJob do
     state
   end
 
-  it "resolves payload, runs generation, and marks pipeline complete" do
+  it "resolves payload, runs generation, marks pipeline complete, and enqueues deferred face enrichment" do
     event = create_story_event
     run_id = "run-story-generation-1"
     state = prepare_pipeline(event: event, run_id: run_id)
-    LlmComment::ParallelPipelineState::STEP_KEYS.each do |step|
+    LlmComment::ParallelPipelineState::REQUIRED_STEP_KEYS.each do |step|
       state.mark_step_completed!(
         run_id: run_id,
         step: step,
@@ -42,8 +42,10 @@ RSpec.describe GenerateStoryCommentFromPipelineJob do
       )
     end
 
+    face_job = instance_double(ActiveJob::Base, job_id: "face-deferred-1", queue_name: "ai_face_queue")
     resolver = instance_double(LlmComment::StoryIntelligencePayloadResolver, fetch!: { source: "spec", topics: [ "travel" ] })
     generator = instance_double(LlmComment::EventGenerationPipeline, call: { selected_comment: "Nice shot", relevance_score: 0.92 })
+    allow(ProcessStoryCommentFaceJob).to receive(:perform_later).and_return(face_job)
     allow(LlmComment::StoryIntelligencePayloadResolver).to receive(:new).and_return(resolver)
     allow(LlmComment::EventGenerationPipeline).to receive(:new).and_return(generator)
 
@@ -58,6 +60,14 @@ RSpec.describe GenerateStoryCommentFromPipelineJob do
     pipeline = event.reload.llm_comment_metadata["parallel_pipeline"]
     expect(pipeline["status"]).to eq("completed")
     expect(pipeline.dig("generation", "status")).to eq("completed")
+    expect(pipeline.dig("steps", "face_recognition", "status")).to eq("queued")
+    expect(ProcessStoryCommentFaceJob).to have_received(:perform_later).with(
+      instagram_profile_event_id: event.id,
+      pipeline_run_id: run_id,
+      provider: "local",
+      model: "llama3.2-vision:11b",
+      requested_by: "spec"
+    )
     expect(pipeline.dig("details", "step_rollup")).to be_a(Hash)
     expect(pipeline.dig("details", "pipeline_duration_ms")).to be_a(Integer)
     expect(pipeline.dig("details", "generation_duration_ms")).to be_a(Integer)

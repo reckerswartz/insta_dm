@@ -26,7 +26,7 @@ module LlmComment
       run_id = start_result[:run_id].to_s
       return reused_result(run_id: run_id) unless start_result[:started]
 
-      steps_to_enqueue = pipeline_state.steps_requiring_execution(run_id: run_id)
+      steps_to_enqueue = pipeline_state.required_steps_requiring_execution(run_id: run_id)
       enqueued_steps = enqueue_stage_jobs(
         pipeline_state: pipeline_state,
         run_id: run_id,
@@ -48,6 +48,8 @@ module LlmComment
           resume_mode: start_result[:resume_mode],
           resumed_from_run_id: start_result[:resumed_from_run_id],
           source_active_job_id: source_job_id,
+          stage_jobs_required: pipeline_state.required_steps(run_id: run_id),
+          stage_jobs_deferred: pipeline_state.deferred_steps(run_id: run_id),
           stage_jobs_requested: steps_to_enqueue,
           stage_jobs_reused: reused_steps,
           stage_jobs: enqueued_steps,
@@ -61,6 +63,8 @@ module LlmComment
         run_id: run_id,
         resume_mode: start_result[:resume_mode],
         resumed_from_run_id: start_result[:resumed_from_run_id],
+        stage_jobs_required: pipeline_state.required_steps(run_id: run_id),
+        stage_jobs_deferred: pipeline_state.deferred_steps(run_id: run_id),
         stage_jobs_requested: steps_to_enqueue,
         stage_jobs_reused: reused_steps,
         stage_jobs: enqueued_steps,

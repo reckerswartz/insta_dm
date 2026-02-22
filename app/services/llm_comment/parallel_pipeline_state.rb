@@ -4,12 +4,9 @@ require "securerandom"
 
 module LlmComment
   class ParallelPipelineState
-    STEP_KEYS = %w[
-      ocr_analysis
-      vision_detection
-      face_recognition
-      metadata_extraction
-    ].freeze
+    STEP_KEYS = LlmComment::StepRegistry.step_keys.freeze
+    REQUIRED_STEP_KEYS = LlmComment::StepRegistry.required_step_keys.freeze
+    DEFERRED_STEP_KEYS = LlmComment::StepRegistry.deferred_step_keys.freeze
     TERMINAL_STEP_STATUSES = %w[succeeded failed skipped].freeze
     PIPELINE_TERMINAL_STATUSES = %w[completed failed].freeze
     SHARED_PAYLOAD_BUILD_STALE_SECONDS = ENV.fetch("LLM_COMMENT_SHARED_PAYLOAD_STALE_SECONDS", "180").to_i.clamp(30, 900)
@@ -49,6 +46,8 @@ module LlmComment
           "resumed_from_run_id" => resume_source.to_h["run_id"].to_s.presence,
           "created_at" => now,
           "updated_at" => now,
+          "required_steps" => REQUIRED_STEP_KEYS,
+          "deferred_steps" => DEFERRED_STEP_KEYS,
           "steps" => seeded_steps(previous_pipeline: resume_source, at: now),
           "shared_payload" => seeded_shared_payload(previous_pipeline: resume_source),
           "generation" => {
@@ -108,21 +107,30 @@ module LlmComment
     end
 
     def all_steps_terminal?(run_id:)
+      required_steps_terminal?(run_id: run_id)
+    end
+
+    def required_steps_terminal?(run_id:)
       pipeline = pipeline_for(run_id: run_id)
       return false unless pipeline.is_a?(Hash)
 
       steps = pipeline["steps"].is_a?(Hash) ? pipeline["steps"] : {}
-      STEP_KEYS.all? do |step|
+      required_steps(run_id: run_id).all? do |step|
         TERMINAL_STEP_STATUSES.include?(steps.dig(step, "status").to_s)
       end
     end
 
-    def failed_steps(run_id:)
+    def failed_steps(run_id:, include_deferred: true)
       pipeline = pipeline_for(run_id: run_id)
       return [] unless pipeline.is_a?(Hash)
 
       steps = pipeline["steps"].is_a?(Hash) ? pipeline["steps"] : {}
-      STEP_KEYS.select { |step| steps.dig(step, "status").to_s == "failed" }
+      keys = include_deferred ? STEP_KEYS : required_steps(run_id: run_id)
+      keys.select { |step| steps.dig(step, "status").to_s == "failed" }
+    end
+
+    def failed_required_steps(run_id:)
+      failed_steps(run_id: run_id, include_deferred: false)
     end
 
     def steps_requiring_execution(run_id:)
@@ -136,6 +144,35 @@ module LlmComment
       end
     rescue StandardError
       STEP_KEYS
+    end
+
+    def required_steps_requiring_execution(run_id:)
+      pending = steps_requiring_execution(run_id: run_id)
+      pending.select { |step| required_steps(run_id: run_id).include?(step) }
+    rescue StandardError
+      REQUIRED_STEP_KEYS
+    end
+
+    def required_steps(run_id:)
+      pipeline = pipeline_for(run_id: run_id)
+      return REQUIRED_STEP_KEYS if pipeline.blank?
+
+      configured = Array(pipeline["required_steps"]).map(&:to_s).select { |step| STEP_KEYS.include?(step) }
+      configured.present? ? configured : REQUIRED_STEP_KEYS
+    rescue StandardError
+      REQUIRED_STEP_KEYS
+    end
+
+    def deferred_steps(run_id:)
+      pipeline = pipeline_for(run_id: run_id)
+      return DEFERRED_STEP_KEYS if pipeline.blank?
+
+      configured = Array(pipeline["deferred_steps"]).map(&:to_s).select { |step| STEP_KEYS.include?(step) }
+      return configured if configured.present?
+
+      STEP_KEYS - required_steps(run_id: run_id)
+    rescue StandardError
+      DEFERRED_STEP_KEYS
     end
 
     def step_rollup(run_id:)

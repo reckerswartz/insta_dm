@@ -270,7 +270,7 @@ module InstagramAccounts
     def completed_workflow_steps(event:, llm_meta:, manual_send_status:)
       completed = 0
       rollup = pipeline_step_rollup(llm_meta)
-      media_done = LlmComment::ParallelPipelineState::STEP_KEYS.all? do |key|
+      media_done = pipeline_required_step_keys(llm_meta).all? do |key|
         state = rollup.dig(key, :status).to_s
         state.in?(%w[succeeded skipped])
       end
@@ -286,11 +286,24 @@ module InstagramAccounts
 
     def pipeline_has_failed_steps?(llm_meta)
       rollup = pipeline_step_rollup(llm_meta)
-      rollup.values.any? do |row|
+      pipeline_required_step_keys(llm_meta).any? do |key|
+        row = rollup[key]
         row.is_a?(Hash) && row[:status].to_s == "failed"
       end
     rescue StandardError
       false
+    end
+
+    def pipeline_required_step_keys(llm_meta)
+      pipeline = parallel_pipeline(llm_meta)
+      configured = Array(pipeline["required_steps"]).map(&:to_s).select do |key|
+        LlmComment::ParallelPipelineState::STEP_KEYS.include?(key)
+      end
+      return configured if configured.present?
+
+      LlmComment::ParallelPipelineState::REQUIRED_STEP_KEYS
+    rescue StandardError
+      LlmComment::ParallelPipelineState::REQUIRED_STEP_KEYS
     end
 
     def parallel_pipeline(llm_meta)

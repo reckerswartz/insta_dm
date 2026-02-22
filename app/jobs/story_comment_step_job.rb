@@ -11,7 +11,9 @@ class StoryCommentStepJob < StoryCommentPipelineJob
     event = context[:event]
     pipeline_state = context[:pipeline_state]
 
-    return if pipeline_state.pipeline_terminal?(run_id: pipeline_run_id)
+    if pipeline_state.pipeline_terminal?(run_id: pipeline_run_id)
+      return unless allows_terminal_pipeline_processing?(context: context)
+    end
     return if pipeline_state.step_terminal?(run_id: pipeline_run_id, step: step_key)
 
     pipeline_state.mark_step_running!(
@@ -122,7 +124,7 @@ class StoryCommentStepJob < StoryCommentPipelineJob
     )
     raise
   ensure
-    if context
+    if context && enqueue_finalizer_after_step?
       enqueue_pipeline_finalizer_if_ready(
         context: context,
         pipeline_run_id: pipeline_run_id,
@@ -174,5 +176,13 @@ class StoryCommentStepJob < StoryCommentPipelineJob
 
   def completed_message(summary:)
     summary.present? ? "Step completed." : "Step completed."
+  end
+
+  def allows_terminal_pipeline_processing?(context:)
+    false
+  end
+
+  def enqueue_finalizer_after_step?
+    true
   end
 end

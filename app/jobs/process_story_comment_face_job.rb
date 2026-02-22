@@ -42,4 +42,12 @@ class ProcessStoryCommentFaceJob < StoryCommentStepJob
       people_count: summary[:people_count]
     }
   end
+
+  def allows_terminal_pipeline_processing?(context:)
+    context.dig(:pipeline, "status").to_s == "completed"
+  end
+
+  def enqueue_finalizer_after_step?
+    false
+  end
 end

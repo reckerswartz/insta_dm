@@ -7,7 +7,7 @@ module InstagramProfileEvent::CommentGenerationCoordinator
     "parallel_services" => { "group" => "orchestration", "label" => "Parallel Stage Jobs", "state" => "pending", "progress" => 0 },
     "ocr_analysis" => { "group" => "media_analysis", "label" => "OCR Analysis", "state" => "pending", "progress" => 0 },
     "vision_detection" => { "group" => "media_analysis", "label" => "Vision Detection", "state" => "pending", "progress" => 0 },
-    "face_recognition" => { "group" => "media_analysis", "label" => "Face Recognition", "state" => "pending", "progress" => 0 },
+    "face_recognition" => { "group" => "media_analysis", "label" => "Face Recognition (Deferred)", "state" => "pending", "progress" => 0 },
     "metadata_extraction" => { "group" => "media_analysis", "label" => "Metadata Extraction", "state" => "pending", "progress" => 0 },
     "context_matching" => { "group" => "context_enrichment", "label" => "Context Matching", "state" => "pending", "progress" => 0 },
     "prompt_construction" => { "group" => "comment_generation", "label" => "Prompt Construction", "state" => "pending", "progress" => 0 },

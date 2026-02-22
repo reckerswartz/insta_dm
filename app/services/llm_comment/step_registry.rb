@@ -5,6 +5,7 @@ module LlmComment
     Step = Struct.new(
       :key,
       :job_class_name,
+      :blocking,
       :running_progress,
       :completed_progress,
       :failed_progress,
@@ -16,6 +17,7 @@ module LlmComment
       Step.new(
         key: "ocr_analysis",
         job_class_name: "ProcessStoryCommentOcrJob",
+        blocking: true,
         queued_progress: 8,
         running_progress: 14,
         completed_progress: 26,
@@ -24,6 +26,7 @@ module LlmComment
       Step.new(
         key: "vision_detection",
         job_class_name: "ProcessStoryCommentVisionJob",
+        blocking: true,
         queued_progress: 9,
         running_progress: 16,
         completed_progress: 30,
@@ -32,6 +35,7 @@ module LlmComment
       Step.new(
         key: "face_recognition",
         job_class_name: "ProcessStoryCommentFaceJob",
+        blocking: false,
         queued_progress: 10,
         running_progress: 18,
         completed_progress: 34,
@@ -40,6 +44,7 @@ module LlmComment
       Step.new(
         key: "metadata_extraction",
         job_class_name: "ProcessStoryCommentMetadataJob",
+        blocking: true,
         queued_progress: 11,
         running_progress: 20,
         completed_progress: 38,
@@ -58,6 +63,14 @@ module LlmComment
 
       def step_keys
         steps.map(&:key)
+      end
+
+      def required_step_keys
+        steps.select { |step| step.blocking == true }.map(&:key)
+      end
+
+      def deferred_step_keys
+        steps.reject { |step| step.blocking == true }.map(&:key)
       end
 
       def stage_job_map

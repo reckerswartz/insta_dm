@@ -51,11 +51,11 @@ RSpec.describe FinalizeStoryCommentPipelineJob do
     expect(event.reload.llm_comment_metadata.dig("parallel_pipeline", "status")).to eq("running")
   end
 
-  it "continues to generation once all required stage jobs are terminal" do
+  it "continues to generation once required stage jobs are terminal even if deferred steps are pending" do
     event = create_story_event
     run_id = "run-complete-1"
     state = prepare_pipeline(event: event, run_id: run_id)
-    LlmComment::ParallelPipelineState::STEP_KEYS.each do |step|
+    LlmComment::ParallelPipelineState::REQUIRED_STEP_KEYS.each do |step|
       state.mark_step_completed!(
         run_id: run_id,
         step: step,
@@ -79,6 +79,7 @@ RSpec.describe FinalizeStoryCommentPipelineJob do
     pipeline = event.reload.llm_comment_metadata["parallel_pipeline"]
     expect(pipeline["status"]).to eq("running")
     expect(pipeline.dig("generation", "status")).to eq("running")
+    expect(pipeline.dig("steps", "face_recognition", "status")).to eq("pending")
     expect(GenerateStoryCommentFromPipelineJob).to have_received(:perform_later).with(
       instagram_profile_event_id: event.id,
       pipeline_run_id: run_id,

@@ -46,7 +46,7 @@ class FinalizeStoryCommentPipelineJob < StoryCommentPipelineJob
         run_id: pipeline_run_id,
         active_job_id: job_id,
         step: "parallel_services",
-        note: "Waiting for parallel stage workers to finish.",
+        note: "Waiting for required parallel stage workers to finish.",
         details: {
           waiting_on_steps: waiting_on_steps,
           attempts: attempts.to_i
@@ -73,7 +73,7 @@ class FinalizeStoryCommentPipelineJob < StoryCommentPipelineJob
         stage: "parallel_services",
         state: "running",
         progress: 36,
-        message: "Parallel workers are still processing; waiting before final generation.",
+        message: "Required parallel workers are still processing; waiting before final generation.",
         details: {
           pipeline_run_id: pipeline_run_id,
           waiting_on_steps: waiting_on_steps,
@@ -173,7 +173,7 @@ class FinalizeStoryCommentPipelineJob < StoryCommentPipelineJob
   private
 
   def waiting_steps(pipeline_state:, run_id:)
-    LlmComment::ParallelPipelineState::STEP_KEYS.select do |step|
+    pipeline_state.required_steps(run_id: run_id).select do |step|
       !pipeline_state.step_terminal?(run_id: run_id, step: step)
     end
   rescue StandardError
