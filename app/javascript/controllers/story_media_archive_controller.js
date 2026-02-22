@@ -27,10 +27,12 @@ export default class extends Controller {
     this.modalEl = null
     this.bootstrapped = false
     this.boundHandleModalKeydown = this.handleModalKeydown.bind(this)
+    this.boundHandleLlmStateChanged = this.handleLlmStateChanged.bind(this)
     this.lastRefreshSignalValue = this.readRefreshSignalValue()
     this.installRefreshSignalObserver()
     this.installScrollEnhancements()
     this.ensureStoryReplySubscription()
+    window.addEventListener("llm-comment:state-changed", this.boundHandleLlmStateChanged)
 
     this.loaderTarget.hidden = false
     this.loaderTarget.textContent = "Archive idle. Click Load Archive to fetch media."
@@ -48,6 +50,7 @@ export default class extends Controller {
     if (this.initialRefreshTimer) clearTimeout(this.initialRefreshTimer)
     if (this.initialRefreshIdleId && "cancelIdleCallback" in window) window.cancelIdleCallback(this.initialRefreshIdleId)
     this.cleanupScrollEnhancements?.()
+    window.removeEventListener("llm-comment:state-changed", this.boundHandleLlmStateChanged)
   }
 
   refresh(event) {
@@ -309,6 +312,7 @@ export default class extends Controller {
     const manualMessage = this.manualSendMessageForItem(item, manual)
     const generatedAt = this.formatDate(item.llm_comment_generated_at)
     const forceRegenerate = state.code === "completed"
+    const progressText = this.compactProgressText(item.llm_processing_stages, item.llm_comment_status)
 
     return `
       <div class="llm-comment-section" data-event-id="${this.esc(String(item.id))}" data-llm-status="${this.esc(state.code)}">
@@ -316,16 +320,19 @@ export default class extends Controller {
           <span class="story-status-chip ${this.esc(state.chipClass)}" data-role="llm-status">${this.esc(state.label)}</span>
           <p class="meta llm-completion-row ${state.code === "completed" ? "" : "hidden"}" data-role="llm-completion">Completed ${this.esc(generatedAt)}</p>
         </div>
+        <p class="meta llm-progress-compact ${progressText ? "" : "hidden"}" data-role="llm-progress-compact">${this.esc(progressText || "")}</p>
         <div class="manual-send-state" data-event-id="${this.esc(String(item.id))}" data-manual-status="${this.esc(manual.code)}">
           <span class="story-status-chip ${this.esc(manual.chipClass)}" data-role="manual-send-status">${this.esc(manual.label)}</span>
           <p class="meta ${manualMessage ? "" : "hidden"}" data-role="manual-send-message">${this.esc(manualMessage || "")}</p>
         </div>
         <div class="llm-card-actions">
+          ${this.renderPrimarySendButton(item, manual, { className: "btn small secondary", baseLabel: "Send" })}
           <button
             type="button"
             class="btn small secondary generate-comment-btn ${state.inFlight ? "loading" : ""}"
             data-event-id="${this.esc(String(item.id))}"
             data-generate-force="${forceRegenerate ? "true" : "false"}"
+            data-generate-all="false"
             data-action="click->llm-comment#generateComment"
             ${state.inFlight ? "disabled" : ""}
           >
@@ -384,6 +391,116 @@ export default class extends Controller {
     document.body.style.overflow = document.querySelector(".technical-details-modal:not(.hidden)") ? "hidden" : ""
   }
 
+  handleLlmStateChanged(event) {
+    const detail = event?.detail && typeof event.detail === "object" ? event.detail : {}
+    const eventId = String(detail?.eventId || "").trim()
+    if (!eventId) return
+
+    const existing = this.itemsById.get(eventId)
+    if (!existing) return
+
+    const patch = detail?.patch && typeof detail.patch === "object" ? detail.patch : {}
+    if (Object.keys(patch).length === 0) return
+
+    const merged = this.mergeArchiveItem(existing, patch)
+    this.itemsById.set(eventId, merged)
+    if (this.shouldRerenderCardForPatch(patch)) {
+      this.refreshCardCommentSection(eventId)
+    }
+    if (this.shouldRerenderModalForPatch(patch)) {
+      this.refreshOpenModalForEvent(eventId)
+    }
+  }
+
+  shouldRerenderCardForPatch(patch) {
+    if (!patch || typeof patch !== "object") return false
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_generated_comment")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_generated_at")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_ranked_candidates")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_status") && String(patch.llm_comment_status) === "completed") return true
+    return false
+  }
+
+  shouldRerenderModalForPatch(patch) {
+    if (!patch || typeof patch !== "object") return false
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_generated_comment")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_generated_at")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_ranked_candidates")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_last_error")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_step_rollup")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_timing")) return true
+    if (!Object.prototype.hasOwnProperty.call(patch, "llm_comment_status")) return false
+
+    const status = String(patch.llm_comment_status || "").toLowerCase()
+    return status === "completed" || status === "failed" || status === "skipped"
+  }
+
+  mergeArchiveItem(existing, patch) {
+    const merged = { ...existing, ...patch }
+    const existingStages = existing?.llm_processing_stages && typeof existing.llm_processing_stages === "object" ? existing.llm_processing_stages : {}
+    const patchStages = patch?.llm_processing_stages && typeof patch.llm_processing_stages === "object" ? patch.llm_processing_stages : {}
+    if (Object.keys(patchStages).length > 0) {
+      merged.llm_processing_stages = this.mergeStageMaps(existingStages, patchStages)
+    }
+
+    if (Array.isArray(patch?.llm_processing_log) && patch.llm_processing_log.length > 0) {
+      merged.llm_processing_log = patch.llm_processing_log
+    }
+    if (patch?.llm_pipeline_step_rollup && typeof patch.llm_pipeline_step_rollup === "object") {
+      merged.llm_pipeline_step_rollup = patch.llm_pipeline_step_rollup
+    }
+    if (patch?.llm_pipeline_timing && typeof patch.llm_pipeline_timing === "object") {
+      merged.llm_pipeline_timing = patch.llm_pipeline_timing
+    }
+    if (String(merged.llm_generated_comment || "").trim().length > 0) {
+      merged.has_llm_comment = true
+    }
+    return merged
+  }
+
+  mergeStageMaps(primary, secondary) {
+    const merged = {}
+    const append = (input) => {
+      if (!input || typeof input !== "object") return
+      Object.entries(input).forEach(([key, value]) => {
+        if (!value || typeof value !== "object") return
+        const current = merged[key] && typeof merged[key] === "object" ? merged[key] : {}
+        merged[key] = { ...current, ...value }
+      })
+    }
+    append(primary)
+    append(secondary)
+    return merged
+  }
+
+  refreshCardCommentSection(eventId) {
+    const key = String(eventId || "").trim()
+    if (!key) return
+    const item = this.itemsById.get(key)
+    if (!item) return
+
+    document
+      .querySelectorAll(`.story-media-card[data-event-id="${this.escapeSelector(key)}"] .llm-comment-section`)
+      .forEach((section) => {
+        section.outerHTML = this.buildLlmCommentSection(item)
+      })
+  }
+
+  refreshOpenModalForEvent(eventId) {
+    if (!this.modalEl) return
+    const modal = this.modalEl.querySelector(".story-modal")
+    if (!modal) return
+    if (String(modal.dataset.eventId || "") !== String(eventId)) return
+
+    const item = this.itemsById.get(String(eventId))
+    if (!item) return
+
+    const scrollTop = modal.scrollTop
+    this.modalEl.innerHTML = this.modalHtml(item)
+    const nextModal = this.modalEl.querySelector(".story-modal")
+    if (nextModal) nextModal.scrollTop = scrollTop
+  }
+
   modalHtml(item) {
     const contentType = String(item.media_content_type || "")
     const isVideo = contentType.startsWith("video/")
@@ -429,8 +546,7 @@ export default class extends Controller {
     const llmError = item.llm_comment_last_error_preview || item.llm_comment_last_error
     const suggestions = Array.isArray(item.llm_ranked_candidates) ? item.llm_ranked_candidates : []
     const breakdown = item.llm_relevance_breakdown && typeof item.llm_relevance_breakdown === "object" ? item.llm_relevance_breakdown : {}
-    const stageList = this.renderStageList(item.llm_processing_stages)
-    const logList = this.renderProcessingLog(item.llm_processing_log)
+    const processingDetails = this.renderProcessingDetailsSection(item)
     const contextSummary = this.renderContextAndFaceSummary(item)
     const comment = item.llm_generated_comment ?
       `
@@ -438,6 +554,21 @@ export default class extends Controller {
           <h4>AI Suggestion</h4>
           <p class="llm-generated-comment">${this.esc(item.llm_generated_comment)}</p>
           ${this.renderRelevanceBreakdown(breakdown)}
+          <div class="llm-card-actions">
+            ${this.renderPrimarySendButton(item, manual, { className: "btn secondary", baseLabel: "Send" })}
+            <button
+              type="button"
+              class="btn secondary generate-comment-btn ${llmState.inFlight ? "loading" : ""}"
+              data-event-id="${this.esc(String(item.id))}"
+              data-generate-force="${llmState.code === "completed" ? "true" : "false"}"
+              data-generate-all="false"
+              data-action="click->llm-comment#generateComment"
+              ${llmState.inFlight ? "disabled" : ""}
+            >
+              ${this.esc(llmLabel)}
+            </button>
+            ${this.renderRegenerateAllButton(item, llmState)}
+          </div>
           ${this.renderSuggestionPreviewList(item, suggestions)}
         </section>
       ` :
@@ -449,11 +580,13 @@ export default class extends Controller {
             class="btn secondary generate-comment-btn ${llmState.inFlight ? "loading" : ""}"
             data-event-id="${this.esc(String(item.id))}"
             data-generate-force="${llmState.code === "completed" ? "true" : "false"}"
+            data-generate-all="false"
             data-action="click->llm-comment#generateComment"
             ${llmState.inFlight ? "disabled" : ""}
           >
             ${this.esc(llmLabel)}
           </button>
+          ${this.renderRegenerateAllButton(item, llmState)}
           <p class="meta llm-progress-hint">${this.esc(llmHint)}</p>
           ${this.renderSuggestionPreviewList(item, suggestions)}
           ${llmFailed && llmError ? `<p class="meta error-text">Last error: ${this.esc(llmError)}</p>` : ""}
@@ -462,7 +595,7 @@ export default class extends Controller {
       `
 
     return `
-      <div class="story-modal" role="dialog" aria-modal="true" aria-label="Story details">
+      <div class="story-modal" role="dialog" aria-modal="true" aria-label="Story details" data-event-id="${this.esc(String(item.id))}">
         <div class="story-modal-header">
           <h3>Story Archive Item</h3>
           <button type="button" class="modal-close" data-modal-close="story" aria-label="Close story modal">&times;</button>
@@ -491,20 +624,9 @@ export default class extends Controller {
               ${item.skipped && item.skip_reason ? `<p class="meta story-skipped-badge">Skipped: ${this.esc(item.skip_reason)}</p>` : ""}
               ${contextSummary}
               ${comment}
-              ${stageList}
-              ${logList}
+              ${processingDetails}
               <div class="story-detail-actions">
                 <a class="btn secondary" href="${this.esc(item.media_download_url)}" target="_blank" rel="noreferrer">Download</a>
-                <button
-                  type="button"
-                  class="btn secondary generate-comment-btn ${llmState.inFlight ? "loading" : ""}"
-                  data-event-id="${this.esc(String(item.id))}"
-                  data-generate-force="${llmState.code === "completed" ? "true" : "false"}"
-                  data-action="click->llm-comment#generateComment"
-                  ${llmState.inFlight ? "disabled" : ""}
-                >
-                  ${this.esc(llmLabel)}
-                </button>
                 <button type="button" class="btn secondary" data-event-id="${this.esc(String(item.id))}" data-action="click->technical-details#showTechnicalDetails">Technical Details</button>
                 <button type="button" class="btn" data-modal-close="story">Close</button>
               </div>
@@ -517,6 +639,69 @@ export default class extends Controller {
 
   handleModalKeydown(event) {
     if (event.key === "Escape") this.closeStoryModal()
+  }
+
+  renderPrimarySendButton(item, manualState, { className = "btn secondary", baseLabel = "Send" } = {}) {
+    const commentText = String(item?.llm_generated_comment || "").trim()
+    if (!commentText) return ""
+
+    const sendDisabled = manualState.sending || manualState.code === "sent" || manualState.code === "expired_removed"
+    const sendLabel = manualState.sending ? "Sending..." : (manualState.code === "sent" ? "Sent" : (manualState.code === "expired_removed" ? "Expired" : baseLabel))
+
+    return `
+      <button
+        type="button"
+        class="${this.esc(className)} manual-send-btn"
+        data-event-id="${this.esc(String(item.id))}"
+        data-comment-text="${this.esc(commentText)}"
+        data-base-label="${this.esc(baseLabel)}"
+        data-action="click->story-media-archive#sendSuggestion"
+        ${sendDisabled ? "disabled" : ""}
+      >
+        ${this.esc(sendLabel)}
+      </button>
+    `
+  }
+
+  renderRegenerateAllButton(item, llmState) {
+    if (llmState?.inFlight) return ""
+
+    const status = String(item?.llm_comment_status || "").toLowerCase()
+    const hasPipelineData = item?.llm_pipeline_step_rollup && typeof item.llm_pipeline_step_rollup === "object" &&
+      Object.keys(item.llm_pipeline_step_rollup).length > 0
+    const canShow = status === "completed" || status === "failed" || status === "skipped" || hasPipelineData
+    if (!canShow) return ""
+
+    return `
+      <button
+        type="button"
+        class="btn secondary generate-comment-all-btn"
+        data-event-id="${this.esc(String(item.id))}"
+        data-generate-force="true"
+        data-generate-all="true"
+        data-action="click->llm-comment#generateComment"
+      >
+        Regenerate All
+      </button>
+    `
+  }
+
+  compactProgressText(stageMap, status) {
+    const entries = this.normalizeStageEntries(stageMap)
+    const normalizedStatus = String(status || "").toLowerCase()
+    if (entries.length === 0 && !["queued", "running", "started", "completed", "failed", "error", "skipped"].includes(normalizedStatus)) {
+      return ""
+    }
+
+    const phaseStates = this.phaseStates(entries)
+    const total = phaseStates.length
+    const completed = phaseStates.filter((row) => row.state === "completed").length
+
+    if (normalizedStatus === "completed") return `${total} of ${total} completed`
+    if (normalizedStatus === "queued") return `${completed} of ${total} completed (queued)`
+    if (normalizedStatus === "failed" || normalizedStatus === "error") return `${completed} of ${total} completed (failed)`
+    if (normalizedStatus === "skipped") return `${completed} of ${total} completed (skipped)`
+    return `${completed} of ${total} completed`
   }
 
   async sendSuggestion(event) {
@@ -749,10 +934,6 @@ export default class extends Controller {
     const rows = Array.isArray(suggestions) ? suggestions : []
     if (rows.length === 0) return ""
 
-    const eventId = String(item.id)
-    const manual = this.resolveManualSendState(item.manual_send_status)
-    const sendDisabled = manual.sending || manual.code === "sent" || manual.code === "expired_removed"
-    const sendLabel = manual.sending ? "Sending..." : (manual.code === "sent" ? "Sent" : (manual.code === "expired_removed" ? "Expired" : "Send manually"))
     const html = rows
       .slice(0, 5)
       .map((row) => {
@@ -760,28 +941,13 @@ export default class extends Controller {
         if (!comment) return ""
         const score = Number(row?.score)
         const scoreText = Number.isFinite(score) ? ` (${score.toFixed(2)})` : ""
-        return `
-          <li>
-            <span>${this.esc(comment)}${this.esc(scoreText)}</span>
-            <button
-              type="button"
-              class="btn small secondary manual-send-btn"
-              data-event-id="${this.esc(eventId)}"
-              data-comment-text="${this.esc(comment)}"
-              data-base-label="Send manually"
-              data-action="click->story-media-archive#sendSuggestion"
-              ${sendDisabled ? "disabled" : ""}
-            >
-              ${this.esc(sendLabel)}
-            </button>
-          </li>
-        `
+        return `<li>${this.esc(comment)}${this.esc(scoreText)}</li>`
       })
       .join("")
 
     return `
       <div class="llm-suggestions-preview">
-        <p class="meta"><strong>Preview suggestions (manual send available):</strong></p>
+        <p class="meta"><strong>Top candidate comments:</strong></p>
         <ul class="meta">${html}</ul>
       </div>
     `
@@ -810,25 +976,107 @@ export default class extends Controller {
     return `<ul class="meta llm-relevance-breakdown">${rows}</ul>`
   }
 
-  renderStageList(stages) {
-    if (!stages || typeof stages !== "object") return ""
-    const rows = Object.values(stages)
-      .filter((row) => row && typeof row === "object")
-      .slice(0, 10)
-      .map((row) => {
-        const label = String(row.label || "Stage")
-        const state = String(row.state || "pending")
-        const progress = Number(row.progress)
-        const stateLabel = state === "completed" ? "Completed" : (state === "running" ? `In Progress${Number.isFinite(progress) ? ` (${Math.round(progress)}%)` : ""}` : "Pending")
-        return `<li>${this.esc(label)} -> ${this.esc(stateLabel)}</li>`
-      })
-      .join("")
-    if (!rows) return ""
+  renderProcessingDetailsSection(item) {
+    const timing = this.renderPipelineTiming(item)
+    const stageList = this.renderStageList(item.llm_processing_stages)
+    const logList = this.renderProcessingLog(item.llm_processing_log)
+    if (!timing && !stageList && !logList) return ""
+
+    const summary = this.compactProgressText(item.llm_processing_stages, item.llm_comment_status)
+    const status = String(item.llm_comment_status || "").toLowerCase()
+    const shouldOpen = status === "running" || status === "queued" || status === "started"
+
     return `
       <section class="story-modal-section">
-        <h4>Context Matching & Face Recognition</h4>
-        <ul class="meta llm-progress-steps">${rows}</ul>
+        <details class="llm-processing-details" data-role="llm-processing-details" data-event-id="${this.esc(String(item.id))}" ${shouldOpen ? "open" : ""}>
+          <summary>
+            <span>AI Processing Details</span>
+            ${summary ? `<span class="meta">${this.esc(summary)}</span>` : ""}
+          </summary>
+          ${timing}
+          ${stageList}
+          ${logList}
+        </details>
       </section>
+    `
+  }
+
+  renderPipelineTiming(item) {
+    const stepRollup = item?.llm_pipeline_step_rollup && typeof item.llm_pipeline_step_rollup === "object" ? item.llm_pipeline_step_rollup : {}
+    const timing = item?.llm_pipeline_timing && typeof item.llm_pipeline_timing === "object" ? item.llm_pipeline_timing : {}
+
+    const stepRows = this.pipelineStepKeys()
+      .map((key) => ({ key, row: stepRollup[key] }))
+      .filter(({ row }) => row && typeof row === "object")
+
+    const totalMs = Number(timing?.pipeline_duration_ms)
+    const generationMs = Number(timing?.generation_duration_ms)
+    const hasTiming = Number.isFinite(totalMs) || Number.isFinite(generationMs)
+    if (stepRows.length === 0 && !hasTiming) return ""
+
+    const summaryParts = []
+    if (Number.isFinite(totalMs)) summaryParts.push(`Total ${this.formatDurationMs(totalMs)}`)
+    if (Number.isFinite(generationMs)) summaryParts.push(`Generation ${this.formatDurationMs(generationMs)}`)
+    const summaryText = summaryParts.join(" | ")
+
+    const rowHtml = stepRows.map(({ key, row }) => {
+      const waitMs = Number(row?.queue_wait_ms)
+      const runMs = Number(row?.run_duration_ms)
+      const totalStepMs = Number(row?.total_duration_ms)
+      const status = this.stageStateLabel(String(row?.status || "pending"), null)
+
+      return `
+        <tr>
+          <td>${this.esc(this.humanizeStageKey(key))}</td>
+          <td>${this.esc(status)}</td>
+          <td>${this.esc(this.formatDurationMs(waitMs))}</td>
+          <td>${this.esc(this.formatDurationMs(runMs))}</td>
+          <td>${this.esc(this.formatDurationMs(totalStepMs))}</td>
+        </tr>
+      `
+    }).join("")
+
+    return `
+      <div class="llm-processing-block">
+        <h4>Queue & Timing</h4>
+        ${summaryText ? `<p class="meta">${this.esc(summaryText)}</p>` : ""}
+        <div class="table-scroll">
+          <table class="table llm-timing-table">
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Status</th>
+                <th>Wait</th>
+                <th>Run</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>${rowHtml}</tbody>
+          </table>
+        </div>
+      </div>
+    `
+  }
+
+  pipelineStepKeys() {
+    return ["ocr_analysis", "vision_detection", "face_recognition", "metadata_extraction"]
+  }
+
+  renderStageList(stages) {
+    if (!stages || typeof stages !== "object") return ""
+    const rows = this.normalizeStageEntries(stages)
+      .slice(0, 12)
+      .map((row) => {
+        const label = String(row.label || "Stage")
+        const stateLabel = this.stageStateLabel(row.state, row.progress)
+        return `<li>${this.esc(label)} -> ${this.esc(stateLabel)}</li>`
+      }).join("")
+    if (!rows) return ""
+    return `
+      <div class="llm-processing-block">
+        <h4>Stage Progress</h4>
+        <ul class="meta llm-progress-steps">${rows}</ul>
+      </div>
     `
   }
 
@@ -848,11 +1096,93 @@ export default class extends Controller {
       .join("")
 
     return `
-      <section class="story-modal-section">
-        <h4>Comment Output & Logs</h4>
+      <div class="llm-processing-block">
+        <h4>Event Log</h4>
         <ul class="meta llm-progress-steps">${logHtml}</ul>
-      </section>
+      </div>
     `
+  }
+
+  normalizeStageEntries(stageMap) {
+    if (!stageMap || typeof stageMap !== "object") return []
+    return Object.entries(stageMap)
+      .filter(([, row]) => row && typeof row === "object")
+      .map(([key, row]) => {
+        const label = String(row?.label || this.humanizeStageKey(key))
+        const state = String(row?.state || "pending").toLowerCase()
+        const progress = Number(row?.progress)
+        const providedOrder = Number(row?.order)
+        return {
+          key: String(key),
+          label,
+          state,
+          progress: Number.isFinite(progress) ? progress : null,
+          order: Number.isFinite(providedOrder) ? providedOrder : this.stageSortWeight(key),
+        }
+      })
+      .sort((a, b) => {
+        if (a.order !== b.order) return a.order - b.order
+        return a.label.localeCompare(b.label)
+      })
+  }
+
+  stageSortWeight(stageKey) {
+    const order = {
+      queue_wait: 5,
+      parallel_services: 10,
+      ocr_analysis: 20,
+      vision_detection: 24,
+      face_recognition: 28,
+      metadata_extraction: 32,
+      context_matching: 40,
+      prompt_construction: 50,
+      llm_generation: 60,
+      relevance_scoring: 70,
+    }
+    return Number(order[String(stageKey)] || 900)
+  }
+
+  stageStateLabel(state, progress) {
+    const normalized = String(state || "pending").toLowerCase()
+    if (normalized === "completed") return "Completed"
+    if (normalized === "completed_with_warnings") return "Completed (Warnings)"
+    if (normalized === "running" || normalized === "started") {
+      return Number.isFinite(progress) ? `In Progress (${Math.round(progress)}%)` : "In Progress"
+    }
+    if (normalized === "queued") return "Queued"
+    if (normalized === "failed" || normalized === "error") return "Failed"
+    if (normalized === "skipped") return "Skipped"
+    return "Pending"
+  }
+
+  phaseStates(entries) {
+    const stateByKey = new Map()
+    entries.forEach((entry) => stateByKey.set(String(entry.key), String(entry.state || "pending").toLowerCase()))
+
+    const phases = [
+      ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "face_recognition", "metadata_extraction"]],
+      ["context", ["context_matching", "prompt_construction"]],
+      ["generation", ["llm_generation", "relevance_scoring"]],
+    ]
+
+    return phases.map(([, keys]) => {
+      const states = keys.map((key) => stateByKey.get(key) || "pending")
+      if (states.some((state) => state === "failed" || state === "error")) return { state: "failed" }
+      if (states.every((state) => state === "completed" || state === "completed_with_warnings" || state === "skipped")) return { state: "completed" }
+      if (states.some((state) => state === "running" || state === "started" || state === "queued")) return { state: "running" }
+      return { state: "pending" }
+    })
+  }
+
+  humanizeStageKey(value) {
+    const key = String(value || "").trim()
+    if (!key) return "Stage"
+    return key
+      .replace(/[_-]+/g, " ")
+      .split(" ")
+      .filter(Boolean)
+      .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+      .join(" ")
   }
 
   renderContextAndFaceSummary(item) {
@@ -894,6 +1224,14 @@ export default class extends Controller {
       return { code: "skipped", label: "Skipped", chipClass: "skipped", buttonLabel: "Generate", inFlight: false }
     }
     return { code: "not_started", label: "Ready", chipClass: "idle", buttonLabel: "Generate", inFlight: false }
+  }
+
+  formatDurationMs(value) {
+    const ms = Number(value)
+    if (!Number.isFinite(ms) || ms < 0) return "-"
+    if (ms < 1000) return `${Math.round(ms)}ms`
+    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+    return `${(ms / 60_000).toFixed(1)}m`
   }
 
   formatBytes(value) {

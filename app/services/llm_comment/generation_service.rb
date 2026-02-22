@@ -6,13 +6,14 @@ module LlmComment
   class GenerationService
     include ActiveModel::Validations
 
-    attr_reader :event, :provider, :model, :requested_by, :result
+    attr_reader :event, :provider, :model, :requested_by, :result, :regenerate_all
 
-    def initialize(instagram_profile_event_id:, provider: "local", model: nil, requested_by: "system")
+    def initialize(instagram_profile_event_id:, provider: "local", model: nil, requested_by: "system", regenerate_all: false)
       @instagram_profile_event_id = instagram_profile_event_id
       @provider = provider.to_s
       @model = model
       @requested_by = requested_by
+      @regenerate_all = ActiveModel::Type::Boolean.new.cast(regenerate_all)
       @event = InstagramProfileEvent.find(instagram_profile_event_id)
     end
 
@@ -81,7 +82,8 @@ module LlmComment
         provider: @provider,
         model: @model,
         requested_by: @requested_by,
-        source_job_id: Current.active_job_id
+        source_job_id: Current.active_job_id,
+        regenerate_all: regenerate_all
       ).call
     end
 
@@ -155,7 +157,8 @@ module LlmComment
         event_id: event.id,
         instagram_profile_id: event.instagram_profile_id,
         requested_provider: @provider,
-        requested_by: @requested_by
+        requested_by: @requested_by,
+        regenerate_all: regenerate_all
       }
       result_payload = @result.is_a?(Hash) ? @result : {}
 

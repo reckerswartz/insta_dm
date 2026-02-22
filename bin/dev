@@ -449,7 +449,11 @@ end
 
 def build_services(rails_args)
   env_path = ENV.fetch("PATH", "")
-  ffmpeg_bin = ENV.fetch("FFMPEG_BIN", "$HOME/.local/bin/ffmpeg")
+  local_ffmpeg_bin = File.expand_path("~/.local/bin/ffmpeg")
+  default_ffmpeg_bin = File.exist?(local_ffmpeg_bin) ? local_ffmpeg_bin : "ffmpeg"
+  ffmpeg_bin = ENV.fetch("FFMPEG_BIN", default_ffmpeg_bin).to_s
+  home = ENV["HOME"].to_s
+  ffmpeg_bin = ffmpeg_bin.gsub("${HOME}", home).gsub("$HOME", home)
   debug_open = ENV["RUBY_DEBUG_OPEN"].to_s
 
   [

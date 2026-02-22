@@ -110,4 +110,102 @@ RSpec.describe LlmComment::ParallelPipelineState do
     expect(timing["pipeline_duration_ms"]).to eq(9000)
     expect(timing["generation_duration_ms"]).to eq(7000)
   end
+
+  it "resumes completed steps and shared payload from a failed run by default" do
+    event = create_story_event
+    previous_pipeline = {
+      "run_id" => "run-old-1",
+      "status" => "failed",
+      "steps" => {
+        "ocr_analysis" => {
+          "status" => "succeeded",
+          "attempts" => 1,
+          "result" => { "text_present" => true },
+          "queued_at" => 3.minutes.ago.iso8601,
+          "started_at" => 3.minutes.ago.iso8601,
+          "finished_at" => 2.minutes.ago.iso8601,
+          "total_duration_ms" => 1100
+        },
+        "vision_detection" => {
+          "status" => "failed",
+          "attempts" => 2,
+          "error" => "timeout"
+        },
+        "face_recognition" => {
+          "status" => "succeeded",
+          "attempts" => 1,
+          "result" => { "face_count" => 1 }
+        },
+        "metadata_extraction" => {
+          "status" => "pending",
+          "attempts" => 0
+        }
+      },
+      "shared_payload" => {
+        "status" => "ready",
+        "payload" => { "ocr_text" => "hello world" }
+      }
+    }
+    event.update!(llm_comment_metadata: { "parallel_pipeline" => previous_pipeline })
+
+    state = described_class.new(event: event)
+    result = state.start!(
+      provider: "local",
+      model: "mistral:7b",
+      requested_by: "spec",
+      source_job: "spec",
+      active_job_id: "source-job",
+      run_id: "run-new-1"
+    )
+
+    expect(result[:started]).to eq(true)
+    expect(result[:resume_mode]).to eq("resume_incomplete")
+    expect(result[:resumed_from_run_id]).to eq("run-old-1")
+
+    pipeline = state.pipeline_for(run_id: "run-new-1")
+    expect(pipeline.dig("steps", "ocr_analysis", "status")).to eq("succeeded")
+    expect(pipeline.dig("steps", "face_recognition", "status")).to eq("succeeded")
+    expect(pipeline.dig("steps", "vision_detection", "status")).to eq("pending")
+    expect(pipeline.dig("steps", "metadata_extraction", "status")).to eq("pending")
+    expect(pipeline.dig("shared_payload", "status")).to eq("ready")
+    expect(pipeline.dig("shared_payload", "payload", "ocr_text")).to eq("hello world")
+
+    expect(state.steps_requiring_execution(run_id: "run-new-1")).to match_array(%w[vision_detection metadata_extraction])
+  end
+
+  it "skips resume reuse when regenerate_all is requested" do
+    event = create_story_event
+    event.update!(
+      llm_comment_metadata: {
+        "parallel_pipeline" => {
+          "run_id" => "run-old-2",
+          "status" => "failed",
+          "steps" => {
+            "ocr_analysis" => { "status" => "succeeded" }
+          },
+          "shared_payload" => {
+            "status" => "ready",
+            "payload" => { "ocr_text" => "cached" }
+          }
+        }
+      }
+    )
+
+    state = described_class.new(event: event)
+    result = state.start!(
+      provider: "local",
+      model: "mistral:7b",
+      requested_by: "spec",
+      source_job: "spec",
+      active_job_id: "source-job",
+      regenerate_all: true,
+      run_id: "run-new-2"
+    )
+
+    expect(result[:resume_mode]).to eq("regenerate_all")
+    pipeline = state.pipeline_for(run_id: "run-new-2")
+    expect(pipeline.dig("steps", "ocr_analysis", "status")).to eq("pending")
+    expect(pipeline["shared_payload"]).to be_nil
+    expect(state.steps_requiring_execution(run_id: "run-new-2")).to match_array(LlmComment::ParallelPipelineState::STEP_KEYS)
+  end
 end

@@ -313,7 +313,8 @@ class InstagramAccountsController < ApplicationController
       provider: params.fetch(:provider, :local),
       model: params[:model].presence,
       status_only: params[:status_only],
-      force: params[:force]
+      force: params[:force],
+      regenerate_all: params[:regenerate_all]
     ).call
 
     render json: result.payload, status: result.status

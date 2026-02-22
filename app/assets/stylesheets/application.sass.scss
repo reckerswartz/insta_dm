@@ -1461,6 +1461,11 @@ pre {
   color: #9fc0ef;
 }
 
+.llm-progress-compact {
+  margin: 0;
+  color: #9fc0ef;
+}
+
 .llm-stage-progress-panel {
   display: grid;
   gap: 6px;
@@ -1645,6 +1650,46 @@ pre {
 .story-modal-section h4 {
   margin: 0 0 6px;
   font-size: 0.96rem;
+}
+
+.llm-processing-details {
+  display: grid;
+  gap: 8px;
+}
+
+.llm-processing-details summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #d9e8ff;
+  font-weight: 700;
+}
+
+.llm-processing-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.llm-processing-block {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(120, 158, 228, 0.22);
+  border-radius: 8px;
+  background: rgba(11, 22, 44, 0.42);
+  padding: 8px;
+}
+
+.llm-processing-block h4 {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.llm-timing-table th,
+.llm-timing-table td {
+  font-size: 0.74rem;
+  white-space: nowrap;
 }
 
 .story-detail-actions {

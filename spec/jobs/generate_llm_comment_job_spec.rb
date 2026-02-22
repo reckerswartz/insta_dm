@@ -20,7 +20,8 @@ RSpec.describe GenerateLlmCommentJob do
       instagram_profile_event_id: 42,
       provider: "local",
       model: "mistral:7b",
-      requested_by: "spec"
+      requested_by: "spec",
+      regenerate_all: false
     ).and_return(service)
 
     job.perform(
@@ -54,7 +55,8 @@ RSpec.describe GenerateLlmCommentJob do
       provider: "local",
       model: nil,
       requested_by: "system",
-      defer_attempt: 1
+      defer_attempt: 1,
+      regenerate_all: false
     ).and_return(deferred_job)
 
     job.perform(instagram_profile_event_id: event.id, provider: "local", requested_by: "system")
@@ -114,5 +116,25 @@ RSpec.describe GenerateLlmCommentJob do
 
     expect(event.reload.llm_comment_status).to eq("failed")
     expect(event.llm_comment_last_error).to include("timed out")
+  end
+
+  it "passes regenerate_all through to generation service" do
+    allow(Ops::ResourceGuard).to receive(:allow_ai_task?).and_return(
+      { allow: true, reason: nil, retry_in_seconds: nil, snapshot: {} }
+    )
+    expect(LlmComment::GenerationService).to receive(:new).with(
+      instagram_profile_event_id: 77,
+      provider: "local",
+      model: nil,
+      requested_by: "spec",
+      regenerate_all: true
+    ).and_return(service)
+
+    job.perform(
+      instagram_profile_event_id: 77,
+      provider: "local",
+      requested_by: "spec",
+      regenerate_all: true
+    )
   end
 end

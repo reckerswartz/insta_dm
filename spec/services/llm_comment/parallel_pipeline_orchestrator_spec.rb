@@ -85,4 +85,88 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     expect(ProcessStoryCommentOcrJob).not_to have_received(:perform_later)
     expect(FinalizeStoryCommentPipelineJob).not_to have_received(:perform_later)
   end
+
+  it "enqueues only failed or incomplete steps when resuming a failed pipeline" do
+    event = create_story_event
+    event.update!(
+      llm_comment_metadata: {
+        "parallel_pipeline" => {
+          "run_id" => "run-failed-1",
+          "status" => "failed",
+          "steps" => {
+            "ocr_analysis" => { "status" => "succeeded", "attempts" => 1 },
+            "vision_detection" => { "status" => "failed", "attempts" => 1, "error" => "timeout" },
+            "face_recognition" => { "status" => "succeeded", "attempts" => 1 },
+            "metadata_extraction" => { "status" => "succeeded", "attempts" => 1 }
+          }
+        }
+      }
+    )
+
+    vision_job = instance_double(ActiveJob::Base, job_id: "vision-resume-1", queue_name: "ai_visual_queue")
+    finalizer_job = instance_double(ActiveJob::Base, job_id: "finalizer-resume-1", queue_name: "ai_pipeline_orchestration_queue")
+    allow(ProcessStoryCommentOcrJob).to receive(:perform_later)
+    allow(ProcessStoryCommentVisionJob).to receive(:perform_later).and_return(vision_job)
+    allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
+    allow(ProcessStoryCommentMetadataJob).to receive(:perform_later)
+    allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later).and_return(finalizer_job)
+
+    result = described_class.new(
+      event: event,
+      provider: "local",
+      model: "mistral:7b",
+      requested_by: "spec",
+      source_job_id: "job-source-resume-1"
+    ).call
+
+    expect(result[:status]).to eq("pipeline_enqueued")
+    expect(result[:resume_mode]).to eq("resume_incomplete")
+    expect(result[:stage_jobs_requested]).to match_array(%w[vision_detection])
+    expect(result[:stage_jobs].keys).to match_array(%w[vision_detection])
+    expect(ProcessStoryCommentVisionJob).to have_received(:perform_later).once
+    expect(ProcessStoryCommentOcrJob).not_to have_received(:perform_later)
+    expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
+    expect(ProcessStoryCommentMetadataJob).not_to have_received(:perform_later)
+  end
+
+  it "skips stage job enqueue entirely when all analysis steps are already complete" do
+    event = create_story_event
+    event.update!(
+      llm_comment_metadata: {
+        "parallel_pipeline" => {
+          "run_id" => "run-failed-after-analysis",
+          "status" => "failed",
+          "steps" => {
+            "ocr_analysis" => { "status" => "succeeded" },
+            "vision_detection" => { "status" => "succeeded" },
+            "face_recognition" => { "status" => "succeeded" },
+            "metadata_extraction" => { "status" => "succeeded" }
+          }
+        }
+      }
+    )
+
+    allow(ProcessStoryCommentOcrJob).to receive(:perform_later)
+    allow(ProcessStoryCommentVisionJob).to receive(:perform_later)
+    allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
+    allow(ProcessStoryCommentMetadataJob).to receive(:perform_later)
+    finalizer_job = instance_double(ActiveJob::Base, job_id: "finalizer-only-1", queue_name: "ai_pipeline_orchestration_queue")
+    allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later).and_return(finalizer_job)
+
+    result = described_class.new(
+      event: event,
+      provider: "local",
+      model: "mistral:7b",
+      requested_by: "spec",
+      source_job_id: "job-source-resume-2"
+    ).call
+
+    expect(result[:stage_jobs]).to eq({})
+    expect(result[:stage_jobs_requested]).to eq([])
+    expect(FinalizeStoryCommentPipelineJob).to have_received(:perform_later).once
+    expect(ProcessStoryCommentOcrJob).not_to have_received(:perform_later)
+    expect(ProcessStoryCommentVisionJob).not_to have_received(:perform_later)
+    expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
+    expect(ProcessStoryCommentMetadataJob).not_to have_received(:perform_later)
+  end
 end

@@ -75,6 +75,8 @@ module InstagramAccounts
         llm_generation_policy: generation_policy,
         llm_processing_stages: llm_meta["processing_stages"].is_a?(Hash) ? llm_meta["processing_stages"] : {},
         llm_processing_log: Array(llm_meta["processing_log"]).last(24),
+        llm_pipeline_step_rollup: pipeline_step_rollup(llm_meta),
+        llm_pipeline_timing: pipeline_timing(llm_meta),
         llm_generated_comment_preview: text_preview(event.llm_generated_comment, max: 260),
         has_llm_comment: event.has_llm_generated_comment?,
         story_ownership_label: ownership_data["label"].to_s.presence,
@@ -168,6 +170,76 @@ module InstagramAccounts
       return "sent" if metadata["reply_comment"].to_s.present?
 
       "ready"
+    end
+
+    def parallel_pipeline(llm_meta)
+      row = llm_meta["parallel_pipeline"]
+      row.is_a?(Hash) ? row : {}
+    rescue StandardError
+      {}
+    end
+
+    def pipeline_step_rollup(llm_meta)
+      pipeline = parallel_pipeline(llm_meta)
+      steps = pipeline["steps"]
+      return {} unless steps.is_a?(Hash)
+
+      LlmComment::ParallelPipelineState::STEP_KEYS.each_with_object({}) do |step, out|
+        row = steps[step].is_a?(Hash) ? steps[step] : {}
+        out[step] = {
+          status: row["status"].to_s.presence || "pending",
+          queue_name: row["queue_name"].to_s.presence,
+          queued_at: row["queued_at"].to_s.presence || row["created_at"].to_s.presence,
+          started_at: row["started_at"].to_s.presence,
+          finished_at: row["finished_at"].to_s.presence,
+          queue_wait_ms: row["queue_wait_ms"],
+          run_duration_ms: row["run_duration_ms"],
+          total_duration_ms: row["total_duration_ms"],
+          attempts: row["attempts"].to_i,
+          error: row["error"].to_s.presence
+        }.compact
+      end
+    rescue StandardError
+      {}
+    end
+
+    def pipeline_timing(llm_meta)
+      pipeline = parallel_pipeline(llm_meta)
+      return {} unless pipeline.is_a?(Hash)
+
+      generation = pipeline["generation"].is_a?(Hash) ? pipeline["generation"] : {}
+      details = pipeline["details"].is_a?(Hash) ? pipeline["details"] : {}
+      created_at = parse_time(pipeline["created_at"])
+      finished_at = parse_time(pipeline["finished_at"])
+      generation_started_at = parse_time(generation["started_at"])
+      generation_finished_at = parse_time(generation["finished_at"])
+
+      {
+        run_id: pipeline["run_id"].to_s.presence,
+        status: pipeline["status"].to_s.presence,
+        created_at: pipeline["created_at"].to_s.presence,
+        finished_at: pipeline["finished_at"].to_s.presence,
+        pipeline_duration_ms: details["pipeline_duration_ms"] || duration_ms(start_time: created_at, end_time: finished_at),
+        generation_duration_ms: details["generation_duration_ms"] || duration_ms(start_time: generation_started_at, end_time: generation_finished_at)
+      }.compact
+    rescue StandardError
+      {}
+    end
+
+    def parse_time(value)
+      return nil if value.to_s.blank?
+
+      Time.zone.parse(value.to_s)
+    rescue StandardError
+      nil
+    end
+
+    def duration_ms(start_time:, end_time:)
+      return nil unless start_time && end_time
+
+      ((end_time.to_f - start_time.to_f) * 1000.0).round
+    rescue StandardError
+      nil
     end
   end
 end

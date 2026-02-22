@@ -4,8 +4,10 @@ require "tempfile"
 require "json"
 
 class VideoMetadataService
-  def initialize(ffprobe_bin: ENV.fetch("FFPROBE_BIN", "ffprobe"))
-    @ffprobe_bin = ffprobe_bin.to_s
+  include BinaryCommandResolver
+  def initialize(ffprobe_bin: nil)
+    resolved_bin = ffprobe_bin.to_s.presence || ENV["FFPROBE_BIN"].to_s.presence || default_ffprobe_bin
+    @ffprobe_bin = resolve_command_path(resolved_bin)
   end
 
   def probe(video_bytes:, story_id:, content_type: nil)
@@ -58,8 +60,11 @@ class VideoMetadataService
 
   private
 
-  def command_available?(command)
-    system("command -v #{Shellwords.escape(command)} >/dev/null 2>&1")
+  def default_ffprobe_bin
+    local_bin = File.expand_path("~/.local/bin/ffprobe")
+    return local_bin if File.exist?(local_bin)
+
+    "ffprobe"
   end
 
   def extension_for(content_type:)

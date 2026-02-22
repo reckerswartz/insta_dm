@@ -9,7 +9,7 @@ class GenerateLlmCommentJob < ApplicationJob
   retry_on ActiveRecord::Deadlocked, ActiveRecord::LockWaitTimeout, wait: 2.seconds, attempts: 5
   discard_on ActiveRecord::RecordNotFound
 
-  def perform(instagram_profile_event_id:, provider: "local", model: nil, requested_by: "system", defer_attempt: 0)
+  def perform(instagram_profile_event_id:, provider: "local", model: nil, requested_by: "system", defer_attempt: 0, regenerate_all: false)
     guard = Ops::ResourceGuard.allow_ai_task?(task: "llm_comment_generation", queue_name: queue_name)
     unless ActiveModel::Type::Boolean.new.cast(guard[:allow])
       if defer_attempt.to_i >= MAX_RESOURCE_DEFER_ATTEMPTS
@@ -26,6 +26,7 @@ class GenerateLlmCommentJob < ApplicationJob
         payload: {
           active_job_id: job_id,
           instagram_profile_event_id: instagram_profile_event_id,
+          regenerate_all: ActiveModel::Type::Boolean.new.cast(regenerate_all),
           defer_attempt: defer_attempt.to_i,
           reason: guard[:reason].to_s,
           retry_in_seconds: retry_seconds,
@@ -38,7 +39,8 @@ class GenerateLlmCommentJob < ApplicationJob
         provider: provider,
         model: model,
         requested_by: requested_by,
-        defer_attempt: defer_attempt.to_i + 1
+        defer_attempt: defer_attempt.to_i + 1,
+        regenerate_all: regenerate_all
       )
       refresh_queued_job_reference!(
         instagram_profile_event_id: instagram_profile_event_id,
@@ -56,7 +58,8 @@ class GenerateLlmCommentJob < ApplicationJob
         instagram_profile_event_id: instagram_profile_event_id,
         provider: provider,
         model: model,
-        requested_by: requested_by
+        requested_by: requested_by,
+        regenerate_all: regenerate_all
       ).call
     end
   rescue Timeout::Error

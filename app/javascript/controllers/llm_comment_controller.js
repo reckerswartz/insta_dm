@@ -35,6 +35,7 @@ export default class extends Controller {
     if (!eventId) return
     const key = String(eventId)
     const force = String(button?.dataset?.generateForce || "").toLowerCase() === "true"
+    const regenerateAll = String(button?.dataset?.generateAll || "").toLowerCase() === "true"
     if (this.pendingEventIds.has(key)) return
 
     try {
@@ -43,13 +44,15 @@ export default class extends Controller {
       this.updateStatusDisplaysForEvent(eventId, { status: "queued" })
       this.updateButtonsForEvent(eventId, { disabled: true, label: "Queued", loading: true, eta: null, force: false })
       this.updateProgressForEvent(eventId, { status: "queued", llm_processing_stages: this.defaultQueuedStages() })
-      const result = await this.callGenerateCommentApi(eventId, { force })
+      this.emitStateChange(eventId, { status: "queued", llm_processing_stages: this.defaultQueuedStages() })
+      const result = await this.callGenerateCommentApi(eventId, { force, regenerateAll })
       this.processImmediateResult(eventId, result)
     } catch (error) {
       this.pendingEventIds.delete(key)
       this.updateProgressForEvent(eventId, { status: "failed" })
       this.updateStatusDisplaysForEvent(eventId, { status: "failed" })
       this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
+      this.emitStateChange(eventId, { status: "failed", error: error.message })
       notifyApp(`Failed to generate comment: ${error.message}`, "error")
     }
   }
@@ -92,7 +95,7 @@ export default class extends Controller {
     }
   }
 
-  async callGenerateCommentApi(eventId, { force = false } = {}) {
+  async callGenerateCommentApi(eventId, { force = false, regenerateAll = false } = {}) {
     const response = await fetch(`/instagram_accounts/${this.accountIdValue}/generate_llm_comment`, {
       method: "POST",
       headers: {
@@ -104,6 +107,7 @@ export default class extends Controller {
         event_id: eventId,
         provider: "local",
         force,
+        regenerate_all: regenerateAll,
       }),
     })
 
@@ -143,9 +147,7 @@ export default class extends Controller {
     if (status === "completed") {
       this.updateProgressForEvent(eventId, result)
       this.stopStatusPolling(eventId)
-      this.handleGenerationComplete(eventId, {
-        generated_at: result.llm_comment_generated_at,
-      })
+      this.handleGenerationComplete(eventId, result)
       return
     }
 
@@ -160,6 +162,7 @@ export default class extends Controller {
         eta: this.buildEtaText(result?.estimated_seconds, result?.queue_size),
         force: false,
       })
+      this.emitStateChange(eventId, result)
       return
     }
 
@@ -174,6 +177,7 @@ export default class extends Controller {
         eta: this.buildEtaText(result?.estimated_seconds, result?.queue_size),
         force: false,
       })
+      this.emitStateChange(eventId, result)
       return
     }
 
@@ -183,6 +187,7 @@ export default class extends Controller {
       this.pendingEventIds.delete(String(eventId))
       this.updateStatusDisplaysForEvent(eventId, { status })
       this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
+      this.emitStateChange(eventId, result)
       return
     }
 
@@ -190,6 +195,7 @@ export default class extends Controller {
     this.pendingEventIds.delete(String(eventId))
     this.updateStatusDisplaysForEvent(eventId, { status: "not_requested" })
     this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
+    this.emitStateChange(eventId, { status: "not_requested" })
   }
 
   handleReceived(data) {
@@ -210,6 +216,7 @@ export default class extends Controller {
           eta: this.buildEtaText(data?.estimated_seconds, data?.queue_size),
           force: false,
         })
+        this.emitStateChange(eventId, data)
         break
       case "running":
       case "started":
@@ -223,6 +230,7 @@ export default class extends Controller {
           eta: this.buildEtaText(data?.estimated_seconds, data?.queue_size),
           force: false,
         })
+        this.emitStateChange(eventId, data)
         break
       case "completed":
         this.stopStatusPolling(eventId)
@@ -235,6 +243,7 @@ export default class extends Controller {
         this.updateProgressForEvent(eventId, data)
         this.updateStatusDisplaysForEvent(eventId, { status: "skipped" })
         this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
+        this.emitStateChange(eventId, data)
         notifyApp(data?.message || "Comment generation skipped: no usable local context.", "notice")
         break
       case "error":
@@ -244,6 +253,7 @@ export default class extends Controller {
         this.updateProgressForEvent(eventId, data)
         this.updateStatusDisplaysForEvent(eventId, { status: "failed" })
         this.updateButtonsForEvent(eventId, { disabled: false, label: "Generate", loading: false, eta: null, force: false })
+        this.emitStateChange(eventId, data)
         notifyApp(`Failed to generate comment: ${data?.error || data?.message || "Unknown error"}`, "error")
         break
       default:
@@ -258,6 +268,8 @@ export default class extends Controller {
     const generatedAt = data?.generated_at || data?.llm_comment_generated_at
     this.updateStatusDisplaysForEvent(eventId, { status: "completed", generatedAt })
     this.updateButtonsForEvent(eventId, { disabled: false, label: "Regenerate", loading: false, eta: null, force: true })
+    this.emitStateChange(eventId, data)
+    this.hydrateCompletedState(eventId, data)
     notifyApp("Comment generated successfully.", "success")
   }
 
@@ -326,73 +338,86 @@ export default class extends Controller {
 
   findProgressContainersForEvent(eventId) {
     const escaped = this.escapeSelector(String(eventId))
-    const containers = new Set()
-
-    document
-      .querySelectorAll(`.llm-comment-section[data-event-id="${escaped}"]`)
-      .forEach((section) => containers.add(section))
-
-    document
-      .querySelectorAll(`.story-modal .generate-comment-btn[data-event-id="${escaped}"]`)
-      .forEach((button) => {
-        const section = button.closest(".story-modal-section")
-        if (section) containers.add(section)
-      })
-
-    return Array.from(containers)
+    return Array.from(document.querySelectorAll(`.llm-comment-section[data-event-id="${escaped}"]`))
   }
 
   renderStageProgress(container, entries, { lastStage = null, status = "" } = {}) {
     if (!container) return
 
-    let panel = container.querySelector("[data-role='llm-stage-panel']")
-    if (!panel) {
-      panel = document.createElement("section")
-      panel.className = "llm-stage-progress-panel"
-      panel.dataset.role = "llm-stage-panel"
-      panel.innerHTML = `
-        <p class="meta llm-stage-progress-title"><strong>AI Processing Stages</strong></p>
-        <ul class="meta llm-progress-steps llm-live-progress-steps" data-role="llm-stage-list"></ul>
-        <p class="meta llm-stage-last hidden" data-role="llm-stage-last"></p>
-      `
-      container.appendChild(panel)
-    }
-
     const activeStatus = ["queued", "running", "started", "completed", "failed", "error", "skipped"].includes(String(status))
-    if (!activeStatus && entries.length === 0) {
-      panel.classList.add("hidden")
+    const summaryText = this.buildCompactProgressSummary(entries, status)
+    if (!activeStatus && !summaryText) {
+      const existingSummary = container.querySelector("[data-role='llm-progress-compact']")
+      if (existingSummary) {
+        existingSummary.textContent = ""
+        existingSummary.classList.add("hidden")
+      }
       return
     }
 
-    const list = panel.querySelector("[data-role='llm-stage-list']")
-    if (list) {
-      list.innerHTML = entries
-        .map((entry) => {
-          const visual = this.resolveStageVisual(entry.state, entry.progress)
-          return `
-            <li class="llm-stage-row ${this.esc(visual.className)}" data-stage-key="${this.esc(entry.key)}">
-              <span class="llm-stage-icon">${this.esc(visual.icon)}</span>
-              <span class="llm-stage-label">${this.esc(entry.label)}</span>
-              <span class="llm-stage-state">${this.esc(visual.label)}</span>
-            </li>
-          `
-        })
-        .join("")
+    let summaryEl = container.querySelector("[data-role='llm-progress-compact']")
+    if (!summaryEl) {
+      summaryEl = document.createElement("p")
+      summaryEl.className = "meta llm-progress-compact"
+      summaryEl.dataset.role = "llm-progress-compact"
+      container.appendChild(summaryEl)
+    }
+    summaryEl.textContent = summaryText
+    summaryEl.classList.toggle("hidden", !summaryText)
+
+    let lastStageEl = container.querySelector("[data-role='llm-stage-last']")
+    if (!lastStageEl) {
+      lastStageEl = document.createElement("p")
+      lastStageEl.className = "meta llm-stage-last hidden"
+      lastStageEl.dataset.role = "llm-stage-last"
+      container.appendChild(lastStageEl)
     }
 
-    const lastStageEl = panel.querySelector("[data-role='llm-stage-last']")
-    if (lastStageEl) {
-      const lastStageText = this.formatLastStageText(lastStage)
-      if (lastStageText) {
-        lastStageEl.textContent = `Latest: ${lastStageText}`
-        lastStageEl.classList.remove("hidden")
-      } else {
-        lastStageEl.textContent = ""
-        lastStageEl.classList.add("hidden")
-      }
+    const lastStageText = this.formatLastStageText(lastStage)
+    if (lastStageText) {
+      lastStageEl.textContent = `Latest: ${lastStageText}`
+      lastStageEl.classList.remove("hidden")
+    } else {
+      lastStageEl.textContent = ""
+      lastStageEl.classList.add("hidden")
     }
+  }
 
-    panel.classList.toggle("hidden", entries.length === 0 && !lastStage)
+  buildCompactProgressSummary(entries, status) {
+    const normalizedStatus = String(status || "").toLowerCase()
+    if (normalizedStatus === "not_requested" || normalizedStatus === "") return ""
+
+    const phaseStates = this.phaseStates(entries)
+    const total = phaseStates.length
+    const completed = phaseStates.filter((row) => row.state === "completed").length
+    const failed = phaseStates.some((row) => row.state === "failed")
+
+    if (normalizedStatus === "completed") return `${total} of ${total} completed`
+    if (normalizedStatus === "skipped") return `${completed} of ${total} completed (skipped)`
+    if (normalizedStatus === "failed" || normalizedStatus === "error" || failed) {
+      return `${completed} of ${total} completed (failed)`
+    }
+    if (normalizedStatus === "queued") return `${completed} of ${total} completed (queued)`
+    return `${completed} of ${total} completed`
+  }
+
+  phaseStates(entries) {
+    const stateByKey = new Map()
+    entries.forEach((entry) => stateByKey.set(String(entry.key), String(entry.state || "pending").toLowerCase()))
+
+    const phases = [
+      ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "face_recognition", "metadata_extraction"]],
+      ["context", ["context_matching", "prompt_construction"]],
+      ["generation", ["llm_generation", "relevance_scoring"]],
+    ]
+
+    return phases.map(([, keys]) => {
+      const states = keys.map((key) => stateByKey.get(key) || "pending")
+      if (states.some((state) => state === "failed" || state === "error")) return { state: "failed" }
+      if (states.every((state) => state === "completed" || state === "completed_with_warnings" || state === "skipped")) return { state: "completed" }
+      if (states.some((state) => state === "running" || state === "started" || state === "queued")) return { state: "running" }
+      return { state: "pending" }
+    })
   }
 
   extractStageMap(data) {
@@ -514,6 +539,83 @@ export default class extends Controller {
     if (message) segments.push(message)
     if (at !== "-") segments.push(at)
     return segments.join(" | ")
+  }
+
+  emitStateChange(eventId, data) {
+    const detail = this.buildArchivePatch(eventId, data)
+    if (!detail) return
+    window.dispatchEvent(new CustomEvent("llm-comment:state-changed", { detail }))
+  }
+
+  buildArchivePatch(eventId, data) {
+    const key = String(eventId || "").trim()
+    if (!key) return null
+
+    const stageMap = this.extractStageMap(data)
+    const normalizedStatus = this.normalizeArchiveStatus(data?.status)
+    const rankedFromResult = Array.isArray(data?.generation_result?.ranked_candidates) ? data.generation_result.ranked_candidates : []
+    const rankedCandidates = Array.isArray(data?.llm_ranked_candidates) ? data.llm_ranked_candidates : rankedFromResult
+    const comment = [data?.llm_generated_comment, data?.comment, data?.generation_result?.selected_comment]
+      .map((value) => String(value || "").trim())
+      .find((value) => value.length > 0)
+    const generatedAt = data?.llm_comment_generated_at || data?.generated_at || null
+    const processingLog = Array.isArray(data?.llm_processing_log) ? data.llm_processing_log : []
+    const pipelineStepRollup = data?.llm_pipeline_step_rollup && typeof data.llm_pipeline_step_rollup === "object" ? data.llm_pipeline_step_rollup : null
+    const pipelineTiming = data?.llm_pipeline_timing && typeof data.llm_pipeline_timing === "object" ? data.llm_pipeline_timing : null
+    const relevanceBreakdown = data?.llm_relevance_breakdown || data?.relevance_breakdown || data?.generation_result?.relevance_breakdown
+    const relevanceScore = data?.llm_comment_relevance_score ?? data?.relevance_score ?? data?.generation_result?.relevance_score
+    const failureMessage = String(data?.error || data?.llm_comment_last_error || data?.message || "").trim()
+
+    const patch = {}
+    if (normalizedStatus) patch.llm_comment_status = normalizedStatus
+    if (comment) {
+      patch.llm_generated_comment = comment
+      patch.has_llm_comment = true
+    }
+    if (generatedAt) patch.llm_comment_generated_at = generatedAt
+    if (String(data?.llm_comment_model || data?.model || "").trim()) patch.llm_comment_model = String(data?.llm_comment_model || data?.model)
+    if (String(data?.llm_comment_provider || data?.provider || "").trim()) patch.llm_comment_provider = String(data?.llm_comment_provider || data?.provider)
+    if (Number.isFinite(Number(relevanceScore))) patch.llm_comment_relevance_score = Number(relevanceScore)
+    if (relevanceBreakdown && typeof relevanceBreakdown === "object") patch.llm_relevance_breakdown = relevanceBreakdown
+    if (rankedCandidates.length > 0) patch.llm_ranked_candidates = rankedCandidates
+    if (Object.keys(stageMap).length > 0) patch.llm_processing_stages = stageMap
+    if (processingLog.length > 0) patch.llm_processing_log = processingLog
+    if (pipelineStepRollup && Object.keys(pipelineStepRollup).length > 0) patch.llm_pipeline_step_rollup = pipelineStepRollup
+    if (pipelineTiming && Object.keys(pipelineTiming).length > 0) patch.llm_pipeline_timing = pipelineTiming
+    if (["failed", "skipped"].includes(normalizedStatus) && failureMessage) {
+      patch.llm_comment_last_error = failureMessage
+      patch.llm_comment_last_error_preview = failureMessage.slice(0, 180)
+    } else if (normalizedStatus === "completed") {
+      patch.llm_comment_last_error = null
+      patch.llm_comment_last_error_preview = null
+    }
+
+    return { eventId: key, patch, status: normalizedStatus }
+  }
+
+  hydrateCompletedState(eventId, data) {
+    const hasComment = String(data?.llm_generated_comment || data?.comment || "").trim().length > 0
+    const hasCandidates = Array.isArray(data?.llm_ranked_candidates) && data.llm_ranked_candidates.length > 0
+    const hasTiming = data?.llm_pipeline_timing && typeof data.llm_pipeline_timing === "object"
+    if (hasComment && hasCandidates && hasTiming) return
+
+    const key = String(eventId || "").trim()
+    if (!key) return
+
+    this.callGenerateCommentStatusApi(key)
+      .then((payload) => {
+        if (String(payload?.status || "").toLowerCase() !== "completed") return
+        this.emitStateChange(key, payload)
+      })
+      .catch(() => {})
+  }
+
+  normalizeArchiveStatus(status) {
+    const normalized = String(status || "").toLowerCase()
+    if (normalized === "started") return "running"
+    if (normalized === "error") return "failed"
+    if (["queued", "running", "completed", "failed", "skipped"].includes(normalized)) return normalized
+    return normalized || "not_requested"
   }
 
   defaultQueuedStages() {
@@ -659,9 +761,20 @@ export default class extends Controller {
   }
 
   updateButtonsForEvent(eventId, state) {
+    const escapedEventId = this.escapeSelector(String(eventId))
     document
-      .querySelectorAll(`.generate-comment-btn[data-event-id="${this.escapeSelector(String(eventId))}"]`)
+      .querySelectorAll(`.generate-comment-btn[data-event-id="${escapedEventId}"]`)
       .forEach((button) => this.updateButtonState(button, state))
+    document
+      .querySelectorAll(`.generate-comment-all-btn[data-event-id="${escapedEventId}"]`)
+      .forEach((button) => {
+        const loading = Boolean(state?.loading)
+        this.updateButtonState(button, {
+          ...state,
+          label: loading ? String(state?.label || "Queued") : "Regenerate All",
+          force: true,
+        })
+      })
   }
 
   updateButtonState(button, { disabled, label, loading, eta = null, force = null }) {

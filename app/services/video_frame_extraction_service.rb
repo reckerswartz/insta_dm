@@ -4,12 +4,13 @@ require "tempfile"
 require "tmpdir"
 
 class VideoFrameExtractionService
+  include BinaryCommandResolver
   DEFAULT_INTERVAL_SECONDS = 2.0
   DEFAULT_MAX_FRAMES = 24
 
   def initialize(ffmpeg_bin: nil, interval_seconds: nil, max_frames: nil)
     resolved_bin = ffmpeg_bin.to_s.presence || ENV["FFMPEG_BIN"].to_s.presence || default_ffmpeg_bin
-    @ffmpeg_bin = resolved_bin.to_s
+    @ffmpeg_bin = resolve_command_path(resolved_bin)
     @interval_seconds = interval_seconds.to_f.positive? ? interval_seconds.to_f : ENV.fetch("VIDEO_FRAME_INTERVAL_SECONDS", DEFAULT_INTERVAL_SECONDS).to_f
     @max_frames = max_frames.to_i.positive? ? max_frames.to_i : ENV.fetch("VIDEO_MAX_FRAMES", DEFAULT_MAX_FRAMES).to_i
   end
@@ -54,10 +55,6 @@ class VideoFrameExtractionService
   end
 
   private
-
-  def command_available?(command)
-    system("command -v #{Shellwords.escape(command)} >/dev/null 2>&1")
-  end
 
   def default_ffmpeg_bin
     local_bin = File.expand_path("~/.local/bin/ffmpeg")

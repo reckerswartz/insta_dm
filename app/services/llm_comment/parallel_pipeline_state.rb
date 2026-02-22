@@ -20,7 +20,7 @@ module LlmComment
 
     attr_reader :event
 
-    def start!(provider:, model:, requested_by:, source_job:, active_job_id: nil, run_id: SecureRandom.uuid)
+    def start!(provider:, model:, requested_by:, source_job:, active_job_id: nil, regenerate_all: false, run_id: SecureRandom.uuid)
       event.with_lock do
         event.reload
         metadata = normalized_metadata
@@ -35,6 +35,7 @@ module LlmComment
         end
 
         now = iso_timestamp
+        resume_source = resumable_pipeline(existing: existing, regenerate_all: regenerate_all)
         pipeline = {
           "run_id" => run_id.to_s,
           "status" => "running",
@@ -43,9 +44,12 @@ module LlmComment
           "requested_by" => requested_by.to_s.presence,
           "source_job" => source_job.to_s.presence,
           "source_active_job_id" => active_job_id.to_s.presence,
+          "resume_mode" => regenerate_all ? "regenerate_all" : (resume_source.present? ? "resume_incomplete" : "fresh"),
+          "resumed_from_run_id" => resume_source.to_h["run_id"].to_s.presence,
           "created_at" => now,
           "updated_at" => now,
-          "steps" => initial_steps(at: now),
+          "steps" => seeded_steps(previous_pipeline: resume_source, at: now),
+          "shared_payload" => seeded_shared_payload(previous_pipeline: resume_source),
           "generation" => {
             "status" => "pending",
             "started_at" => nil,
@@ -62,6 +66,8 @@ module LlmComment
           run_id: run_id.to_s,
           started: true,
           reused: false,
+          resumed_from_run_id: pipeline["resumed_from_run_id"],
+          resume_mode: pipeline["resume_mode"],
           pipeline: pipeline
         }
       end
@@ -116,6 +122,19 @@ module LlmComment
 
       steps = pipeline["steps"].is_a?(Hash) ? pipeline["steps"] : {}
       STEP_KEYS.select { |step| steps.dig(step, "status").to_s == "failed" }
+    end
+
+    def steps_requiring_execution(run_id:)
+      pipeline = pipeline_for(run_id: run_id)
+      return STEP_KEYS if pipeline.blank?
+
+      steps = pipeline["steps"].is_a?(Hash) ? pipeline["steps"] : {}
+      STEP_KEYS.select do |step|
+        status = steps.dig(step, "status").to_s
+        !TERMINAL_STEP_STATUSES.include?(status)
+      end
+    rescue StandardError
+      STEP_KEYS
     end
 
     def step_rollup(run_id:)
@@ -323,7 +342,97 @@ module LlmComment
       end
     end
 
-    private
+  private
+
+    def resumable_pipeline(existing:, regenerate_all:)
+      return nil if ActiveModel::Type::Boolean.new.cast(regenerate_all)
+      return nil unless existing.is_a?(Hash)
+      return nil if existing["run_id"].to_s.blank?
+      return nil if existing["status"].to_s == "running"
+
+      existing.deep_dup
+    rescue StandardError
+      nil
+    end
+
+    def seeded_steps(previous_pipeline:, at:)
+      rows = initial_steps(at: at)
+      return rows unless previous_pipeline.is_a?(Hash)
+
+      previous_steps = previous_pipeline["steps"]
+      return rows unless previous_steps.is_a?(Hash)
+
+      previous_run_id = previous_pipeline["run_id"].to_s.presence
+      STEP_KEYS.each do |step|
+        source = previous_steps[step]
+        next unless source.is_a?(Hash)
+
+        source_status = source["status"].to_s
+        if source_status.in?(%w[succeeded skipped])
+          rows[step] = build_reused_terminal_step(
+            base_row: rows[step],
+            source_row: source,
+            source_status: source_status,
+            previous_run_id: previous_run_id
+          )
+        else
+          attempts = source["attempts"].to_i
+          rows[step]["attempts"] = attempts if attempts.positive?
+          rows[step]["result"] = {
+            "resume_from_status" => source_status.presence || "unknown",
+            "resumed_from_run_id" => previous_run_id
+          }.compact
+        end
+      end
+
+      rows
+    rescue StandardError
+      initial_steps(at: at)
+    end
+
+    def build_reused_terminal_step(base_row:, source_row:, source_status:, previous_run_id:)
+      row = base_row.is_a?(Hash) ? base_row.deep_dup : {}
+      row["status"] = source_status
+      row["attempts"] = source_row["attempts"].to_i
+      row["queue_name"] = source_row["queue_name"].to_s.presence
+      row["active_job_id"] = nil
+      row["queued_at"] = source_row["queued_at"].to_s.presence || source_row["created_at"].to_s.presence
+      row["started_at"] = source_row["started_at"].to_s.presence
+      row["finished_at"] = source_row["finished_at"].to_s.presence
+      row["queue_wait_ms"] = source_row["queue_wait_ms"]
+      row["run_duration_ms"] = source_row["run_duration_ms"]
+      row["total_duration_ms"] = source_row["total_duration_ms"]
+      row["result"] = if source_row["result"].is_a?(Hash)
+        deep_stringify(source_row["result"]).merge("reused_from_run_id" => previous_run_id).compact
+      else
+        { "reused_from_run_id" => previous_run_id }.compact
+      end
+      row["error"] = nil
+      row["created_at"] = source_row["created_at"].to_s.presence || row["created_at"]
+      row
+    end
+
+    def seeded_shared_payload(previous_pipeline:)
+      return nil unless previous_pipeline.is_a?(Hash)
+
+      shared = previous_pipeline["shared_payload"]
+      return nil unless shared.is_a?(Hash)
+      return nil unless shared["status"].to_s == "ready"
+      return nil unless shared["payload"].is_a?(Hash)
+
+      {
+        "status" => "ready",
+        "builder_job_id" => shared["builder_job_id"].to_s.presence,
+        "started_at" => shared["started_at"].to_s.presence,
+        "ready_at" => shared["ready_at"].to_s.presence,
+        "failed_at" => nil,
+        "error" => nil,
+        "payload" => deep_stringify(shared["payload"]),
+        "reused_from_run_id" => previous_pipeline["run_id"].to_s.presence
+      }.compact
+    rescue StandardError
+      nil
+    end
 
     def initial_steps(at:)
       STEP_KEYS.each_with_object({}) do |step, rows|

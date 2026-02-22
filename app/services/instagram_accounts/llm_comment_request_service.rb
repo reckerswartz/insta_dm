@@ -2,13 +2,14 @@ module InstagramAccounts
   class LlmCommentRequestService
     Result = Struct.new(:payload, :status, keyword_init: true)
 
-    def initialize(account:, event_id:, provider:, model:, status_only:, force: false, queue_inspector: LlmQueueInspector.new)
+    def initialize(account:, event_id:, provider:, model:, status_only:, force: false, regenerate_all: false, queue_inspector: LlmQueueInspector.new)
       @account = account
       @event_id = event_id
       @provider = provider.to_s
       @model = model
       @status_only = ActiveModel::Type::Boolean.new.cast(status_only)
-      @force = ActiveModel::Type::Boolean.new.cast(force)
+      @regenerate_all = ActiveModel::Type::Boolean.new.cast(regenerate_all)
+      @force = ActiveModel::Type::Boolean.new.cast(force) || @regenerate_all
       @queue_inspector = queue_inspector
     end
 
@@ -27,14 +28,14 @@ module InstagramAccounts
 
       return status_result(event) if status_only
 
-      enqueue_comment_job(event, force: force)
+      enqueue_comment_job(event, force: force, regenerate_all: regenerate_all)
     rescue StandardError => e
       Result.new(payload: { error: e.message }, status: :unprocessable_entity)
     end
 
     private
 
-    attr_reader :account, :event_id, :provider, :model, :status_only, :force, :queue_inspector
+    attr_reader :account, :event_id, :provider, :model, :status_only, :force, :regenerate_all, :queue_inspector
 
     def accessible_event?(event)
       event.story_archive_item? && event.instagram_profile&.instagram_account_id == account.id
@@ -60,6 +61,8 @@ module InstagramAccounts
           llm_relevance_breakdown: llm_meta["selected_relevance_breakdown"].is_a?(Hash) ? llm_meta["selected_relevance_breakdown"] : {},
           llm_processing_stages: merged_llm_processing_stages(event),
           llm_processing_log: merged_llm_processing_log(event),
+          llm_pipeline_step_rollup: pipeline_step_rollup(event),
+          llm_pipeline_timing: pipeline_timing(event),
           llm_last_stage: merged_llm_last_stage(event),
           llm_manual_review_reason: llm_meta["manual_review_reason"].to_s.presence,
           llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(llm_meta["auto_post_allowed"])
@@ -92,7 +95,7 @@ module InstagramAccounts
       in_progress_result(event)
     end
 
-    def enqueue_comment_job(event, force: false)
+    def enqueue_comment_job(event, force: false, regenerate_all: false)
       event.with_lock do
         event.reload
 
@@ -102,13 +105,14 @@ module InstagramAccounts
         in_progress = normalize_in_progress_event(event)
         return in_progress if in_progress
 
-        reset_generation_state!(event) if force && event.has_llm_generated_comment?
+        reset_generation_state!(event, regenerate_all: regenerate_all) if force && event.has_llm_generated_comment?
 
         job = GenerateLlmCommentJob.perform_later(
           instagram_profile_event_id: event.id,
           provider: provider,
           model: model,
-          requested_by: "dashboard_manual_request"
+          requested_by: "dashboard_manual_request",
+          regenerate_all: regenerate_all
         )
         event.queue_llm_comment_generation!(job_id: job.job_id)
 
@@ -122,14 +126,28 @@ module InstagramAccounts
             queue_size: ai_queue_size,
             llm_processing_stages: merged_llm_processing_stages(event),
             llm_last_stage: merged_llm_last_stage(event),
-            forced: force
+            forced: force,
+            regenerate_all: regenerate_all
           },
           status: :accepted
         )
       end
     end
 
-    def reset_generation_state!(event)
+    def reset_generation_state!(event, regenerate_all: false)
+      existing_metadata = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata.deep_dup : {}
+      next_metadata =
+        if ActiveModel::Type::Boolean.new.cast(regenerate_all)
+          {}
+        else
+          {
+            "parallel_pipeline" => existing_metadata["parallel_pipeline"].is_a?(Hash) ? existing_metadata["parallel_pipeline"] : nil,
+            "processing_stages" => existing_metadata["processing_stages"].is_a?(Hash) ? existing_metadata["processing_stages"] : nil,
+            "processing_log" => Array(existing_metadata["processing_log"]).select { |row| row.is_a?(Hash) }.last(40),
+            "profile_comment_preparation" => existing_metadata["profile_comment_preparation"].is_a?(Hash) ? existing_metadata["profile_comment_preparation"] : nil
+          }.compact
+        end
+
       event.update_columns(
         llm_generated_comment: nil,
         llm_comment_generated_at: nil,
@@ -138,7 +156,7 @@ module InstagramAccounts
         llm_comment_relevance_score: nil,
         llm_comment_last_error: nil,
         llm_comment_status: "not_requested",
-        llm_comment_metadata: {},
+        llm_comment_metadata: next_metadata,
         updated_at: Time.current
       )
       event.reload
@@ -154,6 +172,9 @@ module InstagramAccounts
           estimated_seconds: llm_comment_estimated_seconds(event: event),
           queue_size: ai_queue_size,
           llm_processing_stages: merged_llm_processing_stages(event),
+          llm_processing_log: merged_llm_processing_log(event),
+          llm_pipeline_step_rollup: pipeline_step_rollup(event),
+          llm_pipeline_timing: pipeline_timing(event),
           llm_last_stage: merged_llm_last_stage(event)
         },
         status: :accepted
@@ -169,6 +190,9 @@ module InstagramAccounts
           estimated_seconds: llm_comment_estimated_seconds(event: event),
           queue_size: ai_queue_size,
           llm_processing_stages: merged_llm_processing_stages(event),
+          llm_processing_log: merged_llm_processing_log(event),
+          llm_pipeline_step_rollup: pipeline_step_rollup(event),
+          llm_pipeline_timing: pipeline_timing(event),
           llm_last_stage: merged_llm_last_stage(event)
         },
         status: :ok
@@ -176,13 +200,23 @@ module InstagramAccounts
     end
 
     def completed_status_result(event)
+      llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       Result.new(
         payload: {
           success: true,
           status: "completed",
           event_id: event.id,
+          llm_generated_comment: event.llm_generated_comment,
           llm_comment_generated_at: event.llm_comment_generated_at,
+          llm_comment_model: event.llm_comment_model,
+          llm_comment_provider: event.llm_comment_provider,
+          llm_comment_relevance_score: event.llm_comment_relevance_score,
+          llm_ranked_candidates: Array(llm_meta["ranked_candidates"]).first(8),
+          llm_relevance_breakdown: llm_meta["selected_relevance_breakdown"].is_a?(Hash) ? llm_meta["selected_relevance_breakdown"] : {},
           llm_processing_stages: merged_llm_processing_stages(event),
+          llm_processing_log: merged_llm_processing_log(event),
+          llm_pipeline_step_rollup: pipeline_step_rollup(event),
+          llm_pipeline_timing: pipeline_timing(event),
           llm_last_stage: merged_llm_last_stage(event)
         },
         status: :ok
@@ -212,6 +246,53 @@ module InstagramAccounts
     def llm_processing_log(event)
       llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       Array(llm_meta["processing_log"])
+    end
+
+    def pipeline_step_rollup(event)
+      pipeline = parallel_pipeline(event)
+      steps = pipeline["steps"]
+      return {} unless steps.is_a?(Hash)
+
+      LlmComment::ParallelPipelineState::STEP_KEYS.each_with_object({}) do |step, out|
+        row = steps[step].is_a?(Hash) ? steps[step] : {}
+        out[step] = {
+          status: row["status"].to_s.presence || "pending",
+          queue_name: row["queue_name"].to_s.presence,
+          queued_at: row["queued_at"].to_s.presence || row["created_at"].to_s.presence,
+          started_at: row["started_at"].to_s.presence,
+          finished_at: row["finished_at"].to_s.presence,
+          queue_wait_ms: row["queue_wait_ms"],
+          run_duration_ms: row["run_duration_ms"],
+          total_duration_ms: row["total_duration_ms"],
+          attempts: row["attempts"].to_i,
+          error: row["error"].to_s.presence
+        }.compact
+      end
+    rescue StandardError
+      {}
+    end
+
+    def pipeline_timing(event)
+      pipeline = parallel_pipeline(event)
+      return {} unless pipeline.is_a?(Hash)
+
+      generation = pipeline["generation"].is_a?(Hash) ? pipeline["generation"] : {}
+      details = pipeline["details"].is_a?(Hash) ? pipeline["details"] : {}
+      created_at = parse_time(pipeline["created_at"])
+      finished_at = parse_time(pipeline["finished_at"])
+      generation_started_at = parse_time(generation["started_at"])
+      generation_finished_at = parse_time(generation["finished_at"])
+
+      {
+        run_id: pipeline["run_id"].to_s.presence,
+        status: pipeline["status"].to_s.presence,
+        created_at: pipeline["created_at"].to_s.presence,
+        finished_at: pipeline["finished_at"].to_s.presence,
+        pipeline_duration_ms: details["pipeline_duration_ms"] || duration_ms(start_time: created_at, end_time: finished_at),
+        generation_duration_ms: details["generation_duration_ms"] || duration_ms(start_time: generation_started_at, end_time: generation_finished_at)
+      }.compact
+    rescue StandardError
+      {}
     end
 
     def local_processing_stages(event)
@@ -262,6 +343,14 @@ module InstagramAccounts
       queue_inspector.queue_size
     end
 
+    def parallel_pipeline(event)
+      llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
+      value = llm_meta["parallel_pipeline"]
+      value.is_a?(Hash) ? value : {}
+    rescue StandardError
+      {}
+    end
+
     def parallel_pipeline_active?(event)
       llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       pipeline = llm_meta["parallel_pipeline"]
@@ -282,6 +371,14 @@ module InstagramAccounts
       return nil if value.to_s.blank?
 
       Time.zone.parse(value.to_s)
+    rescue StandardError
+      nil
+    end
+
+    def duration_ms(start_time:, end_time:)
+      return nil unless start_time && end_time
+
+      ((end_time.to_f - start_time.to_f) * 1000.0).round
     rescue StandardError
       nil
     end

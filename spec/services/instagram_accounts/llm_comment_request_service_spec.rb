@@ -50,7 +50,16 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
       profile: profile,
       llm_generated_comment: "Old generated comment",
       llm_comment_status: "completed",
-      llm_comment_generated_at: 1.hour.ago
+      llm_comment_generated_at: 1.hour.ago,
+      llm_comment_metadata: {
+        "parallel_pipeline" => {
+          "run_id" => "run-keep-1",
+          "status" => "failed",
+          "steps" => {
+            "ocr_analysis" => { "status" => "succeeded" }
+          }
+        }
+      }
     )
     job = instance_double(ActiveJob::Base, job_id: "job-force-1")
     allow(GenerateLlmCommentJob).to receive(:perform_later).and_return(job)
@@ -71,6 +80,48 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     expect(event.llm_comment_status).to eq("queued")
     expect(event.llm_generated_comment).to be_nil
     expect(event.llm_comment_generated_at).to be_nil
+    expect(event.llm_comment_metadata.dig("parallel_pipeline", "run_id")).to eq("run-keep-1")
+  end
+
+  it "supports regenerate_all and clears reusable pipeline metadata" do
+    event = create_story_event(
+      profile: profile,
+      llm_generated_comment: "Old generated comment",
+      llm_comment_status: "completed",
+      llm_comment_generated_at: 1.hour.ago,
+      llm_comment_metadata: {
+        "parallel_pipeline" => {
+          "run_id" => "run-clear-1",
+          "status" => "failed",
+          "steps" => {
+            "ocr_analysis" => { "status" => "succeeded" }
+          }
+        }
+      }
+    )
+    job = instance_double(ActiveJob::Base, job_id: "job-force-2")
+    allow(GenerateLlmCommentJob).to receive(:perform_later).and_return(job)
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: false,
+      regenerate_all: true,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:accepted)
+    expect(result.payload[:regenerate_all]).to eq(true)
+    expect(GenerateLlmCommentJob).to have_received(:perform_later).with(
+      instagram_profile_event_id: event.id,
+      provider: "local",
+      model: nil,
+      requested_by: "dashboard_manual_request",
+      regenerate_all: true
+    )
+    expect(event.reload.llm_comment_metadata["parallel_pipeline"]).to be_nil
   end
 
   it "returns status-only payload without enqueuing when requested" do
@@ -131,6 +182,43 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     expect(result.payload[:llm_last_stage]).to include("stage" => "llm_generation")
   end
 
+  it "includes pipeline step timing in status responses when available" do
+    event = create_story_event(
+      profile: profile,
+      llm_comment_status: "running",
+      llm_comment_metadata: {
+        "parallel_pipeline" => {
+          "run_id" => "run-42",
+          "status" => "running",
+          "created_at" => 2.minutes.ago.iso8601,
+          "steps" => {
+            "ocr_analysis" => {
+              "status" => "completed",
+              "queue_wait_ms" => 1200,
+              "run_duration_ms" => 3400,
+              "total_duration_ms" => 4600,
+              "attempts" => 1
+            }
+          }
+        }
+      }
+    )
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: true,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:accepted)
+    expect(result.payload[:llm_pipeline_step_rollup]).to be_a(Hash)
+    expect(result.payload[:llm_pipeline_step_rollup]["ocr_analysis"]).to include(status: "completed", total_duration_ms: 4600)
+    expect(result.payload[:llm_pipeline_timing]).to include(run_id: "run-42", status: "running")
+  end
+
   it "queues generation job when no comment exists and status_only is false" do
     event = create_story_event(profile: profile, llm_comment_status: "failed")
     job = instance_double(ActiveJob::Base, job_id: "job-123")
@@ -155,7 +243,8 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
       instagram_profile_event_id: event.id,
       provider: "local",
       model: "tiny",
-      requested_by: "dashboard_manual_request"
+      requested_by: "dashboard_manual_request",
+      regenerate_all: false
     )
   end
 

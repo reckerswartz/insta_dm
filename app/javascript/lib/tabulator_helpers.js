@@ -121,6 +121,7 @@ function tableCanRedraw(table) {
   if (!Number.isFinite(holderWidth) || holderWidth <= 0) return false
 
   if (table?.rowManager && !table.rowManager.element) return false
+  if (table?.rowManager && !Array.isArray(table.rowManager.visibleRows)) return false
   return true
 }
 
@@ -592,55 +593,85 @@ export function installPaginationControls(controller, table, { addonId = null, f
   }
 
   const pageStats = () => {
-    const pageModule = table.modules?.page
-    const mode = String(pageModule?.mode || table.options?.paginationMode || "local")
-    const currentPage = Number(pageModule?.page) || 1
-    const pageSizeRaw = Number(pageModule?.size)
-    const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? pageSizeRaw : defaultPageSize
-    const pageRows = Array.isArray(table.getRows?.("visible")) ? table.getRows("visible").length : 0
-
-    let totalRows
-    if (mode === "remote") {
-      const remoteEstimate = Number(pageModule?.remoteRowCountEstimate)
-      if (Number.isFinite(remoteEstimate) && remoteEstimate >= 0) {
-        totalRows = remoteEstimate
-      } else {
-        const pageMax = Number(pageModule?.max) || 1
-        if (pageMax <= 1) {
-          totalRows = pageRows
-        } else if (currentPage >= pageMax) {
-          totalRows = ((pageMax - 1) * pageSize) + pageRows
-        } else {
-          totalRows = pageMax * pageSize
-        }
+    if (!tableStillMounted(table)) {
+      return {
+        currentPage: 1,
+        pageSize: defaultPageSize,
+        pageRows: 0,
+        totalRows: 0,
+        start: 0,
+        end: 0,
+        maxPage: 1,
       }
-    } else {
-      const activeCount = Number(table.getDataCount?.("active"))
-      totalRows = Number.isFinite(activeCount) && activeCount >= 0 ? activeCount : pageRows
     }
 
-    const hasRows = pageRows > 0 && totalRows > 0
-    const start = hasRows ? (((currentPage - 1) * pageSize) + 1) : 0
-    const end = hasRows ? Math.min(totalRows, (start + pageRows - 1)) : 0
+    try {
+      const pageModule = table.modules?.page
+      const mode = String(pageModule?.mode || table.options?.paginationMode || "local")
+      const currentPage = Number(pageModule?.page) || 1
+      const pageSizeRaw = Number(pageModule?.size)
+      const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? pageSizeRaw : defaultPageSize
+      const pageRows = Array.isArray(table.getRows?.("visible")) ? table.getRows("visible").length : 0
 
-    return {
-      currentPage,
-      pageSize,
-      pageRows,
-      totalRows,
-      start,
-      end,
-      maxPage: Math.max(1, Number(pageModule?.max) || 1),
+      let totalRows
+      if (mode === "remote") {
+        const remoteEstimate = Number(pageModule?.remoteRowCountEstimate)
+        if (Number.isFinite(remoteEstimate) && remoteEstimate >= 0) {
+          totalRows = remoteEstimate
+        } else {
+          const pageMax = Number(pageModule?.max) || 1
+          if (pageMax <= 1) {
+            totalRows = pageRows
+          } else if (currentPage >= pageMax) {
+            totalRows = ((pageMax - 1) * pageSize) + pageRows
+          } else {
+            totalRows = pageMax * pageSize
+          }
+        }
+      } else {
+        const activeCount = Number(table.getDataCount?.("active"))
+        totalRows = Number.isFinite(activeCount) && activeCount >= 0 ? activeCount : pageRows
+      }
+
+      const hasRows = pageRows > 0 && totalRows > 0
+      const start = hasRows ? (((currentPage - 1) * pageSize) + 1) : 0
+      const end = hasRows ? Math.min(totalRows, (start + pageRows - 1)) : 0
+
+      return {
+        currentPage,
+        pageSize,
+        pageRows,
+        totalRows,
+        start,
+        end,
+        maxPage: Math.max(1, Number(pageModule?.max) || 1),
+      }
+    } catch (_) {
+      return {
+        currentPage: 1,
+        pageSize: defaultPageSize,
+        pageRows: 0,
+        totalRows: 0,
+        start: 0,
+        end: 0,
+        maxPage: 1,
+      }
     }
   }
 
   const goToPage = (page) => {
-    const maxPage = Number(table.modules?.page?.max) || 1
-    const target = Math.max(1, Math.min(maxPage, Number(page) || 1))
-    if (typeof table.setPage === "function") table.setPage(target)
+    if (!tableStillMounted(table)) return
+    try {
+      const maxPage = Number(table.modules?.page?.max) || 1
+      const target = Math.max(1, Math.min(maxPage, Number(page) || 1))
+      if (typeof table.setPage === "function") table.setPage(target)
+    } catch (_) {
+      // Ignore teardown races while navigating away.
+    }
   }
 
   const syncUi = () => {
+    if (!tableStillMounted(table)) return
     const stats = pageStats()
 
     if (metaEl) metaEl.textContent = `Page ${stats.currentPage} of ${stats.maxPage}`
@@ -658,16 +689,26 @@ export function installPaginationControls(controller, table, { addonId = null, f
 
   const onFirst = () => goToPage(1)
   const onPrev = () => {
+    if (!tableStillMounted(table)) return
     if (typeof table.previousPage === "function") {
-      table.previousPage()
+      try {
+        table.previousPage()
+      } catch (_) {
+        // Ignore teardown races while navigating away.
+      }
       return
     }
     const currentPage = Number(table.modules?.page?.page) || 1
     goToPage(currentPage - 1)
   }
   const onNext = () => {
+    if (!tableStillMounted(table)) return
     if (typeof table.nextPage === "function") {
-      table.nextPage()
+      try {
+        table.nextPage()
+      } catch (_) {
+        // Ignore teardown races while navigating away.
+      }
       return
     }
     const currentPage = Number(table.modules?.page?.page) || 1
@@ -685,9 +726,14 @@ export function installPaginationControls(controller, table, { addonId = null, f
   const onPageSizeSelect = () => {
     const nextSize = Number(pageSizeSelect?.value)
     if (!Number.isFinite(nextSize) || nextSize <= 0) return
-    if (typeof table.setPageSize === "function") table.setPageSize(nextSize)
-    if (typeof table.setPage === "function") table.setPage(1)
-    syncUi()
+    if (!tableStillMounted(table)) return
+    try {
+      if (typeof table.setPageSize === "function") table.setPageSize(nextSize)
+      if (typeof table.setPage === "function") table.setPage(1)
+      syncUi()
+    } catch (_) {
+      // Ignore teardown races while navigating away.
+    }
   }
   pageSizeSelect?.addEventListener("change", onPageSizeSelect)
 
@@ -695,7 +741,7 @@ export function installPaginationControls(controller, table, { addonId = null, f
   const onDataLoaded = () => syncUi()
   const onRenderComplete = () => syncUi()
   const onPageSizeChanged = () => {
-    if (typeof table.setPage === "function") table.setPage(1)
+    if (!tableStillMounted(table)) return
     syncUi()
   }
 

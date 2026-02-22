@@ -17,7 +17,15 @@ RSpec.describe "UI Story Archive Comment Workflow", :diagnostic, :slow, :externa
       inject_workflow_probe(driver)
 
       load_button = driver.find_elements(css: "[data-story-media-archive-target='loadButton']").find(&:displayed?)
-      load_button&.click
+      expect(load_button).to be_present
+      if load_button.enabled?
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", load_button)
+        begin
+          load_button.click
+        rescue Selenium::WebDriver::Error::ElementClickInterceptedError
+          driver.execute_script("arguments[0].click();", load_button)
+        end
+      end
 
       cards = driver.find_elements(css: ".story-media-card")
       if cards.empty?

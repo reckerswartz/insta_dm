@@ -3,6 +3,7 @@ require "shellwords"
 require "tempfile"
 
 class VideoFrameChangeDetectorService
+  include BinaryCommandResolver
   DEFAULT_SAMPLE_FRAMES = 3
   DEFAULT_DIFF_THRESHOLD = 2.5
   GRAYSCALE_WIDTH = 32
@@ -15,7 +16,7 @@ class VideoFrameChangeDetectorService
     video_metadata_service: VideoMetadataService.new
   )
     resolved_bin = ffmpeg_bin.to_s.presence || ENV["FFMPEG_BIN"].to_s.presence || default_ffmpeg_bin
-    @ffmpeg_bin = resolved_bin.to_s
+    @ffmpeg_bin = resolve_command_path(resolved_bin)
     @sample_frames = sample_frames.to_i.positive? ? sample_frames.to_i : DEFAULT_SAMPLE_FRAMES
     @diff_threshold = diff_threshold.to_f.positive? ? diff_threshold.to_f : DEFAULT_DIFF_THRESHOLD
     @video_metadata_service = video_metadata_service
@@ -195,10 +196,6 @@ class VideoFrameChangeDetectorService
       total += (a.getbyte(index).to_i - b.getbyte(index).to_i).abs
     end
     total.to_f / length.to_f
-  end
-
-  def command_available?(command)
-    system("command -v #{Shellwords.escape(command)} >/dev/null 2>&1")
   end
 
   def default_ffmpeg_bin

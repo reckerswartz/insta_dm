@@ -4,12 +4,13 @@ require "shellwords"
 require "tempfile"
 
 class VideoThumbnailService
+  include BinaryCommandResolver
   DEFAULT_SEEK_SECONDS = 0.2
   MAX_THUMBNAIL_BYTES = 3 * 1024 * 1024
 
   def initialize(ffmpeg_bin: nil, seek_seconds: nil)
     resolved_bin = ffmpeg_bin.to_s.presence || ENV["FFMPEG_BIN"].to_s.presence || default_ffmpeg_bin
-    @ffmpeg_bin = resolved_bin.to_s
+    @ffmpeg_bin = resolve_command_path(resolved_bin)
     @seek_seconds = seek_seconds.to_f.positive? ? seek_seconds.to_f : DEFAULT_SEEK_SECONDS
   end
 
@@ -62,10 +63,6 @@ class VideoThumbnailService
   end
 
   private
-
-  def command_available?(command)
-    system("command -v #{Shellwords.escape(command)} >/dev/null 2>&1")
-  end
 
   def safe_reference(value)
     value.to_s.gsub(/[^a-zA-Z0-9_-]/, "_").first(32).presence || "video"

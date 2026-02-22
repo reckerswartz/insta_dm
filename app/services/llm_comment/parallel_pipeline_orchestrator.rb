@@ -9,12 +9,13 @@ module LlmComment
       "metadata_extraction" => ProcessStoryCommentMetadataJob
     }.freeze
 
-    def initialize(event:, provider:, model:, requested_by:, source_job_id:)
+    def initialize(event:, provider:, model:, requested_by:, source_job_id:, regenerate_all: false)
       @event = event
       @provider = provider.to_s
       @model = model
       @requested_by = requested_by.to_s
       @source_job_id = source_job_id.to_s
+      @regenerate_all = ActiveModel::Type::Boolean.new.cast(regenerate_all)
     end
 
     def call
@@ -24,12 +25,19 @@ module LlmComment
         model: model,
         requested_by: requested_by,
         source_job: self.class.name,
-        active_job_id: source_job_id
+        active_job_id: source_job_id,
+        regenerate_all: regenerate_all
       )
       run_id = start_result[:run_id].to_s
       return reused_result(run_id: run_id) unless start_result[:started]
 
-      enqueued_steps = enqueue_stage_jobs(pipeline_state: pipeline_state, run_id: run_id)
+      steps_to_enqueue = pipeline_state.steps_requiring_execution(run_id: run_id)
+      enqueued_steps = enqueue_stage_jobs(
+        pipeline_state: pipeline_state,
+        run_id: run_id,
+        steps: steps_to_enqueue
+      )
+      reused_steps = ParallelPipelineState::STEP_KEYS - steps_to_enqueue
       finalizer = enqueue_finalizer(run_id: run_id)
 
       Ops::StructuredLogger.info(
@@ -41,7 +49,12 @@ module LlmComment
           provider: provider,
           model: model,
           requested_by: requested_by,
+          regenerate_all: regenerate_all,
+          resume_mode: start_result[:resume_mode],
+          resumed_from_run_id: start_result[:resumed_from_run_id],
           source_active_job_id: source_job_id,
+          stage_jobs_requested: steps_to_enqueue,
+          stage_jobs_reused: reused_steps,
           stage_jobs: enqueued_steps,
           finalizer_job_id: finalizer&.job_id,
           finalizer_queue_name: finalizer&.queue_name
@@ -51,6 +64,10 @@ module LlmComment
       {
         status: "pipeline_enqueued",
         run_id: run_id,
+        resume_mode: start_result[:resume_mode],
+        resumed_from_run_id: start_result[:resumed_from_run_id],
+        stage_jobs_requested: steps_to_enqueue,
+        stage_jobs_reused: reused_steps,
         stage_jobs: enqueued_steps,
         finalizer_job_id: finalizer&.job_id
       }
@@ -58,10 +75,13 @@ module LlmComment
 
     private
 
-    attr_reader :event, :provider, :model, :requested_by, :source_job_id
+    attr_reader :event, :provider, :model, :requested_by, :source_job_id, :regenerate_all
 
-    def enqueue_stage_jobs(pipeline_state:, run_id:)
-      STAGE_JOB_MAP.each_with_object({}) do |(stage, job_class), out|
+    def enqueue_stage_jobs(pipeline_state:, run_id:, steps:)
+      Array(steps).map(&:to_s).each_with_object({}) do |stage, out|
+        job_class = STAGE_JOB_MAP[stage]
+        next unless job_class
+
         job = job_class.perform_later(
           instagram_profile_event_id: event.id,
           pipeline_run_id: run_id,
