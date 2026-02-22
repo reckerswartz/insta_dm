@@ -5,11 +5,11 @@ RSpec.describe AiProviderSetting do
     setting = described_class.find_or_initialize_by(provider: "local")
     setting.enabled = true
     setting.priority = 1
-    setting.config = { model: "mistral:7b" }
+    setting.config = { model: "llama3.2-vision:11b" }
     setting.save!
 
-    expect(setting.config_hash).to eq({ "model" => "mistral:7b" })
-    expect(setting.config_value(:model)).to eq("mistral:7b")
+    expect(setting.config_hash).to eq({ "model" => "llama3.2-vision:11b" })
+    expect(setting.config_value(:model)).to eq("llama3.2-vision:11b")
 
     setting.set_config_value(:temperature, "0.2")
     expect(setting.config_hash).to include("temperature" => "0.2")

@@ -16,6 +16,9 @@
     <span class="pill queued">Total: <%= stats[:total_items].to_i %></span>
     <span class="pill sent">Ready: <%= stats[:ready_items].to_i %></span>
     <span class="pill running">Processing: <%= stats[:processing_items].to_i %></span>
+    <span class="pill queued">Queued: <%= stats[:queued_items].to_i %></span>
+    <span class="pill partial">Partial: <%= stats[:partial_items].to_i %></span>
+    <span class="pill failed">Failed: <%= stats[:failed_items].to_i %></span>
     <span class="pill">Enqueued now: <%= stats[:enqueued_now].to_i %></span>
     <% if stats[:enqueue_blocked_reason].to_s.present? %>
       <span class="pill failed">Enqueue paused: <%= stats[:enqueue_blocked_reason].to_s.humanize %></span>

@@ -33,7 +33,7 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     result = described_class.new(
       event: event,
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       source_job_id: "job-source-1"
     ).call
@@ -114,7 +114,7 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     result = described_class.new(
       event: event,
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       source_job_id: "job-source-resume-1"
     ).call
@@ -156,7 +156,7 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     result = described_class.new(
       event: event,
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       source_job_id: "job-source-resume-2"
     ).call

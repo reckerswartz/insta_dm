@@ -13,7 +13,10 @@ module Workspace
       skipped_page_profile
       skipped_deleted_source
       skipped_non_user_post
+      skipped_unsuitable_content
     ].freeze
+    LIFECYCLE_STATES = %w[queued processing partial ready failed].freeze
+    STAGE_DONE_STATES = %w[completed skipped].freeze
 
     def initialize(account:, limit: DEFAULT_LIMIT, enqueue_processing: true, now: Time.current)
       @account = account
@@ -33,6 +36,13 @@ module Workspace
 
       ordered = sort_items(items: items)
       enqueue_result = @enqueue_processing ? enqueue_processing_jobs(items: ordered) : { enqueued_count: 0, blocked_reason: nil }
+      lifecycle_counts = lifecycle_counts(items: ordered)
+      avg_progress_percent =
+        if ordered.any?
+          (ordered.sum { |row| row[:progress_percent].to_i }.to_f / ordered.length.to_f).round
+        else
+          0
+        end
 
       {
         items: ordered.first(@limit),
@@ -40,8 +50,13 @@ module Workspace
           total_items: ordered.length,
           ready_items: ordered.count { |row| row[:suggestions].any? },
           processing_items: ordered.count { |row| row[:requires_processing] },
+          queued_items: lifecycle_counts["queued"].to_i,
+          partial_items: lifecycle_counts["partial"].to_i,
+          failed_items: lifecycle_counts["failed"].to_i,
+          average_progress_percent: avg_progress_percent,
           enqueued_now: enqueue_result[:enqueued_count].to_i,
           enqueue_blocked_reason: enqueue_result[:blocked_reason].to_s.presence,
+          service_queue_metrics: service_queue_metrics,
           refreshed_at: @now.iso8601(3)
         }
       }
@@ -58,8 +73,13 @@ module Workspace
           total_items: 0,
           ready_items: 0,
           processing_items: 0,
+          queued_items: 0,
+          partial_items: 0,
+          failed_items: 0,
+          average_progress_percent: 0,
           enqueued_now: 0,
           enqueue_blocked_reason: nil,
+          service_queue_metrics: [],
           refreshed_at: now.iso8601(3)
         }
       }
@@ -96,6 +116,17 @@ module Workspace
       suggestions = Array(analysis["comment_suggestions"]).map { |value| value.to_s.strip }.reject(&:blank?).uniq.first(3)
       processing_status = derive_processing_status(post: post, suggestions: suggestions, workspace_state: workspace_state, policy: policy)
       processing_message = derive_processing_message(processing_status: processing_status, workspace_state: workspace_state, policy: policy, post: post)
+      stage_rows = stage_rows_for(workspace_state: workspace_state, processing_status: processing_status)
+      stage_log = stage_log_rows(workspace_state: workspace_state)
+      progress = workflow_progress(stage_rows: stage_rows, suggestions: suggestions)
+      lifecycle_state = derive_lifecycle_state(processing_status: processing_status, suggestions: suggestions)
+      engagement_insights = derive_engagement_insights(policy: policy, metadata: metadata, analysis: analysis)
+      send_enabled =
+        if suggestions.any?
+          !engagement_insights.key?(:engagement_suitable) || ActiveModel::Type::Boolean.new.cast(engagement_insights[:engagement_suitable])
+        else
+          false
+        end
 
       {
         post: post,
@@ -106,8 +137,16 @@ module Workspace
         policy: policy,
         workspace_state: workspace_state,
         processing_status: processing_status,
+        lifecycle_state: lifecycle_state,
         processing_message: processing_message,
-        requires_processing: suggestions.empty? && !NON_PROCESSABLE_STATUSES.include?(processing_status.to_s),
+        progress_completed: progress[:completed].to_i,
+        progress_total: progress[:total].to_i,
+        progress_percent: progress[:percent].to_i,
+        stage_rows: stage_rows,
+        stage_log: stage_log,
+        engagement_insights: engagement_insights,
+        send_enabled: send_enabled,
+        requires_processing: suggestions.empty? && lifecycle_state.in?(%w[queued processing]) && !NON_PROCESSABLE_STATUSES.include?(processing_status.to_s),
         post_taken_at: post.taken_at,
         profile_last_active_at: profile.last_active_at
       }
@@ -156,6 +195,8 @@ module Workspace
         "Skipped because this post was deleted from source."
       when "skipped_non_user_post"
         "Skipped because this row is not a user-created post."
+      when "skipped_unsuitable_content"
+        policy["blocked_reason"].to_s.presence || "Skipped because this post is not suitable for engagement."
       else
         if post.ai_status.to_s == "analyzed"
           policy["blocked_reason"].to_s.presence || "Awaiting comment suggestions."
@@ -165,7 +206,114 @@ module Workspace
       end
     end
 
+    def derive_lifecycle_state(processing_status:, suggestions:)
+      return "ready" if suggestions.any?
+
+      WorkspaceProcessActionsTodoPostJob.lifecycle_state_for_status(processing_status)
+    rescue StandardError
+      "partial"
+    end
+
+    def stage_rows_for(workspace_state:, processing_status:)
+      stages = workspace_state["stages"].is_a?(Hash) ? workspace_state["stages"] : {}
+      inferred_plan = WorkspaceProcessActionsTodoPostJob.stage_plan_for_status(
+        status: processing_status.to_s,
+        previous_stage: workspace_state["current_stage"].to_s
+      )
+
+      WorkspaceProcessActionsTodoPostJob::WORKFLOW_STAGES.map do |stage|
+        row = stages[stage].is_a?(Hash) ? stages[stage] : {}
+        {
+          stage: stage,
+          label: stage.to_s.humanize,
+          state: row["state"].to_s.presence || inferred_plan[stage].to_s.presence || "pending",
+          updated_at: row["updated_at"].to_s.presence,
+          message: row["message"].to_s.presence
+        }.compact
+      end
+    rescue StandardError
+      []
+    end
+
+    def stage_log_rows(workspace_state:)
+      Array(workspace_state["stage_log"]).filter_map do |row|
+        next unless row.is_a?(Hash)
+
+        {
+          stage: row["stage"].to_s.presence || "queue_item",
+          status: row["status"].to_s.presence || "queued",
+          lifecycle_state: row["lifecycle_state"].to_s.presence || "queued",
+          requested_by: row["requested_by"].to_s.presence,
+          at: row["at"].to_s.presence,
+          message: row["message"].to_s.presence
+        }.compact
+      end.last(14)
+    rescue StandardError
+      []
+    end
+
+    def workflow_progress(stage_rows:, suggestions:)
+      total = WorkspaceProcessActionsTodoPostJob::WORKFLOW_STAGES.length
+      completed =
+        if suggestions.any?
+          total
+        else
+          Array(stage_rows).count { |row| STAGE_DONE_STATES.include?(row[:state].to_s) }
+        end
+      percent = total.positive? ? ((completed.to_f / total.to_f) * 100.0).round : 0
+
+      {
+        completed: completed.clamp(0, total),
+        total: total,
+        percent: percent.clamp(0, 100)
+      }
+    rescue StandardError
+      {
+        completed: 0,
+        total: WorkspaceProcessActionsTodoPostJob::WORKFLOW_STAGES.length,
+        percent: 0
+      }
+    end
+
+    def derive_engagement_insights(policy:, metadata:, analysis:)
+      row =
+        if policy["engagement_classification"].is_a?(Hash)
+          policy["engagement_classification"]
+        elsif metadata["engagement_classification"].is_a?(Hash)
+          metadata["engagement_classification"]
+        elsif analysis["engagement_classification"].is_a?(Hash)
+          analysis["engagement_classification"]
+        else
+          {}
+        end
+      out = {
+        content_type: row["content_type"].to_s.presence,
+        ownership: row["ownership"].to_s.presence,
+        engagement_suitable: if row.key?("engagement_suitable")
+          ActiveModel::Type::Boolean.new.cast(row["engagement_suitable"])
+        end,
+        same_profile_owner_content: if row.key?("same_profile_owner_content")
+          ActiveModel::Type::Boolean.new.cast(row["same_profile_owner_content"])
+        end,
+        reason_codes: Array(row["reason_codes"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(8),
+        summary: row["summary"].to_s.presence,
+        blocked_reason: policy["blocked_reason"].to_s.presence,
+        blocked_reason_code: policy["blocked_reason_code"].to_s.presence
+      }.compact
+      out[:reason_codes] = [] if out[:reason_codes].blank?
+      out
+    rescue StandardError
+      {}
+    end
+
     def sort_items(items:)
+      lifecycle_priority = {
+        "failed" => 8,
+        "processing" => 7,
+        "queued" => 6,
+        "partial" => 2,
+        "ready" => 1
+      }
       status_priority = {
         "failed" => 6,
         "running" => 5,
@@ -177,6 +325,7 @@ module Workspace
         "waiting_media_download" => 3,
         "queued_for_processing" => 2,
         "ready" => 1,
+        "skipped_unsuitable_content" => 0,
         "skipped_non_user_post" => 0,
         "skipped_deleted_source" => 0,
         "skipped_page_profile" => 0
@@ -184,7 +333,9 @@ module Workspace
 
       items.sort_by do |item|
         [
+          lifecycle_priority[item[:lifecycle_state].to_s].to_i,
           status_priority[item[:processing_status].to_s].to_i,
+          item[:progress_percent].to_i,
           item[:profile_last_active_at] || Time.at(0),
           item[:post_taken_at] || Time.at(0)
         ]
@@ -238,6 +389,81 @@ module Workspace
       Rails.cache.fetch("ops/workspace_actions_queue_health", expires_in: 20.seconds) do
         Ops::QueueHealth.check!
       end
+    end
+
+    def lifecycle_counts(items:)
+      counts = LIFECYCLE_STATES.index_with { 0 }
+      Array(items).each do |item|
+        key = item[:lifecycle_state].to_s
+        next unless counts.key?(key)
+
+        counts[key] += 1
+      end
+      counts
+    rescue StandardError
+      LIFECYCLE_STATES.index_with { 0 }
+    end
+
+    def service_queue_metrics
+      Rails.cache.fetch("ops/workspace_actions_service_queue_metrics", expires_in: 15.seconds) do
+        queue_snapshot = Ops::Metrics.queue_counts
+        queue_sizes =
+          if queue_snapshot[:backend].to_s == "sidekiq"
+            Array(queue_snapshot[:queues]).each_with_object(Hash.new(0)) do |row, out|
+              next unless row.is_a?(Hash)
+
+              name = row[:name].to_s.presence || row["name"].to_s.presence
+              next if name.blank?
+
+              size = row[:size].to_i
+              size = row["size"].to_i if size.zero? && row["size"].present?
+              out[name] += size
+            end
+          else
+            Hash.new(0)
+          end
+
+        service_queue_groups.map do |service, queues|
+          active_queues = Array(queues).map(&:to_s).reject(&:blank?).uniq
+          {
+            service: service.to_s,
+            pending: active_queues.sum { |queue_name| queue_sizes[queue_name].to_i },
+            queues: active_queues
+          }
+        end
+      end
+    rescue StandardError
+      []
+    end
+
+    def service_queue_groups
+      {
+        story_sync: %w[
+          home_story_orchestration
+          home_story_sync
+          story_processing
+          story_preview_generation
+        ],
+        media_analysis: [
+          Ops::AiServiceQueueRegistry.queue_name_for(:visual_analysis),
+          Ops::AiServiceQueueRegistry.queue_name_for(:ocr_analysis),
+          Ops::AiServiceQueueRegistry.queue_name_for(:face_analysis),
+          Ops::AiServiceQueueRegistry.queue_name_for(:video_analysis),
+          Ops::AiServiceQueueRegistry.queue_name_for(:metadata_tagging),
+          Ops::AiServiceQueueRegistry.queue_name_for(:story_analysis)
+        ],
+        llm_processing: [
+          Ops::AiServiceQueueRegistry.queue_name_for(:pipeline_orchestration),
+          Ops::AiServiceQueueRegistry.queue_name_for(:llm_comment_generation),
+          Ops::AiServiceQueueRegistry.queue_name_for(:post_comment_generation),
+          "workspace_actions_queue"
+        ],
+        engagement_actions: %w[
+          story_replies
+          messages
+          engagements
+        ]
+      }
     end
 
     def user_profile?(profile)

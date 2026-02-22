@@ -1,10 +1,11 @@
 require "net/http"
 require "json"
+require "base64"
 
 module Ai
   class OllamaClient
     BASE_URL = ENV.fetch("OLLAMA_URL", "http://localhost:11434").freeze
-    DEFAULT_MODEL = ENV.fetch("OLLAMA_MODEL", "mistral:7b").freeze
+    DEFAULT_MODEL = Ai::ModelDefaults.base_model.freeze
     DEFAULT_NUM_CTX = ENV.fetch("OLLAMA_NUM_CTX", "3072").to_i.clamp(1024, 32768)
     DEFAULT_NUM_THREAD = ENV["OLLAMA_NUM_THREAD"].to_i
     OPEN_TIMEOUT_SECONDS = ENV.fetch("OLLAMA_OPEN_TIMEOUT_SECONDS", "12").to_i.clamp(5, 60)
@@ -77,7 +78,50 @@ module Ai
         "message" => response["message"],
         "done" => response["done"],
         "prompt_eval_count" => response["prompt_eval_count"],
-        "eval_count" => response["eval_count"]
+        "eval_count" => response["eval_count"],
+        "total_duration" => response["total_duration"],
+        "load_duration" => response["load_duration"]
+      }
+    end
+
+    def chat_with_images(model:, prompt:, image_bytes_list:, temperature: 0.4, max_tokens: 500, num_ctx: nil, num_thread: nil)
+      encoded_images = Array(image_bytes_list).filter_map do |bytes|
+        raw = bytes.to_s.b
+        next if raw.blank?
+
+        Base64.strict_encode64(raw)
+      end
+
+      raise "No image payload provided for multimodal chat" if encoded_images.empty?
+
+      payload = {
+        model: model || @default_model,
+        messages: [
+          {
+            role: "user",
+            content: prompt.to_s,
+            images: encoded_images
+          }
+        ],
+        options: generation_options(
+          temperature: temperature,
+          max_tokens: max_tokens,
+          num_ctx: num_ctx,
+          num_thread: num_thread
+        ),
+        keep_alive: ENV.fetch("OLLAMA_KEEP_ALIVE", "10m"),
+        stream: false
+      }
+
+      response = post_json("/api/chat", payload)
+      {
+        "model" => response["model"],
+        "message" => response["message"],
+        "done" => response["done"],
+        "prompt_eval_count" => response["prompt_eval_count"],
+        "eval_count" => response["eval_count"],
+        "total_duration" => response["total_duration"],
+        "load_duration" => response["load_duration"]
       }
     end
     

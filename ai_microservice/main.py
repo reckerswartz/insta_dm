@@ -3,22 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import numpy as np
 import cv2
-import base64
 import io
 from PIL import Image, UnidentifiedImageError
-import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import os
 from pathlib import Path
 import tempfile
-
-# Import AI modules
-from services.vision_service import VisionService
-from services.face_service import FaceService
-from services.ocr_service import OCRService
-from services.video_service import VideoService
-from services.whisper_service import WhisperService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -35,12 +26,90 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize services
-vision_service = VisionService()
-face_service = FaceService()
-ocr_service = OCRService()
-video_service = VideoService()
-whisper_service = WhisperService()
+def env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+SERVICE_FLAGS = {
+    "vision": env_enabled("LOCAL_AI_ENABLE_VISION", True),
+    "face": env_enabled("LOCAL_AI_ENABLE_FACE", True),
+    "ocr": env_enabled("LOCAL_AI_ENABLE_OCR", True),
+    "video": env_enabled("LOCAL_AI_ENABLE_VIDEO", True),
+    "whisper": env_enabled("LOCAL_AI_ENABLE_WHISPER", True),
+}
+
+
+def service_available(service: Any) -> bool:
+    if service is None:
+        return False
+
+    checker = getattr(service, "is_loaded", None)
+    if not callable(checker):
+        return True
+
+    try:
+        return bool(checker())
+    except Exception as exc:
+        logger.warning("Service availability check failed: %s", exc)
+        return False
+
+
+def load_service(name: str, enabled: bool, factory: Callable[[], Any]):
+    if not enabled:
+        logger.info("%s service disabled by configuration", name)
+        return None
+
+    try:
+        service = factory()
+    except Exception as exc:
+        logger.warning("%s service failed to initialize: %s", name, exc)
+        return None
+
+    if service_available(service):
+        logger.info("%s service loaded", name)
+    else:
+        logger.warning("%s service initialized but unavailable", name)
+
+    return service
+
+
+def build_vision_service():
+    from services.vision_service import VisionService
+    return VisionService()
+
+
+def build_face_service():
+    from services.face_service import FaceService
+    return FaceService()
+
+
+def build_ocr_service():
+    from services.ocr_service import OCRService
+    return OCRService()
+
+
+def build_video_service():
+    from services.video_service import VideoService
+    return VideoService(
+        vision_service=vision_service,
+        face_service=face_service,
+        ocr_service=ocr_service
+    )
+
+
+def build_whisper_service():
+    from services.whisper_service import WhisperService
+    return WhisperService()
+
+
+vision_service = load_service("vision", SERVICE_FLAGS["vision"], build_vision_service)
+face_service = load_service("face", SERVICE_FLAGS["face"], build_face_service)
+ocr_service = load_service("ocr", SERVICE_FLAGS["ocr"], build_ocr_service)
+video_service = load_service("video", SERVICE_FLAGS["video"], build_video_service)
+whisper_service = load_service("whisper", SERVICE_FLAGS["whisper"], build_whisper_service)
 
 MAX_IMAGE_UPLOAD_BYTES = int(os.getenv("LOCAL_AI_MAX_IMAGE_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 MIN_IMAGE_UPLOAD_BYTES = int(os.getenv("LOCAL_AI_MIN_IMAGE_UPLOAD_BYTES", "128"))
@@ -55,6 +124,31 @@ def normalize_feature_list(raw_features: Optional[str], allowed_features: List[s
     requested = [item.strip().lower() for item in str(raw_features).split(",") if item and item.strip()]
     valid = [item for item in requested if item in allowed_features]
     return valid or list(default_features)
+
+
+def disabled_feature_warning(feature: str, reason: str) -> Dict[str, str]:
+    return {
+        "feature": feature,
+        "error_class": "ServiceUnavailable",
+        "error_message": reason
+    }
+
+
+def empty_video_results(sample_rate: int) -> Dict[str, Any]:
+    return {
+        "metadata": {
+            "duration": 0,
+            "fps": 0,
+            "total_frames": 0,
+            "frames_analyzed": 0,
+            "sample_rate": sample_rate
+        },
+        "labels": [],
+        "faces": [],
+        "scenes": [],
+        "text": [],
+        "shot_changes": []
+    }
 
 
 def decode_uploaded_image(image_bytes: bytes) -> Image.Image:
@@ -90,16 +184,17 @@ def decode_uploaded_image(image_bytes: bytes) -> Image.Image:
 async def health_check():
     """Health check endpoint"""
     services = {
-        "vision": vision_service.is_loaded(),
-        "face": face_service.is_loaded(),
-        "ocr": ocr_service.is_loaded(),
-        "video": video_service.is_loaded(),
-        "whisper": whisper_service.is_loaded()
+        "vision": service_available(vision_service),
+        "face": service_available(face_service),
+        "ocr": service_available(ocr_service),
+        "video": service_available(video_service),
+        "whisper": service_available(whisper_service)
     }
 
     return {
         "status": "healthy" if any(services.values()) else "degraded",
-        "services": services
+        "services": services,
+        "enabled": SERVICE_FLAGS
     }
 
 @app.post("/analyze/image")
@@ -130,39 +225,51 @@ async def analyze_image(
 
         # Object/Label Detection
         if "labels" in feature_list:
-            try:
-                results["labels"] = vision_service.detect_objects(opencv_image)
-            except Exception as e:
+            if not service_available(vision_service):
                 results["labels"] = []
-                warnings.append({
-                    "feature": "labels",
-                    "error_class": e.__class__.__name__,
-                    "error_message": str(e)
-                })
+                warnings.append(disabled_feature_warning("labels", "vision_service_unavailable"))
+            else:
+                try:
+                    results["labels"] = vision_service.detect_objects(opencv_image)
+                except Exception as e:
+                    results["labels"] = []
+                    warnings.append({
+                        "feature": "labels",
+                        "error_class": e.__class__.__name__,
+                        "error_message": str(e)
+                    })
 
         # Text Detection (OCR)
         if "text" in feature_list:
-            try:
-                results["text"] = ocr_service.extract_text(opencv_image)
-            except Exception as e:
+            if not service_available(ocr_service):
                 results["text"] = []
-                warnings.append({
-                    "feature": "text",
-                    "error_class": e.__class__.__name__,
-                    "error_message": str(e)
-                })
+                warnings.append(disabled_feature_warning("text", "ocr_service_unavailable"))
+            else:
+                try:
+                    results["text"] = ocr_service.extract_text(opencv_image)
+                except Exception as e:
+                    results["text"] = []
+                    warnings.append({
+                        "feature": "text",
+                        "error_class": e.__class__.__name__,
+                        "error_message": str(e)
+                    })
 
         # Face Detection
         if "faces" in feature_list:
-            try:
-                results["faces"] = face_service.detect_faces(opencv_image)
-            except Exception as e:
+            if not service_available(face_service):
                 results["faces"] = []
-                warnings.append({
-                    "feature": "faces",
-                    "error_class": e.__class__.__name__,
-                    "error_message": str(e)
-                })
+                warnings.append(disabled_feature_warning("faces", "face_service_unavailable"))
+            else:
+                try:
+                    results["faces"] = face_service.detect_faces(opencv_image)
+                except Exception as e:
+                    results["faces"] = []
+                    warnings.append({
+                        "feature": "faces",
+                        "error_class": e.__class__.__name__,
+                        "error_message": str(e)
+                    })
 
         return {
             "success": True,
@@ -213,7 +320,16 @@ async def analyze_video(
                 allowed_features=["labels", "faces", "scenes", "text"],
                 default_features=["labels", "faces", "scenes"]
             )
-            results = video_service.analyze_video(temp_path, feature_list, sample_rate)
+            normalized_sample_rate = int(sample_rate or 2)
+            normalized_sample_rate = max(1, min(normalized_sample_rate, 10))
+
+            if video_service is None:
+                results = empty_video_results(normalized_sample_rate)
+                results["metadata"]["warnings"] = [
+                    disabled_feature_warning("video", "video_service_unavailable")
+                ]
+            else:
+                results = video_service.analyze_video(temp_path, feature_list, normalized_sample_rate)
         finally:
             try:
                 os.remove(temp_path)
@@ -225,7 +341,7 @@ async def analyze_video(
             "results": results,
             "metadata": {
                 "features_used": feature_list,
-                "sample_rate": sample_rate,
+                "sample_rate": normalized_sample_rate,
                 "bytes_received": len(video_bytes)
             }
         }
@@ -244,6 +360,9 @@ async def transcribe_audio(
     """
     Transcribe audio using local Whisper
     """
+    if not service_available(whisper_service):
+        raise HTTPException(status_code=503, detail="whisper_service_unavailable")
+
     try:
         audio_bytes = await file.read()
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
@@ -277,6 +396,9 @@ async def get_face_embedding(file: UploadFile = File(...)):
     """
     Generate face embedding for recognition
     """
+    if not service_available(face_service):
+        raise HTTPException(status_code=503, detail="face_service_unavailable")
+
     try:
         image_bytes = await file.read()
         if not image_bytes:
@@ -317,6 +439,9 @@ async def compare_faces(
     """
     Compare two faces and return similarity score
     """
+    if not service_available(face_service):
+        raise HTTPException(status_code=503, detail="face_service_unavailable")
+
     try:
         # Read both images
         img1_bytes = await file1.read()

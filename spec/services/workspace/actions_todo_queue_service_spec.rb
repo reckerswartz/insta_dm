@@ -59,8 +59,12 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
     pending_row = result[:items].find { |item| item[:post].id == post_pending.id }
 
     assert_equal "ready", ready_row[:processing_status]
+    assert_equal "ready", ready_row[:lifecycle_state]
+    assert_equal ready_row[:progress_total].to_i, ready_row[:progress_completed].to_i
     assert_equal false, ready_row[:requires_processing]
     assert_equal "waiting_media_download", pending_row[:processing_status]
+    assert_equal "processing", pending_row[:lifecycle_state]
+    assert pending_row[:progress_total].to_i > 0
     assert_equal true, pending_row[:requires_processing]
   end
 
@@ -120,6 +124,39 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
     assert_includes row[:processing_message], "Build History"
   end
 
+  it "treats unsuitable engagement status as non-processable" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(3)}")
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "unsuitable_#{SecureRandom.hex(2)}",
+      taken_at: Time.current,
+      ai_status: "analyzed",
+      analysis: {},
+      metadata: {
+        "post_kind" => "post",
+        "workspace_actions" => { "status" => "skipped_unsuitable_content" },
+        "comment_generation_policy" => {
+          "status" => "blocked",
+          "blocked_reason_code" => "unsuitable_for_engagement",
+          "blocked_reason" => "Post is generic reshared material."
+        }
+      }
+    )
+    post.media.attach(
+      io: StringIO.new("fake-jpeg"),
+      filename: "post.jpg",
+      content_type: "image/jpeg"
+    )
+
+    result = Workspace::ActionsTodoQueueService.new(account: account, limit: 10, enqueue_processing: false).fetch!
+    row = Array(result[:items]).find { |item| item[:post].id == post.id }
+
+    assert_equal "skipped_unsuitable_content", row[:processing_status]
+    assert_equal false, row[:requires_processing]
+    assert_includes row[:processing_message], "generic reshared"
+  end
+
   it "pauses enqueue when queue health is degraded" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(3)}")
@@ -141,6 +178,42 @@ RSpec.describe "Workspace::ActionsTodoQueueServiceTest" do
 
     assert_equal 0, result.dig(:stats, :enqueued_now).to_i
     assert_equal "no_workers_with_backlog", result.dig(:stats, :enqueue_blocked_reason)
+  end
+
+  it "reports service queue metrics per workflow lane" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(3)}")
+    profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "pending_#{SecureRandom.hex(2)}",
+      taken_at: Time.current,
+      ai_status: "pending",
+      analysis: {},
+      metadata: { "post_kind" => "post" }
+    )
+
+    allow(Ops::Metrics).to receive(:queue_counts).and_return(
+      {
+        backend: "sidekiq",
+        queues: [
+          { name: "home_story_sync", size: 2 },
+          { name: "ai_visual_queue", size: 3 },
+          { name: "ai_llm_comment_queue", size: 1 },
+          { name: "messages", size: 4 }
+        ]
+      }
+    )
+    allow(Ops::QueueHealth).to receive(:check!).and_return({ ok: true, counts: { processes: 1 } })
+    allow(WorkspaceProcessActionsTodoPostJob).to receive(:enqueue_if_needed!).and_return({ enqueued: false })
+
+    result = Workspace::ActionsTodoQueueService.new(account: account, limit: 10, enqueue_processing: true).fetch!
+    service_rows = Array(result.dig(:stats, :service_queue_metrics))
+    row_map = service_rows.index_by { |row| row[:service].to_s }
+
+    assert_equal 2, row_map["story_sync"][:pending].to_i
+    assert_equal 3, row_map["media_analysis"][:pending].to_i
+    assert_equal 1, row_map["llm_processing"][:pending].to_i
+    assert_equal 4, row_map["engagement_actions"][:pending].to_i
   end
 
   it "enqueues when queue health is healthy" do

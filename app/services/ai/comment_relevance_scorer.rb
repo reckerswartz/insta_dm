@@ -2,6 +2,7 @@ module Ai
   class CommentRelevanceScorer
     class << self
       MAX_SCORE = 3.0
+      LLM_ORDER_MAX_BONUS = ENV.fetch("LLM_COMMENT_ORDER_MAX_BONUS", "0.18").to_f.clamp(0.0, 0.6)
       MIN_AUTO_POST_SCORE = ENV.fetch("LLM_MIN_AUTO_POST_RELEVANCE_SCORE", "2.0").to_f.clamp(0.5, MAX_SCORE)
       LOW_CONFIDENCE_ANCHOR_THRESHOLD = 0.55
       HIGH_CONFIDENCE_ANCHOR_THRESHOLD = 0.72
@@ -79,6 +80,35 @@ module Ai
         end
 
         rows.sort_by { |row| -row[:score].to_f }
+      end
+
+      def annotate_llm_order_with_breakdown(suggestions:, image_description:, topics:, historical_comments: [], scored_context: {}, verified_story_facts: {})
+        cleaned = Array(suggestions).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+        total = cleaned.length
+
+        cleaned.each_with_index.filter_map do |text, index|
+          breakdown = score_with_breakdown(
+            comment: text,
+            image_description: image_description,
+            topics: topics,
+            historical_comments: historical_comments,
+            scored_context: scored_context,
+            verified_story_facts: verified_story_facts
+          )
+          order_bonus = llm_order_bonus(index: index, total: total)
+          selection_score = (breakdown[:score].to_f + order_bonus).clamp(0.0, MAX_SCORE).round(3)
+
+          {
+            comment: text,
+            score: selection_score,
+            relevance_score: breakdown[:score].to_f.round(3),
+            llm_rank: index + 1,
+            llm_order_bonus: order_bonus.round(3),
+            auto_post_eligible: breakdown[:auto_post_eligible],
+            confidence_level: breakdown[:confidence_level],
+            factors: breakdown[:factors]
+          }
+        end
       end
 
       def score(comment:, image_description:, topics:, historical_comments: [])
@@ -404,6 +434,14 @@ module Ai
           .split
           .reject { |token| token.length < 3 }
           .uniq
+      end
+
+      def llm_order_bonus(index:, total:)
+        size = total.to_i
+        return 0.0 if size <= 0
+
+        normalized_position = 1.0 - (index.to_f / size.to_f)
+        (normalized_position * LLM_ORDER_MAX_BONUS).round(4)
       end
     end
   end

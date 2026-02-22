@@ -15,7 +15,7 @@ RSpec.describe Ops::LocalAiHealth do
       checked_at: 10.minutes.ago.iso8601(3),
       details: {
         microservice: { ok: true, services: { "vision" => true } },
-        ollama: { ok: true, models: [ "mistral:7b" ] }
+        ollama: { ok: true, models: [ "llama3.2-vision:11b" ] }
       }
     }
     allow(Rails.cache).to receive(:read).with(Ops::LocalAiHealth::CACHE_KEY).and_return(cached)
@@ -38,7 +38,7 @@ RSpec.describe Ops::LocalAiHealth do
       instance_double(Ai::LocalMicroserviceClient, test_connection!: { ok: true, services: { "vision" => true } })
     )
     allow(Ai::OllamaClient).to receive(:new).and_return(
-      instance_double(Ai::OllamaClient, test_connection!: { ok: true, models: [ "mistral:7b" ] })
+      instance_double(Ai::OllamaClient, test_connection!: { ok: true, models: [ "llama3.2-vision:11b" ] })
     )
 
     status = Ops::LocalAiHealth.check(force: true)
@@ -46,5 +46,28 @@ RSpec.describe Ops::LocalAiHealth do
     assert_equal true, status[:ok]
     assert_equal "live", status[:source]
     assert_equal false, ActiveModel::Type::Boolean.new.cast(status[:stale])
+  end
+
+  it "treats microservice as optional when disabled by env" do
+    original_use_microservice = ENV["USE_LOCAL_AI_MICROSERVICE"]
+    original_microservice_required = ENV["LOCAL_AI_MICROSERVICE_REQUIRED"]
+    ENV["USE_LOCAL_AI_MICROSERVICE"] = "false"
+    ENV["LOCAL_AI_MICROSERVICE_REQUIRED"] = "false"
+
+    allow(Rails.cache).to receive(:read).with(Ops::LocalAiHealth::CACHE_KEY).and_return(nil)
+    allow(Rails.cache).to receive(:write)
+    allow(Ai::LocalMicroserviceClient).to receive(:new).and_raise("microservice should not be checked")
+    allow(Ai::OllamaClient).to receive(:new).and_return(
+      instance_double(Ai::OllamaClient, test_connection!: { ok: true, models: [ "llama3.2-vision:11b" ] })
+    )
+
+    status = Ops::LocalAiHealth.check(force: true)
+
+    assert_equal true, status[:ok]
+    assert_equal true, ActiveModel::Type::Boolean.new.cast(status.dig(:details, :microservice, :skipped))
+    assert_equal false, ActiveModel::Type::Boolean.new.cast(status.dig(:details, :policy, :microservice_required))
+  ensure
+    ENV["USE_LOCAL_AI_MICROSERVICE"] = original_use_microservice
+    ENV["LOCAL_AI_MICROSERVICE_REQUIRED"] = original_microservice_required
   end
 end

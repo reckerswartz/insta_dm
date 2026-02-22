@@ -19,7 +19,7 @@ RSpec.describe GenerateLlmCommentJob do
     expect(LlmComment::GenerationService).to receive(:new).with(
       instagram_profile_event_id: 42,
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       regenerate_all: false
     ).and_return(service)
@@ -27,7 +27,7 @@ RSpec.describe GenerateLlmCommentJob do
     job.perform(
       instagram_profile_event_id: 42,
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec"
     )
   end

@@ -2,6 +2,8 @@
 
 module LlmComment
   class EventGenerationPipeline
+    MIN_VALIDATION_SCORE = ENV.fetch("LLM_COMMENT_MIN_VALIDATION_SCORE", "1.0").to_f.clamp(0.0, 3.0)
+
     def initialize(event:, provider:, model:, skip_media_stage_reporting: false)
       @event = event
       @provider = provider.to_s
@@ -101,22 +103,24 @@ module LlmComment
         stage: "relevance_scoring",
         state: "running",
         progress: 90,
-        message: "Scoring suggestions for manual and auto-post confidence."
+        message: "Validating generated suggestions with lightweight relevance checks."
       )
 
       ranked = rank_suggestions(result: result, context: context)
-      selected = ranked.first
+      selected = select_candidate(ranked: ranked)
       selected_comment = selected.to_h[:comment].to_s
-      relevance_score = selected.to_h[:score].to_f
+      relevance_score = selected.to_h[:relevance_score].to_f
       selected_breakdown = selected.to_h[:factors].is_a?(Hash) ? selected[:factors] : {}
       raise "No valid comment suggestions generated" if selected_comment.to_s.blank?
       report_stage!(
         stage: "relevance_scoring",
         state: "completed",
         progress: 96,
-        message: "Relevance scoring completed.",
+        message: "Suggestion validation completed.",
         details: {
           final_score: relevance_score,
+          selection_score: selected.to_h[:score].to_f,
+          llm_rank: selected.to_h[:llm_rank].to_i,
           confidence_level: selected.to_h[:confidence_level],
           auto_post_eligible: selected.to_h[:auto_post_eligible]
         }
@@ -235,7 +239,7 @@ module LlmComment
     end
 
     def rank_suggestions(result:, context:)
-      Ai::CommentRelevanceScorer.rank_with_breakdown(
+      rows = Ai::CommentRelevanceScorer.annotate_llm_order_with_breakdown(
         suggestions: result[:comment_suggestions],
         image_description: context[:image_description],
         topics: context[:topics],
@@ -243,6 +247,16 @@ module LlmComment
         scored_context: context[:scored_context],
         verified_story_facts: context[:verified_story_facts]
       )
+      rows.sort_by { |row| [ -row[:score].to_f, row[:llm_rank].to_i ] }
+    end
+
+    def select_candidate(ranked:)
+      rows = Array(ranked).select { |row| row.is_a?(Hash) }
+      top = rows.first
+      return {} unless top
+      return top if top[:relevance_score].to_f >= MIN_VALIDATION_SCORE
+
+      rows.find { |row| row[:relevance_score].to_f >= MIN_VALIDATION_SCORE } || top
     end
 
     def persist_completed_result!(result:, context:, ranked:, selected_comment:, relevance_score:, relevance_breakdown:, selected_confidence_level:, selected_auto_post_eligible:, technical_details:, started_at:)
@@ -279,6 +293,9 @@ module LlmComment
             {
               "comment" => row[:comment],
               "score" => row[:score],
+              "relevance_score" => row[:relevance_score],
+              "llm_rank" => row[:llm_rank],
+              "llm_order_bonus" => row[:llm_order_bonus],
               "auto_post_eligible" => row[:auto_post_eligible],
               "confidence_level" => row[:confidence_level],
               "factors" => row[:factors]

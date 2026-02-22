@@ -5,7 +5,7 @@ export default class extends Controller {
 
   static values = {
     url: String,
-    pollIntervalMs: { type: Number, default: 15000 },
+    pollIntervalMs: { type: Number, default: 8000 },
   }
 
   connect() {

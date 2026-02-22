@@ -3,9 +3,9 @@ require "net/http"
 
 module Ai
   class LocalEngagementCommentGenerator
-    DEFAULT_MODEL = ENV.fetch("OLLAMA_MODEL", "mistral:7b").freeze
-    DEFAULT_FAST_MODEL = ENV.fetch("OLLAMA_FAST_MODEL", DEFAULT_MODEL).freeze
-    DEFAULT_QUALITY_MODEL = ENV.fetch("OLLAMA_QUALITY_MODEL", DEFAULT_MODEL).freeze
+    DEFAULT_MODEL = Ai::ModelDefaults.comment_model.freeze
+    DEFAULT_FAST_MODEL = DEFAULT_MODEL
+    DEFAULT_QUALITY_MODEL = ENV.fetch("OLLAMA_COMMENT_QUALITY_MODEL", Ai::ModelDefaults.quality_model).freeze
     MIN_SUGGESTIONS = 3
     MAX_SUGGESTIONS = 8
     PRIMARY_TEMPERATURE = ENV.fetch("LLM_COMMENT_PRIMARY_TEMPERATURE", "0.65").to_f.clamp(0.1, 1.2)
@@ -77,8 +77,8 @@ module Ai
 
     def initialize(ollama_client:, model: nil, policy_engine: nil)
       @ollama_client = ollama_client
-      @primary_model = model.to_s.presence || DEFAULT_FAST_MODEL
-      @quality_model = ENV.fetch("OLLAMA_QUALITY_MODEL", DEFAULT_QUALITY_MODEL).to_s.presence || @primary_model
+      @primary_model = model.to_s.presence || ENV.fetch("OLLAMA_COMMENT_MODEL", DEFAULT_FAST_MODEL).to_s.presence || DEFAULT_FAST_MODEL
+      @quality_model = ENV.fetch("OLLAMA_COMMENT_QUALITY_MODEL", ENV.fetch("OLLAMA_QUALITY_MODEL", DEFAULT_QUALITY_MODEL)).to_s.presence || @primary_model
       @enable_model_escalation = ActiveModel::Type::Boolean.new.cast(ENV.fetch("LLM_COMMENT_ENABLE_MODEL_ESCALATION", "true"))
       @model = @primary_model
       @policy_engine = policy_engine || Ai::CommentPolicyEngine.new

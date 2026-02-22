@@ -20,7 +20,7 @@ RSpec.describe FinalizeStoryCommentPipelineJob do
     state = LlmComment::ParallelPipelineState.new(event: event)
     state.start!(
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       source_job: "spec",
       active_job_id: "job-source",
@@ -71,7 +71,7 @@ RSpec.describe FinalizeStoryCommentPipelineJob do
       instagram_profile_event_id: event.id,
       pipeline_run_id: run_id,
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       attempts: 0
     )
@@ -83,7 +83,7 @@ RSpec.describe FinalizeStoryCommentPipelineJob do
       instagram_profile_event_id: event.id,
       pipeline_run_id: run_id,
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec"
     )
   end

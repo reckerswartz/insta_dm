@@ -12,17 +12,22 @@ from .ocr_service import OCRService
 logger = logging.getLogger(__name__)
 
 class VideoService:
-    def __init__(self):
-        self.vision_service = VisionService()
-        self.face_service = FaceService()
-        self.ocr_service = OCRService()
+    def __init__(self, vision_service=None, face_service=None, ocr_service=None):
+        # Reuse already-loaded service instances when available to avoid
+        # duplicate model initialization and reduce memory pressure.
+        self.vision_service = vision_service if vision_service is not None else VisionService()
+        self.face_service = face_service if face_service is not None else FaceService()
+        self.ocr_service = ocr_service if ocr_service is not None else OCRService()
     
     def is_loaded(self) -> bool:
-        return all([
-            self.vision_service.is_loaded(),
-            self.face_service.is_loaded(),
-            self.ocr_service.is_loaded()
-        ])
+        statuses = []
+        if self.vision_service is not None:
+            statuses.append(bool(self.vision_service.is_loaded()))
+        if self.face_service is not None:
+            statuses.append(bool(self.face_service.is_loaded()))
+        if self.ocr_service is not None:
+            statuses.append(bool(self.ocr_service.is_loaded()))
+        return any(statuses)
     
     def analyze_video(self, video_path: str, features: List[str], sample_rate: int = 2) -> Dict[str, Any]:
         """
@@ -121,21 +126,21 @@ class VideoService:
         
         try:
             # Object/Label Detection
-            if 'labels' in features:
+            if 'labels' in features and self.vision_service is not None and self.vision_service.is_loaded():
                 labels = self.vision_service.detect_objects(frame)
                 for label in labels:
                     label['timestamp'] = timestamp
                 frame_results['labels'] = labels
             
             # Face Detection
-            if 'faces' in features:
+            if 'faces' in features and self.face_service is not None and self.face_service.is_loaded():
                 faces = self.face_service.detect_faces(frame)
                 for face in faces:
                     face['timestamp'] = timestamp
                 frame_results['faces'] = faces
             
             # Text Detection
-            if 'text' in features:
+            if 'text' in features and self.ocr_service is not None and self.ocr_service.is_loaded():
                 text = self.ocr_service.extract_text(frame)
                 for text_item in text:
                     text_item['timestamp'] = timestamp

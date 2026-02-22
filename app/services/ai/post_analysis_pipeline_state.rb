@@ -8,8 +8,8 @@ module Ai
 
     DEFAULT_TASK_FLAGS = {
       "analyze_visual" => true,
-      "analyze_faces" => true,
-      "run_ocr" => true,
+      "analyze_faces" => false,
+      "run_ocr" => false,
       "run_video" => true,
       "run_metadata" => true,
       "generate_comments" => true,

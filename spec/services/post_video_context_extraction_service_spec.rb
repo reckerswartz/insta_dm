@@ -92,6 +92,39 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     end
   end
 
+  class StubFrameExtractor
+    attr_reader :calls
+
+    def initialize(result:)
+      @result = result
+      @calls = 0
+    end
+
+    def extract(**_kwargs)
+      @calls += 1
+      @result
+    end
+  end
+
+  class StubVisionUnderstanding
+    attr_reader :calls
+
+    def initialize(result:, enabled: true)
+      @result = result
+      @enabled = enabled
+      @calls = []
+    end
+
+    def enabled?
+      @enabled
+    end
+
+    def summarize(**kwargs)
+      @calls << kwargs
+      @result
+    end
+  end
+
   it "routes static image-like videos through image semantics and keeps audio context" do
     detector = StubFrameChangeDetector.new(
       result: {
@@ -138,6 +171,7 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
         ocr_blocks: []
       }
     )
+    vision = StubVisionUnderstanding.new(result: {}, enabled: false)
 
     service = PostVideoContextExtractionService.new(
       video_frame_change_detector_service: detector,
@@ -145,7 +179,8 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
       video_audio_extraction_service: audio,
       speech_transcription_service: transcriber,
       local_microservice_client: local_client,
-      content_understanding_service: understanding
+      content_understanding_service: understanding,
+      vision_understanding_service: vision
     )
 
     result = service.extract(
@@ -168,10 +203,11 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     assert_equal "image", understanding.calls.first[:media_type]
     assert_equal true, ActiveModel::Type::Boolean.new.cast(result.dig(:metadata, :parallel_execution, :enabled))
     assert_equal 2, result.dig(:metadata, :parallel_execution, :branch_count).to_i
+    assert_equal "vision_understanding_disabled", result.dig(:metadata, :vision_understanding, :reason)
     assert_includes result[:context_summary].to_s.downcase, "static"
   end
 
-  it "routes dynamic videos through video semantics and uses local video intelligence" do
+  it "routes dynamic videos through video semantics using LLM vision as primary intelligence" do
     detector = StubFrameChangeDetector.new(
       result: {
         static: false,
@@ -213,6 +249,30 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
       }
     )
     understanding = StoryContentUnderstandingService.new
+    frame_extractor = StubFrameExtractor.new(
+      result: {
+        frames: [
+          { image_bytes: "frame-a", timestamp_seconds: 0.0 },
+          { image_bytes: "frame-b", timestamp_seconds: 1.0 }
+        ],
+        metadata: { source: "ffmpeg", extracted_frames: 2 }
+      }
+    )
+    vision = StubVisionUnderstanding.new(
+      result: {
+        ok: true,
+        model: "llama3.2-vision:11b",
+        summary: "Friends hiking a mountain trail outdoors.",
+        topics: [ "mountain", "trail", "hiking" ],
+        objects: [ "person", "backpack" ],
+        metadata: {
+          status: "completed",
+          source: "ollama_vision",
+          model: "llama3.2-vision:11b"
+        }
+      },
+      enabled: true
+    )
 
     service = PostVideoContextExtractionService.new(
       video_frame_change_detector_service: detector,
@@ -220,7 +280,9 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
       video_audio_extraction_service: audio,
       speech_transcription_service: transcriber,
       local_microservice_client: local_client,
-      content_understanding_service: understanding
+      content_understanding_service: understanding,
+      video_frame_extraction_service: frame_extractor,
+      vision_understanding_service: vision
     )
 
     result = service.extract(
@@ -236,12 +298,18 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     assert_equal false, ActiveModel::Type::Boolean.new.cast(result[:has_audio])
     assert_nil result[:transcript]
     assert_equal 1, probe.calls
-    assert_equal 1, local_client.calls
+    assert_equal 0, local_client.calls
     assert_equal 0, audio.calls
+    assert_equal 1, frame_extractor.calls
+    assert_equal 1, vision.calls.length
     assert_equal true, ActiveModel::Type::Boolean.new.cast(result.dig(:metadata, :parallel_execution, :enabled))
     assert_equal 2, result.dig(:metadata, :parallel_execution, :branch_count).to_i
     assert_includes result[:topics], "mountain"
-    assert_includes result[:hashtags], "#trail"
-    assert_includes result[:mentions], "@buddy"
+    assert_equal [], result[:hashtags]
+    assert_equal [], result[:mentions]
+    assert_includes result[:objects], "backpack"
+    assert_equal "Friends hiking a mountain trail outdoors.", result[:context_summary]
+    assert_equal "llama3.2-vision:11b", result.dig(:metadata, :vision_understanding, :model)
+    assert_equal "legacy_dynamic_intelligence_disabled", result.dig(:metadata, :local_video_intelligence, :reason)
   end
 end

@@ -20,7 +20,7 @@ RSpec.describe GenerateStoryCommentFromPipelineJob do
     state = LlmComment::ParallelPipelineState.new(event: event)
     state.start!(
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       source_job: "spec",
       active_job_id: "job-source",
@@ -51,7 +51,7 @@ RSpec.describe GenerateStoryCommentFromPipelineJob do
       instagram_profile_event_id: event.id,
       pipeline_run_id: run_id,
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec"
     )
 
@@ -64,7 +64,7 @@ RSpec.describe GenerateStoryCommentFromPipelineJob do
     expect(LlmComment::EventGenerationPipeline).to have_received(:new).with(
       event: an_instance_of(InstagramProfileEvent),
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       skip_media_stage_reporting: true
     )
     expect(generator).to have_received(:call).once

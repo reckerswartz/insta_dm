@@ -14,7 +14,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       end
     end.new
 
-    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
 
     prompt = generator.send(
       :build_prompt,
@@ -95,7 +95,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       end
     end.new
 
-    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
 
     out = generator.send(
       :diversify_suggestions,
@@ -143,7 +143,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       end
     end.new
 
-    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
     result = generator.generate!(
       post_payload: {},
       image_description: "Visual elements: potted plant, window light.",
@@ -171,7 +171,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       end
     end.new
 
-    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
     result = generator.generate!(
       post_payload: {},
       image_description: "Visual elements: potted plant, window light.",
@@ -194,7 +194,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       end
     end.new
 
-    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
     result = generator.generate!(
       post_payload: {},
       image_description: "IDFC first money smart personal loan starting 10.99 percent",
@@ -217,7 +217,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       end
     end.new
 
-    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
     result = generator.generate!(
       post_payload: {},
       image_description: "Family photo near a heritage building.",
@@ -239,7 +239,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       end
     end.new
 
-    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
     anchors = generator.send(
       :build_visual_anchors,
       image_description: "Visual elements: bottle, person, sink.",
@@ -273,7 +273,7 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
       end
     end.new
 
-    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "mistral:7b")
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
     result = generator.generate!(
       post_payload: {},
       image_description: "Visual elements: potted plant, window light.",

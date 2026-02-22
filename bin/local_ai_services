@@ -15,8 +15,12 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 HEALTHCHECK_TIMEOUT_SECONDS="${HEALTHCHECK_TIMEOUT_SECONDS:-5}"
 MICROSERVICE_STARTUP_TIMEOUT_SECONDS="${MICROSERVICE_STARTUP_TIMEOUT_SECONDS:-90}"
-OLLAMA_PRIMARY_MODEL="${OLLAMA_FAST_MODEL:-${OLLAMA_MODEL:-mistral:7b}}"
-OLLAMA_QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-${OLLAMA_MODEL:-mistral:7b}}"
+MICROSERVICE_STABILITY_WINDOW_SECONDS="${MICROSERVICE_STABILITY_WINDOW_SECONDS:-18}"
+MICROSERVICE_SAFE_MODE_FALLBACK="${MICROSERVICE_SAFE_MODE_FALLBACK:-true}"
+MICROSERVICE_FORCE_SAFE_MODE="${MICROSERVICE_FORCE_SAFE_MODE:-false}"
+OLLAMA_VISION_MODEL="${OLLAMA_VISION_MODEL:-llama3.2-vision:11b}"
+OLLAMA_PRIMARY_MODEL="${OLLAMA_FAST_MODEL:-${OLLAMA_MODEL:-$OLLAMA_VISION_MODEL}}"
+OLLAMA_QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-${OLLAMA_MODEL:-$OLLAMA_PRIMARY_MODEL}}"
 
 # Function to print colored output
 print_status() {
@@ -33,6 +37,16 @@ print_error() {
 
 print_header() {
     echo -e "${BLUE}=== $1 ===${NC}"
+}
+
+is_truthy() {
+    local value="${1:-}"
+    value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+    [[ "$value" == "1" || "$value" == "true" || "$value" == "yes" || "$value" == "on" ]]
+}
+
+microservice_enabled() {
+    is_truthy "${USE_LOCAL_AI_MICROSERVICE:-true}"
 }
 
 port_listener_pids() {
@@ -125,6 +139,44 @@ wait_for_service_ready() {
     return 1
 }
 
+ensure_service_stable() {
+    local service_name=$1
+    local port=$2
+    local path=${3:-/health}
+    local expected_pattern=${4:-}
+    local stability_window=${5:-15}
+    local started_at=$SECONDS
+
+    while (( SECONDS - started_at < stability_window )); do
+        if ! check_service "$service_name" "$port" "$path" "$expected_pattern" >/dev/null 2>&1; then
+            print_warning "$service_name became unhealthy during stability window"
+            return 1
+        fi
+        sleep 2
+    done
+
+    return 0
+}
+
+start_microservice_process() {
+    local mode_label=$1
+    shift
+    local -a extra_env=("$@")
+
+    print_status "Starting AI Microservice (${mode_label})..."
+    cd "$PROJECT_ROOT"
+
+    if [ "${#extra_env[@]}" -gt 0 ]; then
+        env PYTHONPATH="ai_microservice" "${extra_env[@]}" \
+            nohup ai_microservice/ai_microservice_env/bin/python ai_microservice/main.py > log/ai_microservice.log 2>&1 &
+    else
+        PYTHONPATH="ai_microservice" \
+            nohup ai_microservice/ai_microservice_env/bin/python ai_microservice/main.py > log/ai_microservice.log 2>&1 &
+    fi
+    MICROSERVICE_PID=$!
+    echo $MICROSERVICE_PID > tmp/ai_microservice.pid
+}
+
 # Start Ollama
 start_ollama() {
     print_header "Starting Ollama"
@@ -161,6 +213,11 @@ start_ollama() {
 
 # Start AI Microservice
 start_microservice() {
+    if ! microservice_enabled; then
+        print_warning "USE_LOCAL_AI_MICROSERVICE=false, skipping AI Microservice startup"
+        return 0
+    fi
+
     print_header "Starting AI Microservice"
     
     if check_service "AI Microservice" 8000 "/health" '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
@@ -181,19 +238,47 @@ start_microservice() {
     # Ensure directories exist
     mkdir -p "$PROJECT_ROOT/tmp" "$PROJECT_ROOT/log"
     
-    # Start microservice using virtual environment's Python directly
-    print_status "Starting AI Microservice..."
-    cd "$PROJECT_ROOT"
-    PYTHONPATH="ai_microservice" nohup ai_microservice/ai_microservice_env/bin/python ai_microservice/main.py > log/ai_microservice.log 2>&1 &
-    MICROSERVICE_PID=$!
-    echo $MICROSERVICE_PID > tmp/ai_microservice.pid
-    
-    if wait_for_service_ready "AI Microservice" 8000 "/health" '"status"[[:space:]]*:[[:space:]]*"healthy"' "$MICROSERVICE_STARTUP_TIMEOUT_SECONDS"; then
-        print_status "AI Microservice started successfully (PID: $MICROSERVICE_PID)"
+    local health_pattern='"status"[[:space:]]*:[[:space:]]*"healthy"'
+
+    # Safe fallback: keep vision + video, disable likely crash-prone OCR/face/whisper stacks.
+    local -a safe_mode_env=(
+        "LOCAL_AI_ENABLE_VISION=true"
+        "LOCAL_AI_ENABLE_VIDEO=true"
+        "LOCAL_AI_ENABLE_FACE=false"
+        "LOCAL_AI_ENABLE_OCR=false"
+        "LOCAL_AI_ENABLE_WHISPER=false"
+    )
+
+    if ! is_truthy "$MICROSERVICE_FORCE_SAFE_MODE"; then
+        # First attempt: default configuration.
+        start_microservice_process "default mode"
+        if wait_for_service_ready "AI Microservice" 8000 "/health" "$health_pattern" "$MICROSERVICE_STARTUP_TIMEOUT_SECONDS" && \
+           ensure_service_stable "AI Microservice" 8000 "/health" "$health_pattern" "$MICROSERVICE_STABILITY_WINDOW_SECONDS"; then
+            print_status "AI Microservice started successfully in default mode (PID: $MICROSERVICE_PID)"
+            return 0
+        fi
+
+        print_warning "Default AI Microservice startup failed"
+        stop_stale_microservice_listener
+
+        if ! is_truthy "$MICROSERVICE_SAFE_MODE_FALLBACK"; then
+            print_error "Safe mode fallback is disabled (MICROSERVICE_SAFE_MODE_FALLBACK=$MICROSERVICE_SAFE_MODE_FALLBACK)"
+            return 1
+        fi
     else
-        print_error "Failed to start AI Microservice"
-        return 1
+        print_warning "MICROSERVICE_FORCE_SAFE_MODE enabled; skipping default startup"
     fi
+
+    start_microservice_process "safe mode (vision/video only)" "${safe_mode_env[@]}"
+    if wait_for_service_ready "AI Microservice" 8000 "/health" "$health_pattern" "$MICROSERVICE_STARTUP_TIMEOUT_SECONDS" && \
+       ensure_service_stable "AI Microservice" 8000 "/health" "$health_pattern" "$MICROSERVICE_STABILITY_WINDOW_SECONDS"; then
+        print_warning "AI Microservice started in safe mode (PID: $MICROSERVICE_PID)"
+        print_warning "Safe mode disabled: face, ocr, whisper"
+        return 0
+    fi
+
+    print_error "Failed to start AI Microservice (default and safe mode)"
+    return 1
 }
 
 # Stop services
@@ -225,7 +310,11 @@ status() {
     
     echo ""
     print_status "Service Health Checks:"
-    check_service "AI Microservice" 8000 "/health" '"status"[[:space:]]*:[[:space:]]*"healthy"'
+    if microservice_enabled; then
+        check_service "AI Microservice" 8000 "/health" '"status"[[:space:]]*:[[:space:]]*"healthy"'
+    else
+        print_warning "AI Microservice health check skipped (USE_LOCAL_AI_MICROSERVICE=false)"
+    fi
     check_service "Ollama" 11434 "/api/tags" '"models"'
     
     echo ""
@@ -245,9 +334,12 @@ status() {
     print_status "Configuration:"
     echo "LOCAL_AI_SERVICE_URL: ${LOCAL_AI_SERVICE_URL:-http://localhost:8000}"
     echo "OLLAMA_URL: ${OLLAMA_URL:-http://localhost:11434}"
-    echo "OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}"
+    echo "USE_LOCAL_AI_MICROSERVICE: ${USE_LOCAL_AI_MICROSERVICE:-true}"
+    echo "OLLAMA_MODEL: ${OLLAMA_MODEL:-$OLLAMA_VISION_MODEL}"
     echo "OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-$OLLAMA_PRIMARY_MODEL}"
     echo "OLLAMA_QUALITY_MODEL: $OLLAMA_QUALITY_MODEL"
+    echo "MICROSERVICE_FORCE_SAFE_MODE: $MICROSERVICE_FORCE_SAFE_MODE"
+    echo "MICROSERVICE_SAFE_MODE_FALLBACK: $MICROSERVICE_SAFE_MODE_FALLBACK"
 }
 
 # Test services
@@ -256,7 +348,9 @@ test_services() {
     
     # Test AI Microservice
     print_status "Testing AI Microservice..."
-    if curl -sS --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "http://localhost:8000/health" | grep -q "healthy"; then
+    if ! microservice_enabled; then
+        print_warning "AI Microservice test skipped (USE_LOCAL_AI_MICROSERVICE=false)"
+    elif curl -sS --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "http://localhost:8000/health" | grep -q "healthy"; then
         print_status "✅ AI Microservice health check passed"
     else
         print_error "❌ AI Microservice health check failed"

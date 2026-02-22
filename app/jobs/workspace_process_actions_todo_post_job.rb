@@ -25,20 +25,53 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
   RETRY_BACKOFF_MAX_WAIT_MINUTES = ENV.fetch("WORKSPACE_ACTIONS_RETRY_BACKOFF_MAX_WAIT_MINUTES", 240).to_i.clamp(15, 1440)
   ENQUEUE_COOLDOWN_SECONDS = ENV.fetch("WORKSPACE_ACTIONS_ENQUEUE_COOLDOWN_SECONDS", 180).to_i.clamp(15, 1800)
   RUNNING_LOCK_SECONDS = ENV.fetch("WORKSPACE_ACTIONS_RUNNING_LOCK_SECONDS", 600).to_i.clamp(60, 3600)
+  TERMINAL_STATUSES = %w[
+    ready
+    failed
+    skipped_page_profile
+    skipped_deleted_source
+    skipped_non_user_post
+    skipped_unsuitable_content
+  ].freeze
+  WORKFLOW_STAGES = %w[
+    queue_item
+    media_validation
+    media_analysis
+    llm_processing
+    engagement_eligibility
+  ].freeze
+  MAX_STAGE_LOG_ENTRIES = ENV.fetch("WORKSPACE_ACTIONS_STAGE_LOG_LIMIT", 60).to_i.clamp(20, 200)
 
-  def self.enqueue_if_needed!(account:, profile:, post:, requested_by:, wait_until: nil, force: false)
+  def self.enqueue_if_needed!(account:, profile:, post:, requested_by:, wait_until: nil, force: false, regenerate_all: false)
     return { enqueued: false, reason: "post_missing" } unless account && profile && post
 
     now = Time.current
     forced = ActiveModel::Type::Boolean.new.cast(force)
+    regenerate = ActiveModel::Type::Boolean.new.cast(regenerate_all)
     scheduled_at = wait_until.is_a?(Time) ? wait_until : nil
 
     # Persisted queue state is row-local; lock to prevent duplicate enqueue races.
     post.with_lock do
       metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
       state = metadata["workspace_actions"].is_a?(Hash) ? metadata["workspace_actions"].deep_dup : {}
+      analysis_update = nil
+      if regenerate
+        analysis_update = analysis_for_regeneration(post: post)
+        apply_regeneration_reset!(
+          metadata: metadata,
+          state: state,
+          now: now,
+          requested_by: requested_by
+        )
+      end
+
       suggestions = normalized_suggestions(post)
-      return { enqueued: false, reason: "already_ready" } if suggestions.any? && !forced
+      return { enqueued: false, reason: "already_ready" } if suggestions.any? && !forced && !regenerate
+
+      existing_status = state["status"].to_s
+      if TERMINAL_STATUSES.include?(existing_status) && !forced && !regenerate
+        return { enqueued: false, reason: "already_terminal", status: existing_status }
+      end
 
       next_run_at = parse_time(state["next_run_at"])
       if next_run_at.present? && next_run_at > now && !forced && scheduled_at.nil?
@@ -81,16 +114,30 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       state["next_run_at"] = scheduled_at&.iso8601(3)
       state["updated_at"] = now.iso8601(3)
       state["source"] = name
+      apply_stage_tracking!(
+        state: state,
+        status: "queued",
+        requested_by: requested_by,
+        now: now,
+        message: regenerate ? "Regenerate all requested." : nil
+      )
       metadata["workspace_actions"] = state
 
-      post.update!(metadata: metadata)
+      update_attrs = { metadata: metadata }
+      if regenerate
+        update_attrs[:analysis] = analysis_update
+        update_attrs[:ai_status] = "pending"
+        update_attrs[:analyzed_at] = nil
+      end
+      post.update!(update_attrs)
 
       {
         enqueued: true,
         reason: scheduled_at.present? ? "scheduled" : "queued",
         job_id: job.job_id,
         queue_name: job.queue_name,
-        next_run_at: scheduled_at&.iso8601(3)
+        next_run_at: scheduled_at&.iso8601(3),
+        regenerate_all: regenerate
       }
     end
   rescue StandardError => e
@@ -233,7 +280,7 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       reason_code = policy["blocked_reason_code"].to_s
       persist_workspace_state!(
         post: post,
-        status: "failed",
+        status: blocked_workspace_status(reason_code: reason_code),
         requested_by: requested_by,
         next_run_at: nil,
         last_error: blocked_reason.presence || reason_code.presence || "comment_generation_failed"
@@ -290,6 +337,175 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     []
   end
 
+  def self.analysis_for_regeneration(post:)
+    analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
+    %w[
+      comment_suggestions
+      comment_generation_status
+      comment_generation_source
+      comment_generation_fallback_used
+      comment_generation_error
+      comment_relevance_min_score
+      comment_relevance_top_score
+      comment_relevance_ranking
+      engagement_classification
+    ].each { |key| analysis.delete(key) }
+    analysis
+  rescue StandardError
+    {}
+  end
+
+  def self.apply_regeneration_reset!(metadata:, state:, now:, requested_by:)
+    %w[
+      comment_generation_policy
+      engagement_classification
+      ai_pipeline
+      ai_pipeline_failure
+      post_analysis_context
+    ].each { |key| metadata.delete(key) }
+
+    state.clear
+    state["requested_by"] = requested_by.to_s.presence || "workspace"
+    state["source"] = name
+    state["regenerate_all_requested_at"] = now.iso8601(3)
+  rescue StandardError
+    nil
+  end
+
+  def self.lifecycle_state_for_status(status)
+    value = status.to_s
+    return "ready" if value == "ready"
+    return "failed" if value == "failed"
+    return "partial" if value.start_with?("skipped_")
+    return "processing" if value == "running"
+    return "processing" if value.start_with?("waiting_")
+    return "queued" if value == "queued" || value == "queued_for_processing"
+
+    "partial"
+  end
+
+  def self.stage_plan_for_status(status:, previous_stage:)
+    value = status.to_s
+    case value
+    when "queued", "queued_for_processing"
+      { "queue_item" => "queued" }
+    when "running", "waiting_media_download"
+      {
+        "queue_item" => "completed",
+        "media_validation" => "running"
+      }
+    when "waiting_post_analysis"
+      {
+        "queue_item" => "completed",
+        "media_validation" => "completed",
+        "media_analysis" => "running"
+      }
+    when "waiting_build_history"
+      {
+        "queue_item" => "completed",
+        "media_validation" => "completed",
+        "media_analysis" => "completed",
+        "llm_processing" => "queued"
+      }
+    when "waiting_comment_generation"
+      {
+        "queue_item" => "completed",
+        "media_validation" => "completed",
+        "media_analysis" => "completed",
+        "llm_processing" => "running"
+      }
+    when "ready", "skipped_unsuitable_content"
+      {
+        "queue_item" => "completed",
+        "media_validation" => "completed",
+        "media_analysis" => "completed",
+        "llm_processing" => "completed",
+        "engagement_eligibility" => "completed"
+      }
+    when "skipped_page_profile", "skipped_deleted_source", "skipped_non_user_post"
+      {
+        "queue_item" => "completed",
+        "engagement_eligibility" => "completed"
+      }
+    when "failed"
+      stage = previous_stage.to_s.presence || "llm_processing"
+      { stage => "failed" }
+    else
+      {}
+    end
+  end
+
+  def self.apply_stage_tracking!(state:, status:, requested_by:, now:, message: nil)
+    data = state.is_a?(Hash) ? state : {}
+    timestamp = now.is_a?(Time) ? now.iso8601(3) : Time.current.iso8601(3)
+
+    stages = data["stages"].is_a?(Hash) ? data["stages"].deep_dup : {}
+    WORKFLOW_STAGES.each do |stage|
+      stages[stage] = {
+        "state" => "pending",
+        "updated_at" => timestamp
+      } unless stages[stage].is_a?(Hash)
+    end
+
+    previous_stage = data["current_stage"].to_s
+    stage_plan = stage_plan_for_status(status: status, previous_stage: previous_stage)
+    current_stage = stage_plan.keys.last.to_s.presence || previous_stage.presence || "queue_item"
+    stage_plan.each do |stage, stage_state|
+      row = stages[stage].is_a?(Hash) ? stages[stage].deep_dup : {}
+      row["state"] = stage_state.to_s
+      row["updated_at"] = timestamp
+      row["started_at"] = timestamp if row["started_at"].to_s.blank? && stage_state.to_s.in?(%w[queued running])
+      if stage_state.to_s.in?(%w[completed failed skipped])
+        row["completed_at"] = timestamp
+      end
+      row["message"] = message.to_s if message.to_s.present?
+      stages[stage] = row
+    end
+
+    data["stages"] = stages
+    data["current_stage"] = current_stage
+    data["lifecycle_state"] = lifecycle_state_for_status(status)
+    append_stage_log!(
+      state: data,
+      stage: current_stage,
+      status: status.to_s,
+      lifecycle_state: data["lifecycle_state"].to_s,
+      requested_by: requested_by,
+      at: timestamp,
+      message: message
+    )
+    data
+  rescue StandardError
+    data
+  end
+
+  def self.append_stage_log!(state:, stage:, status:, lifecycle_state:, requested_by:, at:, message: nil)
+    data = state.is_a?(Hash) ? state : {}
+    log = Array(data["stage_log"]).select { |row| row.is_a?(Hash) }.last(MAX_STAGE_LOG_ENTRIES)
+    row = {
+      "stage" => stage.to_s,
+      "status" => status.to_s,
+      "lifecycle_state" => lifecycle_state.to_s,
+      "requested_by" => requested_by.to_s.presence || "workspace",
+      "at" => at.to_s
+    }
+    row["message"] = message.to_s if message.to_s.present?
+
+    last = log.last
+    if last.is_a?(Hash) &&
+        last["stage"].to_s == row["stage"].to_s &&
+        last["status"].to_s == row["status"].to_s &&
+        last["message"].to_s == row["message"].to_s
+      log[-1] = last.merge("at" => row["at"], "requested_by" => row["requested_by"])
+    else
+      log << row
+    end
+    data["stage_log"] = log.last(MAX_STAGE_LOG_ENTRIES)
+    data
+  rescue StandardError
+    data
+  end
+
   def comment_generation_policy(post:)
     metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
     policy = metadata["comment_generation_policy"]
@@ -336,16 +552,24 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
     post.with_lock do
       metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
       state = metadata["workspace_actions"].is_a?(Hash) ? metadata["workspace_actions"].deep_dup : {}
+      now = Time.current
 
       state["status"] = status.to_s
       state["requested_by"] = requested_by.to_s.presence || state["requested_by"].to_s.presence || "workspace"
-      state["updated_at"] = Time.current.iso8601(3)
-      state["finished_at"] = Time.current.iso8601(3)
+      state["updated_at"] = now.iso8601(3)
+      state["finished_at"] = now.iso8601(3)
       state["lock_until"] = nil
       state["last_error"] = last_error.to_s.presence
       state["next_run_at"] = next_run_at&.iso8601(3)
       state["suggestions_count"] = suggestions_count.to_i if suggestions_count.present?
-      state["last_ready_at"] = Time.current.iso8601(3) if status.to_s == "ready"
+      state["last_ready_at"] = now.iso8601(3) if status.to_s == "ready"
+      self.class.apply_stage_tracking!(
+        state: state,
+        status: status.to_s,
+        requested_by: requested_by,
+        now: now,
+        message: last_error.to_s.presence
+      )
       if terminal_workspace_status?(status)
         state["media_download_retry_attempts"] = 0
         state["post_analysis_retry_attempts"] = 0
@@ -373,6 +597,12 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       state["lock_until"] = (now + RUNNING_LOCK_SECONDS.seconds).iso8601(3)
       state["last_error"] = nil
       state["retry_exhausted"] = false
+      self.class.apply_stage_tracking!(
+        state: state,
+        status: "running",
+        requested_by: requested_by,
+        now: now
+      )
 
       metadata["workspace_actions"] = state
       post.update!(metadata: metadata)
@@ -464,8 +694,8 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
       instagram_profile_post_id: post.id,
       task_flags: {
         analyze_visual: true,
-        analyze_faces: true,
-        run_ocr: true,
+        analyze_faces: false,
+        run_ocr: false,
         run_video: true,
         run_metadata: true,
         generate_comments: false,
@@ -691,11 +921,15 @@ class WorkspaceProcessActionsTodoPostJob < ApplicationJob
   end
 
   def terminal_workspace_status?(status)
-    text = status.to_s
-    return true if text == "ready"
-    return true if text == "failed"
-    return true if text.start_with?("skipped_")
+    TERMINAL_STATUSES.include?(status.to_s)
+  end
 
-    false
+  def blocked_workspace_status(reason_code:)
+    case reason_code.to_s
+    when "unsuitable_for_engagement", "low_relevance_suggestions"
+      "skipped_unsuitable_content"
+    else
+      "failed"
+    end
   end
 end

@@ -109,7 +109,7 @@ cd ai_microservice
 Useful env vars:
 - `LOCAL_AI_SERVICE_URL` (default `http://localhost:8000`)
 - `OLLAMA_URL` (default `http://localhost:11434`)
-- `OLLAMA_MODEL` (default `mistral:7b`)
+- `OLLAMA_MODEL` (default `llama3.2-vision:11b`)
 
 ### Active Record Encryption Bootstrap
 

@@ -6,6 +6,10 @@ class PostVideoContextExtractionService
   TRANSCRIPT_MAX_CHARS = ENV.fetch("POST_VIDEO_TRANSCRIPT_MAX_CHARS", 420).to_i
   TOPIC_LIMIT = ENV.fetch("POST_VIDEO_TOPIC_LIMIT", 30).to_i
   SIGNAL_LIMIT = ENV.fetch("POST_VIDEO_SIGNAL_LIMIT", 40).to_i
+  VISION_FRAME_SAMPLE_LIMIT = ENV.fetch("POST_VIDEO_VISION_FRAME_SAMPLE_LIMIT", 3).to_i.clamp(1, 8)
+  ENABLE_LEGACY_VIDEO_INTELLIGENCE = ActiveModel::Type::Boolean.new.cast(
+    ENV.fetch("POST_VIDEO_ENABLE_LEGACY_INTELLIGENCE", "false")
+  )
 
   def initialize(
     video_frame_change_detector_service: VideoFrameChangeDetectorService.new,
@@ -13,7 +17,9 @@ class PostVideoContextExtractionService
     video_audio_extraction_service: VideoAudioExtractionService.new,
     speech_transcription_service: SpeechTranscriptionService.new,
     local_microservice_client: Ai::LocalMicroserviceClient.new,
-    content_understanding_service: StoryContentUnderstandingService.new
+    content_understanding_service: StoryContentUnderstandingService.new,
+    video_frame_extraction_service: VideoFrameExtractionService.new,
+    vision_understanding_service: Ai::VisionUnderstandingService.new
   )
     @video_frame_change_detector_service = video_frame_change_detector_service
     @video_metadata_service = video_metadata_service
@@ -21,6 +27,8 @@ class PostVideoContextExtractionService
     @speech_transcription_service = speech_transcription_service
     @local_microservice_client = local_microservice_client
     @content_understanding_service = content_understanding_service
+    @video_frame_extraction_service = video_frame_extraction_service
+    @vision_understanding_service = vision_understanding_service
   end
 
   def extract(video_bytes:, reference_id:, content_type:)
@@ -82,6 +90,25 @@ class PostVideoContextExtractionService
     hashtags = normalize_string_array(understanding[:hashtags], limit: SIGNAL_LIMIT)
     mentions = normalize_string_array(understanding[:mentions], limit: SIGNAL_LIMIT)
     profile_handles = normalize_string_array(understanding[:profile_handles], limit: SIGNAL_LIMIT)
+    vision_understanding = enrich_with_vision_model(
+      bytes: bytes,
+      mode: mode,
+      reference_id: reference_id,
+      content_type: content_type,
+      static_video: static_video,
+      semantic_route: semantic_route,
+      transcript_text: transcript_text,
+      topics: topics,
+      objects: objects
+    )
+    topics = merge_unique_strings(topics, vision_understanding[:topics], limit: TOPIC_LIMIT)
+    objects = merge_unique_strings(objects, vision_understanding[:objects], limit: SIGNAL_LIMIT)
+    context_summary_text = vision_understanding[:summary].to_s.presence || context_summary(
+      processing_mode: processing_mode,
+      duration_seconds: duration_seconds,
+      topics: topics,
+      transcript: transcript_text
+    )
 
     {
       skipped: false,
@@ -102,12 +129,7 @@ class PostVideoContextExtractionService
       profile_handles: profile_handles,
       ocr_text: understanding[:ocr_text].to_s.presence,
       ocr_blocks: normalize_hash_array(understanding[:ocr_blocks], limit: SIGNAL_LIMIT),
-      context_summary: context_summary(
-        processing_mode: processing_mode,
-        duration_seconds: duration_seconds,
-        topics: topics,
-        transcript: transcript_text
-      ),
+      context_summary: context_summary_text,
       metadata: {
         frame_change_detection: mode[:metadata].is_a?(Hash) ? mode[:metadata] : {},
         video_probe: probe_metadata,
@@ -115,7 +137,8 @@ class PostVideoContextExtractionService
         transcription: transcript[:metadata],
         static_frame_intelligence: static_frame_intelligence[:metadata],
         local_video_intelligence: local_video_intelligence[:metadata],
-        parallel_execution: parallel_branches[:parallel_execution]
+        parallel_execution: parallel_branches[:parallel_execution],
+        vision_understanding: vision_understanding[:metadata]
       }
     }
   rescue StandardError => e
@@ -286,6 +309,13 @@ class PostVideoContextExtractionService
   end
 
   def extract_local_video_intelligence_if_allowed(bytes:, reference_id:, static_video:)
+    unless ENABLE_LEGACY_VIDEO_INTELLIGENCE
+      return {
+        data: {},
+        metadata: { reason: "legacy_dynamic_intelligence_disabled" }
+      }
+    end
+
     if static_video
       return {
         data: {},
@@ -323,6 +353,13 @@ class PostVideoContextExtractionService
   end
 
   def extract_static_frame_intelligence_if_available(mode:, reference_id:, static_video:)
+    unless ENABLE_LEGACY_VIDEO_INTELLIGENCE
+      return {
+        data: {},
+        metadata: { reason: "legacy_static_frame_intelligence_disabled" }
+      }
+    end
+
     unless static_video
       return {
         data: {},
@@ -412,6 +449,127 @@ class PostVideoContextExtractionService
 
     text = parts.join(" ").strip
     text.presence
+  end
+
+  def enrich_with_vision_model(bytes:, mode:, reference_id:, content_type:, static_video:, semantic_route:, transcript_text:, topics:, objects:)
+    unless @vision_understanding_service.respond_to?(:enabled?) && @vision_understanding_service.enabled?
+      return {
+        summary: nil,
+        topics: [],
+        objects: [],
+        metadata: {
+          status: "unavailable",
+          source: "ollama_vision",
+          reason: "vision_understanding_disabled"
+        }
+      }
+    end
+
+    frame_payload = vision_frame_payload(
+      bytes: bytes,
+      mode: mode,
+      reference_id: reference_id,
+      content_type: content_type,
+      static_video: static_video
+    )
+    frame_bytes = frame_payload[:frames]
+    return {
+      summary: nil,
+      topics: [],
+      objects: [],
+      metadata: {
+        status: "unavailable",
+        source: "ollama_vision",
+        reason: frame_payload[:reason].to_s.presence || "vision_frame_payload_missing",
+        frame_count: frame_bytes.length
+      }.compact
+    } if frame_bytes.empty?
+
+    vision = @vision_understanding_service.summarize(
+      image_bytes_list: frame_bytes,
+      transcript: transcript_text,
+      candidate_topics: Array(topics) + Array(objects),
+      media_type: semantic_route
+    )
+    metadata = vision[:metadata].is_a?(Hash) ? vision[:metadata].dup : {}
+    metadata[:frame_count] = frame_bytes.length
+    metadata[:frame_source] = frame_payload[:source].to_s.presence || "unknown"
+    metadata[:frame_extraction] = frame_payload[:metadata] if frame_payload[:metadata].is_a?(Hash)
+
+    {
+      summary: vision[:summary].to_s.presence,
+      topics: normalize_string_array(vision[:topics], limit: TOPIC_LIMIT),
+      objects: normalize_string_array(vision[:objects], limit: SIGNAL_LIMIT),
+      metadata: metadata
+    }
+  rescue StandardError => e
+    {
+      summary: nil,
+      topics: [],
+      objects: [],
+      metadata: {
+        status: "unavailable",
+        source: "ollama_vision",
+        reason: "vision_enrichment_error",
+        error_class: e.class.name,
+        error_message: e.message.to_s
+      }
+    }
+  end
+
+  def vision_frame_payload(bytes:, mode:, reference_id:, content_type:, static_video:)
+    if static_video
+      frame = static_frame_bytes(mode)
+      return {
+        frames: [ frame ],
+        source: "frame_change_detector_static_frame",
+        metadata: {
+          static: true
+        }
+      } if frame.present?
+    end
+
+    extracted = @video_frame_extraction_service.extract(
+      video_bytes: bytes,
+      story_id: reference_id.to_s,
+      content_type: content_type
+    )
+    extraction_metadata = extracted[:metadata].is_a?(Hash) ? extracted[:metadata] : {}
+    frames = Array(extracted[:frames]).filter_map do |row|
+      payload = row.is_a?(Hash) ? row : {}
+      frame = payload[:image_bytes].to_s.b
+      frame = payload["image_bytes"].to_s.b if frame.blank?
+      frame.presence
+    end.first(VISION_FRAME_SAMPLE_LIMIT)
+
+    {
+      frames: frames,
+      source: "ffmpeg_frame_sampling",
+      reason: extraction_metadata[:reason] || extraction_metadata["reason"],
+      metadata: extraction_metadata
+    }
+  rescue StandardError => e
+    {
+      frames: [],
+      source: "ffmpeg_frame_sampling",
+      reason: "frame_sampling_error",
+      metadata: {
+        reason: "frame_sampling_error",
+        error_class: e.class.name,
+        error_message: e.message.to_s
+      }
+    }
+  end
+
+  def static_frame_bytes(mode)
+    value = mode[:frame_bytes]
+    value = mode["frame_bytes"] if value.blank? && mode.is_a?(Hash)
+    raw = value.to_s.b
+    raw.presence
+  end
+
+  def merge_unique_strings(existing, incoming, limit:)
+    normalize_string_array(Array(existing) + Array(incoming), limit: limit)
   end
 
   def monotonic_time

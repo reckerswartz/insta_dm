@@ -546,6 +546,8 @@ module StoryIntelligence
           transcription_reason: metadata.dig("transcription", "reason").to_s.presence,
           static_frame_reason: metadata.dig("static_frame_intelligence", "reason").to_s.presence,
           local_video_reason: metadata.dig("local_video_intelligence", "reason").to_s.presence,
+          vision_reason: metadata.dig("vision_understanding", "reason").to_s.presence,
+          vision_model: metadata.dig("vision_understanding", "model").to_s.presence,
           parallel_execution: metadata["parallel_execution"].is_a?(Hash) ? metadata["parallel_execution"] : nil
         }.compact
       } ]
@@ -562,6 +564,7 @@ module StoryIntelligence
       ]
       candidates = [
         metadata["reason"],
+        metadata.dig("vision_understanding", "reason"),
         metadata.dig("local_video_intelligence", "reason"),
         metadata.dig("static_frame_intelligence", "reason"),
         metadata.dig("transcription", "reason"),

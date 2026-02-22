@@ -29,16 +29,33 @@ module Ops
         started_at = monotonic_started_at
         checked_at = Time.current
 
-        microservice = Ai::LocalMicroserviceClient.new.test_connection!
+        microservice_required = local_microservice_required?
+        microservice_enabled = local_microservice_enabled?
+        microservice =
+          if microservice_enabled
+            Ai::LocalMicroserviceClient.new.test_connection!
+          else
+            {
+              ok: !microservice_required,
+              skipped: true,
+              message: "Local AI microservice checks disabled by USE_LOCAL_AI_MICROSERVICE=false"
+            }
+          end
         ollama = Ai::OllamaClient.new.test_connection!
 
-        ok = ActiveModel::Type::Boolean.new.cast(microservice[:ok]) && ActiveModel::Type::Boolean.new.cast(ollama[:ok])
+        microservice_ok = ActiveModel::Type::Boolean.new.cast(extract_ok_value(microservice))
+        ollama_ok = ActiveModel::Type::Boolean.new.cast(extract_ok_value(ollama))
+        ok = ollama_ok && (!microservice_required || microservice_ok)
         result = {
           ok: ok,
           checked_at: checked_at.iso8601(3),
           details: {
             microservice: microservice,
-            ollama: ollama
+            ollama: ollama,
+            policy: {
+              microservice_enabled: microservice_enabled,
+              microservice_required: microservice_required
+            }
           }
         }
 
@@ -87,6 +104,21 @@ module Ops
             metadata: result[:details]
           )
         end
+      end
+
+      def extract_ok_value(payload)
+        row = payload.is_a?(Hash) ? payload : {}
+        row[:ok].nil? ? row["ok"] : row[:ok]
+      end
+
+      def local_microservice_enabled?
+        ActiveModel::Type::Boolean.new.cast(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "true"))
+      end
+
+      def local_microservice_required?
+        ActiveModel::Type::Boolean.new.cast(
+          ENV.fetch("LOCAL_AI_MICROSERVICE_REQUIRED", "false")
+        )
       end
 
       def annotate_status(payload, source:)

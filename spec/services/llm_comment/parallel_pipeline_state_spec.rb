@@ -31,7 +31,7 @@ RSpec.describe LlmComment::ParallelPipelineState do
     travel_to(start_at) do
       state.start!(
         provider: "local",
-        model: "mistral:7b",
+        model: "llama3.2-vision:11b",
         requested_by: "spec",
         source_job: "spec",
         active_job_id: "source-job",
@@ -83,7 +83,7 @@ RSpec.describe LlmComment::ParallelPipelineState do
     travel_to(start_at) do
       state.start!(
         provider: "local",
-        model: "mistral:7b",
+        model: "llama3.2-vision:11b",
         requested_by: "spec",
         source_job: "spec",
         active_job_id: "source-job",
@@ -151,7 +151,7 @@ RSpec.describe LlmComment::ParallelPipelineState do
     state = described_class.new(event: event)
     result = state.start!(
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       source_job: "spec",
       active_job_id: "source-job",
@@ -194,7 +194,7 @@ RSpec.describe LlmComment::ParallelPipelineState do
     state = described_class.new(event: event)
     result = state.start!(
       provider: "local",
-      model: "mistral:7b",
+      model: "llama3.2-vision:11b",
       requested_by: "spec",
       source_job: "spec",
       active_job_id: "source-job",

@@ -43,11 +43,15 @@ RSpec.describe Ai::Providers::LocalProvider do
       super
     end
 
+    def should_run_legacy_media_analysis?(options:)
+      true
+    end
+
     def generate_engagement_comments(post_payload:, image_description:, labels:, author_type:)
       raise comment_error if comment_error
 
       {
-        model: "mistral:7b",
+        model: "llama3.2-vision:11b",
         prompt: "test",
         raw: {},
         source: "ollama",

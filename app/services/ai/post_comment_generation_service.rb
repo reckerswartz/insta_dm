@@ -1,7 +1,25 @@
 module Ai
   class PostCommentGenerationService
-    REQUIRED_SIGNAL_KEYS = %w[face text_context].freeze
+    REQUIRED_SIGNAL_KEYS = [].freeze
     MAX_SUGGESTIONS = 8
+    UNUSABLE_VISUAL_CONTEXT_PATTERNS = [
+      /no image or video content available/i,
+      /visual analysis unavailable/i,
+      /image analysis unavailable/i,
+      /image_analysis_error/i,
+      /analysis error/i,
+      /failed to open tcp connection/i,
+      /connection refused/i,
+      /net::readtimeout/i,
+      /errn[o0]::econnrefused/i,
+      /local ai timeout/i
+    ].freeze
+    BASE_MIN_RELEVANCE_SCORE =
+      ENV.fetch("POST_COMMENT_MIN_RELEVANCE_SCORE", "1.1").to_f.clamp(0.5, 3.0)
+    MIN_ELIGIBLE_SUGGESTIONS =
+      ENV.fetch("POST_COMMENT_MIN_ELIGIBLE_SUGGESTIONS", "2").to_i.clamp(1, MAX_SUGGESTIONS)
+    HIGH_RELEVANCE_OVERRIDE_SCORE =
+      ENV.fetch("POST_COMMENT_HIGH_RELEVANCE_OVERRIDE_SCORE", "1.55").to_f.clamp(0.5, 3.0)
 
     def initialize(
       account:,
@@ -40,11 +58,24 @@ module Ai
       ocr_text = signals.ocr_text
       transcript = signals.transcript
       text_context = signals.text_context
+      engagement_classification = classify_post_engagement(analysis: analysis, metadata: metadata)
       history_ready = ActiveModel::Type::Boolean.new.cast(preparation["ready_for_comment_generation"])
       missing_required = signals.missing_required_signals
       history_pending = !history_ready
       missing_signals = missing_required.dup
       missing_signals << "history" if history_pending
+
+      unless ActiveModel::Type::Boolean.new.cast(engagement_classification["engagement_suitable"])
+        return policy_persistence.persist_blocked!(
+          analysis: analysis,
+          metadata: metadata,
+          preparation: preparation,
+          missing_signals: [ "engagement_suitability" ],
+          reason_code: "unsuitable_for_engagement",
+          error_message: engagement_classification["summary"].to_s.presence || "Post is not suitable for comment engagement.",
+          engagement_classification: engagement_classification
+        )
+      end
 
       if missing_required.any? && enforce_required_evidence?
         return policy_persistence.persist_blocked!(
@@ -52,20 +83,22 @@ module Ai
           metadata: metadata,
           preparation: preparation,
           missing_signals: missing_signals,
-          reason_code: "missing_required_evidence"
+          reason_code: "missing_required_evidence",
+          engagement_classification: engagement_classification
         )
       end
 
       topics = signals.topics
       image_description = signals.image_description
 
-      if image_description.blank?
+      if unusable_visual_context?(image_description)
         return policy_persistence.persist_blocked!(
           analysis: analysis,
           metadata: metadata,
           preparation: preparation,
           missing_signals: [ "visual_context" ],
-          reason_code: "missing_visual_context"
+          reason_code: "missing_visual_context",
+          engagement_classification: engagement_classification
         )
       end
 
@@ -92,7 +125,30 @@ module Ai
           preparation: preparation,
           missing_signals: [ "generation_output" ],
           reason_code: "comment_generation_empty",
-          error_message: result[:error_message].to_s.presence || "Comment generation produced no valid suggestions."
+          error_message: result[:error_message].to_s.presence || "Comment generation produced no valid suggestions.",
+          engagement_classification: engagement_classification
+        )
+      end
+
+      relevance_evaluation = evaluate_suggestions_relevance(
+        suggestions: suggestions,
+        image_description: image_description,
+        topics: topics,
+        scored_context: scored_context,
+        engagement_classification: engagement_classification
+      )
+      suggestions = Array(relevance_evaluation["eligible_suggestions"])
+
+      if suggestions.empty?
+        return policy_persistence.persist_blocked!(
+          analysis: analysis,
+          metadata: metadata,
+          preparation: preparation,
+          missing_signals: [ "relevance_threshold" ],
+          reason_code: "low_relevance_suggestions",
+          error_message: "Generated suggestions did not pass the relevance quality gate.",
+          engagement_classification: engagement_classification,
+          relevance_evaluation: relevance_evaluation
         )
       end
 
@@ -108,7 +164,9 @@ module Ai
         transcript: transcript,
         suggestions: suggestions,
         generation_result: result,
-        history_pending: history_pending
+        history_pending: history_pending,
+        engagement_classification: engagement_classification,
+        relevance_evaluation: relevance_evaluation
       )
     rescue StandardError => e
       analysis = normalized_hash(post&.analysis)
@@ -162,11 +220,13 @@ module Ai
 
     def preferred_model
       row = profile&.latest_analysis&.ai_provider_setting
-      row&.config_value("ollama_fast_model").to_s.presence ||
+      row&.config_value("ollama_comment_model").to_s.presence ||
+        row&.config_value("ollama_fast_model").to_s.presence ||
+        row&.config_value("ollama_vision_model").to_s.presence ||
         row&.config_value("ollama_model").to_s.presence ||
-        ENV.fetch("OLLAMA_FAST_MODEL", ENV.fetch("OLLAMA_MODEL", "mistral:7b"))
+        ENV.fetch("OLLAMA_COMMENT_MODEL", Ai::ModelDefaults.comment_model)
     rescue StandardError
-      ENV.fetch("OLLAMA_FAST_MODEL", ENV.fetch("OLLAMA_MODEL", "mistral:7b"))
+      ENV.fetch("OLLAMA_COMMENT_MODEL", Ai::ModelDefaults.comment_model)
     end
 
     def post_payload
@@ -174,9 +234,9 @@ module Ai
       payload = builder.payload
       payload[:rules] = (payload[:rules].is_a?(Hash) ? payload[:rules] : {}).merge(
         require_history_context: false,
-        require_face_signal: true,
-        require_ocr_signal: true,
-        require_text_context: true
+        require_face_signal: false,
+        require_ocr_signal: false,
+        require_text_context: false
       )
       payload
     rescue StandardError
@@ -293,6 +353,112 @@ module Ai
         metadata: metadata,
         max_suggestions: MAX_SUGGESTIONS
       )
+    end
+
+    def classify_post_engagement(analysis:, metadata:)
+      classifier = Ai::PostEngagementSuitabilityClassifier.new(
+        profile: profile,
+        post: post,
+        analysis: analysis,
+        metadata: metadata
+      )
+      classification = classifier.classify
+      classification.is_a?(Hash) ? classification : {}
+    rescue StandardError
+      {}
+    end
+
+    def evaluate_suggestions_relevance(suggestions:, image_description:, topics:, scored_context:, engagement_classification:)
+      min_score = BASE_MIN_RELEVANCE_SCORE
+      min_score = relevance_min_score_for(engagement_classification: engagement_classification)
+      ranked = Ai::CommentRelevanceScorer.annotate_llm_order_with_breakdown(
+        suggestions: suggestions,
+        image_description: image_description,
+        topics: topics,
+        historical_comments: historical_comments,
+        scored_context: scored_context
+      )
+      ranked_rows = Array(ranked).sort_by { |row| -row[:relevance_score].to_f }.first(MAX_SUGGESTIONS)
+      eligible = ranked_rows.select { |row| row[:relevance_score].to_f >= min_score }
+      eligible_confident_count = eligible.count { |row| %w[medium high].include?(row[:confidence_level].to_s) }
+      eligible_suggestions = eligible.map { |row| row[:comment].to_s.strip }.reject(&:blank?).uniq.first(MAX_SUGGESTIONS)
+      top_relevance_score = ranked_rows.first&.dig(:relevance_score).to_f.round(3)
+      high_score_override = top_relevance_score >= HIGH_RELEVANCE_OVERRIDE_SCORE
+      quality_gate_passed = eligible_suggestions.length >= MIN_ELIGIBLE_SUGGESTIONS && eligible_confident_count.positive?
+      eligible_suggestions = [] unless quality_gate_passed || high_score_override
+
+      {
+        "min_score" => min_score.round(3),
+        "required_eligible_count" => MIN_ELIGIBLE_SUGGESTIONS,
+        "eligible_count" => eligible_suggestions.length,
+        "eligible_medium_or_high_count" => eligible_confident_count,
+        "quality_gate_passed" => quality_gate_passed,
+        "high_score_override_score" => HIGH_RELEVANCE_OVERRIDE_SCORE.round(3),
+        "high_score_override_applied" => high_score_override && !quality_gate_passed,
+        "top_relevance_score" => top_relevance_score,
+        "eligible_suggestions" => eligible_suggestions,
+        "ranked_suggestions" => ranked_rows.map { |row| normalize_ranked_suggestion(row) },
+        "evaluated_at" => Time.current.iso8601(3)
+      }
+    rescue StandardError => e
+      {
+        "min_score" => min_score.round(3),
+        "required_eligible_count" => MIN_ELIGIBLE_SUGGESTIONS,
+        "eligible_count" => Array(suggestions).length,
+        "eligible_medium_or_high_count" => nil,
+        "quality_gate_passed" => nil,
+        "high_score_override_score" => HIGH_RELEVANCE_OVERRIDE_SCORE.round(3),
+        "high_score_override_applied" => nil,
+        "top_relevance_score" => nil,
+        "eligible_suggestions" => Array(suggestions).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(MAX_SUGGESTIONS),
+        "ranked_suggestions" => [],
+        "error_class" => e.class.name,
+        "error_message" => e.message.to_s,
+        "evaluated_at" => Time.current.iso8601(3)
+      }
+    end
+
+    def relevance_min_score_for(engagement_classification:)
+      classification = engagement_classification.is_a?(Hash) ? engagement_classification : {}
+      score = BASE_MIN_RELEVANCE_SCORE
+      personal_signal = (
+        classification["personal_signal_score"] ||
+        classification[:personal_signal_score] ||
+        classification["content_signal_score"] ||
+        classification[:content_signal_score]
+      ).to_i
+      ownership = classification["ownership"].to_s.presence || classification[:ownership].to_s
+      profile_tags = Array(classification["profile_tags"] || classification[:profile_tags]).map { |value| value.to_s.downcase.strip }
+
+      score -= 0.1 if personal_signal >= 4
+      score += 0.1 if personal_signal <= 1
+      score += 0.15 unless ownership == "original"
+      score += 0.15 if profile_tags.include?("page")
+
+      score.clamp(0.5, 3.0).round(3)
+    end
+
+    def normalize_ranked_suggestion(row)
+      item = row.is_a?(Hash) ? row : {}
+      factors = item[:factors].is_a?(Hash) ? item[:factors] : {}
+
+      {
+        "comment" => item[:comment].to_s,
+        "score" => item[:score].to_f.round(3),
+        "relevance_score" => item[:relevance_score].to_f.round(3),
+        "llm_rank" => item[:llm_rank].to_i,
+        "llm_order_bonus" => item[:llm_order_bonus].to_f.round(3),
+        "auto_post_eligible" => ActiveModel::Type::Boolean.new.cast(item[:auto_post_eligible]),
+        "confidence_level" => item[:confidence_level].to_s.presence || "low",
+        "factors" => factors
+      }
+    end
+
+    def unusable_visual_context?(value)
+      text = value.to_s.strip
+      return true if text.blank?
+
+      UNUSABLE_VISUAL_CONTEXT_PATTERNS.any? { |pattern| text.match?(pattern) }
     end
 
     def build_scored_context(analysis:)

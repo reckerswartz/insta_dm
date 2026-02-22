@@ -20,7 +20,7 @@ RSpec.describe "ProcessPostVisualAnalysisJobTest" do
       {
         provider: provider,
         result: {
-          model: "mistral:7b",
+          model: "llama3.2-vision:11b",
           analysis: { "image_description" => "A person near a beach." }
         },
         record: analysis_record,
@@ -37,7 +37,7 @@ RSpec.describe "ProcessPostVisualAnalysisJobTest" do
 
     post.reload
     assert_equal "local", post.ai_provider
-    assert_equal "mistral:7b", post.ai_model
+    assert_equal "llama3.2-vision:11b", post.ai_model
     assert_equal "running", post.ai_status
     assert_equal "succeeded", post.metadata.dig("ai_pipeline", "steps", "visual", "status")
     assert_equal 12_345, post.metadata.dig("ai_pipeline", "steps", "visual", "result", "ai_analysis_id")

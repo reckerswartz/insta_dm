@@ -2,7 +2,7 @@ require "json"
 
 module Ai
   class ProfileDemographicsAggregator
-    DEFAULT_MODEL = "mistral:7b".freeze
+    DEFAULT_MODEL = Ai::ModelDefaults.comment_model.freeze
 
     def initialize(account:, model: nil)
       @account = account

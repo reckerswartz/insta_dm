@@ -38,10 +38,7 @@ module Ai
       end
 
       def missing_required_signals
-        missing = []
-        missing << "face" unless face_count.positive?
-        missing << "text_context" if text_context.blank?
-        missing
+        []
       end
 
       def topics

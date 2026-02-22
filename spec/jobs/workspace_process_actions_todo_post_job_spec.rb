@@ -139,6 +139,80 @@ it "returns already_ready when suggestions exist" do
   expect(result).to include(enqueued: false, reason: "already_ready")
 end
 
+it "returns already_terminal when row is terminal and not forced" do
+  account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+  profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
+  post = profile.instagram_profile_posts.create!(
+    instagram_account: account,
+    shortcode: "post_#{SecureRandom.hex(3)}",
+    taken_at: Time.current,
+    ai_status: "analyzed",
+    analyzed_at: Time.current,
+    analysis: {},
+    metadata: {
+      "post_kind" => "post",
+      "workspace_actions" => {
+        "status" => "skipped_unsuitable_content"
+      }
+    }
+  )
+
+  result = WorkspaceProcessActionsTodoPostJob.enqueue_if_needed!(
+    account: account,
+    profile: profile,
+    post: post,
+    requested_by: "rspec"
+  )
+
+  expect(result[:enqueued]).to eq(false)
+  expect(result[:reason]).to eq("already_terminal")
+end
+
+it "supports regenerate_all reset before requeueing" do
+  account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+  profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
+  post = profile.instagram_profile_posts.create!(
+    instagram_account: account,
+    shortcode: "post_#{SecureRandom.hex(3)}",
+    taken_at: Time.current,
+    ai_status: "analyzed",
+    analyzed_at: Time.current,
+    analysis: {
+      "comment_suggestions" => [ "Old suggestion" ],
+      "comment_generation_status" => "ok"
+    },
+    metadata: {
+      "post_kind" => "post",
+      "comment_generation_policy" => {
+        "status" => "blocked",
+        "blocked_reason_code" => "unsuitable_for_engagement"
+      },
+      "workspace_actions" => {
+        "status" => "skipped_unsuitable_content"
+      }
+    }
+  )
+
+  result = WorkspaceProcessActionsTodoPostJob.enqueue_if_needed!(
+    account: account,
+    profile: profile,
+    post: post,
+    requested_by: "rspec",
+    force: true,
+    regenerate_all: true
+  )
+
+  expect(result[:enqueued]).to eq(true)
+  expect(result[:regenerate_all]).to eq(true)
+  post.reload
+  expect(post.ai_status).to eq("pending")
+  expect(post.analysis["comment_suggestions"]).to be_nil
+  expect(post.metadata["comment_generation_policy"]).to be_nil
+  expect(post.metadata.dig("workspace_actions", "status")).to eq("queued")
+  expect(post.metadata.dig("workspace_actions", "stage_log")).to be_an(Array)
+  expect(post.metadata.dig("workspace_actions", "lifecycle_state")).to eq("queued")
+end
+
 it "marks story posts as skipped_non_user_post" do
   account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
   profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
@@ -159,6 +233,46 @@ it "marks story posts as skipped_non_user_post" do
 
   post.reload
   expect(post.metadata.dig("workspace_actions", "status")).to eq("skipped_non_user_post")
+end
+
+it "marks unsuitable engagement posts as skipped_unsuitable_content" do
+  account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+  profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}")
+  post = profile.instagram_profile_posts.create!(
+    instagram_account: account,
+    shortcode: "post_#{SecureRandom.hex(3)}",
+    taken_at: Time.current,
+    ai_status: "analyzed",
+    analyzed_at: Time.current,
+    analysis: {},
+    metadata: {
+      "post_kind" => "post",
+      "comment_generation_policy" => {
+        "status" => "blocked",
+        "history_ready" => true,
+        "blocked_reason_code" => "unsuitable_for_engagement",
+        "blocked_reason" => "Post classified as generic reshared content."
+      }
+    }
+  )
+  post.media.attach(
+    io: StringIO.new("fake-jpeg"),
+    filename: "post.jpg",
+    content_type: "image/jpeg"
+  )
+
+  WorkspaceProcessActionsTodoPostJob.perform_now(
+    instagram_account_id: account.id,
+    instagram_profile_id: profile.id,
+    instagram_profile_post_id: post.id,
+    requested_by: "rspec"
+  )
+
+  post.reload
+  expect(post.metadata.dig("workspace_actions", "status")).to eq("skipped_unsuitable_content")
+  expect(post.metadata.dig("workspace_actions", "last_error")).to include("generic reshared")
+  expect(post.metadata.dig("workspace_actions", "lifecycle_state")).to eq("partial")
+  expect(post.metadata.dig("workspace_actions", "stage_log")).to be_an(Array)
 end
 
 it "stops retrying waiting_post_analysis after max attempts" do

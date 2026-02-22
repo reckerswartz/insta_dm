@@ -2254,6 +2254,12 @@ textarea.form-control {
   border-color: rgba(255, 95, 109, 0.38);
 }
 
+.pill.partial {
+  color: #e8dbff;
+  background: rgba(158, 125, 255, 0.18);
+  border-color: rgba(158, 125, 255, 0.35);
+}
+
 .link-inline {
   color: #acd0ff;
   text-decoration: underline;
@@ -2482,6 +2488,15 @@ textarea.form-control {
 .workspace-suggestions-details .compact-numbered-list.tight li span:first-child {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.workspace-suggestions-details .compact-list.tight {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.workspace-suggestions-details .compact-list.tight li {
+  margin: 4px 0;
 }
 
 .workspace-suggestion-actions,

@@ -23,6 +23,24 @@ RSpec.describe Ai::CommentRelevanceScorer do
     expect(result.first[:factors]).to include(:visual_context, :ocr_text, :transcript, :user_context_match, :engagement_relevance)
   end
 
+  it "annotates LLM ordering with a lightweight selection bonus" do
+    result = described_class.annotate_llm_order_with_breakdown(
+      suggestions: [
+        "Great run by the beach.",
+        "Nice post."
+      ],
+      image_description: "Morning run by the beach with sunrise tones",
+      topics: [ "fitness", "morning", "run" ],
+      historical_comments: [],
+      scored_context: {},
+      verified_story_facts: {}
+    )
+
+    expect(result.first).to include(:comment, :score, :relevance_score, :llm_rank, :llm_order_bonus, :factors)
+    expect(result.first[:llm_rank]).to eq(1)
+    expect(result.first[:score]).to be >= result.first[:relevance_score]
+  end
+
   it "keeps sparse context comments reviewable but not auto-post eligible" do
     result = described_class.score_with_breakdown(
       comment: "Nice shot.",

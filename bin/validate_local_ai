@@ -13,7 +13,8 @@ class LocalAIValidator
   def initialize
     @microservice_url = ENV.fetch('LOCAL_AI_SERVICE_URL', 'http://localhost:8000')
     @ollama_url = ENV.fetch('OLLAMA_URL', 'http://localhost:11434')
-    @ollama_model = ENV.fetch('OLLAMA_FAST_MODEL', ENV.fetch('OLLAMA_MODEL', 'mistral:7b'))
+    @ollama_model = ENV.fetch('OLLAMA_COMMENT_MODEL', ENV.fetch('OLLAMA_FAST_MODEL', ENV.fetch('OLLAMA_MODEL', 'llama3.2-vision:11b')))
+    @use_microservice = ENV.fetch('USE_LOCAL_AI_MICROSERVICE', 'true').to_s.strip.downcase == 'true'
     @results = { passed: 0, failed: 0, tests: [] }
   end
 
@@ -58,6 +59,8 @@ class LocalAIValidator
   end
 
   def test_microservice_health
+    return mark_skipped("AI Microservice Health", "USE_LOCAL_AI_MICROSERVICE=false") unless @use_microservice
+
     test("AI Microservice Health") do
       response = http_get("#{@microservice_url}/health")
       data = JSON.parse(response.body)
@@ -87,6 +90,8 @@ class LocalAIValidator
   end
 
   def test_image_analysis
+    return mark_skipped("Image Analysis", "USE_LOCAL_AI_MICROSERVICE=false") unless @use_microservice
+
     test("Image Analysis") do
       # Create a simple test image (1x1 pixel)
       test_image = create_test_image
@@ -104,6 +109,8 @@ class LocalAIValidator
   end
 
   def test_face_recognition
+    return mark_skipped("Face Recognition", "USE_LOCAL_AI_MICROSERVICE=false") unless @use_microservice
+
     test("Face Recognition") do
       test_image = create_test_image
       
@@ -124,6 +131,8 @@ class LocalAIValidator
   end
 
   def test_ocr
+    return mark_skipped("OCR (Text Recognition)", "USE_LOCAL_AI_MICROSERVICE=false") unless @use_microservice
+
     test("OCR (Text Recognition)") do
       # Create a simple image with text (this is a basic test)
       test_image = create_test_image_with_text
@@ -141,6 +150,8 @@ class LocalAIValidator
   end
 
   def test_whisper
+    return mark_skipped("Whisper Speech-to-Text", "USE_LOCAL_AI_MICROSERVICE=false") unless @use_microservice
+
     test("Whisper Speech-to-Text") do
       # Create a silent audio file (basic test)
       test_audio = create_test_audio
@@ -305,6 +316,12 @@ class LocalAIValidator
       puts "   • Check service logs: ./bin/local_ai_services logs"
       puts "   • Restart services: ./bin/local_ai_services restart"
       puts "   • Check configuration: config/local_ai.env.example"
+    end
+  end
+
+  def mark_skipped(name, reason)
+    test(name) do
+      { success: true, details: "Skipped: #{reason}" }
     end
   end
 end

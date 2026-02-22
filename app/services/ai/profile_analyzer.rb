@@ -2,7 +2,7 @@ require "json"
 
 module Ai
   class ProfileAnalyzer
-    DEFAULT_MODEL = "mistral:7b".freeze
+    DEFAULT_MODEL = Ai::ModelDefaults.comment_model.freeze
 
     def initialize(client: nil, model: nil)
       @client = client || Ai::LocalMicroserviceClient.new

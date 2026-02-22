@@ -1,9 +1,21 @@
 module Ai
   module Providers
     class LocalProvider < BaseProvider
-      def initialize(setting: nil, video_frame_change_detector_service: VideoFrameChangeDetectorService.new)
+      VISION_FRAME_SAMPLE_LIMIT = ENV.fetch("OLLAMA_VISION_MAX_IMAGES", "4").to_i.clamp(1, 8)
+      ENABLE_LEGACY_MEDIA_ANALYSIS = ActiveModel::Type::Boolean.new.cast(
+        ENV.fetch("LOCAL_PROVIDER_ENABLE_LEGACY_MEDIA_ANALYSIS", "false")
+      )
+
+      def initialize(
+        setting: nil,
+        video_frame_change_detector_service: VideoFrameChangeDetectorService.new,
+        video_frame_extraction_service: VideoFrameExtractionService.new,
+        vision_understanding_service: nil
+      )
         super(setting: setting)
         @video_frame_change_detector_service = video_frame_change_detector_service
+        @video_frame_extraction_service = video_frame_extraction_service
+        @vision_understanding_service = vision_understanding_service || Ai::VisionUnderstandingService.new(model: ollama_vision_model)
       end
 
       def key
@@ -146,40 +158,13 @@ module Ai
         labels = []
         raw = {}
         image_description = nil
+        mode = nil
 
         case media_hash[:type].to_s
         when "image"
-          vision, vision_warning = safe_media_analysis(stage: "image_analysis", media_type: "image") do
-            analyze_image_media(media_hash, provider_options: options)
-          end
-          raw[:vision] = vision
-          labels = extract_image_labels(vision)
-          if vision_warning
-            labels << warning_label_for_error(vision_warning[:error_class], prefix: "image_analysis_error")
-            raw[:vision_warning] = vision_warning
-          end
-          labels = labels.uniq
-          image_description =
-            if labels.any?
-              build_image_description_from_vision(vision, labels: labels)
-            else
-              "Image analysis unavailable."
-            end
-        when "video"
-          mode = classify_video_processing(media_hash)
-          raw[:video_processing] = (mode[:metadata].is_a?(Hash) ? mode[:metadata] : {}).merge(
-            processing_mode: mode[:processing_mode].to_s,
-            static: ActiveModel::Type::Boolean.new.cast(mode[:static]),
-            duration_seconds: mode[:duration_seconds]
-          ).compact
-          if mode[:processing_mode].to_s == "static_image" && mode[:frame_bytes].present?
-            static_media = {
-              type: "image",
-              content_type: mode[:frame_content_type].to_s.presence || "image/jpeg",
-              bytes: mode[:frame_bytes]
-            }
+          if should_run_legacy_media_analysis?(options: options)
             vision, vision_warning = safe_media_analysis(stage: "image_analysis", media_type: "image") do
-              analyze_image_media(static_media, provider_options: options)
+              analyze_image_media(media_hash, provider_options: options)
             end
             raw[:vision] = vision
             labels = extract_image_labels(vision)
@@ -190,32 +175,97 @@ module Ai
             labels = labels.uniq
             image_description =
               if labels.any?
-                "Static video detected; analyzed representative frame. #{build_image_description_from_vision(vision, labels: labels)}".strip
+                build_image_description_from_vision(vision, labels: labels)
               else
-                "Static video detected, but frame analysis was unavailable."
+                "Image analysis unavailable."
               end
           else
-            video, video_warning = safe_media_analysis(stage: "video_analysis", media_type: "video") do
-              analyze_video_media(media_hash, provider_options: options)
-            end
-            raw[:video] = video
-            labels = extract_video_labels(video)
-            if video_warning
-              labels << warning_label_for_error(video_warning[:error_class], prefix: "video_analysis_error")
-              raw[:video_warning] = video_warning
-            end
-            labels = labels.uniq
-            image_description =
-              if labels.any?
-                build_image_description_from_video(video, labels: labels)
-              else
-                "Video analysis unavailable."
+            raw[:legacy_media_analysis] = {
+              status: "skipped",
+              reason: "llm_vision_primary"
+            }
+            labels = []
+            image_description = "Image visual summary pending LLM vision analysis."
+          end
+        when "video"
+          mode = classify_video_processing(media_hash)
+          raw[:video_processing] = (mode[:metadata].is_a?(Hash) ? mode[:metadata] : {}).merge(
+            processing_mode: mode[:processing_mode].to_s,
+            static: ActiveModel::Type::Boolean.new.cast(mode[:static]),
+            duration_seconds: mode[:duration_seconds]
+          ).compact
+          if mode[:processing_mode].to_s == "static_image" && mode[:frame_bytes].present?
+            if should_run_legacy_media_analysis?(options: options)
+              static_media = {
+                type: "image",
+                content_type: mode[:frame_content_type].to_s.presence || "image/jpeg",
+                bytes: mode[:frame_bytes]
+              }
+              vision, vision_warning = safe_media_analysis(stage: "image_analysis", media_type: "image") do
+                analyze_image_media(static_media, provider_options: options)
               end
+              raw[:vision] = vision
+              labels = extract_image_labels(vision)
+              if vision_warning
+                labels << warning_label_for_error(vision_warning[:error_class], prefix: "image_analysis_error")
+                raw[:vision_warning] = vision_warning
+              end
+              labels = labels.uniq
+              image_description =
+                if labels.any?
+                  "Static video detected; analyzed representative frame. #{build_image_description_from_vision(vision, labels: labels)}".strip
+                else
+                  "Static video detected, but frame analysis was unavailable."
+                end
+            else
+              raw[:legacy_media_analysis] = {
+                status: "skipped",
+                reason: "llm_vision_primary"
+              }
+              labels = []
+              image_description = "Static video detected; summarizing representative frame with LLM vision."
+            end
+          else
+            if should_run_legacy_media_analysis?(options: options)
+              video, video_warning = safe_media_analysis(stage: "video_analysis", media_type: "video") do
+                analyze_video_media(media_hash, provider_options: options)
+              end
+              raw[:video] = video
+              labels = extract_video_labels(video)
+              if video_warning
+                labels << warning_label_for_error(video_warning[:error_class], prefix: "video_analysis_error")
+                raw[:video_warning] = video_warning
+              end
+              labels = labels.uniq
+              image_description =
+                if labels.any?
+                  build_image_description_from_video(video, labels: labels)
+                else
+                  "Video analysis unavailable."
+                end
+            else
+              raw[:legacy_media_analysis] = {
+                status: "skipped",
+                reason: "llm_vision_primary"
+              }
+              labels = []
+              image_description = "Video visual summary pending LLM vision analysis."
+            end
           end
         else
           labels = []
           image_description = "No image or video content available for visual description."
         end
+
+        vision_enrichment = enrich_visual_understanding(
+          media_hash: media_hash,
+          mode: mode,
+          labels: labels,
+          image_description: image_description
+        )
+        labels = vision_enrichment[:labels]
+        image_description = vision_enrichment[:image_description]
+        raw[:vision_understanding] = vision_enrichment[:metadata] if vision_enrichment[:metadata].is_a?(Hash)
 
         visual_labels = meaningful_visual_labels(labels)
         detected_face_count = extract_face_count_from_raw(raw)
@@ -314,6 +364,10 @@ module Ai
         @client ||= Ai::LocalMicroserviceClient.new
       end
 
+      def vision_understanding_service
+        @vision_understanding_service ||= Ai::VisionUnderstandingService.new
+      end
+
       def ollama_client
         @ollama_client ||= Ai::OllamaClient.new
       end
@@ -350,8 +404,8 @@ module Ai
         raw = provider_options.is_a?(Hash) ? provider_options : {}
         options = {
           visual_only: ActiveModel::Type::Boolean.new.cast(raw[:visual_only] || raw["visual_only"]),
-          include_faces: true,
-          include_ocr: true,
+          include_faces: false,
+          include_ocr: false,
           include_comment_generation: true,
           include_video_analysis: true
         }
@@ -401,6 +455,14 @@ module Ai
           error_message: nil,
           comment_suggestions: []
         }
+      end
+
+      def should_run_legacy_media_analysis?(options:)
+        opts = options.is_a?(Hash) ? options : {}
+        return true if ActiveModel::Type::Boolean.new.cast(opts[:include_faces] || opts["include_faces"])
+        return true if ActiveModel::Type::Boolean.new.cast(opts[:include_ocr] || opts["include_ocr"])
+
+        ENABLE_LEGACY_MEDIA_ANALYSIS
       end
 
       def classify_video_processing(media)
@@ -677,9 +739,139 @@ module Ai
       end
 
       def ollama_model
-        @ollama_model ||= setting&.config_value("ollama_model").to_s.presence || 
+        @ollama_model ||= setting&.config_value("ollama_comment_model").to_s.presence ||
+                          setting&.config_value("ollama_fast_model").to_s.presence ||
+                          setting&.config_value("ollama_model").to_s.presence || 
                           Rails.application.credentials.dig(:ollama, :model).to_s.presence || 
-                          "mistral:7b"
+                          Ai::ModelDefaults.comment_model
+      end
+
+      def ollama_vision_model
+        @ollama_vision_model ||= setting&.config_value("ollama_vision_model").to_s.presence ||
+                                 setting&.config_value("ollama_comment_model").to_s.presence ||
+                                 setting&.config_value("ollama_model").to_s.presence ||
+                                 Rails.application.credentials.dig(:ollama, :model).to_s.presence ||
+                                 Ai::ModelDefaults.vision_model
+      end
+
+      def enrich_visual_understanding(media_hash:, mode:, labels:, image_description:)
+        unless vision_understanding_service.respond_to?(:enabled?) && vision_understanding_service.enabled?
+          return {
+            labels: labels,
+            image_description: image_description,
+            metadata: {
+              status: "unavailable",
+              source: "ollama_vision",
+              reason: "vision_understanding_disabled"
+            }
+          }
+        end
+
+        bytes_payload = vision_image_payload_for(media_hash: media_hash, mode: mode)
+        image_bytes = bytes_payload[:images]
+        return {
+          labels: labels,
+          image_description: image_description,
+          metadata: {
+            status: "unavailable",
+            source: "ollama_vision",
+            reason: bytes_payload[:reason].to_s.presence || "vision_images_unavailable"
+          }.compact
+        } if image_bytes.empty?
+
+        result = vision_understanding_service.summarize(
+          image_bytes_list: image_bytes,
+          candidate_topics: labels,
+          media_type: media_hash[:type].to_s.presence || "image"
+        )
+        metadata = result[:metadata].is_a?(Hash) ? result[:metadata].dup : {}
+        metadata[:image_source] = bytes_payload[:source].to_s.presence || "unknown"
+        metadata[:image_count] = image_bytes.length
+
+        {
+          labels: merge_visual_labels(labels, result[:topics], result[:objects]),
+          image_description: result[:summary].to_s.presence || image_description,
+          metadata: metadata
+        }
+      rescue StandardError => e
+        {
+          labels: labels,
+          image_description: image_description,
+          metadata: {
+            status: "unavailable",
+            source: "ollama_vision",
+            reason: "vision_enrichment_error",
+            error_class: e.class.name,
+            error_message: normalize_error_message(e.message)
+          }
+        }
+      end
+
+      def vision_image_payload_for(media_hash:, mode:)
+        media_type = media_hash[:type].to_s
+        if media_type == "image"
+          image_bytes = media_hash[:bytes].to_s.b
+          return {
+            images: [ image_bytes ],
+            source: "direct_image_bytes"
+          } if image_bytes.present?
+
+          return {
+            images: [],
+            source: "direct_image_bytes",
+            reason: "image_bytes_missing"
+          }
+        end
+
+        if media_type == "video"
+          static_frame = mode.is_a?(Hash) ? mode[:frame_bytes].to_s.b : "".b
+          static_frame = mode["frame_bytes"].to_s.b if static_frame.blank? && mode.is_a?(Hash)
+          return {
+            images: [ static_frame ],
+            source: "static_video_frame"
+          } if static_frame.present?
+
+          video_bytes = media_hash[:bytes].to_s.b
+          return {
+            images: [],
+            source: "ffmpeg_video_frames",
+            reason: "video_bytes_missing"
+          } if video_bytes.blank?
+
+          extraction = @video_frame_extraction_service.extract(
+            video_bytes: video_bytes,
+            story_id: media_hash[:reference_id].to_s.presence || "local_provider_video",
+            content_type: media_hash[:content_type]
+          )
+          frames = Array(extraction[:frames]).filter_map do |row|
+            payload = row.is_a?(Hash) ? row : {}
+            bytes = payload[:image_bytes].to_s.b
+            bytes = payload["image_bytes"].to_s.b if bytes.blank?
+            bytes.presence
+          end.first(VISION_FRAME_SAMPLE_LIMIT)
+
+          return {
+            images: frames,
+            source: "ffmpeg_video_frames",
+            reason: extraction.dig(:metadata, :reason) || extraction.dig("metadata", "reason")
+          }
+        end
+
+        {
+          images: [],
+          source: media_type.presence || "unknown_media",
+          reason: "unsupported_media_type"
+        }
+      rescue StandardError => e
+        {
+          images: [],
+          source: "ffmpeg_video_frames",
+          reason: "frame_extraction_error:#{e.class.name}"
+        }
+      end
+
+      def merge_visual_labels(*rows)
+        rows.flatten.map(&:to_s).map(&:downcase).map(&:strip).reject(&:blank?).uniq.first(40)
       end
 
       def extract_historical_comments(post_payload)

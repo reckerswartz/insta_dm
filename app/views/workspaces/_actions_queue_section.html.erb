@@ -1,11 +1,16 @@
 <% rows = Array(queue_result[:items]) %>
 <% stats = queue_result[:stats].is_a?(Hash) ? queue_result[:stats] : {} %>
 <% refreshed_time = begin Time.zone.parse(stats[:refreshed_at].to_s) rescue nil end %>
+<% service_queue_metrics = Array(stats[:service_queue_metrics]) %>
 
 <div class="workspace-actions-stats-row">
   <span class="pill queued">Total: <%= stats[:total_items].to_i %></span>
   <span class="pill sent">Ready: <%= stats[:ready_items].to_i %></span>
   <span class="pill running">Processing: <%= stats[:processing_items].to_i %></span>
+  <span class="pill queued">Queued: <%= stats[:queued_items].to_i %></span>
+  <span class="pill partial">Partial: <%= stats[:partial_items].to_i %></span>
+  <span class="pill failed">Failed: <%= stats[:failed_items].to_i %></span>
+  <span class="pill">Avg progress: <%= stats[:average_progress_percent].to_i %>%</span>
   <span class="pill">Enqueued now: <%= stats[:enqueued_now].to_i %></span>
   <% if stats[:enqueue_blocked_reason].to_s.present? %>
     <span class="pill failed">Enqueue paused: <%= stats[:enqueue_blocked_reason].to_s.humanize %></span>
@@ -14,6 +19,17 @@
     <span class="meta">Updated <%= relative_time_with_tooltip(refreshed_time) %></span>
   <% end %>
 </div>
+
+<% if service_queue_metrics.any? %>
+  <div class="workspace-actions-stats-row">
+    <% service_queue_metrics.each do |row| %>
+      <% service_name = row[:service].to_s.humanize %>
+      <% pending = row[:pending].to_i %>
+      <% row_class = pending.positive? ? "queued" : "sent" %>
+      <span class="pill <%= row_class %>"><%= service_name %>: <%= pending %></span>
+    <% end %>
+  </div>
+<% end %>
 
 <% if rows.any? %>
   <div class="table-scroll workspace-actions-table-scroll">
@@ -35,14 +51,24 @@
           <% metadata = item[:metadata].is_a?(Hash) ? item[:metadata] : {} %>
           <% suggestions = Array(item[:suggestions]).first(3) %>
           <% status = item[:processing_status].to_s %>
+          <% lifecycle_state = item[:lifecycle_state].to_s.presence || "queued" %>
+          <% progress_completed = item[:progress_completed].to_i %>
+          <% progress_total = item[:progress_total].to_i %>
+          <% progress_percent = item[:progress_percent].to_i %>
+          <% stage_log = Array(item[:stage_log]) %>
+          <% stage_rows = Array(item[:stage_rows]) %>
+          <% insights = item[:engagement_insights].is_a?(Hash) ? item[:engagement_insights] : {} %>
+          <% send_enabled = ActiveModel::Type::Boolean.new.cast(item[:send_enabled]) %>
           <% status_class =
-              case status
+              case lifecycle_state
               when "ready"
                 "sent"
               when "failed"
                 "failed"
-              when "running", "waiting_build_history", "waiting_profile_analysis", "waiting_post_analysis", "waiting_media_download"
+              when "processing"
                 "running"
+              when "partial"
+                "partial"
               else
                 "queued"
               end %>
@@ -109,28 +135,75 @@
               <% if suggestions.any? %>
                 <p class="meta compact-meta-top"><strong><%= suggestions.size %></strong> suggestions ready</p>
                 <details class="details-box workspace-suggestions-details">
-                  <summary>View and post</summary>
+                  <summary>View and send</summary>
                   <ol class="compact-numbered-list tight">
                     <% suggestions.each_with_index do |text, idx| %>
                       <li class="meta">
                         <span><%= text %></span>
                         <span class="workspace-suggestion-actions">
-                          <%= button_to "Post ##{idx + 1}",
+                          <%= button_to "Send ##{idx + 1}",
                                 forward_comment_instagram_profile_instagram_profile_post_path(profile, post, comment: text),
                                 method: :post,
+                                disabled: !send_enabled,
                                 class: "btn small secondary" %>
                         </span>
                       </li>
                     <% end %>
                   </ol>
                 </details>
+                <% unless send_enabled %>
+                  <p class="meta compact-meta-top">Send is disabled by engagement policy.</p>
+                <% end %>
               <% else %>
                 <span class="meta">Suggestions pending</span>
               <% end %>
             </td>
             <td>
-              <span class="pill <%= status_class %>"><%= status.humanize %></span>
+              <span class="pill <%= status_class %>"><%= lifecycle_state.humanize %></span>
               <p class="meta compact-meta-top"><%= item[:processing_message].to_s.presence || "Queued for background processing." %></p>
+              <p class="meta compact-meta-top">Progress: <strong><%= progress_completed %>/<%= progress_total %></strong> (<%= progress_percent %>%)</p>
+              <% if insights.any? %>
+                <p class="meta compact-meta-top">
+                  Type: <%= insights[:content_type].to_s.presence || "unknown" %>,
+                  Ownership: <%= insights[:ownership].to_s.presence || "unknown" %>,
+                  Suitable: <%= insights.key?(:engagement_suitable) ? (insights[:engagement_suitable] ? "yes" : "no") : "n/a" %>
+                </p>
+              <% end %>
+              <% if stage_rows.any? %>
+                <details class="details-box workspace-suggestions-details">
+                  <summary>Pipeline stages</summary>
+                  <ul class="compact-list tight meta">
+                    <% stage_rows.each do |row| %>
+                      <li>
+                        <strong><%= row[:label].to_s %>:</strong>
+                        <%= row[:state].to_s.humanize %>
+                        <% if row[:updated_at].to_s.present? %>
+                          (<%= relative_time_with_tooltip(Time.zone.parse(row[:updated_at].to_s)) rescue row[:updated_at].to_s %>)
+                        <% end %>
+                      </li>
+                    <% end %>
+                  </ul>
+                </details>
+              <% end %>
+              <% if stage_log.any? %>
+                <details class="details-box workspace-suggestions-details">
+                  <summary>Stage log</summary>
+                  <ul class="compact-list tight meta">
+                    <% stage_log.last(10).reverse_each do |log_entry| %>
+                      <li>
+                        <strong><%= log_entry[:stage].to_s.humanize %></strong> →
+                        <%= log_entry[:status].to_s.humanize %>
+                        <% if log_entry[:at].to_s.present? %>
+                          (<%= relative_time_with_tooltip(Time.zone.parse(log_entry[:at].to_s)) rescue log_entry[:at].to_s %>)
+                        <% end %>
+                        <% if log_entry[:message].to_s.present? %>
+                          - <%= log_entry[:message].to_s %>
+                        <% end %>
+                      </li>
+                    <% end %>
+                  </ul>
+                </details>
+              <% end %>
             </td>
             <td class="table-actions">
               <%= link_to "Profile", instagram_profile_path(profile), class: "btn small secondary" %>
@@ -146,6 +219,21 @@
                       generate_comments: true,
                       enforce_comment_evidence_policy: false,
                       retry_on_incomplete_profile: false
+                    },
+                    class: "btn small secondary" %>
+              <%= button_to "Regenerate All",
+                    analyze_instagram_profile_instagram_profile_post_path(profile, post),
+                    method: :post,
+                    params: {
+                      analyze_visual: true,
+                      analyze_faces: false,
+                      run_ocr: false,
+                      run_video: true,
+                      run_metadata: true,
+                      generate_comments: true,
+                      enforce_comment_evidence_policy: true,
+                      retry_on_incomplete_profile: true,
+                      regenerate_all: true
                     },
                     class: "btn small secondary" %>
             </td>

@@ -8,6 +8,26 @@ class PostInstagramProfileCommentJob < ApplicationJob
     action_log = profile.instagram_profile_action_logs.find_by(id: profile_action_log_id)
     action_log&.mark_running!(extra_metadata: { queue_name: queue_name, active_job_id: job_id })
 
+    guard = comment_posting_guard(post: post)
+    unless ActiveModel::Type::Boolean.new.cast(guard[:allow])
+      reason = guard[:reason].to_s.presence || "Post is not suitable for engagement."
+      action_log&.mark_failed!(
+        error_message: reason,
+        extra_metadata: {
+          active_job_id: job_id,
+          media_id: media_id.to_s,
+          blocked_reason_code: guard[:reason_code].to_s
+        }
+      )
+      Turbo::StreamsChannel.broadcast_append_to(
+        account,
+        target: "notifications",
+        partial: "shared/notification",
+        locals: { kind: "alert", message: "Comment skipped for #{post.shortcode}: #{reason}" }
+      )
+      return
+    end
+
     result = Instagram::Client.new(account: account).post_comment_to_media!(
       media_id: media_id.to_s,
       shortcode: post.shortcode.to_s,
@@ -47,5 +67,63 @@ class PostInstagramProfileCommentJob < ApplicationJob
       locals: { kind: "alert", message: "Comment post failed: #{e.message}" }
     ) if defined?(account) && account
     raise
+  end
+
+  private
+
+  def comment_posting_guard(post:)
+    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
+    policy = metadata["comment_generation_policy"].is_a?(Hash) ? metadata["comment_generation_policy"] : {}
+    reason_code = policy["blocked_reason_code"].to_s
+    reason = policy["blocked_reason"].to_s
+
+    if policy["status"].to_s == "blocked" && reason_code.in?(%w[unsuitable_for_engagement low_relevance_suggestions])
+      return {
+        allow: false,
+        reason_code: reason_code,
+        reason: reason.presence || "Comment blocked by engagement suitability policy."
+      }
+    end
+
+    classification = policy["engagement_classification"]
+    classification = metadata["engagement_classification"] unless classification.is_a?(Hash)
+    if classification.is_a?(Hash)
+      ownership = classification["ownership"].to_s
+      same_owner =
+        if classification.key?("same_profile_owner_content")
+          ActiveModel::Type::Boolean.new.cast(classification["same_profile_owner_content"])
+        end
+      content_type = classification["content_type"].to_s
+      blocked_content_type = %w[meme quote music_share religious_viral promotional generic_reshared reshared_content].include?(content_type)
+
+      if same_owner == false || (ownership.present? && ownership != "original")
+        return {
+          allow: false,
+          reason_code: "ownership_mismatch",
+          reason: "Post ownership is not original to this profile."
+        }
+      end
+
+      if blocked_content_type
+        return {
+          allow: false,
+          reason_code: "unsuitable_content_type",
+          reason: "Post content type '#{content_type}' is excluded from engagement."
+        }
+      end
+
+      if classification.key?("engagement_suitable") &&
+          !ActiveModel::Type::Boolean.new.cast(classification["engagement_suitable"])
+        return {
+          allow: false,
+          reason_code: "unsuitable_for_engagement",
+          reason: classification["summary"].to_s.presence || "Post is classified as unsuitable for engagement."
+        }
+      end
+    end
+
+    { allow: true }
+  rescue StandardError
+    { allow: true }
   end
 end
