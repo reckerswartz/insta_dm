@@ -41,6 +41,48 @@ RSpec.describe Jobs::FailureRetry do
     assert_equal 1, failure.metadata.dig("retry_state", "attempts").to_i
   end
 
+  it "skips retry for llm comment failures while the event is still running" do
+    account = InstagramAccount.create!(username: "acct_retry_llm_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "profile_retry_llm_#{SecureRandom.hex(4)}")
+    event = profile.instagram_profile_events.create!(
+      kind: "story_downloaded",
+      external_id: "evt_retry_llm_#{SecureRandom.hex(4)}",
+      detected_at: Time.current,
+      llm_comment_status: "running",
+      metadata: {}
+    )
+    failure = BackgroundJobFailure.create!(
+      active_job_id: SecureRandom.uuid,
+      queue_name: "ai_llm_comment_queue",
+      job_class: "GenerateLlmCommentJob",
+      arguments_json: JSON.generate(
+        [
+          {
+            instagram_profile_event_id: event.id,
+            provider: "local",
+            requested_by: "spec"
+          }
+        ]
+      ),
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      error_class: "Timeout::Error",
+      error_message: "timed out",
+      failure_kind: "transient",
+      retryable: true,
+      occurred_at: Time.current,
+      metadata: {
+        retry_state: {
+          attempts: 0
+        }
+      }
+    )
+
+    expect do
+      described_class.enqueue!(failure)
+    end.to raise_error(Jobs::FailureRetry::RetryError, /already queued or running/)
+  end
+
   def build_visual_failure(pipeline_status:, visual_status:)
     account = InstagramAccount.create!(username: "acct_retry_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "profile_retry_#{SecureRandom.hex(4)}", followers_count: 450)

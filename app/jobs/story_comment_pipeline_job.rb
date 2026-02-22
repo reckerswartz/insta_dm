@@ -134,4 +134,50 @@ class StoryCommentPipelineJob < ApplicationJob
   rescue StandardError
     {}
   end
+
+  def with_pipeline_heartbeat(event:, pipeline_state:, pipeline_run_id:, step:, message:, interval_seconds: 20, progress: nil, details: nil)
+    stop = false
+    heartbeat = Thread.new do
+      Thread.current.abort_on_exception = false
+      until stop
+        sleep interval_seconds
+        break if stop
+
+        pipeline_state.touch_pipeline_heartbeat!(
+          run_id: pipeline_run_id,
+          active_job_id: job_id,
+          step: step,
+          note: message,
+          details: details
+        )
+        report_stage!(
+          event: event,
+          stage: step,
+          state: "running",
+          progress: progress || step_progress(step, :running),
+          message: message,
+          details: (details || {}).merge(pipeline_run_id: pipeline_run_id, heartbeat: true)
+        )
+        Ops::StructuredLogger.info(
+          event: "llm_comment.pipeline.heartbeat",
+          payload: {
+            event_id: event.id,
+            instagram_profile_id: event.instagram_profile_id,
+            pipeline_run_id: pipeline_run_id,
+            step: step,
+            active_job_id: job_id,
+            queue_name: queue_name,
+            note: message
+          }
+        )
+      end
+    rescue StandardError
+      nil
+    end
+
+    yield
+  ensure
+    stop = true
+    heartbeat&.join(0.25)
+  end
 end

@@ -94,7 +94,7 @@ RSpec.describe GenerateLlmCommentJob do
     expect(event.llm_comment_last_error).to include("deferred too many times")
   end
 
-  it "marks llm comment status as failed when timeout occurs" do
+  it "re-enqueues llm comment generation when timeout guardrail is reached" do
     allow(Ops::ResourceGuard).to receive(:allow_ai_task?).and_return(
       { allow: true, reason: nil, retry_in_seconds: nil, snapshot: {} }
     )
@@ -111,11 +111,15 @@ RSpec.describe GenerateLlmCommentJob do
 
     allow(LlmComment::GenerationService).to receive(:new).and_return(instance_double(LlmComment::GenerationService, call: true))
     allow(Timeout).to receive(:timeout).and_raise(Timeout::Error)
+    resumed_job = instance_double(ActiveJob::Base, job_id: "job-timeout-resume")
+    expect(described_class).to receive(:set).with(wait: 20.seconds).and_return(described_class)
+    expect(described_class).to receive(:perform_later).and_return(resumed_job)
 
     job.perform(instagram_profile_event_id: event.id, provider: "local", requested_by: "spec")
 
-    expect(event.reload.llm_comment_status).to eq("failed")
-    expect(event.llm_comment_last_error).to include("timed out")
+    expect(event.reload.llm_comment_status).to eq("queued")
+    expect(event.llm_comment_last_error).to be_nil
+    expect(event.llm_comment_job_id).to eq("job-timeout-resume")
   end
 
   it "passes regenerate_all through to generation service" do

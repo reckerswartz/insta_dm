@@ -3,7 +3,7 @@
 class FinalizeStoryCommentPipelineJob < StoryCommentPipelineJob
   queue_as Ops::AiServiceQueueRegistry.queue_symbol_for(:pipeline_orchestration)
 
-  MAX_FINALIZE_ATTEMPTS = ENV.fetch("LLM_COMMENT_PIPELINE_FINALIZE_ATTEMPTS", "36").to_i.clamp(8, 120)
+  MAX_FINALIZE_ATTEMPTS = ENV.fetch("LLM_COMMENT_PIPELINE_FINALIZE_ATTEMPTS", "120").to_i.clamp(24, 240)
 
   def perform(instagram_profile_event_id:, pipeline_run_id:, provider: "local", model: nil, requested_by: "system", attempts: 0)
     context = load_story_pipeline_context!(
@@ -40,6 +40,16 @@ class FinalizeStoryCommentPipelineJob < StoryCommentPipelineJob
       end
 
       waiting_on_steps = waiting_steps(pipeline_state: pipeline_state, run_id: pipeline_run_id)
+      pipeline_state.touch_pipeline_heartbeat!(
+        run_id: pipeline_run_id,
+        active_job_id: job_id,
+        step: "parallel_services",
+        note: "Waiting for parallel stage workers to finish.",
+        details: {
+          waiting_on_steps: waiting_on_steps,
+          attempts: attempts.to_i
+        }
+      )
       Ops::StructuredLogger.info(
         event: "llm_comment.pipeline.finalizer_waiting",
         payload: {
@@ -54,6 +64,18 @@ class FinalizeStoryCommentPipelineJob < StoryCommentPipelineJob
             run_id: pipeline_run_id,
             waiting_steps: waiting_on_steps
           )
+        }
+      )
+      report_stage!(
+        event: event,
+        stage: "parallel_services",
+        state: "running",
+        progress: 36,
+        message: "Parallel workers are still processing; waiting before final generation.",
+        details: {
+          pipeline_run_id: pipeline_run_id,
+          waiting_on_steps: waiting_on_steps,
+          attempts: attempts.to_i
         }
       )
 

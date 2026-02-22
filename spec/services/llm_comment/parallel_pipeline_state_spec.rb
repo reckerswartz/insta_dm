@@ -208,4 +208,41 @@ RSpec.describe LlmComment::ParallelPipelineState do
     expect(pipeline["shared_payload"]).to be_nil
     expect(state.steps_requiring_execution(run_id: "run-new-2")).to match_array(LlmComment::ParallelPipelineState::STEP_KEYS)
   end
+
+  it "resumes from a stale running pipeline when prior execution was interrupted" do
+    event = create_story_event
+    stale_time = 40.minutes.ago
+    event.update!(
+      llm_comment_metadata: {
+        "parallel_pipeline" => {
+          "run_id" => "run-stale-1",
+          "status" => "running",
+          "created_at" => stale_time.iso8601,
+          "updated_at" => stale_time.iso8601,
+          "steps" => {
+            "ocr_analysis" => { "status" => "succeeded", "result" => { "text_present" => true } },
+            "vision_detection" => { "status" => "running", "attempts" => 1 },
+            "face_recognition" => { "status" => "pending" },
+            "metadata_extraction" => { "status" => "pending" }
+          }
+        }
+      }
+    )
+
+    state = described_class.new(event: event)
+    result = state.start!(
+      provider: "local",
+      model: "llama3.2-vision:11b",
+      requested_by: "spec",
+      source_job: "spec",
+      active_job_id: "source-job",
+      run_id: "run-resumed-1"
+    )
+
+    expect(result[:started]).to eq(true)
+    expect(result[:resume_mode]).to eq("resume_incomplete")
+    expect(result[:resumed_from_run_id]).to eq("run-stale-1")
+    expect(state.pipeline_for(run_id: "run-resumed-1").dig("steps", "ocr_analysis", "status")).to eq("succeeded")
+    expect(state.steps_requiring_execution(run_id: "run-resumed-1")).to include("vision_detection")
+  end
 end

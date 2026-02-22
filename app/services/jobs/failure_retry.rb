@@ -25,6 +25,7 @@ module Jobs
         raise RetryError, "Unknown job class: #{failure.job_class}" unless job_class
 
         payload = parse_arguments(failure.arguments_json)
+        raise RetryError, "Job is already queued or running; retry skipped to avoid duplicate execution" if retry_in_flight?(failure: failure, payload: payload)
         raise RetryError, "Failure is no longer actionable for retry" unless retry_actionable?(failure: failure, payload: payload)
 
         job = perform_later(job_class: job_class, payload: payload)
@@ -107,6 +108,7 @@ module Jobs
         state = retry_state_for(failure)
         attempts = state["attempts"].to_i
         return false if attempts >= max_attempts
+        return false if retry_in_flight?(failure: failure)
         return false unless retry_actionable?(failure: failure)
 
         last_retry_at = parse_time(state["last_retry_at"])
@@ -167,6 +169,7 @@ module Jobs
       end
 
       def retry_actionable?(failure:, payload: nil)
+        return false if llm_generation_still_processing?(failure: failure, payload: payload)
         return true unless PIPELINE_STEP_BY_JOB_CLASS.key?(failure.job_class.to_s)
 
         args = pipeline_args(payload || parse_arguments(failure.arguments_json))
@@ -187,6 +190,46 @@ module Jobs
         !pipeline_state.step_terminal?(run_id: pipeline_run_id, step: step)
       rescue StandardError
         true
+      end
+
+      def retry_in_flight?(failure:, payload: nil)
+        args = payload || parse_arguments(failure.arguments_json)
+        return true if llm_generation_still_processing?(failure: failure, payload: args)
+        return false unless sidekiq_adapter?
+
+        active_job_id = failure.active_job_id.to_s
+        return false if active_job_id.blank?
+
+        require "sidekiq/api"
+        queues = Sidekiq::Queue.all
+
+        Sidekiq::Workers.new.any? { |_pid, _tid, work| work["payload"].to_s.include?(active_job_id) } ||
+          queues.any? { |queue| queue.any? { |job| job.item.to_s.include?(active_job_id) } } ||
+          Sidekiq::RetrySet.new.any? { |job| job.item.to_s.include?(active_job_id) } ||
+          Sidekiq::ScheduledSet.new.any? { |job| job.item.to_s.include?(active_job_id) }
+      rescue StandardError
+        false
+      end
+
+      def llm_generation_still_processing?(failure:, payload:)
+        return false unless failure.job_class.to_s == "GenerateLlmCommentJob"
+
+        args = pipeline_args(payload)
+        event_id = args["instagram_profile_event_id"].to_i
+        return false if event_id <= 0
+
+        event = InstagramProfileEvent.find_by(id: event_id)
+        return false unless event
+
+        event.llm_comment_status.to_s.in?(%w[queued running])
+      rescue StandardError
+        false
+      end
+
+      def sidekiq_adapter?
+        Rails.application.config.active_job.queue_adapter.to_s == "sidekiq"
+      rescue StandardError
+        false
       end
 
       def pipeline_args(payload)

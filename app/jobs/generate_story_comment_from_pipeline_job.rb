@@ -48,32 +48,45 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
       }
     )
 
-    payload = LlmComment::StoryIntelligencePayloadResolver.new(
+    generation_result = nil
+    with_pipeline_heartbeat(
       event: event,
       pipeline_state: pipeline_state,
       pipeline_run_id: pipeline_run_id,
-      active_job_id: job_id
-    ).fetch!
-
-    event.persist_local_story_intelligence!(payload)
-    report_stage!(
-      event: event,
-      stage: "context_matching",
-      state: "completed",
-      progress: 46,
-      message: "Context matching completed.",
-      details: {
+      step: "llm_generation",
+      interval_seconds: 20,
+      progress: 68,
+      # Local model inference can be slow under CPU/GPU pressure; heartbeats make
+      # prolonged processing explicit so operators can distinguish progress vs. failure.
+      message: "LLM is still processing on local resources; large-model inference may take several minutes."
+    ) do
+      payload = LlmComment::StoryIntelligencePayloadResolver.new(
+        event: event,
+        pipeline_state: pipeline_state,
         pipeline_run_id: pipeline_run_id,
-        source: payload[:source].to_s.presence
-      }
-    )
+        active_job_id: job_id
+      ).fetch!
 
-    generation_result = LlmComment::EventGenerationPipeline.new(
-      event: event,
-      provider: provider,
-      model: model,
-      skip_media_stage_reporting: true
-    ).call
+      event.persist_local_story_intelligence!(payload)
+      report_stage!(
+        event: event,
+        stage: "context_matching",
+        state: "completed",
+        progress: 46,
+        message: "Context matching completed.",
+        details: {
+          pipeline_run_id: pipeline_run_id,
+          source: payload[:source].to_s.presence
+        }
+      )
+
+      generation_result = LlmComment::EventGenerationPipeline.new(
+        event: event,
+        provider: provider,
+        model: model,
+        skip_media_stage_reporting: true
+      ).call
+    end
 
     pipeline_state.mark_pipeline_finished!(
       run_id: pipeline_run_id,

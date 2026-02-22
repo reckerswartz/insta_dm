@@ -13,6 +13,7 @@ module LlmComment
     TERMINAL_STEP_STATUSES = %w[succeeded failed skipped].freeze
     PIPELINE_TERMINAL_STATUSES = %w[completed failed].freeze
     SHARED_PAYLOAD_BUILD_STALE_SECONDS = ENV.fetch("LLM_COMMENT_SHARED_PAYLOAD_STALE_SECONDS", "180").to_i.clamp(30, 900)
+    RUNNING_PIPELINE_STALE_SECONDS = ENV.fetch("LLM_COMMENT_RUNNING_PIPELINE_STALE_SECONDS", "900").to_i.clamp(300, 7200)
 
     def initialize(event:)
       @event = event
@@ -25,7 +26,7 @@ module LlmComment
         event.reload
         metadata = normalized_metadata
         existing = metadata["parallel_pipeline"]
-        if existing.is_a?(Hash) && existing["status"].to_s == "running" && existing["run_id"].to_s.present?
+        if existing_running_and_fresh?(existing)
           return {
             run_id: existing["run_id"].to_s,
             started: false,
@@ -342,13 +343,48 @@ module LlmComment
       end
     end
 
+    def touch_pipeline_heartbeat!(run_id:, active_job_id:, step: nil, note: nil, details: nil)
+      with_pipeline_update(run_id: run_id) do |pipeline, _metadata|
+        heartbeat = pipeline["heartbeat"].is_a?(Hash) ? pipeline["heartbeat"] : {}
+        heartbeat["active_job_id"] = active_job_id.to_s.presence
+        heartbeat["step"] = step.to_s.presence
+        heartbeat["note"] = note.to_s.presence
+        heartbeat["details"] = deep_stringify(details) if details.is_a?(Hash)
+        heartbeat["updated_at"] = iso_timestamp
+        pipeline["heartbeat"] = heartbeat.compact
+      end
+    rescue StandardError
+      nil
+    end
+
   private
+
+    def existing_running_and_fresh?(existing)
+      return false unless existing.is_a?(Hash)
+      return false unless existing["status"].to_s == "running"
+      return false if existing["run_id"].to_s.blank?
+      return false if running_pipeline_stale?(existing)
+
+      true
+    end
+
+    def running_pipeline_stale?(existing)
+      last_update =
+        parse_time(existing["updated_at"]) ||
+        parse_time(existing.dig("heartbeat", "updated_at")) ||
+        parse_time(existing["created_at"])
+      return true unless last_update
+
+      last_update < RUNNING_PIPELINE_STALE_SECONDS.seconds.ago
+    rescue StandardError
+      true
+    end
 
     def resumable_pipeline(existing:, regenerate_all:)
       return nil if ActiveModel::Type::Boolean.new.cast(regenerate_all)
       return nil unless existing.is_a?(Hash)
       return nil if existing["run_id"].to_s.blank?
-      return nil if existing["status"].to_s == "running"
+      return nil if existing["status"].to_s == "running" && !running_pipeline_stale?(existing)
 
       existing.deep_dup
     rescue StandardError

@@ -35,7 +35,7 @@ module Admin
           elsif job.respond_to?(:scheduled_at) && job.scheduled_at.present?
             "scheduled"
           else
-            "running/queued"
+            "processing"
           end
 
         {

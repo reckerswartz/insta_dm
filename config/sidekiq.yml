@@ -1,5 +1,7 @@
 :concurrency: <%= ENV.fetch("SIDEKIQ_CONCURRENCY", 5) %>
-:timeout: 25
+# Give workers more time to shut down gracefully so long-running local LLM
+# inference jobs can checkpoint and be resumed cleanly instead of being cut off.
+:timeout: <%= ENV.fetch("SIDEKIQ_SHUTDOWN_TIMEOUT_SECONDS", 180) %>
 
 :queues:
   # AI and story analysis lanes are isolated by dedicated Sidekiq capsules in

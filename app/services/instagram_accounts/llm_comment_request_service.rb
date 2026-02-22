@@ -319,11 +319,13 @@ module InstagramAccounts
     end
 
     def llm_comment_estimated_seconds(event:, include_queue: false)
-      base = 18
-      queue_factor = include_queue ? (ai_queue_size * 4) : 0
-      attempt_factor = event.llm_comment_attempts.to_i * 6
+      # Local LLM jobs can legitimately run well beyond 5 minutes when model
+      # size is large and compute resources are limited.
+      base = 120
+      queue_factor = include_queue ? (ai_queue_size * 18) : 0
+      attempt_factor = event.llm_comment_attempts.to_i * 30
       preprocess_factor = story_local_context_preprocess_penalty(event: event)
-      (base + queue_factor + attempt_factor + preprocess_factor).clamp(10, 240)
+      (base + queue_factor + attempt_factor + preprocess_factor).clamp(30, 1800)
     end
 
     def story_local_context_preprocess_penalty(event:)
