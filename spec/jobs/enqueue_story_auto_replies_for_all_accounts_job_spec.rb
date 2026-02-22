@@ -30,6 +30,8 @@ RSpec.describe "EnqueueStoryAutoRepliesForAllAccountsJobTest" do
 
     account_jobs = enqueued_jobs.select { |row| row[:job] == SyncProfileStoriesForAccountJob }
     expect(account_jobs.length).to eq(2)
+    expect(account_jobs.first[:at]).to be_nil
+    expect(account_jobs.second[:at]).to be_present
 
     account_ids = account_jobs.map do |row|
       args = Array(row[:args]).first.to_h.with_indifferent_access

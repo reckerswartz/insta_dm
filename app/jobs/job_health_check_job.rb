@@ -1,9 +1,6 @@
 class JobHealthCheckJob < ApplicationJob
   queue_as :default
 
-  # Run health checks every 15 minutes
-  self.cron = "*/15 * * * *"
-
   def perform
     Rails.logger.info("[JobHealthCheckJob] Starting job health monitoring")
 

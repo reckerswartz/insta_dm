@@ -30,6 +30,8 @@ RSpec.describe "EnqueueFeedAutoEngagementForAllAccountsJobTest" do
 
     enqueued_feed_jobs = enqueued_jobs.select { |row| row[:job] == AutoEngageHomeFeedJob }
     expect(enqueued_feed_jobs.length).to eq(2)
+    expect(enqueued_feed_jobs.first[:at]).to be_nil
+    expect(enqueued_feed_jobs.second[:at]).to be_present
 
     continuation = enqueued_jobs.find { |row| row[:job] == EnqueueFeedAutoEngagementForAllAccountsJob }
     expect(continuation).to be_present
@@ -66,6 +68,8 @@ RSpec.describe "EnqueueFeedAutoEngagementForAllAccountsJobTest" do
     )
 
     enqueued_feed_jobs = enqueued_jobs.select { |row| row[:job] == AutoEngageHomeFeedJob }
+    expect(enqueued_feed_jobs.first[:at]).to be_nil
+    expect(enqueued_feed_jobs.second[:at]).to be_present
     enqueued_ids = enqueued_feed_jobs.map do |row|
       Array(row[:args]).first.to_h.with_indifferent_access[:instagram_account_id]
     end

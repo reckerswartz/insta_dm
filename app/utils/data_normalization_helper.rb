@@ -129,7 +129,7 @@ module DataNormalizationHelper
   end
 
   def extract_detection_confidence(row)
-    (row[:confidence] || row["confidence"] || row[:score] || row["score"] || row[:max_confidence"] || row["max_confidence"]).to_f
+    (row[:confidence] || row["confidence"] || row[:score] || row["score"] || row[:max_confidence] || row["max_confidence"]).to_f
   end
 
   def extract_detection_bbox(row)

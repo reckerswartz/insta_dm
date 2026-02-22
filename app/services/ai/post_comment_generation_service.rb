@@ -162,9 +162,11 @@ module Ai
 
     def preferred_model
       row = profile&.latest_analysis&.ai_provider_setting
-      row&.config_value("ollama_model").to_s.presence || "mistral:7b"
+      row&.config_value("ollama_fast_model").to_s.presence ||
+        row&.config_value("ollama_model").to_s.presence ||
+        ENV.fetch("OLLAMA_FAST_MODEL", ENV.fetch("OLLAMA_MODEL", "mistral:7b"))
     rescue StandardError
-      "mistral:7b"
+      ENV.fetch("OLLAMA_FAST_MODEL", ENV.fetch("OLLAMA_MODEL", "mistral:7b"))
     end
 
     def post_payload
@@ -238,12 +240,30 @@ module Ai
     def conversational_voice
       summary = profile.instagram_profile_behavior_profile&.behavioral_summary
       summary = {} unless summary.is_a?(Hash)
+      metadata = profile.instagram_profile_behavior_profile&.metadata
+      metadata = {} unless metadata.is_a?(Hash)
+      history_conversation = metadata.dig("history_build", "conversation")
+      history_conversation = {} unless history_conversation.is_a?(Hash)
 
       {
         profile_tags: profile.profile_tags.pluck(:name).map(&:to_s).uniq.first(10),
         recurring_topics: hash_keys(summary["topic_clusters"]),
         recurring_hashtags: hash_keys(summary["top_hashtags"]),
-        frequent_people_labels: frequent_people_labels(summary["frequent_secondary_persons"])
+        frequent_people_labels: frequent_people_labels(summary["frequent_secondary_persons"]),
+        suggested_openers: Array(history_conversation["suggested_openers"]).map { |value| value.to_s.byteslice(0, 80) }.reject(&:blank?).first(6),
+        recent_incoming_messages: Array(history_conversation["recent_incoming_messages"]).first(2).map do |row|
+          data = row.is_a?(Hash) ? row : {}
+          {
+            body: data["body"].to_s.byteslice(0, 140),
+            created_at: data["created_at"].to_s
+          }
+        end,
+        conversation_state: {
+          dm_allowed: ActiveModel::Type::Boolean.new.cast(history_conversation["dm_allowed"]),
+          has_incoming_messages: ActiveModel::Type::Boolean.new.cast(history_conversation["has_incoming_messages"]),
+          can_respond_to_existing_messages: ActiveModel::Type::Boolean.new.cast(history_conversation["can_respond_to_existing_messages"]),
+          outgoing_message_count: history_conversation["outgoing_message_count"].to_i
+        }
       }
     rescue StandardError
       {}

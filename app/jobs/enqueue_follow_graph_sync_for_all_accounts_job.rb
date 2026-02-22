@@ -5,6 +5,8 @@ class EnqueueFollowGraphSyncForAllAccountsJob < ApplicationJob
 
   DEFAULT_ACCOUNT_BATCH_SIZE = ENV.fetch("FOLLOW_GRAPH_SYNC_ACCOUNT_BATCH_SIZE", "20").to_i.clamp(5, 120)
   CONTINUATION_WAIT_SECONDS = ENV.fetch("FOLLOW_GRAPH_SYNC_CONTINUATION_WAIT_SECONDS", "3").to_i.clamp(1, 90)
+  ACCOUNT_ENQUEUE_STAGGER_SECONDS = ENV.fetch("FOLLOW_GRAPH_SYNC_ACCOUNT_ENQUEUE_STAGGER_SECONDS", "5").to_i.clamp(0, 120)
+  ACCOUNT_ENQUEUE_JITTER_SECONDS = ENV.fetch("FOLLOW_GRAPH_SYNC_ACCOUNT_ENQUEUE_JITTER_SECONDS", "3").to_i.clamp(0, 30)
 
   def perform(opts = nil, **kwargs)
     params = normalize_scheduler_params(opts, kwargs, batch_size: DEFAULT_ACCOUNT_BATCH_SIZE, cursor_id: nil)
@@ -26,7 +28,17 @@ class EnqueueFollowGraphSyncForAllAccountsJob < ApplicationJob
       end
 
       run = account.sync_runs.create!(kind: "follow_graph", status: "queued")
-      SyncFollowGraphJob.perform_later(instagram_account_id: account.id, sync_run_id: run.id)
+      enqueue_account_job_with_delay!(
+        job_class: SyncFollowGraphJob,
+        slot_index: enqueued,
+        account_id: account.id,
+        stagger_seconds: ACCOUNT_ENQUEUE_STAGGER_SECONDS,
+        jitter_seconds: ACCOUNT_ENQUEUE_JITTER_SECONDS,
+        args: {
+          instagram_account_id: account.id,
+          sync_run_id: run.id
+        }
+      )
       enqueued += 1
     rescue StandardError
       # best-effort; errors will be recorded by ApplicationJob failure logging

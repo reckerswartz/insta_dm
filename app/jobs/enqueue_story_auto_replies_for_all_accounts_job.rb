@@ -5,6 +5,8 @@ class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
 
   DEFAULT_ACCOUNT_BATCH_SIZE = ENV.fetch("STORY_AUTO_REPLY_ACCOUNT_BATCH_SIZE", "20").to_i.clamp(5, 120)
   CONTINUATION_WAIT_SECONDS = ENV.fetch("STORY_AUTO_REPLY_CONTINUATION_WAIT_SECONDS", "3").to_i.clamp(1, 90)
+  ACCOUNT_ENQUEUE_STAGGER_SECONDS = ENV.fetch("STORY_AUTO_REPLY_ACCOUNT_ENQUEUE_STAGGER_SECONDS", "5").to_i.clamp(0, 120)
+  ACCOUNT_ENQUEUE_JITTER_SECONDS = ENV.fetch("STORY_AUTO_REPLY_ACCOUNT_ENQUEUE_JITTER_SECONDS", "3").to_i.clamp(0, 30)
 
   def perform(opts = nil, **kwargs)
     params = normalize_scheduler_params(
@@ -37,13 +39,20 @@ class EnqueueStoryAutoRepliesForAllAccountsJob < ApplicationJob
         next
       end
 
-      SyncProfileStoriesForAccountJob.perform_later(
-        instagram_account_id: account.id,
-        story_limit: profile_limit,
-        stories_per_profile: max_stories_i,
-        with_comments: true,
-        require_auto_reply_tag: true,
-        force_analyze_all: force
+      enqueue_account_job_with_delay!(
+        job_class: SyncProfileStoriesForAccountJob,
+        slot_index: enqueued,
+        account_id: account.id,
+        stagger_seconds: ACCOUNT_ENQUEUE_STAGGER_SECONDS,
+        jitter_seconds: ACCOUNT_ENQUEUE_JITTER_SECONDS,
+        args: {
+          instagram_account_id: account.id,
+          story_limit: profile_limit,
+          stories_per_profile: max_stories_i,
+          with_comments: true,
+          require_auto_reply_tag: true,
+          force_analyze_all: force
+        }
       )
       enqueued += 1
     rescue StandardError => e

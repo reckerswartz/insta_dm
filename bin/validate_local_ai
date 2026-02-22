@@ -13,6 +13,7 @@ class LocalAIValidator
   def initialize
     @microservice_url = ENV.fetch('LOCAL_AI_SERVICE_URL', 'http://localhost:8000')
     @ollama_url = ENV.fetch('OLLAMA_URL', 'http://localhost:11434')
+    @ollama_model = ENV.fetch('OLLAMA_FAST_MODEL', ENV.fetch('OLLAMA_MODEL', 'mistral:7b'))
     @results = { passed: 0, failed: 0, tests: [] }
   end
 
@@ -75,12 +76,12 @@ class LocalAIValidator
       data = JSON.parse(response.body)
       
       models = data['models'] || []
-      mistral_available = models.any? { |m| m['name'].include?('mistral:7b') }
+      model_available = models.any? { |m| m['name'].include?(@ollama_model) }
       
-      if mistral_available
+      if model_available
         { success: true, details: "Models available: #{models.map { |m| m['name'] }.join(', ')}" }
       else
-        { success: false, error: "mistral:7b model not found" }
+        { success: false, error: "#{@ollama_model} model not found" }
       end
     end
   end
@@ -159,7 +160,7 @@ class LocalAIValidator
   def test_llm_generation
     test("LLM Text Generation") do
       payload = {
-        model: 'mistral:7b',
+        model: @ollama_model,
         prompt: 'Respond with just the word: SUCCESS',
         options: { temperature: 0.1, num_predict: 10 }
       }

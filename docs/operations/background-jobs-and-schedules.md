@@ -85,10 +85,25 @@ Additional production jobs:
 Jobs that fan out across accounts use `ScheduledAccountBatching`:
 
 - load accounts in ascending-id batches,
-- enqueue per-account jobs,
+- enqueue per-account jobs with deterministic staggered delay (slot-based wait + account-id jitter),
 - self-schedule continuation with cursor when `has_more`.
 
 This pattern prevents large one-shot queue spikes and keeps scheduling idempotent across large account sets.
+
+Default stagger controls (override via ENV):
+
+- `SCHEDULED_ACCOUNT_ENQUEUE_STAGGER_SECONDS` (default `4`)
+- `SCHEDULED_ACCOUNT_ENQUEUE_JITTER_SECONDS` (default `2`)
+
+Per-orchestrator overrides are also available, for example:
+
+- `CONTINUOUS_PROCESSING_ACCOUNT_ENQUEUE_STAGGER_SECONDS`
+- `FOLLOW_GRAPH_SYNC_ACCOUNT_ENQUEUE_STAGGER_SECONDS`
+- `STORY_AUTO_REPLY_ACCOUNT_ENQUEUE_STAGGER_SECONDS`
+- `FEED_AUTO_ENGAGEMENT_ACCOUNT_ENQUEUE_STAGGER_SECONDS`
+- `PROFILE_SCAN_ACCOUNT_ENQUEUE_STAGGER_SECONDS`
+- `PROFILE_REFRESH_ACCOUNT_ENQUEUE_STAGGER_SECONDS`
+- `AVATAR_SYNC_ACCOUNT_ENQUEUE_STAGGER_SECONDS`
 
 Follow graph sync safety:
 

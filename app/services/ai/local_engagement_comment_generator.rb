@@ -3,9 +3,20 @@ require "net/http"
 
 module Ai
   class LocalEngagementCommentGenerator
-    DEFAULT_MODEL = "mistral:7b".freeze
+    DEFAULT_MODEL = ENV.fetch("OLLAMA_MODEL", "mistral:7b").freeze
+    DEFAULT_FAST_MODEL = ENV.fetch("OLLAMA_FAST_MODEL", DEFAULT_MODEL).freeze
+    DEFAULT_QUALITY_MODEL = ENV.fetch("OLLAMA_QUALITY_MODEL", DEFAULT_MODEL).freeze
     MIN_SUGGESTIONS = 3
     MAX_SUGGESTIONS = 8
+    PRIMARY_TEMPERATURE = ENV.fetch("LLM_COMMENT_PRIMARY_TEMPERATURE", "0.65").to_f.clamp(0.1, 1.2)
+    QUALITY_TEMPERATURE = ENV.fetch("LLM_COMMENT_QUALITY_TEMPERATURE", "0.55").to_f.clamp(0.1, 1.2)
+    PRIMARY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_PRIMARY_MAX_TOKENS", "180").to_i.clamp(80, 420)
+    PRIMARY_RETRY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_PRIMARY_RETRY_MAX_TOKENS", "130").to_i.clamp(60, 320)
+    QUALITY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_QUALITY_MAX_TOKENS", "240").to_i.clamp(120, 520)
+    QUALITY_RETRY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_QUALITY_RETRY_MAX_TOKENS", "170").to_i.clamp(80, 360)
+    ESCALATION_MIN_ACCEPTED_SUGGESTIONS = ENV.fetch("LLM_COMMENT_ESCALATION_MIN_ACCEPTED", "5").to_i.clamp(MIN_SUGGESTIONS, MAX_SUGGESTIONS)
+    ESCALATION_MAX_REJECT_RATIO = ENV.fetch("LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO", "0.45").to_f.clamp(0.0, 1.0)
+    ESCALATION_MIN_GROUNDED_RATIO = ENV.fetch("LLM_COMMENT_ESCALATION_MIN_GROUNDED_RATIO", "0.55").to_f.clamp(0.0, 1.0)
     MIN_DETECTION_ANCHOR_CONFIDENCE = 0.38
     STRONG_DETECTION_ANCHOR_CONFIDENCE = 0.55
     STORY_MODE_HINTS = {
@@ -61,11 +72,15 @@ module Ai
       Errno::ECONNRESET,
       Errno::ECONNREFUSED
     ].freeze
-    MAX_CONTEXT_JSON_CHARS = ENV.fetch("LLM_COMMENT_MAX_CONTEXT_JSON_CHARS", "4200").to_i.clamp(1800, 12000)
+    MAX_CONTEXT_JSON_CHARS = ENV.fetch("LLM_COMMENT_MAX_CONTEXT_JSON_CHARS", "3200").to_i.clamp(1600, 12000)
+    TARGET_CONTEXT_JSON_CHARS = ENV.fetch("LLM_COMMENT_TARGET_CONTEXT_JSON_CHARS", "2600").to_i.clamp(1200, 10000)
 
     def initialize(ollama_client:, model: nil, policy_engine: nil)
       @ollama_client = ollama_client
-      @model = model.to_s.presence || DEFAULT_MODEL
+      @primary_model = model.to_s.presence || DEFAULT_FAST_MODEL
+      @quality_model = ENV.fetch("OLLAMA_QUALITY_MODEL", DEFAULT_QUALITY_MODEL).to_s.presence || @primary_model
+      @enable_model_escalation = ActiveModel::Type::Boolean.new.cast(ENV.fetch("LLM_COMMENT_ENABLE_MODEL_ESCALATION", "true"))
+      @model = @primary_model
       @policy_engine = policy_engine || Ai::CommentPolicyEngine.new
     end
 
@@ -103,52 +118,48 @@ module Ai
         conversational_voice: conversational_voice,
         scored_context: scored_context
       )
-
-      resp = @ollama_client.generate(
-        model: @model,
-        prompt: prompt,
-        temperature: 0.7,
-        max_tokens: 300
-      )
-      llm_telemetry = build_llm_telemetry(prompt: prompt, response_payload: resp)
-
       @last_topics_for_policy = Array(topics).map(&:to_s)
       @last_image_description_for_policy = image_description.to_s
-      suggestions = evaluate_suggestions(
-        suggestions: parse_comment_suggestions(resp),
-        historical_comments: historical_comments,
-        scored_context: scored_context
-      )
-      suggestions = diversify_suggestions(
-        suggestions: suggestions,
+
+      primary_pass = execute_model_pass(
+        model: @primary_model,
+        prompt: prompt,
+        tier: :primary,
         topics: topics,
         image_description: image_description,
-        channel: channel,
-        scored_context: scored_context
+        historical_comments: historical_comments,
+        scored_context: scored_context,
+        verified_story_facts: verified_story_facts,
+        channel: channel
       )
 
-      if suggestions.size < MIN_SUGGESTIONS
-        retry_resp = @ollama_client.generate(
-          model: @model,
-          prompt: "#{prompt}\n\nReturn strict JSON only. Ensure 8 non-empty suggestions.",
-          temperature: 0.4,
-          max_tokens: 220
-        )
-        llm_telemetry[:retry] = build_llm_telemetry(prompt: prompt, response_payload: retry_resp)
-        retry_suggestions = evaluate_suggestions(
-          suggestions: parse_comment_suggestions(retry_resp),
-          historical_comments: historical_comments,
-          scored_context: scored_context
-        )
-        retry_suggestions = diversify_suggestions(
-          suggestions: retry_suggestions,
+      quality_pass = nil
+      escalated = false
+      escalation_reasons = escalation_reasons_for(pass: primary_pass)
+      if should_escalate_to_quality_model?(reasons: escalation_reasons)
+        quality_pass = execute_model_pass(
+          model: @quality_model,
+          prompt: prompt,
+          tier: :quality,
           topics: topics,
           image_description: image_description,
-          channel: channel,
-          scored_context: scored_context
+          historical_comments: historical_comments,
+          scored_context: scored_context,
+          verified_story_facts: verified_story_facts,
+          channel: channel
         )
-        suggestions = retry_suggestions if retry_suggestions.size >= MIN_SUGGESTIONS
+        escalated = true
       end
+
+      selected_pass = choose_best_model_pass(primary_pass: primary_pass, quality_pass: quality_pass)
+      suggestions = Array(selected_pass[:suggestions]).first(MAX_SUGGESTIONS)
+      llm_telemetry = merge_model_telemetry(
+        selected_pass: selected_pass,
+        primary_pass: primary_pass,
+        quality_pass: quality_pass,
+        escalated: escalated,
+        escalation_reasons: escalation_reasons
+      )
 
       if suggestions.size < MIN_SUGGESTIONS
         fallback = fallback_comments(
@@ -159,9 +170,9 @@ module Ai
           verified_story_facts: verified_story_facts
         ).first(MAX_SUGGESTIONS)
         return {
-          model: @model,
+          model: selected_pass[:model] || @model,
           prompt: prompt,
-          raw: resp,
+          raw: selected_pass[:raw].is_a?(Hash) ? selected_pass[:raw] : {},
           source: "fallback",
           status: "fallback_used",
           fallback_used: true,
@@ -172,9 +183,9 @@ module Ai
       end
 
       {
-        model: @model,
+        model: selected_pass[:model] || @model,
         prompt: prompt,
-        raw: resp,
+        raw: selected_pass[:raw].is_a?(Hash) ? selected_pass[:raw] : {},
         source: "ollama",
         status: "ok",
         fallback_used: false,
@@ -300,6 +311,7 @@ module Ai
         - Every suggestion must reference current_story.topics or current_story.visual_anchors
         - Keep at least 3 suggestions neutral-safe
         - Include 1-2 light conversational questions
+        - If conversational_voice.recent_incoming_messages exists, align with that topic context without copying message text
         - Avoid explicit/adult/sensitive-trait language
         - Avoid duplicate openings and avoid repeating prior comments
 
@@ -322,7 +334,198 @@ module Ai
       }
     end
 
-    def evaluate_suggestions(suggestions:, historical_comments:, scored_context: {})
+    def execute_model_pass(model:, prompt:, tier:, topics:, image_description:, historical_comments:, scored_context:, verified_story_facts:, channel:)
+      temperature = tier == :quality ? QUALITY_TEMPERATURE : PRIMARY_TEMPERATURE
+      max_tokens = tier_token_budget(tier: tier, prompt: prompt)
+      retry_max_tokens = tier_retry_token_budget(tier: tier, prompt: prompt)
+
+      resp = @ollama_client.generate(
+        model: model,
+        prompt: prompt,
+        temperature: temperature,
+        max_tokens: max_tokens
+      )
+      telemetry = build_llm_telemetry(prompt: prompt, response_payload: resp)
+
+      parsed_suggestions = parse_comment_suggestions(resp)
+      evaluation = evaluate_suggestions(
+        suggestions: parsed_suggestions,
+        historical_comments: historical_comments,
+        scored_context: scored_context,
+        include_diagnostics: true
+      )
+      suggestions = diversify_suggestions(
+        suggestions: evaluation[:accepted],
+        topics: topics,
+        image_description: image_description,
+        channel: channel,
+        scored_context: scored_context
+      )
+
+      retry_used = false
+      if suggestions.size < MIN_SUGGESTIONS
+        retry_resp = @ollama_client.generate(
+          model: model,
+          prompt: "#{prompt}\n\nReturn strict JSON only. Ensure 8 non-empty suggestions.",
+          temperature: [temperature - 0.15, 0.2].max,
+          max_tokens: retry_max_tokens
+        )
+        telemetry[:retry] = build_llm_telemetry(prompt: prompt, response_payload: retry_resp)
+        retry_parsed = parse_comment_suggestions(retry_resp)
+        retry_evaluation = evaluate_suggestions(
+          suggestions: retry_parsed,
+          historical_comments: historical_comments,
+          scored_context: scored_context,
+          include_diagnostics: true
+        )
+        retry_suggestions = diversify_suggestions(
+          suggestions: retry_evaluation[:accepted],
+          topics: topics,
+          image_description: image_description,
+          channel: channel,
+          scored_context: scored_context
+        )
+        if retry_suggestions.size >= suggestions.size
+          resp = retry_resp
+          evaluation = retry_evaluation
+          suggestions = retry_suggestions
+          retry_used = true
+        end
+      end
+
+      {
+        model: model,
+        raw: resp,
+        suggestions: suggestions.first(MAX_SUGGESTIONS),
+        telemetry: telemetry,
+        accepted_count: suggestions.size,
+        parsed_count: evaluation[:raw_count],
+        rejected_count: evaluation[:rejected_count],
+        reject_ratio: evaluation[:reject_ratio],
+        grounded_ratio: grounded_suggestion_ratio(
+          suggestions: suggestions,
+          topics: topics,
+          image_description: image_description,
+          verified_story_facts: verified_story_facts,
+          scored_context: scored_context
+        ),
+        retry_used: retry_used,
+        tier: tier.to_s
+      }
+    end
+
+    def tier_token_budget(tier:, prompt:)
+      baseline = tier == :quality ? QUALITY_MAX_TOKENS : PRIMARY_MAX_TOKENS
+      prompt_chars = prompt.to_s.length
+      return [baseline - 70, 80].max if prompt_chars > 9000
+      return [baseline - 40, 80].max if prompt_chars > 7000
+      return [baseline - 20, 80].max if prompt_chars > 5000
+
+      baseline
+    end
+
+    def tier_retry_token_budget(tier:, prompt:)
+      baseline = tier == :quality ? QUALITY_RETRY_MAX_TOKENS : PRIMARY_RETRY_MAX_TOKENS
+      prompt_chars = prompt.to_s.length
+      return [baseline - 40, 60].max if prompt_chars > 9000
+      return [baseline - 20, 60].max if prompt_chars > 7000
+
+      baseline
+    end
+
+    def escalation_reasons_for(pass:)
+      reasons = []
+      accepted_count = pass[:accepted_count].to_i
+      reject_ratio = pass[:reject_ratio].to_f
+      grounded_ratio = pass[:grounded_ratio].to_f
+
+      reasons << "low_accepted_count" if accepted_count < ESCALATION_MIN_ACCEPTED_SUGGESTIONS
+      reasons << "high_reject_ratio" if reject_ratio > ESCALATION_MAX_REJECT_RATIO
+      reasons << "weak_grounding" if grounded_ratio.positive? && grounded_ratio < ESCALATION_MIN_GROUNDED_RATIO
+      reasons
+    end
+
+    def should_escalate_to_quality_model?(reasons:)
+      return false unless @enable_model_escalation
+      return false if reasons.empty?
+      return false if @quality_model.to_s.blank?
+      return false if @quality_model.to_s == @primary_model.to_s
+
+      true
+    end
+
+    def choose_best_model_pass(primary_pass:, quality_pass:)
+      return primary_pass unless quality_pass.is_a?(Hash)
+
+      primary_score = model_pass_score(primary_pass)
+      quality_score = model_pass_score(quality_pass)
+      quality_score >= primary_score ? quality_pass : primary_pass
+    end
+
+    def model_pass_score(pass)
+      accepted = pass[:accepted_count].to_i
+      grounded = pass[:grounded_ratio].to_f
+      reject_ratio = pass[:reject_ratio].to_f
+      retry_penalty = pass[:retry_used] ? 0.2 : 0.0
+
+      accepted + (grounded * 2.5) - (reject_ratio * 2.2) - retry_penalty
+    end
+
+    def merge_model_telemetry(selected_pass:, primary_pass:, quality_pass:, escalated:, escalation_reasons:)
+      selected = selected_pass[:telemetry].is_a?(Hash) ? selected_pass[:telemetry].deep_dup : {}
+      selected[:routing] = {
+        primary_model: @primary_model,
+        quality_model: @quality_model,
+        selected_model: selected_pass[:model].to_s,
+        selected_tier: selected_pass[:tier].to_s,
+        escalated: escalated,
+        escalation_reasons: escalation_reasons,
+        primary_stats: compact_pass_stats(primary_pass),
+        quality_stats: compact_pass_stats(quality_pass)
+      }.compact
+      selected
+    end
+
+    def compact_pass_stats(pass)
+      return nil unless pass.is_a?(Hash)
+
+      {
+        model: pass[:model].to_s,
+        accepted_count: pass[:accepted_count].to_i,
+        parsed_count: pass[:parsed_count].to_i,
+        rejected_count: pass[:rejected_count].to_i,
+        reject_ratio: pass[:reject_ratio].to_f.round(3),
+        grounded_ratio: pass[:grounded_ratio].to_f.round(3),
+        retry_used: ActiveModel::Type::Boolean.new.cast(pass[:retry_used])
+      }
+    end
+
+    def grounded_suggestion_ratio(suggestions:, topics:, image_description:, verified_story_facts:, scored_context:)
+      anchors = build_visual_anchors(
+        image_description: image_description,
+        topics: topics,
+        verified_story_facts: verified_story_facts,
+        scored_context: scored_context
+      )
+      anchor_tokens = []
+      anchor_tokens.concat(Array(topics).flat_map { |row| tokenize_text(row) })
+      anchor_tokens.concat(Array(anchors).flat_map { |row| tokenize_text(row) })
+      anchor_tokens.concat(extract_keywords_from_text(image_description.to_s))
+      anchor_tokens = anchor_tokens.uniq.reject { |token| NON_VISUAL_CONTEXT_TOKENS.include?(token) }
+      return 1.0 if anchor_tokens.empty?
+
+      rows = Array(suggestions).map(&:to_s).reject(&:blank?)
+      return 0.0 if rows.empty?
+
+      grounded_count = rows.count do |comment|
+        (tokenize_text(comment) & anchor_tokens).any?
+      end
+      grounded_count.to_f / rows.size.to_f
+    rescue StandardError
+      0.0
+    end
+
+    def evaluate_suggestions(suggestions:, historical_comments:, scored_context: {}, include_diagnostics: false)
       memory_comments = []
       memory_comments.concat(Array(historical_comments))
       memory_comments.concat(Array(scored_context.dig(:engagement_memory, :recent_generated_comments)))
@@ -346,7 +549,17 @@ module Ai
         context_keywords: context_keywords,
         max_suggestions: MAX_SUGGESTIONS
       )
-      Array(result[:accepted])
+      accepted = Array(result[:accepted])
+      return accepted unless include_diagnostics
+
+      rejected = Array(result[:rejected])
+      {
+        accepted: accepted,
+        rejected: rejected,
+        raw_count: Array(suggestions).size,
+        rejected_count: rejected.size,
+        reject_ratio: (Array(suggestions).size > 0 ? (rejected.size.to_f / Array(suggestions).size.to_f) : 0.0)
+      }
     end
 
     def diversify_suggestions(suggestions:, topics:, image_description:, channel:, scored_context:)
@@ -546,17 +759,50 @@ module Ai
         data[:current_story][:topics] = Array(data[:current_story][:topics]).first(4)
         data[:current_story][:image_description] = truncate_text(data[:current_story][:image_description], max: 120)
       end
+      return data if prompt_context_within_budget?(data, max_chars: TARGET_CONTEXT_JSON_CHARS)
+
+      apply_aggressive_context_compaction!(data)
       return data if prompt_context_within_budget?(data)
 
       data[:conversational_voice] = {}
+      data[:profile_preparation] = {}
       data[:historical_context][:comparison] = {} if data[:historical_context].is_a?(Hash)
       data
     rescue StandardError
       payload
     end
 
-    def prompt_context_within_budget?(payload)
-      JSON.generate(payload).length <= MAX_CONTEXT_JSON_CHARS
+    def apply_aggressive_context_compaction!(data)
+      if data[:scored_context].is_a?(Hash)
+        data[:scored_context][:prioritized_signals] = Array(data[:scored_context][:prioritized_signals]).first(2)
+        data[:scored_context][:context_keywords] = Array(data[:scored_context][:context_keywords]).first(8)
+      end
+
+      if data[:historical_context].is_a?(Hash)
+        data[:historical_context][:recent_profile_history] = Array(data[:historical_context][:recent_profile_history]).first(1)
+        data[:historical_context][:recent_story_patterns] = Array(data[:historical_context][:recent_story_patterns]).first(1)
+        data[:historical_context][:recent_comments] = Array(data[:historical_context][:recent_comments]).first(1)
+        data[:historical_context][:summary] = truncate_text(data[:historical_context][:summary], max: 90)
+        data[:historical_context][:comparison] = {}
+      end
+
+      if data[:current_story].is_a?(Hash)
+        data[:current_story][:visual_anchors] = Array(data[:current_story][:visual_anchors]).first(4)
+        data[:current_story][:topics] = Array(data[:current_story][:topics]).first(3)
+        data[:current_story][:verified_story_facts] = compact_verified_story_facts(
+          data[:current_story][:verified_story_facts],
+          local_story_intelligence: {},
+          cv_ocr_evidence: {}
+        )
+      end
+
+      if data[:conversational_voice].is_a?(Hash)
+        data[:conversational_voice][:recent_incoming_messages] = Array(data[:conversational_voice][:recent_incoming_messages]).first(1)
+      end
+    end
+
+    def prompt_context_within_budget?(payload, max_chars: MAX_CONTEXT_JSON_CHARS)
+      JSON.generate(payload).length <= max_chars.to_i
     rescue StandardError
       true
     end
@@ -730,6 +976,7 @@ module Ai
 
     def compact_conversational_voice(payload)
       data = payload.is_a?(Hash) ? payload : {}
+      conversation_state = data[:conversation_state].is_a?(Hash) ? data[:conversation_state] : (data["conversation_state"].is_a?(Hash) ? data["conversation_state"] : {})
       {
         author_type: data[:author_type] || data["author_type"],
         profile_tags: Array(data[:profile_tags] || data["profile_tags"]).first(6),
@@ -737,7 +984,22 @@ module Ai
         recurring_topics: Array(data[:recurring_topics] || data["recurring_topics"]).first(8),
         recurring_hashtags: Array(data[:recurring_hashtags] || data["recurring_hashtags"]).first(6),
         frequent_people_labels: Array(data[:frequent_people_labels] || data["frequent_people_labels"]).first(4),
-        prior_comment_examples: Array(data[:prior_comment_examples] || data["prior_comment_examples"]).map { |value| truncate_text(value, max: 80) }.first(3)
+        prior_comment_examples: Array(data[:prior_comment_examples] || data["prior_comment_examples"]).map { |value| truncate_text(value, max: 80) }.first(3),
+        suggested_openers: Array(data[:suggested_openers] || data["suggested_openers"]).map { |value| truncate_text(value, max: 64) }.first(4),
+        recent_incoming_messages: Array(data[:recent_incoming_messages] || data["recent_incoming_messages"]).map do |row|
+          next unless row.is_a?(Hash)
+
+          {
+            body: truncate_text(row[:body] || row["body"], max: 120),
+            created_at: row[:created_at] || row["created_at"]
+          }
+        end.compact.first(2),
+        conversation_state: {
+          dm_allowed: ActiveModel::Type::Boolean.new.cast(conversation_state[:dm_allowed] || conversation_state["dm_allowed"]),
+          has_incoming_messages: ActiveModel::Type::Boolean.new.cast(conversation_state[:has_incoming_messages] || conversation_state["has_incoming_messages"]),
+          can_respond_to_existing_messages: ActiveModel::Type::Boolean.new.cast(conversation_state[:can_respond_to_existing_messages] || conversation_state["can_respond_to_existing_messages"]),
+          outgoing_message_count: (conversation_state[:outgoing_message_count] || conversation_state["outgoing_message_count"]).to_i
+        }
       }.compact
     end
 

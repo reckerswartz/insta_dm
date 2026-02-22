@@ -5,6 +5,8 @@ module Ai
   class OllamaClient
     BASE_URL = ENV.fetch("OLLAMA_URL", "http://localhost:11434").freeze
     DEFAULT_MODEL = ENV.fetch("OLLAMA_MODEL", "mistral:7b").freeze
+    DEFAULT_NUM_CTX = ENV.fetch("OLLAMA_NUM_CTX", "3072").to_i.clamp(1024, 32768)
+    DEFAULT_NUM_THREAD = ENV["OLLAMA_NUM_THREAD"].to_i
     OPEN_TIMEOUT_SECONDS = ENV.fetch("OLLAMA_OPEN_TIMEOUT_SECONDS", "12").to_i.clamp(5, 60)
     READ_TIMEOUT_SECONDS = ENV.fetch("OLLAMA_READ_TIMEOUT_SECONDS", "240").to_i.clamp(30, 600)
     
@@ -27,14 +29,16 @@ module Ai
       { ok: false, message: e.message.to_s }
     end
     
-    def generate(model:, prompt:, temperature: 0.8, max_tokens: 900)
+    def generate(model:, prompt:, temperature: 0.8, max_tokens: 900, num_ctx: nil, num_thread: nil)
       payload = {
         model: model || @default_model,
         prompt: prompt,
-        options: {
+        options: generation_options(
           temperature: temperature,
-          num_predict: max_tokens
-        },
+          max_tokens: max_tokens,
+          num_ctx: num_ctx,
+          num_thread: num_thread
+        ),
         keep_alive: ENV.fetch("OLLAMA_KEEP_ALIVE", "10m"),
         stream: false
       }
@@ -52,14 +56,16 @@ module Ai
       }
     end
     
-    def chat(model:, messages:, temperature: 0.8, max_tokens: 900)
+    def chat(model:, messages:, temperature: 0.8, max_tokens: 900, num_ctx: nil, num_thread: nil)
       payload = {
         model: model || @default_model,
         messages: messages,
-        options: {
+        options: generation_options(
           temperature: temperature,
-          num_predict: max_tokens
-        },
+          max_tokens: max_tokens,
+          num_ctx: num_ctx,
+          num_thread: num_thread
+        ),
         keep_alive: ENV.fetch("OLLAMA_KEEP_ALIVE", "10m"),
         stream: false
       }
@@ -88,6 +94,23 @@ module Ai
     end
     
     private
+
+    def generation_options(temperature:, max_tokens:, num_ctx:, num_thread:)
+      options = {
+        temperature: temperature,
+        num_predict: max_tokens,
+        num_ctx: (num_ctx || DEFAULT_NUM_CTX).to_i.clamp(512, 32768)
+      }
+      resolved_thread_count = if num_thread.nil?
+        DEFAULT_NUM_THREAD
+      else
+        num_thread.to_i
+      end
+      if resolved_thread_count.positive?
+        options[:num_thread] = resolved_thread_count.clamp(1, 128)
+      end
+      options
+    end
     
     def get_json(endpoint)
       uri = URI.parse("#{@base_url}#{endpoint}")

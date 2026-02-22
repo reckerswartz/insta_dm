@@ -8,6 +8,8 @@ class EnqueueContinuousAccountProcessingJob < ApplicationJob
   DEFAULT_ACCOUNT_BATCH_SIZE = ENV.fetch("CONTINUOUS_PROCESSING_ENQUEUE_BATCH_SIZE", "25").to_i.clamp(5, 120)
   CONTINUATION_WAIT_SECONDS = ENV.fetch("CONTINUOUS_PROCESSING_ENQUEUE_CONTINUATION_WAIT_SECONDS", "2").to_i.clamp(1, 60)
   SCHEDULER_CURSOR_CACHE_KEY = "continuous_processing:enqueue_cursor:v1".freeze
+  ACCOUNT_ENQUEUE_STAGGER_SECONDS = ENV.fetch("CONTINUOUS_PROCESSING_ACCOUNT_ENQUEUE_STAGGER_SECONDS", "4").to_i.clamp(0, 120)
+  ACCOUNT_ENQUEUE_JITTER_SECONDS = ENV.fetch("CONTINUOUS_PROCESSING_ACCOUNT_ENQUEUE_JITTER_SECONDS", "2").to_i.clamp(0, 30)
 
   def perform(opts = nil, **kwargs)
     params = normalize_scheduler_params(
@@ -53,9 +55,16 @@ class EnqueueContinuousAccountProcessingJob < ApplicationJob
         next
       end
 
-      ProcessInstagramAccountContinuouslyJob.perform_later(
-        instagram_account_id: account.id,
-        trigger_source: "scheduler"
+      enqueue_account_job_with_delay!(
+        job_class: ProcessInstagramAccountContinuouslyJob,
+        slot_index: enqueued,
+        account_id: account.id,
+        stagger_seconds: ACCOUNT_ENQUEUE_STAGGER_SECONDS,
+        jitter_seconds: ACCOUNT_ENQUEUE_JITTER_SECONDS,
+        args: {
+          instagram_account_id: account.id,
+          trigger_source: "scheduler"
+        }
       )
       enqueued += 1
     rescue StandardError => e

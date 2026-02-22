@@ -55,8 +55,10 @@ class Admin::JobMonitoringController < Admin::BaseController
       end
     end
 
-    redirect_back(fallback_location: admin_job_monitoring_path),
+    redirect_back(
+      fallback_location: admin_job_monitoring_path,
       notice: "Retried #{retried_count} out of #{failures_to_retry.count} selected jobs"
+    )
   end
 
   def job_details

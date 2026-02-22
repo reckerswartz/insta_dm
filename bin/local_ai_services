@@ -15,6 +15,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 HEALTHCHECK_TIMEOUT_SECONDS="${HEALTHCHECK_TIMEOUT_SECONDS:-5}"
 MICROSERVICE_STARTUP_TIMEOUT_SECONDS="${MICROSERVICE_STARTUP_TIMEOUT_SECONDS:-90}"
+OLLAMA_PRIMARY_MODEL="${OLLAMA_FAST_MODEL:-${OLLAMA_MODEL:-mistral:7b}}"
+OLLAMA_QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-${OLLAMA_MODEL:-mistral:7b}}"
 
 # Function to print colored output
 print_status() {
@@ -142,10 +144,14 @@ start_ollama() {
     if check_service "Ollama" 11434 "/api/tags" '"models"'; then
         print_status "Ollama started successfully"
         
-        # Check if model is available
-        if ! ollama list | grep -q "mistral:7b"; then
-            print_status "Pulling mistral:7b model (this may take a while)..."
-            ollama pull mistral:7b
+        # Ensure configured models are available
+        if ! ollama list | grep -Fq "$OLLAMA_PRIMARY_MODEL"; then
+            print_status "Pulling primary model $OLLAMA_PRIMARY_MODEL (this may take a while)..."
+            ollama pull "$OLLAMA_PRIMARY_MODEL"
+        fi
+        if [ "$OLLAMA_QUALITY_MODEL" != "$OLLAMA_PRIMARY_MODEL" ] && ! ollama list | grep -Fq "$OLLAMA_QUALITY_MODEL"; then
+            print_status "Pulling quality model $OLLAMA_QUALITY_MODEL (this may take a while)..."
+            ollama pull "$OLLAMA_QUALITY_MODEL"
         fi
     else
         print_error "Failed to start Ollama"
@@ -224,10 +230,15 @@ status() {
     
     echo ""
     print_status "Model Availability:"
-    if ollama list 2>/dev/null | grep -q "mistral:7b"; then
-        echo "✅ mistral:7b model available"
+    if ollama list 2>/dev/null | grep -Fq "$OLLAMA_PRIMARY_MODEL"; then
+        echo "✅ primary model available: $OLLAMA_PRIMARY_MODEL"
     else
-        echo "❌ mistral:7b model not found"
+        echo "❌ primary model missing: $OLLAMA_PRIMARY_MODEL"
+    fi
+    if ollama list 2>/dev/null | grep -Fq "$OLLAMA_QUALITY_MODEL"; then
+        echo "✅ quality model available: $OLLAMA_QUALITY_MODEL"
+    else
+        echo "❌ quality model missing: $OLLAMA_QUALITY_MODEL"
     fi
     
     echo ""
@@ -235,6 +246,8 @@ status() {
     echo "LOCAL_AI_SERVICE_URL: ${LOCAL_AI_SERVICE_URL:-http://localhost:8000}"
     echo "OLLAMA_URL: ${OLLAMA_URL:-http://localhost:11434}"
     echo "OLLAMA_MODEL: ${OLLAMA_MODEL:-mistral:7b}"
+    echo "OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-$OLLAMA_PRIMARY_MODEL}"
+    echo "OLLAMA_QUALITY_MODEL: $OLLAMA_QUALITY_MODEL"
 }
 
 # Test services
@@ -255,7 +268,7 @@ test_services() {
         print_status "✅ Ollama is responding"
         
         # Test model generation
-        echo "test" | ollama run mistral:7b > /dev/null 2>&1 && \
+        echo "test" | ollama run "$OLLAMA_PRIMARY_MODEL" > /dev/null 2>&1 && \
             print_status "✅ Ollama model generation works" || \
             print_error "❌ Ollama model generation failed"
     else

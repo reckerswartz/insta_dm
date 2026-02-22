@@ -1,5 +1,4 @@
 require_relative "boot"
-require_relative "../lib/job_safety_measures"
 
 require "rails"
 # Pick the frameworks you want:

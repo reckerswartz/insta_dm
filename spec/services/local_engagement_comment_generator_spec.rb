@@ -301,4 +301,66 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     expect(suggestions.any? { |row| row.downcase.include?("plant") || row.downcase.include?("green") }).to eq(true) if anchored
     expect(suggestions.any? { |row| row.strip.empty? }).to eq(false) if no_empty
   end
+
+  it "escalates from fast model to quality model when primary pass quality is low" do
+    fake_client = Class.new do
+      attr_reader :models
+
+      def initialize
+        @models = []
+      end
+
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        @models << model
+        if model == "fast-3b"
+          {
+            "response" => {
+              comment_suggestions: [
+                "Nice post.",
+                "Great vibes.",
+                "Looks cool."
+              ]
+            }.to_json
+          }
+        else
+          {
+            "response" => {
+              comment_suggestions: [
+                "The plant corner and soft light look super calm.",
+                "That green setup feels fresh and intentional.",
+                "Love how the window light frames the plant details.",
+                "This plant styling has such a clean home vibe.",
+                "The texture and color balance here look really good.",
+                "That pot and light combo works so well together.",
+                "Which plant in this setup is your current favorite?",
+                "The cozy green theme comes through clearly here."
+              ]
+            }.to_json
+          }
+        end
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "fast-3b")
+    generator.instance_variable_set(:@enable_model_escalation, true)
+    generator.instance_variable_set(:@quality_model, "quality-7b")
+    result = generator.generate!(
+      post_payload: {},
+      image_description: "Visual elements: potted plant, window light.",
+      topics: ["plant"],
+      author_type: "personal",
+      channel: "story",
+      verified_story_facts: { objects: ["potted plant"] },
+      scored_context: {}
+    )
+
+    telemetry = result[:llm_telemetry].is_a?(Hash) ? result[:llm_telemetry] : {}
+    routing = telemetry[:routing].is_a?(Hash) ? telemetry[:routing] : {}
+
+    expect(fake_client.models).to include("fast-3b")
+    expect(fake_client.models.any? { |row| row != "fast-3b" }).to eq(true)
+    expect(result[:model]).not_to eq("fast-3b")
+    expect(ActiveModel::Type::Boolean.new.cast(routing[:escalated])).to eq(true)
+    expect(Array(routing[:escalation_reasons])).to include("low_accepted_count")
+  end
 end

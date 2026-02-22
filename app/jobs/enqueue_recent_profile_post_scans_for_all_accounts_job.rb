@@ -5,6 +5,8 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
 
   DEFAULT_ACCOUNT_BATCH_SIZE = ENV.fetch("PROFILE_SCAN_ACCOUNT_BATCH_SIZE", "25").to_i.clamp(5, 120)
   CONTINUATION_WAIT_SECONDS = ENV.fetch("PROFILE_SCAN_CONTINUATION_WAIT_SECONDS", "3").to_i.clamp(1, 90)
+  ACCOUNT_ENQUEUE_STAGGER_SECONDS = ENV.fetch("PROFILE_SCAN_ACCOUNT_ENQUEUE_STAGGER_SECONDS", "5").to_i.clamp(0, 120)
+  ACCOUNT_ENQUEUE_JITTER_SECONDS = ENV.fetch("PROFILE_SCAN_ACCOUNT_ENQUEUE_JITTER_SECONDS", "3").to_i.clamp(0, 30)
 
   # Accept a single hash (e.g. from Sidekiq cron/schedule) or keyword args from perform_later(...)
   def perform(opts = nil, **kwargs)
@@ -38,11 +40,18 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
         next
       end
 
-      EnqueueRecentProfilePostScansForAccountJob.perform_later(
-        instagram_account_id: account.id,
-        limit_per_account: limit_per_account,
-        posts_limit: posts_limit_i,
-        comments_limit: comments_limit_i
+      enqueue_account_job_with_delay!(
+        job_class: EnqueueRecentProfilePostScansForAccountJob,
+        slot_index: enqueued_accounts,
+        account_id: account.id,
+        stagger_seconds: ACCOUNT_ENQUEUE_STAGGER_SECONDS,
+        jitter_seconds: ACCOUNT_ENQUEUE_JITTER_SECONDS,
+        args: {
+          instagram_account_id: account.id,
+          limit_per_account: limit_per_account,
+          posts_limit: posts_limit_i,
+          comments_limit: comments_limit_i
+        }
       )
       enqueued_accounts += 1
     rescue StandardError => e

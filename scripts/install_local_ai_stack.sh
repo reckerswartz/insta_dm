@@ -17,7 +17,8 @@ NC='\033[0m' # No Color
 # Configuration
 INSTALL_DIR="$PWD"
 PYTHON_VERSION="3.12"
-OLLAMA_MODEL="mistral:7b"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:3b-instruct}"
+OLLAMA_QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-mistral:7b}"
 
 # Logging
 LOG_FILE="$INSTALL_DIR/installation.log"
@@ -175,9 +176,13 @@ install_ollama() {
         return 1
     fi
     
-    # Pull the model
-    print_status "Pulling $OLLAMA_MODEL model (this may take a while)..."
+    # Pull the models
+    print_status "Pulling primary model $OLLAMA_MODEL (this may take a while)..."
     ollama pull "$OLLAMA_MODEL"
+    if [[ "$OLLAMA_QUALITY_MODEL" != "$OLLAMA_MODEL" ]]; then
+        print_status "Pulling quality model $OLLAMA_QUALITY_MODEL (this may take a while)..."
+        ollama pull "$OLLAMA_QUALITY_MODEL"
+    fi
     
     print_status "Ollama installation completed"
 }
@@ -264,7 +269,11 @@ configure_services() {
     print_status "Configuring Rails AI providers..."
     rails runner "
         AiProviderSetting.where(provider: 'local').first_or_create.update(
-            config: { ollama_model: '$OLLAMA_MODEL' },
+            config: {
+              ollama_model: '$OLLAMA_MODEL',
+              ollama_fast_model: '$OLLAMA_MODEL',
+              ollama_quality_model: '$OLLAMA_QUALITY_MODEL'
+            },
             enabled: true
         )
         AiProviderSetting.where(provider: 'google_cloud').update_all(enabled: false)
@@ -278,8 +287,8 @@ verify_installation() {
     
     # Check Ollama
     print_status "Checking Ollama..."
-    if curl -s http://localhost:11434/api/tags | grep -q "$OLLAMA_MODEL"; then
-        print_status "✅ Ollama is running with $OLLAMA_MODEL model"
+    if curl -s http://localhost:11434/api/tags | grep -Fq "$OLLAMA_MODEL"; then
+        print_status "✅ Ollama is running with primary model $OLLAMA_MODEL"
     else
         print_error "❌ Ollama verification failed"
         return 1
@@ -376,7 +385,7 @@ show_next_steps() {
     echo -e "${GREEN}🎉 Local AI Stack installation completed successfully!${NC}"
     echo ""
     echo -e "${CYAN}What's been installed:${NC}"
-    echo "✅ Ollama (LLM service) with $OLLAMA_MODEL model"
+    echo "✅ Ollama (LLM service) with primary model $OLLAMA_MODEL and quality model $OLLAMA_QUALITY_MODEL"
     echo "✅ Python AI microservice with vision, face, OCR capabilities"
     echo "✅ Rails integration with local AI provider"
     echo "✅ All necessary system dependencies"

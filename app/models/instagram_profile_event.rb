@@ -377,6 +377,10 @@ class InstagramProfileEvent < ApplicationRecord
   def build_conversational_voice_profile(profile:, historical_story_context:, verified_profile_history:, profile_preparation:)
     behavior_summary = profile&.instagram_profile_behavior_profile&.behavioral_summary
     behavior_summary = {} unless behavior_summary.is_a?(Hash)
+    behavior_metadata = profile&.instagram_profile_behavior_profile&.metadata
+    behavior_metadata = {} unless behavior_metadata.is_a?(Hash)
+    history_conversation = behavior_metadata.dig("history_build", "conversation")
+    history_conversation = {} unless history_conversation.is_a?(Hash)
     preparation = profile_preparation.is_a?(Hash) ? profile_preparation : {}
     recent_comments = recent_llm_comments_for_profile(profile).first(6)
     recent_topics = Array(verified_profile_history).flat_map { |row| Array(row[:topics]) }.map(&:to_s).reject(&:blank?).uniq.first(10)
@@ -390,6 +394,20 @@ class InstagramProfileEvent < ApplicationRecord
       recurring_hashtags: Array(behavior_summary["top_hashtags"]).map(&:first).map(&:to_s).reject(&:blank?).first(10),
       frequent_people_labels: Array(behavior_summary["frequent_secondary_persons"]).map { |row| row.is_a?(Hash) ? row["label"] || row[:label] : nil }.map(&:to_s).reject(&:blank?).uniq.first(8),
       prior_comment_examples: recent_comments.map { |value| value.to_s.byteslice(0, 120) },
+      suggested_openers: Array(history_conversation["suggested_openers"]).map { |value| value.to_s.byteslice(0, 80) }.reject(&:blank?).first(6),
+      recent_incoming_messages: Array(history_conversation["recent_incoming_messages"]).first(2).map do |row|
+        data = row.is_a?(Hash) ? row : {}
+        {
+          body: data["body"].to_s.byteslice(0, 140),
+          created_at: data["created_at"].to_s
+        }
+      end,
+      conversation_state: {
+        dm_allowed: ActiveModel::Type::Boolean.new.cast(history_conversation["dm_allowed"]),
+        has_incoming_messages: ActiveModel::Type::Boolean.new.cast(history_conversation["has_incoming_messages"]),
+        can_respond_to_existing_messages: ActiveModel::Type::Boolean.new.cast(history_conversation["can_respond_to_existing_messages"]),
+        outgoing_message_count: history_conversation["outgoing_message_count"].to_i
+      },
       identity_consistency: preparation[:identity_consistency].is_a?(Hash) ? preparation[:identity_consistency] : preparation["identity_consistency"],
       profile_preparation_reason: preparation[:reason].to_s.presence || preparation["reason"].to_s.presence
     }.compact

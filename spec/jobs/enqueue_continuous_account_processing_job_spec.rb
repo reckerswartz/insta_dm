@@ -44,6 +44,8 @@ RSpec.describe "EnqueueContinuousAccountProcessingJobTest" do
 
     queued_processing_jobs = enqueued_jobs.select { |row| row[:job] == ProcessInstagramAccountContinuouslyJob }
     expect(queued_processing_jobs.length).to eq(2)
+    expect(queued_processing_jobs.first[:at]).to be_nil
+    expect(queued_processing_jobs.second[:at]).to be_present
 
     continuation = enqueued_jobs.find { |row| row[:job] == EnqueueContinuousAccountProcessingJob }
     expect(continuation).to be_present
