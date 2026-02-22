@@ -1,0 +1,103 @@
+#!/usr/bin/env ruby
+
+require_relative "../config/environment"
+
+days = (ARGV[0] || "7").to_i.clamp(1, 60)
+limit = (ARGV[1] || "400").to_i.clamp(20, 5000)
+window_start = days.days.ago
+
+def deep_get(hash, *keys)
+  current = hash
+  keys.each do |key|
+    return nil unless current.is_a?(Hash)
+    current = current[key] || current[key.to_s] || current[key.to_sym]
+  end
+  current
+end
+
+def percentile(values, q)
+  rows = Array(values).map(&:to_f).reject(&:nan?).sort
+  return 0.0 if rows.empty?
+
+  rank = (q.to_f * (rows.length - 1)).round
+  rows[rank]
+end
+
+scope = InstagramProfileEvent
+  .where(llm_comment_status: "completed")
+  .where.not(llm_generated_comment: [nil, ""])
+  .where("llm_comment_generated_at >= ?", window_start)
+  .order(llm_comment_generated_at: :desc, id: :desc)
+  .limit(limit)
+
+events = scope.pluck(:id, :llm_comment_model, :llm_comment_provider, :llm_comment_generated_at, :llm_comment_metadata)
+
+selected_model_counts = Hash.new(0)
+primary_model_counts = Hash.new(0)
+quality_model_counts = Hash.new(0)
+selected_tier_counts = Hash.new(0)
+escalation_reason_counts = Hash.new(0)
+
+with_routing = 0
+escalated_count = 0
+fallback_count = 0
+processing_ms = []
+prompt_chars = []
+
+events.each do |_id, comment_model, _provider, _generated_at, metadata|
+  meta = metadata.is_a?(Hash) ? metadata : {}
+  fallback_count += 1 if ActiveModel::Type::Boolean.new.cast(meta["fallback_used"])
+
+  processing_ms << meta["processing_ms"].to_f if meta["processing_ms"].to_f.positive?
+  telemetry = meta["llm_telemetry"].is_a?(Hash) ? meta["llm_telemetry"] : {}
+  prompt_chars << telemetry["prompt_chars"].to_f if telemetry["prompt_chars"].to_f.positive?
+  routing = telemetry["routing"].is_a?(Hash) ? telemetry["routing"] : {}
+  next if routing.empty?
+
+  with_routing += 1
+  selected_model = deep_get(routing, :selected_model).to_s.presence || comment_model.to_s.presence || "unknown"
+  primary_model = deep_get(routing, :primary_model).to_s.presence || "unknown"
+  quality_model = deep_get(routing, :quality_model).to_s.presence || "unknown"
+  selected_tier = deep_get(routing, :selected_tier).to_s.presence || "unknown"
+  escalated = ActiveModel::Type::Boolean.new.cast(deep_get(routing, :escalated))
+  reasons = Array(deep_get(routing, :escalation_reasons)).map(&:to_s).reject(&:empty?)
+
+  selected_model_counts[selected_model] += 1
+  primary_model_counts[primary_model] += 1
+  quality_model_counts[quality_model] += 1
+  selected_tier_counts[selected_tier] += 1
+  escalated_count += 1 if escalated
+  reasons.each { |reason| escalation_reason_counts[reason] += 1 }
+end
+
+total = events.size
+escalation_rate = with_routing.positive? ? (escalated_count.to_f / with_routing.to_f) * 100.0 : 0.0
+fallback_rate = total.positive? ? (fallback_count.to_f / total.to_f) * 100.0 : 0.0
+
+puts "LLM Comment Routing Report"
+puts "Window: last #{days} day(s) since #{window_start.iso8601}"
+puts "Sampled completed events: #{total} (limit=#{limit})"
+puts "Events with routing telemetry: #{with_routing}"
+puts format("Escalation rate: %.1f%%", escalation_rate)
+puts format("Fallback-used rate: %.1f%%", fallback_rate)
+
+if processing_ms.any?
+  puts format("Processing ms p50/p95: %.0f / %.0f", percentile(processing_ms, 0.50), percentile(processing_ms, 0.95))
+end
+if prompt_chars.any?
+  puts format("Prompt chars p50/p95: %.0f / %.0f", percentile(prompt_chars, 0.50), percentile(prompt_chars, 0.95))
+end
+
+print_counts = lambda do |label, counts|
+  return if counts.empty?
+  puts "\n#{label}:"
+  counts.sort_by { |_key, value| -value }.each do |key, value|
+    puts "  #{key}: #{value}"
+  end
+end
+
+print_counts.call("Selected Models", selected_model_counts)
+print_counts.call("Primary Models", primary_model_counts)
+print_counts.call("Quality Models", quality_model_counts)
+print_counts.call("Selected Tier", selected_tier_counts)
+print_counts.call("Escalation Reasons", escalation_reason_counts)

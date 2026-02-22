@@ -1,0 +1,190 @@
+#!/usr/bin/env ruby
+
+require_relative "../config/environment"
+
+DEFAULTS = {
+  "LLM_COMMENT_ESCALATION_MIN_ACCEPTED" => 5,
+  "LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO" => 0.45,
+  "LLM_COMMENT_ESCALATION_MIN_GROUNDED_RATIO" => 0.55
+}.freeze
+
+def parse_args(argv)
+  args = argv.dup
+  opts = {
+    days: 14,
+    limit: 1000,
+    apply: false,
+    env_file: ".env"
+  }
+  positional = []
+
+  while args.any?
+    token = args.shift
+    case token
+    when "--apply"
+      opts[:apply] = true
+    when "--env"
+      opts[:env_file] = args.shift.to_s
+    when /\A\d+\z/
+      positional << token.to_i
+    end
+  end
+
+  opts[:days] = positional[0] if positional[0]
+  opts[:limit] = positional[1] if positional[1]
+  opts[:days] = opts[:days].to_i.clamp(1, 60)
+  opts[:limit] = opts[:limit].to_i.clamp(20, 5000)
+  opts
+end
+
+def percentile(values, q)
+  rows = Array(values).map(&:to_f).reject(&:nan?).sort
+  return 0.0 if rows.empty?
+
+  rank = (q.to_f * (rows.length - 1)).round
+  rows[rank]
+end
+
+def to_bool(value)
+  ActiveModel::Type::Boolean.new.cast(value)
+end
+
+def clamp(value, min:, max:)
+  [[value, min].max, max].min
+end
+
+def deep_get(hash, *keys)
+  current = hash
+  keys.each do |key|
+    return nil unless current.is_a?(Hash)
+    current = current[key] || current[key.to_s] || current[key.to_sym]
+  end
+  current
+end
+
+def read_env_value(key)
+  ENV[key].presence || DEFAULTS[key].to_s
+end
+
+def upsert_env_value(env_file:, key:, value:)
+  line = "#{key}=#{value}"
+  if File.exist?(env_file)
+    rows = File.read(env_file).split("\n", -1)
+    idx = rows.find_index { |row| row.start_with?("#{key}=") }
+    if idx
+      rows[idx] = line
+    else
+      rows << line
+    end
+    File.write(env_file, rows.join("\n"))
+  else
+    File.write(env_file, "#{line}\n")
+  end
+end
+
+opts = parse_args(ARGV)
+window_start = opts[:days].days.ago
+
+scope = InstagramProfileEvent
+  .where(llm_comment_status: "completed")
+  .where.not(llm_generated_comment: [nil, ""])
+  .where("llm_comment_generated_at >= ?", window_start)
+  .order(llm_comment_generated_at: :desc, id: :desc)
+  .limit(opts[:limit])
+
+rows = scope.pluck(:llm_comment_metadata)
+
+telemetry_rows = []
+fallback_count = 0
+rows.each do |metadata|
+  meta = metadata.is_a?(Hash) ? metadata : {}
+  fallback_count += 1 if to_bool(meta["fallback_used"])
+  routing = deep_get(meta, "llm_telemetry", "routing")
+  next unless routing.is_a?(Hash) && routing.present?
+
+  telemetry_rows << routing
+end
+
+total = rows.size
+with_routing = telemetry_rows.size
+if with_routing < 10
+  puts "Insufficient routing telemetry to tune thresholds."
+  puts "Window: #{opts[:days]} day(s), sampled completed events: #{total}, with routing: #{with_routing}"
+  puts "Run again after at least 10 events with llm_telemetry.routing."
+  exit(0)
+end
+
+escalated_count = telemetry_rows.count { |routing| to_bool(routing["escalated"]) }
+escalation_rate = escalated_count.to_f / with_routing.to_f
+fallback_rate = total.positive? ? (fallback_count.to_f / total.to_f) : 0.0
+
+primary_accepts = []
+quality_accepts = []
+primary_reject_ratios = []
+primary_grounded_ratios = []
+
+telemetry_rows.each do |routing|
+  pstats = deep_get(routing, "primary_stats")
+  qstats = deep_get(routing, "quality_stats")
+  if pstats.is_a?(Hash)
+    primary_accepts << pstats["accepted_count"].to_i
+    primary_reject_ratios << pstats["reject_ratio"].to_f
+    primary_grounded_ratios << pstats["grounded_ratio"].to_f
+  end
+  quality_accepts << qstats["accepted_count"].to_i if qstats.is_a?(Hash)
+end
+
+avg_primary_accept = primary_accepts.empty? ? 0.0 : (primary_accepts.sum.to_f / primary_accepts.size.to_f)
+avg_quality_accept = quality_accepts.empty? ? 0.0 : (quality_accepts.sum.to_f / quality_accepts.size.to_f)
+avg_quality_gain = avg_quality_accept - avg_primary_accept
+
+current = {
+  "LLM_COMMENT_ESCALATION_MIN_ACCEPTED" => read_env_value("LLM_COMMENT_ESCALATION_MIN_ACCEPTED").to_i,
+  "LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO" => read_env_value("LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO").to_f,
+  "LLM_COMMENT_ESCALATION_MIN_GROUNDED_RATIO" => read_env_value("LLM_COMMENT_ESCALATION_MIN_GROUNDED_RATIO").to_f
+}
+
+recommended = current.dup
+
+# Heuristics:
+# - High escalation + low quality gain => thresholds too strict (escalating unnecessarily).
+# - Low escalation + high fallback => thresholds too loose (primary pass often underperforming).
+if escalation_rate > 0.65 && avg_quality_gain < 1.0
+  recommended["LLM_COMMENT_ESCALATION_MIN_ACCEPTED"] = clamp(current["LLM_COMMENT_ESCALATION_MIN_ACCEPTED"] - 1, min: 3, max: 7)
+  recommended["LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO"] = clamp((current["LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO"] + 0.05).round(2), min: 0.25, max: 0.65)
+elsif escalation_rate < 0.15 && fallback_rate > 0.2
+  recommended["LLM_COMMENT_ESCALATION_MIN_ACCEPTED"] = clamp(current["LLM_COMMENT_ESCALATION_MIN_ACCEPTED"] + 1, min: 3, max: 7)
+  recommended["LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO"] = clamp((current["LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO"] - 0.05).round(2), min: 0.25, max: 0.65)
+end
+
+if primary_grounded_ratios.any?
+  p25_grounded = percentile(primary_grounded_ratios, 0.25)
+  recommended_grounded = clamp((p25_grounded - 0.03).round(2), min: 0.35, max: 0.75)
+  recommended["LLM_COMMENT_ESCALATION_MIN_GROUNDED_RATIO"] = recommended_grounded
+end
+
+puts "LLM Escalation Threshold Tuning"
+puts "Window: last #{opts[:days]} day(s) since #{window_start.iso8601}"
+puts "Completed events sampled: #{total}"
+puts "Events with routing telemetry: #{with_routing}"
+puts format("Escalation rate: %.1f%%", escalation_rate * 100.0)
+puts format("Fallback-used rate: %.1f%%", fallback_rate * 100.0)
+puts format("Avg primary accepted: %.2f", avg_primary_accept)
+puts format("Avg quality accepted: %.2f", avg_quality_accept)
+puts format("Avg quality gain: %.2f", avg_quality_gain)
+
+puts "\nCurrent values:"
+current.each { |key, value| puts "  #{key}=#{value}" }
+
+puts "\nRecommended values:"
+recommended.each { |key, value| puts "  #{key}=#{value}" }
+
+if opts[:apply]
+  env_file = File.expand_path(opts[:env_file], Dir.pwd)
+  recommended.each do |key, value|
+    upsert_env_value(env_file: env_file, key: key, value: value)
+  end
+  puts "\nApplied recommended values to #{env_file}"
+else
+  puts "\nDry run only. Re-run with --apply to write values to #{opts[:env_file]}."
+end

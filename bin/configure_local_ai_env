@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${1:-$ROOT_DIR/.env}"
+EXAMPLE_FILE="$ROOT_DIR/config/local_ai.env.example"
+
+PRIMARY_MODEL="${OLLAMA_FAST_MODEL:-qwen2.5:3b-instruct}"
+QUALITY_MODEL="${OLLAMA_QUALITY_MODEL:-mistral:7b}"
+BASE_MODEL="${OLLAMA_MODEL:-$PRIMARY_MODEL}"
+NUM_CTX="${OLLAMA_NUM_CTX:-3072}"
+
+upsert_kv() {
+  local key="$1"
+  local value="$2"
+
+  if grep -Eq "^${key}=" "$ENV_FILE"; then
+    sed -i "s#^${key}=.*#${key}=${value}#g" "$ENV_FILE"
+  else
+    printf "%s=%s\n" "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  if [[ -f "$EXAMPLE_FILE" ]]; then
+    cp "$EXAMPLE_FILE" "$ENV_FILE"
+    echo "Created $ENV_FILE from config/local_ai.env.example"
+  else
+    touch "$ENV_FILE"
+    echo "Created empty $ENV_FILE"
+  fi
+fi
+
+upsert_kv "OLLAMA_URL" "${OLLAMA_URL:-http://localhost:11434}"
+upsert_kv "OLLAMA_MODEL" "$BASE_MODEL"
+upsert_kv "OLLAMA_FAST_MODEL" "$PRIMARY_MODEL"
+upsert_kv "OLLAMA_QUALITY_MODEL" "$QUALITY_MODEL"
+upsert_kv "OLLAMA_NUM_CTX" "$NUM_CTX"
+
+upsert_kv "LLM_COMMENT_ENABLE_MODEL_ESCALATION" "${LLM_COMMENT_ENABLE_MODEL_ESCALATION:-true}"
+upsert_kv "LLM_COMMENT_ESCALATION_MIN_ACCEPTED" "${LLM_COMMENT_ESCALATION_MIN_ACCEPTED:-5}"
+upsert_kv "LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO" "${LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO:-0.45}"
+upsert_kv "LLM_COMMENT_ESCALATION_MIN_GROUNDED_RATIO" "${LLM_COMMENT_ESCALATION_MIN_GROUNDED_RATIO:-0.55}"
+upsert_kv "LLM_COMMENT_MAX_CONTEXT_JSON_CHARS" "${LLM_COMMENT_MAX_CONTEXT_JSON_CHARS:-3200}"
+upsert_kv "LLM_COMMENT_TARGET_CONTEXT_JSON_CHARS" "${LLM_COMMENT_TARGET_CONTEXT_JSON_CHARS:-2600}"
+upsert_kv "LLM_COMMENT_PRIMARY_MAX_TOKENS" "${LLM_COMMENT_PRIMARY_MAX_TOKENS:-180}"
+upsert_kv "LLM_COMMENT_PRIMARY_RETRY_MAX_TOKENS" "${LLM_COMMENT_PRIMARY_RETRY_MAX_TOKENS:-130}"
+upsert_kv "LLM_COMMENT_QUALITY_MAX_TOKENS" "${LLM_COMMENT_QUALITY_MAX_TOKENS:-240}"
+upsert_kv "LLM_COMMENT_QUALITY_RETRY_MAX_TOKENS" "${LLM_COMMENT_QUALITY_RETRY_MAX_TOKENS:-170}"
+
+echo "Configured local AI env values in $ENV_FILE"
+echo "  OLLAMA_FAST_MODEL=$PRIMARY_MODEL"
+echo "  OLLAMA_QUALITY_MODEL=$QUALITY_MODEL"
+echo "  OLLAMA_NUM_CTX=$NUM_CTX"
