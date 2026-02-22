@@ -5,6 +5,14 @@ module Ai
     STEP_KEYS = %w[visual face ocr video metadata].freeze
     TERMINAL_STATUSES = %w[succeeded failed skipped].freeze
     PIPELINE_TERMINAL_STATUSES = %w[completed failed].freeze
+    STEP_TO_QUEUE_SERVICE_KEY = {
+      "visual" => :visual_analysis,
+      "face" => :face_analysis,
+      "ocr" => :ocr_analysis,
+      "video" => :video_analysis,
+      "metadata" => :metadata_tagging
+    }.freeze
+    DEFAULT_PENDING_ESTIMATE_SECONDS = ENV.fetch("POST_PIPELINE_DEFAULT_PENDING_ESTIMATE_SECONDS", "180").to_i.clamp(20, 7_200)
 
     DEFAULT_TASK_FLAGS = {
       "analyze_visual" => true,
@@ -39,6 +47,7 @@ module Ai
       now = iso_timestamp
 
       post.with_lock do
+        post.reload
         metadata = metadata_for(post)
         metadata.delete("ai_pipeline_failure")
         metadata["ai_pipeline"] = {
@@ -52,10 +61,18 @@ module Ai
           "steps" => build_initial_steps(required_steps: required_steps, at: now)
         }.compact
 
+        pipeline = metadata["ai_pipeline"]
         post.update!(
           ai_status: "running",
           analyzed_at: nil,
-          metadata: metadata
+          metadata: metadata,
+          **pending_projection_for(
+            pipeline: pipeline,
+            existing_pending_since_at: Time.current,
+            existing_next_retry_at: nil,
+            existing_estimated_ready_at: nil,
+            existing_blocking_step: nil
+          )
         )
       end
 
@@ -220,6 +237,7 @@ module Ai
 
     def with_pipeline_update(run_id:)
       post.with_lock do
+        post.reload
         metadata = metadata_for(post)
         pipeline = metadata["ai_pipeline"]
         return nil unless pipeline.is_a?(Hash)
@@ -228,9 +246,130 @@ module Ai
         yield(pipeline, metadata)
 
         metadata["ai_pipeline"] = pipeline
-        post.update!(metadata: metadata)
+        post.update!(
+          metadata: metadata,
+          **pending_projection_for(
+            pipeline: pipeline,
+            existing_pending_since_at: post.ai_pending_since_at,
+            existing_next_retry_at: post.ai_next_retry_at,
+            existing_estimated_ready_at: post.ai_estimated_ready_at,
+            existing_blocking_step: post.ai_blocking_step
+          )
+        )
         pipeline
       end
+    end
+
+    def pending_projection_for(pipeline:, existing_pending_since_at:, existing_next_retry_at:, existing_estimated_ready_at:, existing_blocking_step:)
+      return terminal_pending_projection(pipeline: pipeline) unless pipeline.to_h["status"].to_s == "running"
+
+      blocking_step = blocking_step_for(pipeline: pipeline)
+      created_at = parse_time(pipeline["created_at"])
+      pending_since_at = existing_pending_since_at || created_at || Time.current
+      reason_code = pending_reason_code_for(pipeline: pipeline, blocking_step: blocking_step)
+      queue_name = queue_name_for(blocking_step: blocking_step)
+      estimated_ready_at =
+        estimate_ready_at_for(
+          queue_name: queue_name,
+          blocking_step: blocking_step,
+          existing_blocking_step: existing_blocking_step,
+          existing_estimated_ready_at: existing_estimated_ready_at
+        )
+
+      {
+        ai_pipeline_run_id: pipeline["run_id"].to_s.presence,
+        ai_blocking_step: blocking_step,
+        ai_pending_reason_code: reason_code,
+        ai_pending_since_at: pending_since_at,
+        ai_next_retry_at: existing_next_retry_at,
+        ai_estimated_ready_at: estimated_ready_at
+      }
+    rescue StandardError
+      terminal_pending_projection(pipeline: pipeline)
+    end
+
+    def terminal_pending_projection(pipeline:)
+      {
+        ai_pipeline_run_id: pipeline.to_h["run_id"].to_s.presence,
+        ai_blocking_step: nil,
+        ai_pending_reason_code: nil,
+        ai_pending_since_at: nil,
+        ai_next_retry_at: nil,
+        ai_estimated_ready_at: nil
+      }
+    end
+
+    def blocking_step_for(pipeline:)
+      steps = pipeline["steps"].is_a?(Hash) ? pipeline["steps"] : {}
+      required = Array(pipeline["required_steps"]).map(&:to_s)
+      required.find do |step|
+        !TERMINAL_STATUSES.include?(steps.dig(step, "status").to_s)
+      end
+    rescue StandardError
+      nil
+    end
+
+    def pending_reason_code_for(pipeline:, blocking_step:)
+      return "pipeline_finalizing" if blocking_step.to_s.blank?
+
+      status = pipeline.dig("steps", blocking_step.to_s, "status").to_s
+      case status
+      when "queued"
+        "queued_#{blocking_step}"
+      when "running"
+        "running_#{blocking_step}"
+      when "failed"
+        "failed_#{blocking_step}"
+      else
+        "waiting_#{blocking_step}"
+      end
+    rescue StandardError
+      "pipeline_running"
+    end
+
+    def queue_name_for(blocking_step:)
+      service_key =
+        if blocking_step.to_s.present?
+          STEP_TO_QUEUE_SERVICE_KEY[blocking_step.to_s]
+        else
+          :pipeline_orchestration
+        end
+      name = Ops::AiServiceQueueRegistry.queue_name_for(service_key)
+      name.to_s.presence || Ops::AiServiceQueueRegistry.queue_name_for(:pipeline_orchestration).to_s
+    rescue StandardError
+      Ops::AiServiceQueueRegistry.queue_name_for(:pipeline_orchestration).to_s
+    end
+
+    def estimate_ready_at_for(queue_name:, blocking_step:, existing_blocking_step:, existing_estimated_ready_at:)
+      if existing_estimated_ready_at.present? && existing_blocking_step.to_s == blocking_step.to_s
+        return existing_estimated_ready_at
+      end
+
+      seconds = estimated_total_seconds_for_queue(queue_name: queue_name)
+      Time.current + seconds.seconds
+    rescue StandardError
+      Time.current + DEFAULT_PENDING_ESTIMATE_SECONDS.seconds
+    end
+
+    def estimated_total_seconds_for_queue(queue_name:)
+      estimate = Ops::QueueProcessingEstimator.estimate_for_queue(
+        queue_name: queue_name.to_s,
+        backend: "sidekiq"
+      )
+      value = estimate.to_h[:estimated_new_item_total_seconds].to_f
+      return DEFAULT_PENDING_ESTIMATE_SECONDS if value <= 0.0
+
+      value.round.clamp(5, 7_200)
+    rescue StandardError
+      DEFAULT_PENDING_ESTIMATE_SECONDS
+    end
+
+    def parse_time(value)
+      return nil if value.to_s.blank?
+
+      Time.zone.parse(value.to_s)
+    rescue StandardError
+      nil
     end
 
     def normalize_task_flags(task_flags)

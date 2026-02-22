@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_22_230000) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_22_234000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -438,6 +438,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_22_230000) do
     t.string "external_id"
     t.bigint "instagram_profile_id", null: false
     t.string "kind", null: false
+    t.string "llm_blocking_step"
     t.integer "llm_comment_attempts", default: 0, null: false
     t.datetime "llm_comment_generated_at"
     t.string "llm_comment_job_id"
@@ -447,7 +448,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_22_230000) do
     t.string "llm_comment_provider"
     t.float "llm_comment_relevance_score"
     t.string "llm_comment_status", default: "not_requested", null: false
+    t.datetime "llm_estimated_ready_at"
     t.text "llm_generated_comment"
+    t.string "llm_pending_reason_code"
+    t.string "llm_pipeline_run_id"
     t.json "metadata"
     t.datetime "occurred_at"
     t.datetime "updated_at", null: false
@@ -455,10 +459,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_22_230000) do
     t.index ["instagram_profile_id", "kind", "external_id"], name: "idx_on_instagram_profile_id_kind_external_id_ddff026220", unique: true
     t.index ["instagram_profile_id", "kind", "occurred_at"], name: "idx_profile_events_profile_kind_occurred"
     t.index ["instagram_profile_id"], name: "index_instagram_profile_events_on_instagram_profile_id"
+    t.index ["llm_blocking_step"], name: "index_instagram_profile_events_on_llm_blocking_step"
     t.index ["llm_comment_generated_at"], name: "index_instagram_profile_events_on_llm_comment_generated_at"
     t.index ["llm_comment_job_id"], name: "idx_profile_events_llm_comment_job_id"
     t.index ["llm_comment_provider", "llm_comment_generated_at"], name: "idx_on_llm_comment_provider_llm_comment_generated_a_c186e86ca1"
     t.index ["llm_comment_status", "detected_at"], name: "idx_profile_events_llm_status_detected"
+    t.index ["llm_estimated_ready_at"], name: "index_instagram_profile_events_on_llm_estimated_ready_at"
+    t.index ["llm_pending_reason_code"], name: "index_instagram_profile_events_on_llm_pending_reason_code"
+    t.index ["llm_pipeline_run_id"], name: "index_instagram_profile_events_on_llm_pipeline_run_id"
   end
 
   create_table "instagram_profile_history_chunks", force: :cascade do |t|
@@ -540,7 +548,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_22_230000) do
   end
 
   create_table "instagram_profile_posts", force: :cascade do |t|
+    t.string "ai_blocking_step"
+    t.datetime "ai_estimated_ready_at"
     t.string "ai_model"
+    t.datetime "ai_next_retry_at"
+    t.string "ai_pending_reason_code"
+    t.datetime "ai_pending_since_at"
+    t.string "ai_pipeline_run_id"
     t.string "ai_provider"
     t.string "ai_status", default: "pending", null: false
     t.json "analysis"
@@ -559,6 +573,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_22_230000) do
     t.string "source_media_url"
     t.datetime "taken_at"
     t.datetime "updated_at", null: false
+    t.index ["ai_blocking_step"], name: "index_instagram_profile_posts_on_ai_blocking_step"
+    t.index ["ai_estimated_ready_at"], name: "index_instagram_profile_posts_on_ai_estimated_ready_at"
+    t.index ["ai_pending_reason_code"], name: "index_instagram_profile_posts_on_ai_pending_reason_code"
+    t.index ["ai_pipeline_run_id"], name: "index_instagram_profile_posts_on_ai_pipeline_run_id"
     t.index ["ai_status"], name: "index_instagram_profile_posts_on_ai_status"
     t.index ["instagram_account_id"], name: "index_instagram_profile_posts_on_instagram_account_id"
     t.index ["instagram_profile_id", "analyzed_at"], name: "idx_profile_posts_profile_analyzed"

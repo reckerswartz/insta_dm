@@ -238,6 +238,149 @@
   </section>
 
   <section class="card">
+    <h2>Pipeline Pending Backlog</h2>
+    <% pending_snapshot = @pipeline_pending_snapshot.is_a?(Hash) ? @pipeline_pending_snapshot : {} %>
+    <% posts_pending = pending_snapshot[:posts].is_a?(Hash) ? pending_snapshot[:posts] : {} %>
+    <% stories_pending = pending_snapshot[:story_events].is_a?(Hash) ? pending_snapshot[:story_events] : {} %>
+    <% captured_at = begin Time.zone.parse(pending_snapshot[:captured_at].to_s) rescue nil end %>
+    <p class="meta">
+      Captured at <%= captured_at.present? ? captured_at.iso8601(3) : (pending_snapshot[:captured_at].to_s.presence || "-") %>
+      | Stale threshold: <strong><%= pending_snapshot[:stale_after_minutes].to_i %>m</strong>
+      | Pending posts: <strong><%= posts_pending[:pending_total].to_i %></strong>
+      | Pending stories: <strong><%= stories_pending[:pending_total].to_i %></strong>
+    </p>
+    <div class="meta">
+      Posts: running <strong><%= posts_pending[:running_total].to_i %></strong>,
+      queued <strong><%= posts_pending[:queued_total].to_i %></strong>,
+      overdue <strong><%= posts_pending[:overdue_total].to_i %></strong>,
+      stale <strong><%= posts_pending[:stale_total].to_i %></strong>.
+      Stories: running <strong><%= stories_pending[:running_total].to_i %></strong>,
+      queued <strong><%= stories_pending[:queued_total].to_i %></strong>,
+      overdue <strong><%= stories_pending[:overdue_total].to_i %></strong>,
+      stale <strong><%= stories_pending[:stale_total].to_i %></strong>.
+    </div>
+
+    <% reason_rows = Array(posts_pending[:reasons]).map { |row| row.merge(pipeline: "post") } + Array(stories_pending[:reasons]).map { |row| row.merge(pipeline: "story") } %>
+    <% if reason_rows.any? %>
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-pipeline-pending-reasons-table" data-table-standard-pagination-size-value="20">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
+            <thead>
+              <tr>
+                <th>Pipeline</th>
+                <th>Reason</th>
+                <th>Blocking step</th>
+                <th>Queue</th>
+                <th>Pending</th>
+                <th>Median ETA (s)</th>
+                <th>P90 ETA (s)</th>
+                <th>Overdue</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% reason_rows.each do |row| %>
+                <tr>
+                  <td><span class="pill"><%= row[:pipeline].to_s %></span></td>
+                  <td><code><%= row[:reason_code] %></code></td>
+                  <td><code><%= row[:blocking_step] %></code></td>
+                  <td><code><%= row[:queue_name].to_s.presence || "-" %></code></td>
+                  <td><%= row[:count].to_i %></td>
+                  <td><%= row[:eta_seconds_median].present? ? row[:eta_seconds_median].to_i : "-" %></td>
+                  <td><%= row[:eta_seconds_p90].present? ? row[:eta_seconds_p90].to_i : "-" %></td>
+                  <td><%= row[:overdue_count].to_i %></td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    <% else %>
+      <p class="meta">No pending pipeline reason data.</p>
+    <% end %>
+
+    <% item_rows = Array(posts_pending[:items]).map { |row| row.merge(pipeline: "post") } + Array(stories_pending[:items]).map { |row| row.merge(pipeline: "story") } %>
+    <% if item_rows.any? %>
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-pipeline-pending-items-table" data-table-standard-pagination-size-value="20">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
+            <thead>
+              <tr>
+                <th>Pipeline</th>
+                <th>Entity</th>
+                <th>Profile</th>
+                <th>Status</th>
+                <th>Blocking step</th>
+                <th>Reason</th>
+                <th>ETA (s)</th>
+                <th>Ready at</th>
+                <th>Pending since / updated</th>
+                <th>Retry at</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% item_rows.each do |row| %>
+                <% ready_at = begin Time.zone.parse(row[:estimated_ready_at].to_s) rescue nil end %>
+                <% since_at = begin Time.zone.parse(row[:pending_since_at].to_s) rescue nil end %>
+                <% updated_at = begin Time.zone.parse(row[:updated_at].to_s) rescue nil end %>
+                <% retry_at = begin Time.zone.parse(row[:next_retry_at].to_s) rescue nil end %>
+                <tr>
+                  <td><span class="pill"><%= row[:pipeline].to_s %></span></td>
+                  <td>
+                    <% if row[:pipeline].to_s == "post" %>
+                      Post #<%= row[:post_id] %>
+                      <% if row[:shortcode].to_s.present? %>
+                        · <code><%= row[:shortcode] %></code>
+                      <% end %>
+                    <% else %>
+                      Event #<%= row[:event_id] %>
+                      <% if row[:story_id].to_s.present? %>
+                        · Story <code><%= row[:story_id] %></code>
+                      <% end %>
+                    <% end %>
+                  </td>
+                  <td>
+                    <%= row[:profile_username].to_s.presence || "-" %>
+                    <% if row[:instagram_profile_id].to_i.positive? %>
+                      (<code><%= row[:instagram_profile_id] %></code>)
+                    <% end %>
+                  </td>
+                  <td><%= row[:status].to_s.presence || "-" %></td>
+                  <td><code><%= row[:blocking_step].to_s.presence || "-" %></code></td>
+                  <td><code><%= row[:pending_reason_code].to_s.presence || "-" %></code></td>
+                  <td>
+                    <% eta_seconds = row[:eta_seconds] %>
+                    <% if eta_seconds.present? %>
+                      <%= eta_seconds.to_i %>
+                      <% if row[:overdue] %>
+                        <span class="pill failed">overdue</span>
+                      <% end %>
+                    <% else %>
+                      -
+                    <% end %>
+                  </td>
+                  <td><%= ready_at.present? ? relative_time_with_tooltip(ready_at) : "-" %></td>
+                  <td>
+                    <% if since_at.present? %>
+                      <%= relative_time_with_tooltip(since_at) %>
+                    <% elsif updated_at.present? %>
+                      <%= relative_time_with_tooltip(updated_at) %>
+                    <% else %>
+                      -
+                    <% end %>
+                  </td>
+                  <td><%= retry_at.present? ? relative_time_with_tooltip(retry_at) : "-" %></td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    <% else %>
+      <p class="meta">No pending pipeline items.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
     <h2>Recent Jobs (All)</h2>
     <% if @recent_jobs.any? %>
       <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-recent-jobs-table" data-table-standard-pagination-size-value="25">

@@ -37,7 +37,7 @@ module Ops
           processing_duration_ms: processing_duration_ms,
           total_time_ms: total_time_ms,
           transition_recorded_at_ms: now_ms
-        }.merge(info[:context]).merge(extra_payload).compact
+        }.merge(info[:context]).merge(queue_prediction(msg: msg)).merge(extra_payload).compact
 
         if state.to_s == "failed"
           Ops::StructuredLogger.error(event: "job.state_transition", payload: payload)
@@ -55,9 +55,18 @@ module Ops
 
       def mark_queued!(msg:, queue:, now_ms:)
         meta = metadata(msg)
+        queue_name = queue.to_s
         meta["queued_at_ms"] ||= now_ms
-        meta["queue_name"] ||= queue.to_s
+        meta["queue_name"] ||= queue_name
         meta["enqueued_pid"] ||= Process.pid
+        prediction = estimate_queue_timing(queue_name: queue_name)
+        if prediction.present?
+          meta["predicted_wait_seconds"] ||= prediction[:estimated_new_item_wait_seconds]
+          meta["predicted_total_seconds"] ||= prediction[:estimated_new_item_total_seconds]
+          meta["prediction_confidence"] ||= prediction[:confidence].to_s.presence
+          meta["prediction_sample_size"] ||= prediction[:sample_size].to_i
+          meta["prediction_captured_at_ms"] ||= now_ms
+        end
       end
 
       def mark_reserved!(msg:, now_ms:)
@@ -99,7 +108,31 @@ module Ops
         nil
       end
 
+      def queue_prediction(msg:)
+        meta = metadata(msg)
+        {
+          predicted_wait_seconds: float_or_nil(meta["predicted_wait_seconds"]),
+          predicted_total_seconds: float_or_nil(meta["predicted_total_seconds"]),
+          prediction_confidence: meta["prediction_confidence"].to_s.presence,
+          prediction_sample_size: integer_or_nil(meta["prediction_sample_size"]),
+          prediction_captured_at_ms: integer_or_nil(meta["prediction_captured_at_ms"])
+        }.compact
+      rescue StandardError
+        {}
+      end
+
       private
+
+      def estimate_queue_timing(queue_name:)
+        return nil if queue_name.to_s.blank?
+
+        Ops::QueueProcessingEstimator.estimate_for_queue(
+          queue_name: queue_name.to_s,
+          backend: "sidekiq"
+        )
+      rescue StandardError
+        nil
+      end
 
       def metadata(msg)
         return {} unless msg.is_a?(Hash)
@@ -173,6 +206,22 @@ module Ops
         }.compact
       rescue StandardError
         {}
+      end
+
+      def integer_or_nil(value)
+        return nil if value.nil?
+
+        Integer(value)
+      rescue StandardError
+        nil
+      end
+
+      def float_or_nil(value)
+        return nil if value.nil?
+
+        Float(value)
+      rescue StandardError
+        nil
       end
     end
 

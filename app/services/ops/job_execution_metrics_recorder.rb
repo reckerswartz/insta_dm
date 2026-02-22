@@ -20,6 +20,11 @@ module Ops
       instagram_account_id
       instagram_profile_id
       instagram_profile_post_id
+      predicted_wait_seconds
+      predicted_total_seconds
+      prediction_confidence
+      prediction_sample_size
+      prediction_captured_at_ms
     ].freeze
 
     class << self
@@ -56,7 +61,7 @@ module Ops
           instagram_profile_id: integer_or_nil(row[:instagram_profile_id]),
           instagram_profile_post_id: integer_or_nil(row[:instagram_profile_post_id]),
           recorded_at: recorded_at,
-          metadata: additional_metadata(row)
+          metadata: additional_metadata(row).merge(prediction_metadata(row: row))
         )
       rescue StandardError
         nil
@@ -79,6 +84,35 @@ module Ops
         {}
       end
 
+      def prediction_metadata(row:)
+        predicted_wait_seconds = float_or_nil(row[:predicted_wait_seconds])
+        predicted_total_seconds = float_or_nil(row[:predicted_total_seconds])
+        prediction_confidence = row[:prediction_confidence].to_s.presence
+        prediction_sample_size = integer_or_nil(row[:prediction_sample_size])
+        prediction_captured_at_ms = integer_or_nil(row[:prediction_captured_at_ms])
+        actual_total_ms = duration_or_nil(row[:total_time_ms])
+
+        out = {}
+        out["predicted_wait_seconds"] = predicted_wait_seconds.round(3) if predicted_wait_seconds
+        if predicted_total_seconds
+          predicted_total_ms = (predicted_total_seconds.to_f * 1000.0).round
+          out["predicted_total_seconds"] = predicted_total_seconds.round(3)
+          out["predicted_total_ms"] = predicted_total_ms
+          if actual_total_ms && predicted_total_ms.positive?
+            error_ms = actual_total_ms - predicted_total_ms
+            out["prediction_error_ms"] = error_ms
+            out["prediction_abs_error_ms"] = error_ms.abs
+            out["prediction_error_pct"] = ((error_ms.to_f / predicted_total_ms.to_f) * 100.0).round(2)
+          end
+        end
+        out["prediction_confidence"] = prediction_confidence if prediction_confidence
+        out["prediction_sample_size"] = prediction_sample_size if prediction_sample_size
+        out["prediction_captured_at_ms"] = prediction_captured_at_ms if prediction_captured_at_ms
+        out
+      rescue StandardError
+        {}
+      end
+
       def duration_or_nil(value)
         number = integer_or_nil(value)
         return nil unless number
@@ -92,6 +126,14 @@ module Ops
         return nil if value.nil?
 
         Integer(value)
+      rescue StandardError
+        nil
+      end
+
+      def float_or_nil(value)
+        return nil if value.nil?
+
+        Float(value)
       rescue StandardError
         nil
       end

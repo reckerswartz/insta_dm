@@ -60,6 +60,7 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
       end
 
       wait_seconds = finalize_poll_delay_seconds(attempts: attempts)
+      persist_next_retry_at!(post: post, next_retry_at: Time.current + wait_seconds.seconds)
       self.class.set(wait: wait_seconds.seconds).perform_later(
         instagram_account_id: account.id,
         instagram_profile_id: profile.id,
@@ -152,6 +153,12 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     acquired
   rescue StandardError
     true
+  end
+
+  def persist_next_retry_at!(post:, next_retry_at:)
+    post.update_columns(ai_next_retry_at: next_retry_at, updated_at: Time.current)
+  rescue StandardError
+    nil
   end
 
   def finalize_poll_delay_seconds(attempts:)

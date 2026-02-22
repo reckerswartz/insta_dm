@@ -9,6 +9,14 @@ module LlmComment
     DEFERRED_STEP_KEYS = LlmComment::StepRegistry.deferred_step_keys.freeze
     TERMINAL_STEP_STATUSES = %w[succeeded failed skipped].freeze
     PIPELINE_TERMINAL_STATUSES = %w[completed failed].freeze
+    STEP_TO_QUEUE_SERVICE_KEY = {
+      "ocr_analysis" => :ocr_analysis,
+      "vision_detection" => :visual_analysis,
+      "face_recognition" => :face_analysis,
+      "metadata_extraction" => :metadata_tagging,
+      "llm_generation" => :llm_comment_generation
+    }.freeze
+    DEFAULT_PENDING_ESTIMATE_SECONDS = ENV.fetch("LLM_PIPELINE_DEFAULT_PENDING_ESTIMATE_SECONDS", "120").to_i.clamp(20, 7_200)
     SHARED_PAYLOAD_BUILD_STALE_SECONDS = ENV.fetch("LLM_COMMENT_SHARED_PAYLOAD_STALE_SECONDS", "180").to_i.clamp(30, 900)
     RUNNING_PIPELINE_STALE_SECONDS = ENV.fetch("LLM_COMMENT_RUNNING_PIPELINE_STALE_SECONDS", "900").to_i.clamp(300, 7200)
 
@@ -60,7 +68,15 @@ module LlmComment
         }.compact
 
         metadata["parallel_pipeline"] = pipeline
-        event.update_columns(llm_comment_metadata: metadata, updated_at: Time.current)
+        event.update_columns(
+          llm_comment_metadata: metadata,
+          **pending_projection_for(
+            pipeline: pipeline,
+            existing_estimated_ready_at: nil,
+            existing_blocking_step: nil
+          ),
+          updated_at: Time.current
+        )
 
         {
           run_id: run_id.to_s,
@@ -564,9 +580,122 @@ module LlmComment
 
         yield(pipeline, metadata)
         metadata["parallel_pipeline"] = pipeline
-        event.update_columns(llm_comment_metadata: metadata, updated_at: Time.current)
+        event.update_columns(
+          llm_comment_metadata: metadata,
+          **pending_projection_for(
+            pipeline: pipeline,
+            existing_estimated_ready_at: event.llm_estimated_ready_at,
+            existing_blocking_step: event.llm_blocking_step
+          ),
+          updated_at: Time.current
+        )
         pipeline
       end
+    end
+
+    def pending_projection_for(pipeline:, existing_estimated_ready_at:, existing_blocking_step:)
+      status = pipeline.to_h["status"].to_s
+      run_id = pipeline.to_h["run_id"].to_s.presence
+      return terminal_pending_projection(run_id: run_id) unless status == "running"
+
+      blocking_step = blocking_step_for(pipeline: pipeline)
+      reason_code = pending_reason_code_for(pipeline: pipeline, blocking_step: blocking_step)
+      queue_name = queue_name_for(blocking_step: blocking_step)
+      estimated_ready_at =
+        estimate_ready_at_for(
+          queue_name: queue_name,
+          blocking_step: blocking_step,
+          existing_blocking_step: existing_blocking_step,
+          existing_estimated_ready_at: existing_estimated_ready_at
+        )
+
+      {
+        llm_pipeline_run_id: run_id,
+        llm_blocking_step: blocking_step,
+        llm_pending_reason_code: reason_code,
+        llm_estimated_ready_at: estimated_ready_at
+      }
+    rescue StandardError
+      terminal_pending_projection(run_id: run_id)
+    end
+
+    def terminal_pending_projection(run_id:)
+      {
+        llm_pipeline_run_id: run_id,
+        llm_blocking_step: nil,
+        llm_pending_reason_code: nil,
+        llm_estimated_ready_at: nil
+      }
+    end
+
+    def blocking_step_for(pipeline:)
+      generation_status = pipeline.dig("generation", "status").to_s
+      return "llm_generation" if generation_status == "running"
+
+      steps = pipeline["steps"].is_a?(Hash) ? pipeline["steps"] : {}
+      required = Array(pipeline["required_steps"]).map(&:to_s)
+      required.find do |step|
+        !TERMINAL_STEP_STATUSES.include?(steps.dig(step, "status").to_s)
+      end
+    rescue StandardError
+      nil
+    end
+
+    def pending_reason_code_for(pipeline:, blocking_step:)
+      return "pipeline_finalizing" if blocking_step.to_s.blank?
+
+      return "running_llm_generation" if blocking_step.to_s == "llm_generation"
+
+      status = pipeline.dig("steps", blocking_step.to_s, "status").to_s
+      case status
+      when "queued"
+        "queued_#{blocking_step}"
+      when "running"
+        "running_#{blocking_step}"
+      when "failed"
+        "failed_#{blocking_step}"
+      else
+        "waiting_#{blocking_step}"
+      end
+    rescue StandardError
+      "pipeline_running"
+    end
+
+    def queue_name_for(blocking_step:)
+      service_key =
+        if blocking_step.to_s.present?
+          STEP_TO_QUEUE_SERVICE_KEY[blocking_step.to_s]
+        else
+          :pipeline_orchestration
+        end
+      name = Ops::AiServiceQueueRegistry.queue_name_for(service_key)
+      name.to_s.presence || Ops::AiServiceQueueRegistry.queue_name_for(:pipeline_orchestration).to_s
+    rescue StandardError
+      Ops::AiServiceQueueRegistry.queue_name_for(:pipeline_orchestration).to_s
+    end
+
+    def estimate_ready_at_for(queue_name:, blocking_step:, existing_blocking_step:, existing_estimated_ready_at:)
+      if existing_estimated_ready_at.present? && existing_blocking_step.to_s == blocking_step.to_s
+        return existing_estimated_ready_at
+      end
+
+      seconds = estimated_total_seconds_for_queue(queue_name: queue_name)
+      Time.current + seconds.seconds
+    rescue StandardError
+      Time.current + DEFAULT_PENDING_ESTIMATE_SECONDS.seconds
+    end
+
+    def estimated_total_seconds_for_queue(queue_name:)
+      estimate = Ops::QueueProcessingEstimator.estimate_for_queue(
+        queue_name: queue_name.to_s,
+        backend: "sidekiq"
+      )
+      value = estimate.to_h[:estimated_new_item_total_seconds].to_f
+      return DEFAULT_PENDING_ESTIMATE_SECONDS if value <= 0.0
+
+      value.round.clamp(5, 7_200)
+    rescue StandardError
+      DEFAULT_PENDING_ESTIMATE_SECONDS
     end
 
     def normalized_metadata
