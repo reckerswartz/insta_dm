@@ -199,6 +199,7 @@
       | Total lanes: <strong><%= totals[:total_lanes].to_i %></strong>
       | Active lanes: <strong><%= totals[:active_lanes].to_i %></strong>
       | Idle lanes: <strong><%= totals[:idle_lanes].to_i %></strong>
+      | Active drain ETA: <strong><%= totals[:active_lane_drain_eta_seconds].to_f.round(1) %>s</strong>
     </p>
     <p class="meta mt-0">Captured at <%= runtime_audit[:captured_at].to_s.presence || "-" %></p>
 
@@ -214,7 +215,11 @@
               <th>API Calls (24h)</th>
               <th>Failures (24h)</th>
               <th>Tokens (24h)</th>
+              <th>New item ETA</th>
+              <th>Drain ETA</th>
+              <th>ETA confidence</th>
               <th>Job Classes</th>
+              <th>Data impact</th>
             </tr>
           </thead>
           <tbody>
@@ -230,6 +235,12 @@
                 <td><%= row[:api_calls_24h].to_i %></td>
                 <td><%= row[:recent_failures_24h].to_i %></td>
                 <td><%= row[:api_total_tokens_24h].to_i %></td>
+                <td><%= row[:eta_new_item_seconds].present? ? "#{row[:eta_new_item_seconds]}s" : "-" %></td>
+                <td><%= row[:eta_queue_drain_seconds].present? ? "#{row[:eta_queue_drain_seconds]}s" : "-" %></td>
+                <td>
+                  <span class="pill"><%= row[:eta_confidence].to_s %></span>
+                  <div class="meta">n=<%= row[:eta_sample_size].to_i %></div>
+                </td>
                 <td>
                   <span><%= row[:job_class_count].to_i %> registered</span>
                   <% sample_rows = Array(row[:sampled_job_classes]) %>
@@ -241,6 +252,7 @@
                     </div>
                   <% end %>
                 </td>
+                <td class="meta"><%= row[:data_impact] %></td>
               </tr>
             <% end %>
           </tbody>

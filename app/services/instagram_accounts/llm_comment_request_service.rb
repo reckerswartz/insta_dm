@@ -126,6 +126,7 @@ module InstagramAccounts
             job_id: job.job_id,
             estimated_seconds: llm_comment_estimated_seconds(event: event, include_queue: true),
             queue_size: ai_queue_size,
+            queue_estimate: llm_queue_estimate_payload,
             llm_processing_stages: merged_llm_processing_stages(event),
             llm_last_stage: merged_llm_last_stage(event),
             llm_workflow_status: workflow_status_for(event),
@@ -175,6 +176,7 @@ module InstagramAccounts
           job_id: event.llm_comment_job_id,
           estimated_seconds: llm_comment_estimated_seconds(event: event),
           queue_size: ai_queue_size,
+          queue_estimate: llm_queue_estimate_payload,
           llm_processing_stages: merged_llm_processing_stages(event),
           llm_processing_log: merged_llm_processing_log(event),
           llm_pipeline_step_rollup: pipeline_step_rollup(event),
@@ -195,6 +197,7 @@ module InstagramAccounts
           event_id: event.id,
           estimated_seconds: llm_comment_estimated_seconds(event: event),
           queue_size: ai_queue_size,
+          queue_estimate: llm_queue_estimate_payload,
           llm_processing_stages: merged_llm_processing_stages(event),
           llm_processing_log: merged_llm_processing_log(event),
           llm_pipeline_step_rollup: pipeline_step_rollup(event),
@@ -329,13 +332,16 @@ module InstagramAccounts
     end
 
     def llm_comment_estimated_seconds(event:, include_queue: false)
-      # Local LLM jobs can legitimately run well beyond 5 minutes when model
-      # size is large and compute resources are limited.
-      base = 120
-      queue_factor = include_queue ? (ai_queue_size * 18) : 0
+      queue_estimate = llm_queue_estimate_payload
+      queue_wait_seconds = queue_estimate[:estimated_new_item_wait_seconds].to_f
+      queue_total_seconds = queue_estimate[:estimated_new_item_total_seconds].to_f
+      estimated_processing_seconds = [ queue_total_seconds - queue_wait_seconds, 20.0 ].max
+      base = include_queue ? queue_total_seconds : estimated_processing_seconds
+      base = 120.0 if base <= 0.0
+
       attempt_factor = event.llm_comment_attempts.to_i * 30
       preprocess_factor = story_local_context_preprocess_penalty(event: event)
-      (base + queue_factor + attempt_factor + preprocess_factor).clamp(30, 1800)
+      (base + attempt_factor + preprocess_factor).round.clamp(30, 1800)
     end
 
     def story_local_context_preprocess_penalty(event:)
@@ -352,7 +358,21 @@ module InstagramAccounts
     end
 
     def ai_queue_size
+      estimate_size = llm_queue_estimate_payload[:queue_size].to_i
+      return estimate_size if estimate_size.positive?
+
       queue_inspector.queue_size
+    end
+
+    def llm_queue_estimate_payload
+      return @llm_queue_estimate_payload if defined?(@llm_queue_estimate_payload)
+
+      estimate = queue_inspector.queue_estimate
+      return {} unless estimate.is_a?(Hash)
+
+      @llm_queue_estimate_payload = estimate.deep_symbolize_keys
+    rescue StandardError
+      @llm_queue_estimate_payload = {}
     end
 
     def parallel_pipeline(event)

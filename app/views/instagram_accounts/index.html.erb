@@ -2,6 +2,9 @@
 <% queue = @metrics[:queue] || {} %>
 <% app = @metrics[:app] || {} %>
 <% usage = @metrics[:api_usage_24h] || {} %>
+<% queue_estimate_snapshot = @metrics[:queue_estimates].is_a?(Hash) ? @metrics[:queue_estimates] : {} %>
+<% queue_estimates = Array(queue_estimate_snapshot[:estimates]).select { |row| row[:queue_size].to_i.positive? }.first(4) %>
+<% timing_snapshot = @metrics[:job_execution_metrics_24h].is_a?(Hash) ? @metrics[:job_execution_metrics_24h] : {} %>
 
 <div class="page dashboard-page">
   <header class="page-header page-toolbar">
@@ -105,6 +108,23 @@
           <% end %>
         <% else %>
           <p class="meta mb-0">No API calls recorded in the last 24 hours.</p>
+        <% end %>
+      </div>
+
+      <div class="stat">
+        <div class="stat-label">Queue ETA & Timing</div>
+        <div class="stat-kv"><span class="muted">Timing samples (24h)</span><strong><%= timing_snapshot[:completed_rows].to_i %></strong></div>
+        <div class="stat-kv"><span class="muted">Avg wait (ms)</span><strong><%= timing_snapshot[:avg_queue_wait_ms].present? ? timing_snapshot[:avg_queue_wait_ms] : "-" %></strong></div>
+        <div class="stat-kv"><span class="muted">Avg processing (ms)</span><strong><%= timing_snapshot[:avg_processing_ms].present? ? timing_snapshot[:avg_processing_ms] : "-" %></strong></div>
+        <% if queue_estimates.any? %>
+          <% queue_estimates.each do |row| %>
+            <div class="stat-kv">
+              <span class="muted"><%= row[:queue_name] %></span>
+              <strong><%= row[:estimated_new_item_total_seconds].to_f.round(1) %>s</strong>
+            </div>
+          <% end %>
+        <% else %>
+          <p class="meta mb-0">No active queue ETA samples right now.</p>
         <% end %>
       </div>
     </div>

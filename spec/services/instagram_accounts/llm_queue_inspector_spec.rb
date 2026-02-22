@@ -1,24 +1,42 @@
 require "rails_helper"
-require "securerandom"
 
 RSpec.describe InstagramAccounts::LlmQueueInspector do
-  it "returns zero queue size when adapter is not sidekiq" do
-    inspector = described_class.new
-    allow(inspector).to receive(:sidekiq_adapter?).and_return(false)
-    expect(inspector.queue_size).to eq(0)
-  end
+  describe "#queue_estimate" do
+    it "returns DB-backed estimate when available" do
+      inspector = described_class.new
 
-  it "returns false for stale check when event is not in progress" do
-    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
-    profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(3)}")
-    event = profile.instagram_profile_events.create!(
-      kind: "story_downloaded",
-      external_id: "evt_#{SecureRandom.hex(4)}",
-      detected_at: Time.current,
-      llm_comment_status: "failed"
-    )
+      allow(Ops::QueueProcessingEstimator).to receive(:estimate_for_queue).and_return(
+        {
+          queue_name: "ai_llm_comment_queue",
+          queue_size: 4,
+          estimated_new_item_wait_seconds: 12.2,
+          estimated_new_item_total_seconds: 30.5,
+          estimated_queue_drain_seconds: 88.7,
+          confidence: "medium",
+          sample_size: 20
+        }
+      )
 
-    inspector = described_class.new
-    expect(inspector.stale_comment_job?(event: event)).to eq(false)
+      payload = inspector.queue_estimate
+      expect(payload).to include(
+        queue_name: "ai_llm_comment_queue",
+        queue_size: 4,
+        estimated_new_item_total_seconds: 30.5,
+        confidence: "medium",
+        sample_size: 20
+      )
+    end
+
+    it "falls back to queue-size heuristic when estimate is unavailable" do
+      inspector = described_class.new
+      allow(Ops::QueueProcessingEstimator).to receive(:estimate_for_queue).and_return(nil)
+      allow(inspector).to receive(:queue_size).and_return(3)
+
+      payload = inspector.queue_estimate
+      expect(payload[:queue_size]).to eq(3)
+      expect(payload[:estimated_new_item_total_seconds]).to be > 0
+      expect(payload[:confidence]).to eq("low")
+      expect(payload[:sample_size]).to eq(0)
+    end
   end
 end

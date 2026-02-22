@@ -7,6 +7,8 @@ module Ops
 
       {
         queue: queue_counts,
+        queue_estimates: Ops::QueueProcessingEstimator.snapshot,
+        job_execution_metrics_24h: Ops::JobExecutionMetricsSnapshot.snapshot(window_hours: 24, queue_limit: 8),
         ai_service_queues: Ops::AiServiceQueueMetrics.snapshot,
         app: {
           accounts: InstagramAccount.count,
@@ -66,6 +68,8 @@ module Ops
         analyses_by_status: account.ai_analyses.group(:status).count,
         api_usage_24h: api_usage_summary(scope: usage_scope),
         ai_service_queues: Ops::AiServiceQueueMetrics.snapshot(account_id: account.id),
+        queue_estimates: Ops::QueueProcessingEstimator.snapshot,
+        job_execution_metrics_24h: Ops::JobExecutionMetricsSnapshot.snapshot(window_hours: 24, queue_limit: 8, account_id: account.id),
         visual_failures_24h: visual_failure_summary(scope: BackgroundJobFailure.where(instagram_account_id: account.id, job_class: "ProcessPostVisualAnalysisJob")
           .where("occurred_at >= ?", 24.hours.ago)),
         queue: queue_counts

@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+
 require "open3"
 require "socket"
 
@@ -55,9 +56,13 @@ module AiDashboard
 
     def call
       metrics_by_key = queue_metrics_by_key
+      queue_eta_by_queue = queue_estimates_by_queue_name
       architecture = architecture_snapshot
       host_services = build_host_services(architecture: architecture)
-      concurrent_services = build_concurrent_services(metrics_by_key: metrics_by_key)
+      concurrent_services = build_concurrent_services(
+        metrics_by_key: metrics_by_key,
+        queue_eta_by_queue: queue_eta_by_queue
+      )
 
       {
         captured_at: Time.current.iso8601(3),
@@ -95,9 +100,10 @@ module AiDashboard
 
     private
 
-    def build_concurrent_services(metrics_by_key:)
+    def build_concurrent_services(metrics_by_key:, queue_eta_by_queue:)
       Ops::AiServiceQueueRegistry.services.map do |service|
         metric = metrics_by_key[service.key.to_s] || {}
+        queue_eta = queue_eta_by_queue[service.queue_name.to_s] || {}
         queue_pending = metric[:queue_pending].to_i
         api_calls_24h = metric[:api_calls_24h].to_i
         failures_24h = metric[:recent_failures_24h].to_i
@@ -116,6 +122,11 @@ module AiDashboard
           api_total_tokens_24h: metric[:api_total_tokens_24h].to_i,
           sampled_job_classes: Array(metric[:sampled_job_classes]),
           job_class_count: service.normalized_job_classes.length,
+          eta_new_item_seconds: queue_eta[:estimated_new_item_total_seconds],
+          eta_queue_drain_seconds: queue_eta[:estimated_queue_drain_seconds],
+          eta_confidence: queue_eta[:confidence].to_s.presence || "low",
+          eta_sample_size: queue_eta[:sample_size].to_i,
+          data_impact: service.description.to_s,
           active: queue_pending.positive? || api_calls_24h.positive? || failures_24h.positive?
         }
       end
@@ -197,6 +208,7 @@ module AiDashboard
       rows << unused_models_candidate(architecture: architecture)
       rows.concat(host_service_candidates(host_services: host_services, architecture: architecture))
       rows.concat(idle_lane_candidates(concurrent_services: concurrent_services))
+      rows.concat(high_failure_lane_candidates(concurrent_services: concurrent_services))
       rows.compact
     end
 
@@ -299,6 +311,22 @@ module AiDashboard
         }
       end
 
+      Array(host_services).each do |service|
+        row = service.is_a?(Hash) ? service : {}
+        service_key = row[:service_key].to_s
+        next if service_key == "local_microservice"
+        next unless ActiveModel::Type::Boolean.new.cast(row[:required])
+        next if ActiveModel::Type::Boolean.new.cast(row[:active])
+
+        rows << {
+          id: "missing_#{service_key}",
+          status: "review",
+          title: "Required service offline: #{row[:service_name]}",
+          evidence: "port_open=#{row[:port_open]}, process_count=#{row[:process_count]}",
+          recommended_action: "Start #{row[:service_name]} or disable features that depend on it."
+        }
+      end
+
       rows
     end
 
@@ -323,9 +351,28 @@ module AiDashboard
         end
     end
 
+    def high_failure_lane_candidates(concurrent_services:)
+      concurrent_services
+        .select { |row| row[:recent_failures_24h].to_i >= 8 }
+        .sort_by { |row| -row[:recent_failures_24h].to_i }
+        .first(4)
+        .map do |row|
+          {
+            id: "failure_hotspot_#{row[:service_key]}",
+            status: "tune_concurrency",
+            title: "Failure hotspot: #{row[:service_name]}",
+            evidence: "failures_24h=#{row[:recent_failures_24h]}, queue=#{row[:queue_pending]}, concurrency=#{row[:configured_concurrency]}",
+            recommended_action: "Reduce `#{row[:concurrency_env]}` to `1`, keep lightweight mode on, and investigate recurring errors before scaling."
+          }
+        end
+    end
+
     def totals(concurrent_services:, host_services:)
       total = concurrent_services.length
       active = concurrent_services.count { |row| ActiveModel::Type::Boolean.new.cast(row[:active]) }
+      active_drain_seconds = concurrent_services
+        .select { |row| ActiveModel::Type::Boolean.new.cast(row[:active]) }
+        .sum { |row| row[:eta_queue_drain_seconds].to_f }
       host_total = Array(host_services).length
       host_active = Array(host_services).count { |row| ActiveModel::Type::Boolean.new.cast(row[:active]) }
       host_required_missing = Array(host_services).count do |row|
@@ -335,11 +382,28 @@ module AiDashboard
       {
         total_lanes: total,
         active_lanes: active,
-        idle_lanes: [total - active, 0].max,
+        idle_lanes: [ total - active, 0 ].max,
+        active_lane_drain_eta_seconds: active_drain_seconds.round(1),
         host_services_total: host_total,
         host_services_active: host_active,
         host_services_required_missing: host_required_missing
       }
+    end
+
+    def queue_estimates_by_queue_name
+      snapshot = Ops::QueueProcessingEstimator.snapshot(
+        backend: @queue_backend,
+        queue_names: Ops::AiServiceQueueRegistry.ai_queue_names
+      )
+      Array(snapshot[:estimates]).each_with_object({}) do |row, map|
+        payload = row.is_a?(Hash) ? row.deep_symbolize_keys : {}
+        queue_name = payload[:queue_name].to_s
+        next if queue_name.blank?
+
+        map[queue_name] = payload
+      end
+    rescue StandardError
+      {}
     end
 
     def queue_metrics_by_key

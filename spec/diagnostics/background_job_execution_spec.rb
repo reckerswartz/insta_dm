@@ -3,6 +3,11 @@ require "rails_helper"
 RSpec.describe "Background Job Execution Diagnostics", :diagnostic do
   include ActiveJob::TestHelper
 
+  before do
+    Rails.cache.delete("ops:check_queue_health_job:last_checked_at")
+    CheckQueueHealthJob.instance_variable_set(:@last_checked_at_fallback, nil)
+  end
+
   it "executes lightweight queue health checks through ActiveJob" do
     allow(Ops::QueueHealth).to receive(:check!).and_return(true)
 
@@ -19,7 +24,7 @@ RSpec.describe "Background Job Execution Diagnostics", :diagnostic do
       class_attribute :performed_values, default: []
 
       def perform(payload = {})
-        self.class.performed_values += [payload.fetch("value", "ok")]
+        self.class.performed_values += [ payload.fetch("value", "ok") ]
       end
     end)
 

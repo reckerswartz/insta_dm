@@ -8,6 +8,8 @@ class Admin::BackgroundJobsController < Admin::BaseController
     @recent_jobs = snapshot.recent_jobs
     @recent_failed = snapshot.recent_failed
     @ai_service_queue_metrics = Ops::AiServiceQueueMetrics.snapshot
+    @queue_estimates = Ops::QueueProcessingEstimator.snapshot(backend: @backend)
+    @job_execution_metrics = Ops::JobExecutionMetricsSnapshot.snapshot
 
     Admin::BackgroundJobs::RecentJobDetailsEnricher.new(rows: @recent_jobs).call
 

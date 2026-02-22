@@ -2,6 +2,20 @@ require "rails_helper"
 
 RSpec.describe AiDashboard::RuntimeAudit do
   it "builds concurrent lane summary and cleanup candidates" do
+    allow(Ops::QueueProcessingEstimator).to receive(:snapshot).and_return(
+      {
+        estimates: [
+          {
+            queue_name: "ai_llm_comment_queue",
+            estimated_new_item_total_seconds: 35.5,
+            estimated_queue_drain_seconds: 88.0,
+            confidence: "medium",
+            sample_size: 12
+          }
+        ]
+      }
+    )
+
     service_status = {
       status: "online",
       details: {
@@ -52,6 +66,12 @@ RSpec.describe AiDashboard::RuntimeAudit do
     expect(result.dig(:totals, :total_lanes).to_i).to be > 0
     expect(result[:concurrent_services]).to include(
       hash_including(service_key: "llm_comment_generation", queue_pending: 2)
+    )
+    llm_row = result[:concurrent_services].find { |row| row[:service_key] == "llm_comment_generation" }
+    expect(llm_row).to include(
+      eta_new_item_seconds: 35.5,
+      eta_queue_drain_seconds: 88.0,
+      eta_confidence: "medium"
     )
     expect(result[:cleanup_candidates]).to include(
       hash_including(id: "unused_ollama_models", status: "safe_to_remove")

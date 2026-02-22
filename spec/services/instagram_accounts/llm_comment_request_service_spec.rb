@@ -4,7 +4,22 @@ require "securerandom"
 RSpec.describe InstagramAccounts::LlmCommentRequestService do
   let(:account) { InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}") }
   let(:profile) { InstagramProfile.create!(instagram_account: account, username: "profile_#{SecureRandom.hex(3)}") }
-  let(:queue_inspector) { instance_double(InstagramAccounts::LlmQueueInspector, queue_size: 2, stale_comment_job?: false) }
+  let(:queue_inspector) do
+    instance_double(
+      InstagramAccounts::LlmQueueInspector,
+      queue_size: 2,
+      queue_estimate: {
+        queue_name: "ai_llm_comment_queue",
+        queue_size: 2,
+        estimated_new_item_wait_seconds: 12.0,
+        estimated_new_item_total_seconds: 48.0,
+        estimated_queue_drain_seconds: 72.0,
+        confidence: "medium",
+        sample_size: 15
+      },
+      stale_comment_job?: false
+    )
+  end
 
   it "returns not_found when the event does not belong to the account" do
     other_account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")

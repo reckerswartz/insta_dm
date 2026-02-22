@@ -9,8 +9,8 @@ development:
   ai_microservice_health_check:
     class: CheckAiMicroserviceHealthJob
     active_job: true
-    queue: sync
-    cron: "*/5 * * * *"
+    queue: maintenance
+    cron: "*/10 * * * *"
   ai_feature_evidence_snapshot:
     class: AnalyzeAiFeatureEvidenceJob
     active_job: true
@@ -21,8 +21,8 @@ development:
   queue_health_check:
     class: CheckQueueHealthJob
     active_job: true
-    queue: sync
-    cron: "*/3 * * * *"
+    queue: maintenance
+    cron: "*/8 * * * *"
   job_health_monitor:
     class: JobHealthMonitorJob
     active_job: true
@@ -80,8 +80,8 @@ production:
   ai_microservice_health_check:
     class: CheckAiMicroserviceHealthJob
     active_job: true
-    queue: sync
-    cron: "*/5 * * * *"
+    queue: maintenance
+    cron: "*/10 * * * *"
   ai_feature_evidence_snapshot:
     class: AnalyzeAiFeatureEvidenceJob
     active_job: true
@@ -92,8 +92,8 @@ production:
   queue_health_check:
     class: CheckQueueHealthJob
     active_job: true
-    queue: sync
-    cron: "*/2 * * * *"
+    queue: maintenance
+    cron: "*/6 * * * *"
   job_health_monitor:
     class: JobHealthMonitorJob
     active_job: true

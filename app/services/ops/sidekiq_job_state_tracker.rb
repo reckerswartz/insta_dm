@@ -44,6 +44,11 @@ module Ops
         else
           Ops::StructuredLogger.info(event: "job.state_transition", payload: payload)
         end
+
+        # Persist terminal transition timings for queue ETA forecasting.
+        if payload[:transition].to_s.in?(%w[completed failed])
+          Ops::JobExecutionMetricsRecorder.record_transition(payload: payload)
+        end
       rescue StandardError
         nil
       end

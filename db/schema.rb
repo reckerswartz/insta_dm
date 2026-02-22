@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_20_110000) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_22_230000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -171,6 +171,35 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_20_110000) do
     t.index ["severity", "last_seen_at"], name: "idx_app_issues_severity_last_seen"
     t.index ["source"], name: "index_app_issues_on_source"
     t.index ["status", "last_seen_at"], name: "idx_app_issues_status_last_seen"
+  end
+
+  create_table "background_job_execution_metrics", force: :cascade do |t|
+    t.string "active_job_id", null: false
+    t.datetime "created_at", null: false
+    t.bigint "instagram_account_id"
+    t.bigint "instagram_profile_id"
+    t.bigint "instagram_profile_post_id"
+    t.string "job_class", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.integer "processing_duration_ms"
+    t.string "provider_job_id"
+    t.string "queue_name", null: false
+    t.integer "queue_wait_ms"
+    t.datetime "recorded_at", null: false
+    t.integer "retry_count"
+    t.string "sidekiq_class"
+    t.string "sidekiq_jid"
+    t.string "status", null: false
+    t.integer "total_time_ms"
+    t.bigint "transition_recorded_at_ms"
+    t.datetime "updated_at", null: false
+    t.index ["instagram_account_id"], name: "index_background_job_execution_metrics_on_instagram_account_id"
+    t.index ["instagram_profile_id"], name: "index_background_job_execution_metrics_on_instagram_profile_id"
+    t.index ["job_class", "recorded_at"], name: "idx_on_job_class_recorded_at_27c9e4b771"
+    t.index ["provider_job_id"], name: "index_background_job_execution_metrics_on_provider_job_id"
+    t.index ["queue_name", "recorded_at"], name: "idx_on_queue_name_recorded_at_a83d040c6d"
+    t.index ["recorded_at"], name: "index_background_job_execution_metrics_on_recorded_at"
+    t.index ["status", "recorded_at"], name: "idx_on_status_recorded_at_684af8c112"
   end
 
   create_table "background_job_failures", force: :cascade do |t|

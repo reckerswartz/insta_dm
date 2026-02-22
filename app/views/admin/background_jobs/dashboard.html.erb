@@ -74,6 +74,110 @@
   </section>
 
   <section class="card">
+    <h2>Queue ETA Forecast (DB-backed)</h2>
+    <% queue_estimate_snapshot = @queue_estimates.is_a?(Hash) ? @queue_estimates : {} %>
+    <% queue_estimates = Array(queue_estimate_snapshot[:estimates]) %>
+    <p class="meta">
+      Captured at <%= queue_estimate_snapshot[:captured_at].to_s.presence || "-" %>
+      | Lookback: <strong><%= queue_estimate_snapshot[:lookback_window_hours].to_i %>h</strong>
+      | Queues: <strong><%= queue_estimate_snapshot[:queue_count].to_i %></strong>
+      | Items queued: <strong><%= queue_estimate_snapshot[:queued_items_total].to_i %></strong>
+    </p>
+    <% if queue_estimates.any? %>
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-queue-estimates-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
+            <thead>
+              <tr>
+                <th>Queue</th>
+                <th>Size</th>
+                <th>Latency (s)</th>
+                <th>Concurrency</th>
+                <th>Median proc (ms)</th>
+                <th>Median wait (ms)</th>
+                <th>New item ETA (s)</th>
+                <th>Drain ETA (s)</th>
+                <th>Confidence</th>
+                <th>Samples</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% queue_estimates.each do |row| %>
+                <tr>
+                  <td><code><%= row[:queue_name] %></code></td>
+                  <td><%= row[:queue_size].to_i %></td>
+                  <td><%= row[:queue_latency_seconds].to_f.round(1) %></td>
+                  <td><%= row[:estimated_concurrency].to_f.round(2) %></td>
+                  <td><%= row[:median_processing_ms].present? ? row[:median_processing_ms] : "-" %></td>
+                  <td><%= row[:median_queue_wait_ms].present? ? row[:median_queue_wait_ms] : "-" %></td>
+                  <td><strong><%= row[:estimated_new_item_total_seconds].to_f.round(1) %></strong></td>
+                  <td><%= row[:estimated_queue_drain_seconds].to_f.round(1) %></td>
+                  <td><span class="pill"><%= row[:confidence].to_s %></span></td>
+                  <td><%= row[:sample_size].to_i %></td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    <% else %>
+      <p class="meta">No queue ETA data available yet.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
+    <h2>Execution Timing Metrics (24h)</h2>
+    <% execution_snapshot = @job_execution_metrics.is_a?(Hash) ? @job_execution_metrics : {} %>
+    <% execution_rows = Array(execution_snapshot[:queues]) %>
+    <p class="meta">
+      Captured at <%= execution_snapshot[:captured_at].to_s.presence || "-" %>
+      | Total: <strong><%= execution_snapshot[:total_rows].to_i %></strong>
+      | Completed: <strong><%= execution_snapshot[:completed_rows].to_i %></strong>
+      | Failed: <strong><%= execution_snapshot[:failed_rows].to_i %></strong>
+      | Avg wait: <strong><%= execution_snapshot[:avg_queue_wait_ms].present? ? execution_snapshot[:avg_queue_wait_ms] : "-" %>ms</strong>
+      | Avg processing: <strong><%= execution_snapshot[:avg_processing_ms].present? ? execution_snapshot[:avg_processing_ms] : "-" %>ms</strong>
+    </p>
+    <% if execution_rows.any? %>
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-execution-metrics-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
+            <thead>
+              <tr>
+                <th>Queue</th>
+                <th>Total</th>
+                <th>Completed</th>
+                <th>Failed</th>
+                <th>Median proc (ms)</th>
+                <th>P90 proc (ms)</th>
+                <th>Median wait (ms)</th>
+                <th>Avg total (ms)</th>
+                <th>Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% execution_rows.each do |row| %>
+                <tr>
+                  <td><code><%= row[:queue_name] %></code></td>
+                  <td><%= row[:total_rows].to_i %></td>
+                  <td><%= row[:completed_rows].to_i %></td>
+                  <td><%= row[:failed_rows].to_i %></td>
+                  <td><%= row[:median_processing_ms].present? ? row[:median_processing_ms] : "-" %></td>
+                  <td><%= row[:p90_processing_ms].present? ? row[:p90_processing_ms] : "-" %></td>
+                  <td><%= row[:median_queue_wait_ms].present? ? row[:median_queue_wait_ms] : "-" %></td>
+                  <td><%= row[:avg_total_ms].present? ? row[:avg_total_ms] : "-" %></td>
+                  <td><%= row[:last_recorded_at].to_s.presence || "-" %></td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    <% else %>
+      <p class="meta">No recorded terminal job timings yet. Metrics appear once jobs complete or fail.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
     <h2>AI Service Queue Metrics (24h)</h2>
     <% ai_metrics = @ai_service_queue_metrics.is_a?(Hash) ? @ai_service_queue_metrics : {} %>
     <% ai_services = Array(ai_metrics[:services]) %>

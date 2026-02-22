@@ -1,6 +1,7 @@
 module InstagramAccounts
   class LlmQueueInspector
     STALE_AFTER = 5.minutes
+    DEFAULT_ITEM_SECONDS = ENV.fetch("LLM_COMMENT_DEFAULT_QUEUE_ITEM_SECONDS", 120).to_i.clamp(20, 1800)
     LLM_QUEUE_NAME = Ops::AiServiceQueueRegistry.queue_name_for(:llm_comment_generation).to_s.presence || "ai_llm_comment_queue"
 
     def queue_size
@@ -10,6 +11,27 @@ module InstagramAccounts
       Sidekiq::Queue.new(LLM_QUEUE_NAME).size.to_i
     rescue StandardError
       0
+    end
+
+    def queue_estimate
+      estimate = Ops::QueueProcessingEstimator.estimate_for_queue(
+        queue_name: LLM_QUEUE_NAME,
+        backend: "sidekiq"
+      )
+      return fallback_queue_estimate if estimate.blank?
+
+      payload = estimate.deep_symbolize_keys
+      {
+        queue_name: payload[:queue_name].to_s.presence || LLM_QUEUE_NAME,
+        queue_size: payload[:queue_size].to_i,
+        estimated_new_item_wait_seconds: payload[:estimated_new_item_wait_seconds].to_f.round(1),
+        estimated_new_item_total_seconds: payload[:estimated_new_item_total_seconds].to_f.round(1),
+        estimated_queue_drain_seconds: payload[:estimated_queue_drain_seconds].to_f.round(1),
+        confidence: payload[:confidence].to_s.presence || "low",
+        sample_size: payload[:sample_size].to_i
+      }
+    rescue StandardError
+      fallback_queue_estimate
     end
 
     def stale_comment_job?(event:)
@@ -72,6 +94,31 @@ module InstagramAccounts
         Ops::AiServiceQueueRegistry.queue_name_for(:llm_comment_generation),
         Ops::AiServiceQueueRegistry.queue_name_for(:pipeline_orchestration)
       ].map(&:to_s).reject(&:blank?).uniq
+    end
+
+    def fallback_queue_estimate
+      size = queue_size
+      per_item = DEFAULT_ITEM_SECONDS
+      wait_seconds = [ size - 1, 0 ].max * per_item
+      {
+        queue_name: LLM_QUEUE_NAME,
+        queue_size: size,
+        estimated_new_item_wait_seconds: wait_seconds.to_f.round(1),
+        estimated_new_item_total_seconds: (wait_seconds + per_item).to_f.round(1),
+        estimated_queue_drain_seconds: (size * per_item).to_f.round(1),
+        confidence: "low",
+        sample_size: 0
+      }
+    rescue StandardError
+      {
+        queue_name: LLM_QUEUE_NAME,
+        queue_size: 0,
+        estimated_new_item_wait_seconds: 0.0,
+        estimated_new_item_total_seconds: DEFAULT_ITEM_SECONDS.to_f.round(1),
+        estimated_queue_drain_seconds: 0.0,
+        confidence: "low",
+        sample_size: 0
+      }
     end
   end
 end
