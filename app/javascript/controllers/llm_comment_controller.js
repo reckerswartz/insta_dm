@@ -571,7 +571,20 @@ export default class extends Controller {
     const pipelineTiming = data?.llm_pipeline_timing && typeof data.llm_pipeline_timing === "object" ? data.llm_pipeline_timing : null
     const relevanceBreakdown = data?.llm_relevance_breakdown || data?.relevance_breakdown || data?.generation_result?.relevance_breakdown
     const relevanceScore = data?.llm_comment_relevance_score ?? data?.relevance_score ?? data?.generation_result?.relevance_score
-    const failureMessage = String(data?.error || data?.llm_comment_last_error || data?.message || "").trim()
+    const failureMessage = String(data?.error || data?.llm_comment_last_error || data?.llm_failure_message || data?.message || "").trim()
+    const generationPolicy = data?.llm_generation_policy && typeof data.llm_generation_policy === "object" ? data.llm_generation_policy : null
+    const failureReasonCode = String(data?.llm_failure_reason_code || data?.reason || "").trim()
+    const failureSource = String(data?.llm_failure_source || data?.source || "").trim()
+    const failureErrorClass = String(data?.llm_failure_error_class || "").trim()
+    const manualReviewReason = String(data?.llm_manual_review_reason || "").trim()
+    const policyReasonCode = String(data?.llm_policy_reason_code || generationPolicy?.reason_code || "").trim()
+    const policyReason = String(data?.llm_policy_reason || generationPolicy?.reason || "").trim()
+    const policySource = String(data?.llm_policy_source || generationPolicy?.source || "").trim()
+    const hasPolicyAllow = Object.prototype.hasOwnProperty.call(data || {}, "llm_policy_allow_comment")
+    const policyAllow = hasPolicyAllow ? this.coerceBoolean(data?.llm_policy_allow_comment) : null
+    const hasAutoPostAllowed = Object.prototype.hasOwnProperty.call(data || {}, "llm_auto_post_allowed")
+    const autoPostAllowed = hasAutoPostAllowed ? this.coerceBoolean(data?.llm_auto_post_allowed) : null
+    const modelLabel = String(data?.llm_model_label || "").trim()
 
     const patch = {}
     if (normalizedStatus) patch.llm_comment_status = normalizedStatus
@@ -582,6 +595,7 @@ export default class extends Controller {
     if (generatedAt) patch.llm_comment_generated_at = generatedAt
     if (String(data?.llm_comment_model || data?.model || "").trim()) patch.llm_comment_model = String(data?.llm_comment_model || data?.model)
     if (String(data?.llm_comment_provider || data?.provider || "").trim()) patch.llm_comment_provider = String(data?.llm_comment_provider || data?.provider)
+    if (modelLabel) patch.llm_model_label = modelLabel
     if (Number.isFinite(Number(relevanceScore))) patch.llm_comment_relevance_score = Number(relevanceScore)
     if (relevanceBreakdown && typeof relevanceBreakdown === "object") patch.llm_relevance_breakdown = relevanceBreakdown
     if (rankedCandidates.length > 0) patch.llm_ranked_candidates = rankedCandidates
@@ -589,12 +603,28 @@ export default class extends Controller {
     if (processingLog.length > 0) patch.llm_processing_log = processingLog
     if (pipelineStepRollup && Object.keys(pipelineStepRollup).length > 0) patch.llm_pipeline_step_rollup = pipelineStepRollup
     if (pipelineTiming && Object.keys(pipelineTiming).length > 0) patch.llm_pipeline_timing = pipelineTiming
+    if (manualReviewReason) patch.llm_manual_review_reason = manualReviewReason
+    if (hasAutoPostAllowed) patch.llm_auto_post_allowed = autoPostAllowed
+    if (generationPolicy && Object.keys(generationPolicy).length > 0) patch.llm_generation_policy = generationPolicy
+    if (failureReasonCode) patch.llm_failure_reason_code = failureReasonCode
+    if (failureSource) patch.llm_failure_source = failureSource
+    if (failureErrorClass) patch.llm_failure_error_class = failureErrorClass
+    if (hasPolicyAllow) patch.llm_policy_allow_comment = policyAllow
+    if (policyReasonCode) patch.llm_policy_reason_code = policyReasonCode
+    if (policyReason) patch.llm_policy_reason = policyReason
+    if (policySource) patch.llm_policy_source = policySource
     if (["failed", "skipped"].includes(normalizedStatus) && failureMessage) {
       patch.llm_comment_last_error = failureMessage
       patch.llm_comment_last_error_preview = failureMessage.slice(0, 180)
+      patch.llm_failure_message = failureMessage
     } else if (normalizedStatus === "completed") {
       patch.llm_comment_last_error = null
       patch.llm_comment_last_error_preview = null
+      if (manualReviewReason) {
+        patch.llm_failure_message = manualReviewReason
+      } else if (policyReason) {
+        patch.llm_failure_message = policyReason
+      }
     }
     if (String(data?.llm_workflow_status || "").trim().length > 0) patch.llm_workflow_status = String(data.llm_workflow_status)
     if (data?.llm_workflow_progress && typeof data.llm_workflow_progress === "object") patch.llm_workflow_progress = data.llm_workflow_progress
@@ -849,5 +879,13 @@ export default class extends Controller {
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#39;")
+  }
+
+  coerceBoolean(value) {
+    if (typeof value === "boolean") return value
+    const normalized = String(value || "").toLowerCase().trim()
+    if (["1", "true", "yes", "on"].includes(normalized)) return true
+    if (["0", "false", "no", "off"].includes(normalized)) return false
+    return Boolean(value)
   }
 }

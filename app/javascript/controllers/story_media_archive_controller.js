@@ -318,6 +318,9 @@ export default class extends Controller {
       item.llm_workflow_status || item.llm_comment_status,
       item.llm_workflow_progress
     )
+    const stageLastText = this.formatLastStageText(this.latestStageFromItem(item))
+    const modelSummary = this.renderModelSummary(item, { compact: true })
+    const diagnostics = this.renderDecisionDiagnostics(item, { llmState: state, manualState: manual, compact: true })
 
     return `
       <div class="llm-comment-section" data-event-id="${this.esc(String(item.id))}" data-llm-status="${this.esc(state.code)}">
@@ -326,6 +329,9 @@ export default class extends Controller {
           <p class="meta llm-completion-row ${state.code === "completed" ? "" : "hidden"}" data-role="llm-completion">Completed ${this.esc(generatedAt)}</p>
         </div>
         <p class="meta llm-progress-compact ${progressText ? "" : "hidden"}" data-role="llm-progress-compact">${this.esc(progressText || "")}</p>
+        <p class="meta llm-stage-last ${stageLastText ? "" : "hidden"}" data-role="llm-stage-last">${stageLastText ? `Latest: ${this.esc(stageLastText)}` : ""}</p>
+        ${modelSummary}
+        ${diagnostics}
         <div class="manual-send-state" data-event-id="${this.esc(String(item.id))}" data-manual-status="${this.esc(manual.code)}">
           <span class="story-status-chip ${this.esc(manual.chipClass)}" data-role="manual-send-status">${this.esc(manual.label)}</span>
           <p class="meta ${manualMessage ? "" : "hidden"}" data-role="manual-send-message">${this.esc(manualMessage || "")}</p>
@@ -424,7 +430,18 @@ export default class extends Controller {
     if (Object.prototype.hasOwnProperty.call(patch, "llm_ranked_candidates")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_workflow_status")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_workflow_progress")) return true
-    if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_status") && String(patch.llm_comment_status) === "completed") return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_status")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_last_error")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_manual_review_reason")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_generation_policy")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_reason_code")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_source")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_message")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_model_label")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "manual_send_status")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "manual_send_reason")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "manual_send_message")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "manual_send_last_error")) return true
     return false
   }
 
@@ -436,6 +453,16 @@ export default class extends Controller {
     if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_last_error")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_step_rollup")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_timing")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_generation_policy")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_manual_review_reason")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_reason_code")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_source")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_message")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_model_label")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "manual_send_status")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "manual_send_reason")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "manual_send_message")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "manual_send_last_error")) return true
     if (!Object.prototype.hasOwnProperty.call(patch, "llm_comment_status")) return false
 
     const status = String(patch.llm_comment_status || "").toLowerCase()
@@ -458,6 +485,10 @@ export default class extends Controller {
     }
     if (patch?.llm_pipeline_timing && typeof patch.llm_pipeline_timing === "object") {
       merged.llm_pipeline_timing = patch.llm_pipeline_timing
+    }
+    if (patch?.llm_generation_policy && typeof patch.llm_generation_policy === "object") {
+      const currentPolicy = existing?.llm_generation_policy && typeof existing.llm_generation_policy === "object" ? existing.llm_generation_policy : {}
+      merged.llm_generation_policy = { ...currentPolicy, ...patch.llm_generation_policy }
     }
     if (typeof patch?.llm_workflow_status === "string" && patch.llm_workflow_status.length > 0) {
       merged.llm_workflow_status = patch.llm_workflow_status
@@ -562,6 +593,8 @@ export default class extends Controller {
     const breakdown = item.llm_relevance_breakdown && typeof item.llm_relevance_breakdown === "object" ? item.llm_relevance_breakdown : {}
     const processingDetails = this.renderProcessingDetailsSection(item)
     const contextSummary = this.renderContextAndFaceSummary(item)
+    const modelSummary = this.renderModelSummary(item, { compact: false })
+    const decisionDetails = this.renderDecisionDiagnostics(item, { llmState, manualState: manual, compact: false })
     const comment = item.llm_generated_comment ?
       `
         <section class="story-modal-section">
@@ -637,6 +670,8 @@ export default class extends Controller {
               ${item.reply_comment ? `<p><strong>Reply sent:</strong> ${this.esc(item.reply_comment)}</p>` : ""}
               ${item.skipped && item.skip_reason ? `<p class="meta story-skipped-badge">Skipped: ${this.esc(item.skip_reason)}</p>` : ""}
               ${contextSummary}
+              ${modelSummary}
+              ${decisionDetails}
               ${comment}
               ${processingDetails}
               <div class="story-detail-actions">
@@ -876,6 +911,8 @@ export default class extends Controller {
       })
 
     this.updateManualSendButtonsForEvent(key, state)
+    this.refreshCardCommentSection(key)
+    this.refreshOpenModalForEvent(key)
   }
 
   resolveManualSendState(status) {
@@ -1217,9 +1254,7 @@ export default class extends Controller {
     const summary = String(item.story_ownership_summary || "").trim()
     const confidence = Number(item.story_ownership_confidence)
     const confidenceText = Number.isFinite(confidence) ? confidence.toFixed(2) : "-"
-    const reviewReason = String(item.llm_manual_review_reason || "").trim()
-
-    if (!label && !summary && !reviewReason) return ""
+    if (!label && !summary) return ""
 
     return `
       <section class="story-modal-section">
@@ -1227,9 +1262,274 @@ export default class extends Controller {
         ${label ? `<p class="meta"><strong>Ownership:</strong> ${this.esc(label)}</p>` : ""}
         ${summary ? `<p class="meta"><strong>Summary:</strong> ${this.esc(summary)}</p>` : ""}
         ${label ? `<p class="meta"><strong>Confidence:</strong> ${this.esc(confidenceText)}</p>` : ""}
-        ${reviewReason ? `<p class="meta"><strong>Manual review:</strong> ${this.esc(reviewReason)}</p>` : ""}
       </section>
     `
+  }
+
+  renderModelSummary(item, { compact = true } = {}) {
+    const provider = String(item?.llm_comment_provider || "").trim()
+    const model = String(item?.llm_comment_model || "").trim()
+    const explicitLabel = String(item?.llm_model_label || "").trim()
+    const contentType = String(item?.media_content_type || "").trim() || "unknown"
+    const modelLabel = explicitLabel || (provider && model ? `${provider} / ${model}` : (provider || model || "Pending"))
+    const title = compact ? "Model" : "Comment model"
+    return `<p class="meta llm-model-row"><strong>${this.esc(title)}:</strong> ${this.esc(modelLabel)} <span class="llm-model-media">(${this.esc(contentType)})</span></p>`
+  }
+
+  renderDecisionDiagnostics(item, { llmState = null, manualState = null, compact = true } = {}) {
+    const resolvedLlmState = llmState || this.resolveLlmCardState({
+      status: item?.llm_comment_status,
+      workflowStatus: item?.llm_workflow_status,
+      hasComment: item?.has_llm_comment,
+      generatedComment: item?.llm_generated_comment,
+    })
+    const resolvedManualState = manualState || this.resolveManualSendState(item?.manual_send_status)
+    const rows = [
+      this.llmDecisionReason(item, resolvedLlmState),
+      this.manualDecisionReason(item, resolvedManualState),
+    ].filter(Boolean)
+    if (rows.length === 0) return ""
+
+    const notes = rows.map((row) => {
+      const codeLabel = row?.reasonCode ? this.humanizeReasonCode(row.reasonCode) : ""
+      const sourceLabel = row?.source ? this.humanizeReasonCode(row.source) : ""
+      const metaParts = []
+      if (codeLabel) metaParts.push(`Reason: ${codeLabel}`)
+      if (sourceLabel) metaParts.push(`Source: ${sourceLabel}`)
+      if (row?.rawCode && row.rawCode !== row.reasonCode) metaParts.push(`Code: ${row.rawCode}`)
+      return `
+        <div class="llm-decision-note ${this.esc(row.levelClass || "info")}">
+          <p class="llm-decision-title"><strong>${this.esc(row.title || "Decision")}</strong></p>
+          ${row.message ? `<p class="meta llm-decision-message">${this.esc(row.message)}</p>` : ""}
+          ${metaParts.length > 0 ? `<p class="meta llm-decision-meta">${this.esc(metaParts.join(" | "))}</p>` : ""}
+        </div>
+      `
+    }).join("")
+
+    if (compact) return `<div class="llm-decision-stack compact">${notes}</div>`
+
+    return `
+      <section class="story-modal-section">
+        <h4>Decision Details</h4>
+        <div class="llm-decision-stack">${notes}</div>
+      </section>
+    `
+  }
+
+  llmDecisionReason(item, llmState) {
+    const stateCode = String(llmState?.code || "").toLowerCase()
+    const manualReviewReason = String(item?.llm_manual_review_reason || "").trim()
+    const failureMessage = this.resolveLlmFailureMessage(item)
+    const reasonCodeRaw = String(
+      item?.llm_failure_reason_code ||
+      item?.llm_policy_reason_code ||
+      item?.llm_generation_policy?.reason_code ||
+      "",
+    ).trim()
+    const sourceRaw = String(
+      item?.llm_failure_source ||
+      item?.llm_policy_source ||
+      item?.llm_generation_policy?.source ||
+      "",
+    ).trim()
+    const policyReason = String(item?.llm_policy_reason || item?.llm_generation_policy?.reason || "").trim()
+    const allowComment = this.resolveAllowComment(item)
+    const autoPostAllowed = this.resolveAutoPostAllowed(item)
+    const mediaUnsupported = !this.supportedStoryMediaType(item?.media_content_type)
+    const reasonCode = reasonCodeRaw || (mediaUnsupported ? "unsupported_media_type" : "")
+
+    if (stateCode === "completed" && (manualReviewReason || autoPostAllowed === false)) {
+      return {
+        title: "AI requires manual review",
+        message: manualReviewReason || policyReason || "Generated comment is marked for manual verification before sending.",
+        reasonCode: reasonCode || "manual_review_required",
+        source: sourceRaw || "quality_policy",
+        rawCode: reasonCodeRaw,
+        levelClass: "warning",
+      }
+    }
+
+    if (stateCode === "skipped") {
+      return {
+        title: "AI skipped comment generation",
+        message: failureMessage || policyReason || "Comment generation was skipped for this story.",
+        reasonCode: reasonCode || "generation_skipped",
+        source: sourceRaw || "llm_pipeline",
+        rawCode: reasonCodeRaw,
+        levelClass: "failed",
+      }
+    }
+
+    if (stateCode === "failed") {
+      return {
+        title: "AI generation failed",
+        message: failureMessage || policyReason || "The generation pipeline failed before producing a comment.",
+        reasonCode: reasonCode || "generation_failed",
+        source: sourceRaw || "llm_pipeline",
+        rawCode: reasonCodeRaw,
+        levelClass: "failed",
+      }
+    }
+
+    if (allowComment === false) {
+      return {
+        title: "AI policy blocked generation",
+        message: policyReason || "Story policy marked this media as not suitable for auto comment generation.",
+        reasonCode: reasonCode || "policy_blocked",
+        source: sourceRaw || "validated_story_policy",
+        rawCode: reasonCodeRaw,
+        levelClass: "warning",
+      }
+    }
+
+    if (mediaUnsupported && (stateCode === "not_started" || stateCode === "partial")) {
+      return {
+        title: "Media type may not be supported",
+        message: `Detected media type ${String(item?.media_content_type || "unknown")}; AI generation may be skipped.`,
+        reasonCode: "unsupported_media_type",
+        source: "media_validation",
+        rawCode: reasonCodeRaw,
+        levelClass: "warning",
+      }
+    }
+
+    return null
+  }
+
+  manualDecisionReason(item, manualState) {
+    const code = String(manualState?.code || "").trim()
+    if (!["failed", "expired_removed"].includes(code)) return null
+
+    const reasonCodeRaw = String(item?.manual_send_reason || "").trim()
+    const reasonCode = reasonCodeRaw || (code === "expired_removed" ? "story_unavailable" : "manual_send_failed")
+    const message = String(item?.manual_send_last_error || item?.manual_send_message || "").trim() ||
+      (code === "expired_removed" ? "Story expired or was removed before sending." : "Manual send did not complete.")
+
+    return {
+      title: code === "expired_removed" ? "Send skipped: story unavailable" : "Send failed",
+      message,
+      reasonCode,
+      source: "manual_send",
+      rawCode: reasonCodeRaw,
+      levelClass: "failed",
+    }
+  }
+
+  resolveLlmFailureMessage(item) {
+    return String(
+      item?.llm_comment_last_error ||
+      item?.llm_failure_message ||
+      item?.llm_policy_reason ||
+      item?.llm_generation_policy?.reason ||
+      "",
+    ).trim()
+  }
+
+  resolveAllowComment(item) {
+    if (Object.prototype.hasOwnProperty.call(item || {}, "llm_policy_allow_comment")) {
+      const value = this.coerceBoolean(item?.llm_policy_allow_comment)
+      return typeof value === "boolean" ? value : null
+    }
+    if (item?.llm_generation_policy && Object.prototype.hasOwnProperty.call(item.llm_generation_policy, "allow_comment")) {
+      const value = this.coerceBoolean(item.llm_generation_policy.allow_comment)
+      return typeof value === "boolean" ? value : null
+    }
+    return null
+  }
+
+  resolveAutoPostAllowed(item) {
+    if (!Object.prototype.hasOwnProperty.call(item || {}, "llm_auto_post_allowed")) return null
+    const value = this.coerceBoolean(item?.llm_auto_post_allowed)
+    return typeof value === "boolean" ? value : null
+  }
+
+  supportedStoryMediaType(contentType) {
+    const value = String(contentType || "").toLowerCase().trim()
+    if (!value) return false
+    return value.startsWith("image/") || value.startsWith("video/")
+  }
+
+  latestStageFromItem(item) {
+    const processingLog = Array.isArray(item?.llm_processing_log) ? item.llm_processing_log : []
+    for (let index = processingLog.length - 1; index >= 0; index -= 1) {
+      const row = processingLog[index]
+      if (row && typeof row === "object") return row
+    }
+
+    const stageMap = item?.llm_processing_stages && typeof item.llm_processing_stages === "object" ? item.llm_processing_stages : {}
+    const rows = Object.entries(stageMap)
+      .filter(([, row]) => row && typeof row === "object")
+      .map(([key, row]) => ({
+        stage: key,
+        state: row?.state,
+        message: row?.message,
+        at: row?.updated_at || null,
+        order: this.stageSortWeight(key),
+      }))
+    if (rows.length === 0) return null
+
+    rows.sort((a, b) => a.order - b.order)
+    return rows[rows.length - 1]
+  }
+
+  humanizeReasonCode(value) {
+    const key = String(value || "").toLowerCase().trim()
+    if (!key) return ""
+
+    const labels = {
+      vision_model_error: "Vision model error",
+      local_ai_extraction_empty: "No usable AI extraction",
+      local_story_intelligence_blank: "No local story intelligence",
+      identity_likelihood_low: "Low ownership confidence",
+      insufficient_verified_signals: "Insufficient verified signals",
+      no_historical_overlap_with_external_usernames: "No historical overlap with detected external usernames",
+      external_usernames_detected: "Likely third-party or reshared content",
+      unsupported_media_type: "Unsupported media type",
+      manual_review_required: "Manual review required",
+      generation_skipped: "Generation skipped",
+      generation_failed: "Generation failed",
+      story_unavailable: "Story unavailable",
+      missing_story_user_id: "Missing story user id",
+      api_story_not_found: "Story not found in API",
+      api_can_reply_false: "Replies not allowed by API",
+      reply_box_not_found: "Reply UI not available",
+      comment_submit_failed: "Comment submission failed",
+      policy_blocked: "Blocked by verified story policy",
+      quality_policy: "Quality policy review",
+      manual_send_failed: "Manual send failed",
+      manual_send: "Manual send action",
+      llm_pipeline: "LLM processing pipeline",
+      validated_story_policy: "Validated story policy",
+      media_validation: "Media validation",
+      profile_comment_preparation: "Profile context preparation",
+      unavailable: "Upstream context unavailable",
+      unknown: "Unknown",
+    }
+    if (labels[key]) return labels[key]
+    return key
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (letter) => letter.toUpperCase())
+  }
+
+  formatLastStageText(row) {
+    if (!row || typeof row !== "object") return ""
+
+    const stage = String(row?.stage || row?.label || "").trim()
+    const state = String(row?.state || "").trim().toLowerCase()
+    const message = String(row?.message || "").trim()
+    const timeValue = row?.at || row?.updated_at || null
+
+    const stageText = stage ? this.humanizeStageKey(stage) : ""
+    const stateText = this.stageStateLabel(state, null)
+    const at = this.formatDate(timeValue)
+    const segments = []
+    if (stageText) segments.push(stageText)
+    if (stateText && stateText !== "Pending") segments.push(stateText)
+    if (message) segments.push(message)
+    if (at !== "-") segments.push(at)
+    return segments.join(" | ")
   }
 
   resolveLlmCardState({ status, workflowStatus, hasComment, generatedComment }) {
@@ -1417,6 +1717,15 @@ export default class extends Controller {
     if (!value) return "-"
     const date = new Date(value)
     return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString()
+  }
+
+  coerceBoolean(value) {
+    if (typeof value === "boolean") return value
+    const normalized = String(value || "").toLowerCase().trim()
+    if (["1", "true", "yes", "on"].includes(normalized)) return true
+    if (["0", "false", "no", "off"].includes(normalized)) return false
+    if (normalized === "") return null
+    return Boolean(value)
   }
 
   escapeSelector(value) {

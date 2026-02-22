@@ -25,17 +25,32 @@ RSpec.describe InstagramAccounts::StoryArchiveItemSerializer do
       occurred_at: Time.current,
       llm_generated_comment: "Looks great!",
       llm_comment_status: "completed",
+      llm_comment_provider: "local",
+      llm_comment_model: "qwen2.5:7b",
       llm_comment_attempts: 1,
       llm_comment_relevance_score: 0.88,
       llm_comment_metadata: {
-        "ownership_classification" => { "label" => "self", "summary" => "same profile", "confidence" => 0.93 }
+        "ownership_classification" => { "label" => "self", "summary" => "same profile", "confidence" => 0.93 },
+        "generation_policy" => {
+          "allow_comment" => true,
+          "reason_code" => "verified_context_available",
+          "reason" => "Verified context is sufficient.",
+          "source" => "verified_story_insight_builder"
+        },
+        "last_failure" => {
+          "reason" => "vision_model_error",
+          "source" => "unavailable",
+          "error_class" => "StandardError",
+          "error_message" => "Vision worker unavailable"
+        }
       },
       metadata: {
         "upload_time" => "2026-02-19T08:00:00Z",
         "downloaded_at" => "2026-02-19T08:05:00Z",
         "image_url" => "https://cdn.example/story.jpg",
         "story_id" => "story_123",
-        "media_bytes" => 321
+        "media_bytes" => 321,
+        "manual_send_quality_review" => { "status" => "expired_removed", "reason" => "story_unavailable" }
       }
     )
     event.media.attach(io: File.open(image_fixture_path, "rb"), filename: "story_reference.png", content_type: "image/png")
@@ -50,8 +65,16 @@ RSpec.describe InstagramAccounts::StoryArchiveItemSerializer do
     expect(payload[:video_static_frame_only]).to eq(false)
     expect(payload[:media_bytes]).to eq(321)
     expect(payload[:llm_comment_status]).to eq("completed")
+    expect(payload[:llm_model_label]).to eq("local / qwen2.5:7b")
     expect(payload[:llm_workflow_status]).to eq("ready")
     expect(payload.dig(:llm_workflow_progress, :summary)).to end_with("/5 completed")
+    expect(payload[:llm_policy_allow_comment]).to eq(true)
+    expect(payload[:llm_policy_reason_code]).to eq("verified_context_available")
+    expect(payload[:llm_failure_reason_code]).to eq("vision_model_error")
+    expect(payload[:llm_failure_source]).to eq("unavailable")
+    expect(payload[:llm_failure_error_class]).to eq("StandardError")
+    expect(payload[:llm_failure_message]).to eq("Vision worker unavailable")
+    expect(payload[:manual_send_quality_review]).to include("status" => "expired_removed")
     expect(payload[:story_ownership_label]).to eq("self")
   end
 

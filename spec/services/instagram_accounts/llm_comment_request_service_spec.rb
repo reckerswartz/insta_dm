@@ -337,6 +337,50 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     expect(GenerateLlmCommentJob).not_to have_received(:perform_later)
   end
 
+  it "returns AI diagnostic reason fields in status responses" do
+    event = create_story_event(
+      profile: profile,
+      llm_comment_status: "skipped",
+      llm_comment_last_error: "Local story intelligence unavailable (reason: vision_model_error, source: unavailable).",
+      llm_comment_metadata: {
+        "last_failure" => {
+          "reason" => "vision_model_error",
+          "source" => "unavailable",
+          "error_class" => "LocalStoryIntelligenceUnavailableError",
+          "error_message" => "Local story intelligence unavailable (reason: vision_model_error, source: unavailable)."
+        },
+        "manual_review_reason" => "insufficient_verified_signals",
+        "auto_post_allowed" => false,
+        "generation_policy" => {
+          "allow_comment" => false,
+          "reason_code" => "identity_likelihood_low",
+          "reason" => "Insufficient verified context.",
+          "source" => "verified_story_insight_builder"
+        }
+      }
+    )
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: true,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:ok)
+    expect(result.payload).to include(status: "skipped", event_id: event.id)
+    expect(result.payload[:llm_failure_reason_code]).to eq("vision_model_error")
+    expect(result.payload[:llm_failure_source]).to eq("unavailable")
+    expect(result.payload[:llm_failure_error_class]).to eq("LocalStoryIntelligenceUnavailableError")
+    expect(result.payload[:llm_policy_allow_comment]).to eq(false)
+    expect(result.payload[:llm_policy_reason_code]).to eq("identity_likelihood_low")
+    expect(result.payload[:llm_policy_source]).to eq("verified_story_insight_builder")
+    expect(result.payload[:llm_comment_last_error_preview]).to include("Local story intelligence unavailable")
+    expect(result.payload[:llm_model_label]).to eq("-")
+  end
+
   def create_story_event(profile:, **attrs)
     defaults = {
       kind: "story_downloaded",

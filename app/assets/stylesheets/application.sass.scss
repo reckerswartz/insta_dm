@@ -1466,6 +1466,65 @@ pre {
   color: #9fc0ef;
 }
 
+.llm-model-row {
+  margin: 0;
+  color: #b7cbed;
+  font-size: 0.74rem;
+}
+
+.llm-model-media {
+  color: #9eb8df;
+}
+
+.llm-decision-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.llm-decision-note {
+  margin: 0;
+  display: grid;
+  gap: 2px;
+  border: 1px solid rgba(120, 158, 228, 0.24);
+  border-radius: 8px;
+  background: rgba(13, 25, 46, 0.5);
+  padding: 7px 8px;
+}
+
+.llm-decision-stack.compact .llm-decision-note {
+  padding: 6px 7px;
+}
+
+.llm-decision-note.warning {
+  border-color: rgba(245, 185, 66, 0.42);
+  background: rgba(63, 42, 10, 0.46);
+}
+
+.llm-decision-note.failed {
+  border-color: rgba(255, 95, 109, 0.38);
+  background: rgba(63, 19, 29, 0.46);
+}
+
+.llm-decision-note.info {
+  border-color: rgba(106, 169, 255, 0.36);
+  background: rgba(16, 45, 88, 0.4);
+}
+
+.llm-decision-title,
+.llm-decision-message,
+.llm-decision-meta {
+  margin: 0;
+}
+
+.llm-decision-title {
+  font-size: 0.76rem;
+  color: #e6f0ff;
+}
+
+.llm-decision-meta {
+  color: #a8bfdf;
+}
+
 .llm-stage-progress-panel {
   display: grid;
   gap: 6px;

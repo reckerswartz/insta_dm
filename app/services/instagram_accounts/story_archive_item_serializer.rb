@@ -13,13 +13,8 @@ module InstagramAccounts
       ownership_data = extract_ownership_data(metadata: metadata, llm_meta: llm_meta)
       ranked_candidates = Array(llm_meta["ranked_candidates"]).select { |row| row.is_a?(Hash) }.first(8)
       top_breakdown = llm_meta["selected_relevance_breakdown"].is_a?(Hash) ? llm_meta["selected_relevance_breakdown"] : {}
-      generation_policy = if llm_meta["generation_policy"].is_a?(Hash)
-        llm_meta["generation_policy"]
-      elsif metadata.dig("validated_story_insights", "generation_policy").is_a?(Hash)
-        metadata.dig("validated_story_insights", "generation_policy")
-      else
-        {}
-      end
+      generation_policy = generation_policy_for(metadata: metadata, llm_meta: llm_meta)
+      last_failure = last_failure_payload(llm_meta)
       blob = event.media.blob
       profile = event.instagram_profile
       story_posted_at = metadata["upload_time"].presence || metadata["taken_at"].presence
@@ -56,18 +51,24 @@ module InstagramAccounts
         manual_send_last_attempted_at: metadata["manual_send_last_attempted_at"].to_s.presence,
         manual_send_last_sent_at: metadata["manual_send_last_sent_at"].to_s.presence || metadata["manual_resend_last_at"].to_s.presence,
         manual_send_updated_at: metadata["manual_send_updated_at"].to_s.presence,
+        manual_send_quality_review: metadata["manual_send_quality_review"].is_a?(Hash) ? metadata["manual_send_quality_review"] : {},
         skipped: ActiveModel::Type::Boolean.new.cast(metadata["skipped"]),
         skip_reason: metadata["skip_reason"].to_s.presence,
         llm_generated_comment: event.llm_generated_comment,
         llm_comment_generated_at: event.llm_comment_generated_at&.iso8601,
         llm_comment_model: event.llm_comment_model,
         llm_comment_provider: event.llm_comment_provider,
+        llm_model_label: llm_model_label,
         llm_comment_status: event.llm_comment_status,
         llm_workflow_status: llm_workflow_status(event: event, llm_meta: llm_meta, manual_send_status: manual_send_status),
         llm_workflow_progress: llm_workflow_progress(event: event, llm_meta: llm_meta, manual_send_status: manual_send_status),
         llm_comment_attempts: event.llm_comment_attempts,
         llm_comment_last_error: event.llm_comment_last_error,
         llm_comment_last_error_preview: text_preview(event.llm_comment_last_error, max: 180),
+        llm_failure_reason_code: llm_failure_reason_code(last_failure: last_failure, generation_policy: generation_policy),
+        llm_failure_source: llm_failure_source(last_failure: last_failure, generation_policy: generation_policy),
+        llm_failure_error_class: hash_value(last_failure, :error_class).to_s.presence,
+        llm_failure_message: llm_failure_message(last_failure: last_failure, generation_policy: generation_policy),
         llm_comment_relevance_score: event.llm_comment_relevance_score,
         llm_relevance_breakdown: top_breakdown,
         llm_ranked_suggestions: ranked_candidates.map { |row| row["comment"].to_s.presence }.compact,
@@ -75,6 +76,10 @@ module InstagramAccounts
         llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(llm_meta["auto_post_allowed"]),
         llm_manual_review_reason: llm_meta["manual_review_reason"].to_s.presence || generation_policy["reason"].to_s.presence,
         llm_generation_policy: generation_policy,
+        llm_policy_allow_comment: llm_policy_allow_comment(generation_policy),
+        llm_policy_reason_code: hash_value(generation_policy, :reason_code).to_s.presence,
+        llm_policy_reason: hash_value(generation_policy, :reason).to_s.presence,
+        llm_policy_source: hash_value(generation_policy, :source).to_s.presence,
         llm_processing_stages: llm_meta["processing_stages"].is_a?(Hash) ? llm_meta["processing_stages"] : {},
         llm_processing_log: Array(llm_meta["processing_log"]).last(24),
         llm_pipeline_step_rollup: pipeline_step_rollup(llm_meta),
@@ -101,6 +106,54 @@ module InstagramAccounts
       else
         {}
       end
+    end
+
+    def generation_policy_for(metadata:, llm_meta:)
+      if hash_value(llm_meta, :generation_policy).is_a?(Hash)
+        hash_value(llm_meta, :generation_policy)
+      elsif metadata.dig("validated_story_insights", "generation_policy").is_a?(Hash)
+        metadata.dig("validated_story_insights", "generation_policy")
+      elsif metadata["story_generation_policy"].is_a?(Hash)
+        metadata["story_generation_policy"]
+      else
+        {}
+      end
+    end
+
+    def last_failure_payload(llm_meta)
+      row = hash_value(llm_meta, :last_failure)
+      row.is_a?(Hash) ? row : {}
+    end
+
+    def llm_failure_reason_code(last_failure:, generation_policy:)
+      hash_value(last_failure, :reason).to_s.presence || hash_value(generation_policy, :reason_code).to_s.presence
+    end
+
+    def llm_failure_source(last_failure:, generation_policy:)
+      hash_value(last_failure, :source).to_s.presence || hash_value(generation_policy, :source).to_s.presence
+    end
+
+    def llm_failure_message(last_failure:, generation_policy:)
+      event.llm_comment_last_error.to_s.presence ||
+        hash_value(last_failure, :error_message).to_s.presence ||
+        hash_value(generation_policy, :reason).to_s.presence
+    end
+
+    def llm_policy_allow_comment(generation_policy)
+      return nil unless generation_policy.is_a?(Hash)
+      return nil unless generation_policy.key?("allow_comment") || generation_policy.key?(:allow_comment)
+
+      ActiveModel::Type::Boolean.new.cast(hash_value(generation_policy, :allow_comment))
+    end
+
+    def llm_model_label
+      provider = event.llm_comment_provider.to_s.strip
+      model = event.llm_comment_model.to_s.strip
+      return "-" if provider.blank? && model.blank?
+      return provider if provider.present? && model.blank?
+      return model if model.present? && provider.blank?
+
+      "#{provider} / #{model}"
     end
 
     def blob_path(attachment, disposition: nil)
@@ -172,6 +225,16 @@ module InstagramAccounts
       return "sent" if metadata["reply_comment"].to_s.present?
 
       "ready"
+    end
+
+    def hash_value(row, key)
+      return nil unless row.is_a?(Hash)
+      return row[key.to_s] if row.key?(key.to_s)
+      return row[key.to_sym] if row.key?(key.to_sym)
+
+      nil
+    rescue StandardError
+      nil
     end
 
     def llm_workflow_status(event:, llm_meta:, manual_send_status:)

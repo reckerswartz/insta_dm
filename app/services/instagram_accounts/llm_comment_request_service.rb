@@ -64,11 +64,11 @@ module InstagramAccounts
           llm_pipeline_step_rollup: pipeline_step_rollup(event),
           llm_pipeline_timing: pipeline_timing(event),
           llm_last_stage: merged_llm_last_stage(event),
-          llm_manual_review_reason: llm_meta["manual_review_reason"].to_s.presence,
-          llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(llm_meta["auto_post_allowed"]),
           llm_workflow_status: workflow_status_for(event),
           llm_workflow_progress: workflow_progress_for(event)
-        },
+        }.merge(
+          llm_diagnostics_payload(event: event, llm_meta: llm_meta)
+        ),
         status: :ok
       )
     end
@@ -133,7 +133,9 @@ module InstagramAccounts
             llm_workflow_progress: workflow_progress_for(event),
             forced: force,
             regenerate_all: regenerate_all
-          },
+          }.merge(
+            llm_diagnostics_payload(event: event)
+          ),
           status: :accepted
         )
       end
@@ -184,7 +186,9 @@ module InstagramAccounts
           llm_last_stage: merged_llm_last_stage(event),
           llm_workflow_status: workflow_status_for(event),
           llm_workflow_progress: workflow_progress_for(event)
-        },
+        }.merge(
+          llm_diagnostics_payload(event: event)
+        ),
         status: :accepted
       )
     end
@@ -205,7 +209,9 @@ module InstagramAccounts
           llm_last_stage: merged_llm_last_stage(event),
           llm_workflow_status: workflow_status_for(event),
           llm_workflow_progress: workflow_progress_for(event)
-        },
+        }.merge(
+          llm_diagnostics_payload(event: event)
+        ),
         status: :ok
       )
     end
@@ -231,9 +237,34 @@ module InstagramAccounts
           llm_last_stage: merged_llm_last_stage(event),
           llm_workflow_status: workflow_status_for(event),
           llm_workflow_progress: workflow_progress_for(event)
-        },
+        }.merge(
+          llm_diagnostics_payload(event: event, llm_meta: llm_meta)
+        ),
         status: :ok
       )
+    end
+
+    def llm_diagnostics_payload(event:, llm_meta: nil)
+      data = llm_meta.is_a?(Hash) ? llm_meta : (event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {})
+      generation_policy = generation_policy_for(event: event, llm_meta: data)
+      last_failure = last_failure_for(llm_meta: data)
+
+      {
+        llm_comment_last_error: event.llm_comment_last_error,
+        llm_comment_last_error_preview: text_preview(event.llm_comment_last_error, max: 180),
+        llm_failure_reason_code: hash_value(last_failure, :reason).to_s.presence || hash_value(generation_policy, :reason_code).to_s.presence,
+        llm_failure_source: hash_value(last_failure, :source).to_s.presence || hash_value(generation_policy, :source).to_s.presence,
+        llm_failure_error_class: hash_value(last_failure, :error_class).to_s.presence,
+        llm_failure_message: hash_value(last_failure, :error_message).to_s.presence || event.llm_comment_last_error.to_s.presence || hash_value(generation_policy, :reason).to_s.presence,
+        llm_manual_review_reason: hash_value(data, :manual_review_reason).to_s.presence || hash_value(generation_policy, :manual_review_reason).to_s.presence || hash_value(generation_policy, :reason).to_s.presence,
+        llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(hash_value(data, :auto_post_allowed)),
+        llm_generation_policy: generation_policy,
+        llm_policy_allow_comment: llm_policy_allow_comment(generation_policy),
+        llm_policy_reason_code: hash_value(generation_policy, :reason_code).to_s.presence,
+        llm_policy_reason: hash_value(generation_policy, :reason).to_s.presence,
+        llm_policy_source: hash_value(generation_policy, :source).to_s.presence,
+        llm_model_label: llm_model_label_for(event)
+      }
     end
 
     def merged_llm_processing_stages(event)
@@ -259,6 +290,27 @@ module InstagramAccounts
     def llm_processing_log(event)
       llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       Array(llm_meta["processing_log"])
+    end
+
+    def generation_policy_for(event:, llm_meta:)
+      if hash_value(llm_meta, :generation_policy).is_a?(Hash)
+        hash_value(llm_meta, :generation_policy)
+      elsif event.metadata.is_a?(Hash) && event.metadata.dig("validated_story_insights", "generation_policy").is_a?(Hash)
+        event.metadata.dig("validated_story_insights", "generation_policy")
+      elsif event.metadata.is_a?(Hash) && event.metadata["story_generation_policy"].is_a?(Hash)
+        event.metadata["story_generation_policy"]
+      else
+        {}
+      end
+    rescue StandardError
+      {}
+    end
+
+    def last_failure_for(llm_meta:)
+      row = hash_value(llm_meta, :last_failure)
+      row.is_a?(Hash) ? row : {}
+    rescue StandardError
+      {}
     end
 
     def pipeline_step_rollup(event)
@@ -329,6 +381,15 @@ module InstagramAccounts
       base.deep_merge(overlay)
     rescue StandardError
       secondary.is_a?(Hash) ? secondary : {}
+    end
+
+    def llm_policy_allow_comment(generation_policy)
+      return nil unless generation_policy.is_a?(Hash)
+      return nil unless generation_policy.key?("allow_comment") || generation_policy.key?(:allow_comment)
+
+      ActiveModel::Type::Boolean.new.cast(hash_value(generation_policy, :allow_comment))
+    rescue StandardError
+      nil
     end
 
     def llm_comment_estimated_seconds(event:, include_queue: false)
@@ -411,6 +472,35 @@ module InstagramAccounts
       return nil unless start_time && end_time
 
       ((end_time.to_f - start_time.to_f) * 1000.0).round
+    rescue StandardError
+      nil
+    end
+
+    def llm_model_label_for(event)
+      provider_name = event.llm_comment_provider.to_s.strip
+      model_name = event.llm_comment_model.to_s.strip
+      return "-" if provider_name.blank? && model_name.blank?
+      return provider_name if provider_name.present? && model_name.blank?
+      return model_name if model_name.present? && provider_name.blank?
+
+      "#{provider_name} / #{model_name}"
+    rescue StandardError
+      "-"
+    end
+
+    def text_preview(raw, max:)
+      text = raw.to_s
+      return text if text.length <= max
+
+      "#{text[0, max]}..."
+    end
+
+    def hash_value(row, key)
+      return nil unless row.is_a?(Hash)
+      return row[key.to_s] if row.key?(key.to_s)
+      return row[key.to_sym] if row.key?(key.to_sym)
+
+      nil
     rescue StandardError
       nil
     end
