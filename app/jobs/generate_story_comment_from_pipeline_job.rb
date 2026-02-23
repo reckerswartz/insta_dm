@@ -53,6 +53,16 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
     )
 
     generation_result = nil
+    payload_result = nil
+    payload_audit_before = nil
+    payload_audit_after = nil
+    generation_audit_before = nil
+    generation_audit_after = nil
+    audit_context = {
+      event: event,
+      profile: event.instagram_profile,
+      account: event.instagram_profile&.instagram_account
+    }
     begin
       with_pipeline_heartbeat(
         event: event,
@@ -65,14 +75,36 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
         # prolonged processing explicit so operators can distinguish progress vs. failure.
         message: "LLM is still processing on local resources; large-model inference may take several minutes."
       ) do
+        payload_audit_before = Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event)
         payload = LlmComment::StoryIntelligencePayloadResolver.new(
           event: event,
           pipeline_state: pipeline_state,
           pipeline_run_id: pipeline_run_id,
           active_job_id: job_id
         ).fetch!
+        payload_result = payload
 
         event.persist_local_story_intelligence!(payload)
+        payload_audit_after = Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event.reload)
+        record_story_service_output_audit!(
+          service_name: LlmComment::StoryIntelligencePayloadResolver.name,
+          status: "completed",
+          produced: payload_result,
+          referenced: {
+            source: payload_result[:source],
+            reason: payload_result[:reason],
+            transcript_present: payload_result[:transcript].to_s.present?,
+            topics_count: Array(payload_result[:topics]).length
+          },
+          persisted_before: payload_audit_before,
+          persisted_after: payload_audit_after,
+          context: audit_context,
+          pipeline_run_id: pipeline_run_id,
+          metadata: {
+            step: "context_matching",
+            active_job_id: job_id
+          }
+        )
         report_stage!(
           event: event,
           stage: "context_matching",
@@ -85,14 +117,54 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
           }
         )
 
+        generation_audit_before = Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event.reload)
         generation_result = LlmComment::EventGenerationPipeline.new(
           event: event,
           provider: provider,
           model: model,
           skip_media_stage_reporting: true
         ).call
+        generation_audit_after = Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event.reload)
+        record_story_service_output_audit!(
+          service_name: LlmComment::EventGenerationPipeline.name,
+          status: "completed",
+          produced: generation_result,
+          referenced: {
+            selected_comment: generation_result[:selected_comment].to_s.presence,
+            relevance_score: generation_result[:relevance_score],
+            ranked_candidates_count: Array(generation_result[:ranked_candidates]).length
+          },
+          persisted_before: generation_audit_before,
+          persisted_after: generation_audit_after,
+          context: audit_context,
+          pipeline_run_id: pipeline_run_id,
+          metadata: {
+            step: "llm_generation",
+            provider: provider,
+            model: model,
+            active_job_id: job_id
+          }
+        )
       end
     rescue InstagramProfileEvent::LocalStoryIntelligence::LocalStoryIntelligenceUnavailableError => e
+      record_story_service_output_audit!(
+        service_name: LlmComment::StoryIntelligencePayloadResolver.name,
+        status: "failed",
+        produced: payload_result,
+        referenced: {},
+        persisted_before: payload_audit_before || Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event),
+        persisted_after: Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event.reload),
+        context: audit_context,
+        pipeline_run_id: pipeline_run_id,
+        metadata: {
+          step: "context_matching",
+          active_job_id: job_id,
+          error_class: e.class.name,
+          error_message: e.message.to_s.byteslice(0, 220),
+          reason: e.reason.to_s.presence,
+          source: e.source.to_s.presence
+        }.compact
+      )
       mark_story_pipeline_skipped!(
         event: event,
         pipeline_state: pipeline_state,
@@ -143,6 +215,52 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
     )
   rescue StandardError => e
     if context
+      event = context[:event]
+      audit_context = {
+        event: event,
+        profile: event.instagram_profile,
+        account: event.instagram_profile&.instagram_account
+      }
+      if generation_result.present? || generation_audit_before.present?
+        record_story_service_output_audit!(
+          service_name: LlmComment::EventGenerationPipeline.name,
+          status: "failed",
+          produced: generation_result,
+          referenced: {},
+          persisted_before: generation_audit_before || Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event),
+          persisted_after: generation_audit_after || Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event.reload),
+          context: audit_context,
+          pipeline_run_id: pipeline_run_id,
+          metadata: {
+            step: "llm_generation",
+            provider: provider,
+            model: model,
+            active_job_id: job_id,
+            error_class: e.class.name,
+            error_message: e.message.to_s.byteslice(0, 220)
+          }
+        )
+      elsif payload_result.present? || payload_audit_before.present?
+        record_story_service_output_audit!(
+          service_name: LlmComment::StoryIntelligencePayloadResolver.name,
+          status: "failed",
+          produced: payload_result,
+          referenced: {},
+          persisted_before: payload_audit_before || Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event),
+          persisted_after: payload_audit_after || Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event.reload),
+          context: audit_context,
+          pipeline_run_id: pipeline_run_id,
+          metadata: {
+            step: "context_matching",
+            active_job_id: job_id,
+            error_class: e.class.name,
+            error_message: e.message.to_s.byteslice(0, 220)
+          }
+        )
+      end
+    end
+
+    if context
       fail_story_pipeline!(
         event: context[:event],
         pipeline_state: context[:pipeline_state],
@@ -170,6 +288,35 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
   end
 
   private
+
+  def record_story_service_output_audit!(
+    service_name:,
+    status:,
+    produced:,
+    referenced:,
+    persisted_before:,
+    persisted_after:,
+    context:,
+    pipeline_run_id:,
+    metadata: {}
+  )
+    Ops::ServiceOutputAuditRecorder.record!(
+      service_name: service_name.to_s,
+      execution_source: self.class.name,
+      status: status,
+      run_id: pipeline_run_id,
+      active_job_id: job_id,
+      queue_name: queue_name,
+      produced: produced,
+      referenced: referenced,
+      persisted_before: persisted_before,
+      persisted_after: persisted_after,
+      context: context,
+      metadata: metadata
+    )
+  rescue StandardError
+    nil
+  end
 
   def mark_story_pipeline_skipped!(event:, pipeline_state:, pipeline_run_id:, error:, active_job_id: nil)
     step_rollup = pipeline_step_rollup(pipeline_state: pipeline_state, run_id: pipeline_run_id)

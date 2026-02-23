@@ -12,6 +12,9 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:)
     enqueue_finalizer = true
+    audit_before = nil
+    audit_after = nil
+    produced_payload = {}
     context = load_pipeline_context!(
       instagram_account_id: instagram_account_id,
       instagram_profile_id: instagram_profile_id,
@@ -45,6 +48,7 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
       queue_name: queue_name,
       active_job_id: job_id
     )
+    audit_before = Ops::ServiceOutputAuditRecorder.post_persistence_snapshot(post)
 
     analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
     face_meta = post.metadata.is_a?(Hash) ? post.metadata.dig("face_recognition") : nil
@@ -72,6 +76,24 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
       pipeline_state: pipeline_state,
       pipeline_run_id: pipeline_run_id
     )
+    produced_payload = {
+      face_summary: analysis["face_summary"],
+      comment_enqueue: comment_enqueue_result
+    }
+    audit_after = Ops::ServiceOutputAuditRecorder.post_persistence_snapshot(post.reload)
+    record_metadata_step_output_audit!(
+      context: context,
+      pipeline_run_id: pipeline_run_id,
+      status: "completed",
+      produced: produced_payload,
+      referenced: {
+        comment_generation_status: comment_enqueue_result[:status].to_s,
+        comment_enqueue_reason: comment_enqueue_result[:reason].to_s,
+        comment_job_queued: ActiveModel::Type::Boolean.new.cast(comment_enqueue_result[:queued])
+      },
+      persisted_before: audit_before,
+      persisted_after: audit_after
+    )
 
     pipeline_state.mark_step_completed!(
       run_id: pipeline_run_id,
@@ -88,6 +110,20 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
       }
     )
   rescue StandardError => e
+    if context
+      audit_after ||= Ops::ServiceOutputAuditRecorder.post_persistence_snapshot(context[:post].reload)
+      record_metadata_step_output_audit!(
+        context: context,
+        pipeline_run_id: pipeline_run_id,
+        status: "failed",
+        produced: produced_payload,
+        referenced: {},
+        persisted_before: audit_before || Ops::ServiceOutputAuditRecorder.post_persistence_snapshot(context[:post]),
+        persisted_after: audit_after,
+        error: e
+      )
+    end
+
     context&.dig(:pipeline_state)&.mark_step_completed!(
       run_id: pipeline_run_id,
       step: "metadata",
@@ -186,5 +222,37 @@ class ProcessPostMetadataTaggingJob < PostAnalysisPipelineJob
       error_class: e.class.name,
       error_message: e.message.to_s
     }
+  end
+
+  def record_metadata_step_output_audit!(
+    context:,
+    pipeline_run_id:,
+    status:,
+    produced:,
+    referenced:,
+    persisted_before:,
+    persisted_after:,
+    error: nil
+  )
+    Ops::ServiceOutputAuditRecorder.record!(
+      service_name: self.class.name,
+      execution_source: self.class.name,
+      status: status,
+      run_id: pipeline_run_id,
+      active_job_id: job_id,
+      queue_name: queue_name,
+      produced: produced,
+      referenced: referenced,
+      persisted_before: persisted_before,
+      persisted_after: persisted_after,
+      context: context,
+      metadata: {
+        step_key: "metadata",
+        error_class: error&.class&.name,
+        error_message: error&.message.to_s&.byteslice(0, 220)
+      }.compact
+    )
+  rescue StandardError
+    nil
   end
 end

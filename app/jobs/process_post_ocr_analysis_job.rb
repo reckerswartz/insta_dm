@@ -19,6 +19,10 @@ class ProcessPostOcrAnalysisJob < PostAnalysisStepJob
     "ocr"
   end
 
+  def audit_service_name
+    Ai::PostOcrService.name
+  end
+
   def max_defer_attempts
     MAX_DEFER_ATTEMPTS
   end

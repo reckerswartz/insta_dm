@@ -3,6 +3,10 @@ require "timeout"
 class PostAnalysisStepJob < PostAnalysisPipelineJob
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, defer_attempt: 0, **options)
     enqueue_finalizer = true
+    raw_result = {}
+    completion_payload = {}
+    audit_before = nil
+    audit_after = nil
     context = load_pipeline_context!(
       instagram_account_id: instagram_account_id,
       instagram_profile_id: instagram_profile_id,
@@ -28,6 +32,7 @@ class PostAnalysisStepJob < PostAnalysisPipelineJob
       queue_name: queue_name,
       active_job_id: job_id
     )
+    audit_before = post_step_audit_snapshot(context: context)
 
     raw_result =
       if timeout_seconds
@@ -36,13 +41,43 @@ class PostAnalysisStepJob < PostAnalysisPipelineJob
         perform_step!(context: context, pipeline_run_id: pipeline_run_id, options: options)
       end
 
+    audit_after = post_step_audit_snapshot(context: context)
+    completion_payload = step_completion_result(raw_result: raw_result, context: context, options: options).compact
+    record_step_output_audit!(
+      context: context,
+      pipeline_run_id: pipeline_run_id,
+      status: "completed",
+      raw_result: raw_result,
+      completion_payload: completion_payload,
+      audit_before: audit_before,
+      audit_after: audit_after,
+      defer_attempt: defer_attempt,
+      options: options
+    )
+
     pipeline_state.mark_step_completed!(
       run_id: pipeline_run_id,
       step: step_key,
       status: "succeeded",
-      result: step_completion_result(raw_result: raw_result, context: context, options: options).compact
+      result: completion_payload
     )
   rescue StandardError => e
+    if context
+      audit_after ||= post_step_audit_snapshot(context: context)
+      record_step_output_audit!(
+        context: context,
+        pipeline_run_id: pipeline_run_id,
+        status: "failed",
+        raw_result: raw_result,
+        completion_payload: completion_payload,
+        audit_before: audit_before,
+        audit_after: audit_after,
+        defer_attempt: defer_attempt,
+        options: options,
+        error: e
+      )
+    end
+
     context&.dig(:pipeline_state)&.mark_step_completed!(
       run_id: pipeline_run_id,
       step: step_key,
@@ -184,5 +219,66 @@ class PostAnalysisStepJob < PostAnalysisPipelineJob
     )
 
     false
+  end
+
+  def post_step_audit_snapshot(context:)
+    post = context[:post]
+    post.reload
+    Ops::ServiceOutputAuditRecorder.post_persistence_snapshot(post)
+  rescue StandardError
+    {}
+  end
+
+  def audit_service_name
+    self.class.name
+  end
+
+  def audit_persisted_paths(_raw_result:, _context:, _completion_payload:, _options:)
+    []
+  end
+
+  def record_step_output_audit!(
+    context:,
+    pipeline_run_id:,
+    status:,
+    raw_result:,
+    completion_payload:,
+    audit_before:,
+    audit_after:,
+    defer_attempt:,
+    options:,
+    error: nil
+  )
+    Ops::ServiceOutputAuditRecorder.record!(
+      service_name: audit_service_name,
+      execution_source: self.class.name,
+      status: status,
+      run_id: pipeline_run_id,
+      active_job_id: job_id,
+      queue_name: queue_name,
+      produced: raw_result,
+      referenced: completion_payload,
+      persisted_before: audit_before,
+      persisted_after: audit_after,
+      persisted_paths: audit_persisted_paths(
+        raw_result: raw_result,
+        context: context,
+        completion_payload: completion_payload,
+        options: options
+      ),
+      context: context,
+      metadata: {
+        step_key: step_key,
+        defer_attempt: defer_attempt.to_i,
+        timeout_seconds: timeout_seconds,
+        retryable_error: error.present? ? retryable_step_error?(error) : nil,
+        error_class: error&.class&.name,
+        error_message: error&.message.to_s&.byteslice(0, 220),
+        resource_task_name: resource_task_name.to_s,
+        options: options
+      }.compact
+    )
+  rescue StandardError
+    nil
   end
 end

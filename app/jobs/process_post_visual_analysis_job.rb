@@ -20,6 +20,10 @@ class ProcessPostVisualAnalysisJob < PostAnalysisStepJob
     "visual"
   end
 
+  def audit_service_name
+    Ai::Runner.name
+  end
+
   def max_defer_attempts
     MAX_DEFER_ATTEMPTS
   end

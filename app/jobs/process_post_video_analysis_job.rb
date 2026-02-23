@@ -19,6 +19,10 @@ class ProcessPostVideoAnalysisJob < PostAnalysisStepJob
     "video"
   end
 
+  def audit_service_name
+    PostVideoContextExtractionService.name
+  end
+
   def max_defer_attempts
     MAX_DEFER_ATTEMPTS
   end

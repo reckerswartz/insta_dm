@@ -178,6 +178,83 @@
   </section>
 
   <section class="card">
+    <h2>Service Output Audit (24h)</h2>
+    <% service_audit = @service_output_audits.is_a?(Hash) ? @service_output_audits : {} %>
+    <% service_rows = Array(service_audit[:services]) %>
+    <p class="meta">
+      Captured at <%= service_audit[:captured_at].to_s.presence || "-" %>
+      | Rows: <strong><%= service_audit[:total_rows].to_i %></strong>
+      | Completed: <strong><%= service_audit[:completed_rows].to_i %></strong>
+      | Failed: <strong><%= service_audit[:failed_rows].to_i %></strong>
+      | Unique services: <strong><%= service_audit[:unique_services].to_i %></strong>
+      | Avg produced keys: <strong><%= service_audit[:avg_produced_count].presence || "-" %></strong>
+      | Avg unused keys: <strong><%= service_audit[:avg_unused_count].presence || "-" %></strong>
+    </p>
+    <% if service_rows.any? %>
+      <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="admin-bg-service-output-audit-table" data-table-standard-pagination-size-value="25">
+        <div class="table-scroll">
+          <table class="table" data-table-standard-target="table">
+            <thead>
+              <tr>
+                <th>Service</th>
+                <th>Executions</th>
+                <th>Completed</th>
+                <th>Failed</th>
+                <th>Avg produced</th>
+                <th>Avg persisted</th>
+                <th>Avg referenced</th>
+                <th>Avg unused</th>
+                <th>Persisted %</th>
+                <th>Used %</th>
+                <th>Unused %</th>
+                <th>Top unused keys</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% service_rows.each do |row| %>
+                <tr>
+                  <td><code><%= row[:service_name] %></code></td>
+                  <td><%= row[:executions].to_i %></td>
+                  <td><%= row[:completed].to_i %></td>
+                  <td><%= row[:failed].to_i %></td>
+                  <td><%= row[:avg_produced_count].to_f.round(2) %></td>
+                  <td><%= row[:avg_persisted_count].to_f.round(2) %></td>
+                  <td><%= row[:avg_referenced_count].to_f.round(2) %></td>
+                  <td><%= row[:avg_unused_count].to_f.round(2) %></td>
+                  <td><%= row[:persisted_ratio].to_f.round(2) %></td>
+                  <td><%= row[:used_ratio].to_f.round(2) %></td>
+                  <td><%= row[:unused_ratio].to_f.round(2) %></td>
+                  <td class="meta">
+                    <% top_keys = Array(row[:top_unused_keys]) %>
+                    <% if top_keys.any? %>
+                      <% top_keys.first(5).each do |key_row| %>
+                        <code><%= key_row[:key] %>=<%= key_row[:count] %></code>
+                      <% end %>
+                    <% else %>
+                      -
+                    <% end %>
+                  </td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <% global_unused = Array(service_audit[:top_unused_leaf_keys]) %>
+      <% if global_unused.any? %>
+        <p class="meta">
+          Global top unused keys:
+          <% global_unused.first(8).each do |row| %>
+            <code><%= row[:key] %>=<%= row[:count] %></code>
+          <% end %>
+        </p>
+      <% end %>
+    <% else %>
+      <p class="meta">No service output audit rows yet. Records appear once instrumented services execute.</p>
+    <% end %>
+  </section>
+
+  <section class="card">
     <h2>AI Service Queue Metrics (24h)</h2>
     <% ai_metrics = @ai_service_queue_metrics.is_a?(Hash) ? @ai_service_queue_metrics : {} %>
     <% ai_services = Array(ai_metrics[:services]) %>

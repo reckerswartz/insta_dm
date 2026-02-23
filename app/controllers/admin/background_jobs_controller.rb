@@ -11,6 +11,7 @@ class Admin::BackgroundJobsController < Admin::BaseController
     @queue_estimates = Ops::QueueProcessingEstimator.snapshot(backend: @backend)
     @job_execution_metrics = Ops::JobExecutionMetricsSnapshot.snapshot
     @pipeline_pending_snapshot = Ops::PipelinePendingSnapshot.snapshot
+    @service_output_audits = Ops::ServiceOutputAuditSnapshot.snapshot(window_hours: 24, service_limit: 20, key_limit: 25)
 
     Admin::BackgroundJobs::RecentJobDetailsEnricher.new(rows: @recent_jobs).call
 

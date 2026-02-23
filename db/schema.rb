@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_22_234000) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_23_001500) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -735,6 +735,41 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_22_234000) do
     t.string "name", null: false
     t.datetime "updated_at", null: false
     t.index ["name"], name: "index_profile_tags_on_name", unique: true
+  end
+
+  create_table "service_output_audits", force: :cascade do |t|
+    t.string "active_job_id"
+    t.datetime "created_at", null: false
+    t.string "execution_source"
+    t.bigint "instagram_account_id"
+    t.bigint "instagram_profile_event_id"
+    t.bigint "instagram_profile_id"
+    t.bigint "instagram_profile_post_id"
+    t.jsonb "metadata", default: {}, null: false
+    t.integer "persisted_count", default: 0, null: false
+    t.jsonb "persisted_paths", default: [], null: false
+    t.integer "produced_count", default: 0, null: false
+    t.jsonb "produced_leaf_keys", default: [], null: false
+    t.jsonb "produced_paths", default: [], null: false
+    t.string "queue_name"
+    t.datetime "recorded_at", null: false
+    t.integer "referenced_count", default: 0, null: false
+    t.jsonb "referenced_paths", default: [], null: false
+    t.string "run_id"
+    t.string "service_name", null: false
+    t.string "status", default: "completed", null: false
+    t.integer "unused_count", default: 0, null: false
+    t.jsonb "unused_leaf_keys", default: [], null: false
+    t.datetime "updated_at", null: false
+    t.index ["active_job_id"], name: "index_service_output_audits_on_active_job_id"
+    t.index ["instagram_account_id"], name: "index_service_output_audits_on_instagram_account_id"
+    t.index ["instagram_profile_event_id"], name: "index_service_output_audits_on_instagram_profile_event_id"
+    t.index ["instagram_profile_id"], name: "index_service_output_audits_on_instagram_profile_id"
+    t.index ["instagram_profile_post_id"], name: "index_service_output_audits_on_instagram_profile_post_id"
+    t.index ["recorded_at"], name: "index_service_output_audits_on_recorded_at"
+    t.index ["run_id"], name: "index_service_output_audits_on_run_id"
+    t.index ["service_name", "recorded_at"], name: "idx_service_output_audits_service_recorded"
+    t.index ["status", "recorded_at"], name: "idx_service_output_audits_status_recorded"
   end
 
   create_table "sync_runs", force: :cascade do |t|
