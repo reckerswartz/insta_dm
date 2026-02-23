@@ -269,6 +269,10 @@ module Ai
           max_chars_per_comment: 140
         },
         tone_profile: tone_profile,
+        voice_directives: gen_z_voice_directives(
+          channel: channel,
+          story_ownership_classification: story_ownership_classification
+        ),
         tone_plan: tone_plan,
         occasion_context: occasion_context,
         situational_cues: situational_cues,
@@ -297,7 +301,7 @@ module Ai
       context_json = compact_prompt_context(context_json)
 
       <<~PROMPT
-        Generate Instagram story comments from CONTEXT_JSON only.
+        Generate Instagram comments from CONTEXT_JSON only.
         No fabrication, no hidden metadata, and no assumptions outside verified_story_facts.
         If generation_policy.allow_comment is false, return an empty list.
         If ownership is not owned_by_profile, keep comments neutral and non-personal.
@@ -309,6 +313,10 @@ module Ai
         - Return strict JSON only with key "comment_suggestions"
         - Exactly 8 suggestions, each <= 140 chars
         - Every suggestion must reference current_story.topics or current_story.visual_anchors
+        - Sound natural, friendly, and socially conversational for a Gen Z audience
+        - Avoid mechanical descriptions and camera-analysis wording like "this frame", "strong composition", or "detected objects"
+        - Use light emoji naturally in 2-4 suggestions max, with at most 1 emoji per suggestion
+        - Add a relatable personal touch while staying grounded in verified context
         - Keep at least 3 suggestions neutral-safe
         - Include 1-2 light conversational questions
         - If conversational_voice.recent_incoming_messages exists, align with that topic context without copying message text
@@ -366,7 +374,7 @@ module Ai
       if suggestions.size < MIN_SUGGESTIONS
         retry_resp = @ollama_client.generate(
           model: model,
-          prompt: "#{prompt}\n\nReturn strict JSON only. Ensure 8 non-empty suggestions.",
+          prompt: "#{prompt}\n\nReturn strict JSON only. Ensure 8 non-empty suggestions and follow voice_directives.",
           temperature: [temperature - 0.15, 0.2].max,
           max_tokens: retry_max_tokens
         )
@@ -497,6 +505,34 @@ module Ai
         reject_ratio: pass[:reject_ratio].to_f.round(3),
         grounded_ratio: pass[:grounded_ratio].to_f.round(3),
         retry_used: ActiveModel::Type::Boolean.new.cast(pass[:retry_used])
+      }
+    end
+
+    def gen_z_voice_directives(channel:, story_ownership_classification:)
+      ownership = story_ownership_classification.is_a?(Hash) ? story_ownership_classification : {}
+      ownership_label = (ownership[:label] || ownership["label"]).to_s
+
+      {
+        target_audience: "gen_z_social",
+        channel: Ai::CommentToneProfile.normalize(channel),
+        style: [
+          "Write like a real Instagram reply from a friend.",
+          "Use natural contractions and casual social phrasing.",
+          "Keep it warm, context-aware, and not overhyped."
+        ],
+        emoji_policy: {
+          min_suggestions_with_emoji: 2,
+          max_suggestions_with_emoji: 4,
+          max_emoji_per_comment: 1
+        },
+        avoid_phrases: [
+          "this frame",
+          "strong composition",
+          "detected objects",
+          "visual signals",
+          "clean shot"
+        ],
+        neutral_only: ownership_label.present? && ownership_label != "owned_by_profile"
       }
     end
 
@@ -1186,9 +1222,9 @@ module Ai
       return nil if anchor.blank?
 
       if Ai::CommentToneProfile.normalize(channel) == "story"
-        "What made this #{anchor} moment stand out most for you?"
+        "What's the story behind this #{anchor} moment?"
       else
-        "What inspired this #{anchor} setup?"
+        "What inspired this #{anchor} vibe?"
       end
     end
 
@@ -1288,13 +1324,13 @@ module Ai
 
       case mode
       when "sports" then "match moment"
-      when "group" then "group shot"
-      when "food" then "food setup"
+      when "group" then "group moment"
+      when "food" then "food moment"
       when "portrait" then "portrait"
       when "repost_meme" then "story mood"
       when "text_heavy" then "message"
       else
-        normalize_anchor(extract_keywords_from_text(image_description.to_s).first) || "frame"
+        normalize_anchor(extract_keywords_from_text(image_description.to_s).first) || "moment"
       end
     end
 
@@ -1302,25 +1338,25 @@ module Ai
       base = anchor.to_s.presence || "message"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "The #{base} lands clearly in this story frame.",
-          "Strong text-first layout and clear message here.",
-          "That #{base} detail grabs attention right away.",
-          "Clean promo-style visual with a clear focal point.",
-          "Nice balance between text and visual structure.",
-          "What inspired this #{base}-focused story?",
-          "The wording and layout feel very deliberate.",
-          "This frame communicates the point quickly."
+          "That #{base} is super clear right away, easy to follow 📌",
+          "Text-first but still feels natural, nice flow.",
+          "The message in this one lands quick ⚡",
+          "This #{base} feels intentional without trying too hard.",
+          "Really solid text + visual balance here.",
+          "What made you go with this #{base} angle?",
+          "The wording feels relatable and direct.",
+          "This one gets the point across fast 💯"
         ]
       else
         [
-          "The #{base} is clear and easy to read.",
-          "Strong text-forward composition in this post.",
-          "The key line and layout work really well together.",
-          "Clean visual hierarchy and readable message.",
-          "This #{base} detail stands out nicely.",
-          "What was the core message you wanted to highlight?",
-          "Simple, direct, and visually clear.",
-          "The typography focus is handled well here."
+          "That #{base} is clear right away and easy to read 📌",
+          "Text-forward, but still feels human and natural.",
+          "The message lands quickly in this one ⚡",
+          "This #{base} angle feels intentional.",
+          "Nice text and visual balance here.",
+          "What message did you want people to feel first?",
+          "Straight to the point in a good way.",
+          "This one keeps the message clear without overdoing it."
         ]
       end
     end
@@ -1329,25 +1365,25 @@ module Ai
       base = anchor.to_s.presence || "action moment"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "Great timing on this #{base} frame.",
-          "That #{base} capture has real game-day energy.",
-          "Strong action shot with solid intensity.",
-          "This frame freezes the pace of the moment perfectly.",
-          "Love the movement and focus in this sports shot.",
-          "What part of the match stood out most here?",
-          "Big competitive energy in this story frame.",
-          "The #{base} detail looks sharp."
+          "That #{base} moment goes hard, love the energy ⚽",
+          "The timing here is actually so good.",
+          "You can feel the game-day rush in this one 🔥",
+          "This #{base} has big momentum.",
+          "Such a fun sports moment to catch.",
+          "What part of the match had everyone loud?",
+          "The intensity in this one is real.",
+          "Okay this #{base} was clean 👏"
         ]
       else
         [
-          "Great timing on this #{base} shot.",
-          "Strong sports moment captured here.",
-          "Love the action and crowd energy in this frame.",
-          "This shot holds the movement really well.",
-          "The #{base} focus makes this post stand out.",
+          "That #{base} timing is elite ⚽",
+          "Big sports energy in this one.",
+          "The pace of this moment really comes through 🔥",
+          "This #{base} feels super alive.",
+          "Love how intense this looks.",
           "Which part of the game was this from?",
-          "Clean action capture with great intensity.",
-          "The pace and framing work really well together."
+          "Such a strong sports update.",
+          "That #{base} capture hits."
         ]
       end
     end
@@ -1356,52 +1392,52 @@ module Ai
       base = anchor.to_s.presence || "group moment"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "Great group frame with warm energy.",
-          "Love the way this #{base} came together.",
-          "Strong group composition and background context.",
-          "This story captures a real together moment.",
-          "Nice balance across everyone in the frame.",
-          "Where was this #{base} taken?",
-          "The group vibe here feels very genuine.",
-          "Clean and memorable #{base} shot."
+          "This #{base} feels wholesome, everyone looks locked in 🫶",
+          "Such a good group moment.",
+          "The energy between everyone feels genuine.",
+          "This one feels like core memory material.",
+          "Group vibes are super warm here ✨",
+          "Where did this #{base} happen?",
+          "Everyone looks naturally in the moment.",
+          "This group pic hits different ❤️"
         ]
       else
         [
-          "Great group photo with strong presence.",
-          "This #{base} feels natural and well framed.",
-          "Nice group balance and clear setting details.",
-          "The collective energy in this frame stands out.",
-          "Solid composition across everyone in the shot.",
+          "This #{base} has great group energy 🫶",
+          "Everyone looks genuinely happy here.",
+          "Such a natural group moment.",
+          "The vibe across everyone feels real.",
+          "This one feels like a memory keeper.",
           "What was the occasion behind this #{base}?",
-          "Warm, candid group moment here.",
-          "The framing keeps the whole group in focus."
+          "Strong group update, really fun.",
+          "Everyone being in sync makes this one stand out."
         ]
       end
     end
 
     def food_fallback_comments(anchor:, channel:)
-      base = anchor.to_s.presence || "food setup"
+      base = anchor.to_s.presence || "food moment"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "This #{base} looks really inviting.",
-          "Great food frame with clean table detail.",
-          "Love the way the #{base} is presented here.",
-          "The composition makes this meal moment pop.",
-          "Nice mix of detail and color in this shot.",
-          "What was your favorite part of this #{base}?",
-          "This story has a solid food vibe.",
-          "The #{base} focus works really well."
+          "This #{base} looks unreal, now I'm hungry 😮‍💨",
+          "The colors on this are so satisfying.",
+          "Love how the #{base} is presented.",
+          "This meal moment feels cozy.",
+          "That #{base} has major comfort-food energy 🍜",
+          "What was your favorite bite from this #{base}?",
+          "This food update feels super inviting.",
+          "The #{base} here is making me want a repeat."
         ]
       else
         [
-          "This #{base} looks great.",
-          "Clean food composition with nice detail.",
-          "Love the plating and framing in this shot.",
-          "The table setup gives this post character.",
-          "Strong visual balance in this food frame.",
+          "This #{base} looks so good 😮‍💨",
+          "The colors and plating are really satisfying.",
+          "Love this kind of #{base} update.",
+          "This meal moment feels cozy and real.",
+          "That #{base} has serious comfort-food energy 🍜",
           "What dish are we looking at here?",
-          "Great capture of this meal moment.",
-          "The #{base} detail stands out nicely."
+          "Super appetizing post.",
+          "The #{base} here totally works."
         ]
       end
     end
@@ -1410,25 +1446,25 @@ module Ai
       base = anchor.to_s.presence || "portrait"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "Strong #{base} frame here.",
-          "Love the styling and focus in this shot.",
-          "The #{base} detail feels intentional and clean.",
-          "This portrait-style frame has great presence.",
-          "Nice visual balance and expression here.",
+          "This #{base} look lands really well ✨",
+          "The styling here feels effortless.",
+          "Great energy in this #{base}.",
+          "This one feels confident and natural.",
+          "The expression in this #{base} is so good 🙂",
           "What inspired this #{base} look?",
-          "The framing keeps the focus exactly where it should be.",
-          "This #{base} shot stands out."
+          "This has that low-key iconic feel.",
+          "Such a strong #{base} moment."
         ]
       else
         [
-          "Strong #{base} shot.",
-          "The styling and framing work really well together.",
-          "Clean portrait capture with good focus.",
-          "The #{base} detail gives this post character.",
-          "Nice expression and composition in this frame.",
-          "What was the idea behind this #{base} setup?",
-          "The visual tone feels very intentional.",
-          "This portrait has a solid presence."
+          "This #{base} look really works ✨",
+          "Styling here feels effortless.",
+          "Great energy in this #{base}.",
+          "This one feels confident and natural.",
+          "Expression and vibe both land 🙂",
+          "What was the idea behind this #{base} look?",
+          "Low-key iconic #{base} moment.",
+          "This portrait update stands out."
         ]
       end
     end
@@ -1437,52 +1473,52 @@ module Ai
       base = anchor.to_s.presence || "story mood"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "This repost-style frame carries a clear #{base}.",
-          "Strong mood-driven story composition here.",
-          "The text and visual blend set the tone well.",
-          "This frame communicates a distinct feeling.",
-          "The #{base} comes through clearly in this story.",
-          "What made you share this #{base} frame?",
-          "Nice balance of mood and visual texture.",
-          "The overall tone of this story stands out."
+          "This repost mood is relatable fr 😌",
+          "The #{base} comes through immediately.",
+          "Text + visual combo feels intentional.",
+          "This one carries a real feeling.",
+          "The tone here is easy to connect with.",
+          "What made this #{base} worth sharing?",
+          "This repost has a thoughtful vibe.",
+          "Mood is clear and it works 💭"
         ]
       else
         [
-          "This repost-style frame has a clear #{base}.",
-          "Strong mood-forward composition in this post.",
-          "The visual tone is consistent and intentional.",
-          "This frame communicates the vibe clearly.",
-          "Nice blend of message and atmosphere here.",
+          "This repost mood is relatable 😌",
+          "The #{base} comes through quickly.",
+          "Message and visual tone match well.",
+          "This one carries a clear feeling.",
+          "Easy to connect with this share.",
           "What drew you to share this #{base}?",
-          "The mood-first structure works well.",
-          "Distinct tone and styling in this frame."
+          "Thoughtful repost choice.",
+          "The mood here is clear and authentic."
         ]
       end
     end
 
     def generic_fallback_comments(anchor:, channel:)
-      base = anchor.to_s.presence || "frame"
+      base = anchor.to_s.presence || "moment"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "The #{base} focus works well here.",
-          "Love how this #{base} is framed.",
-          "Strong detail and clean composition on this one.",
-          "This #{base} shot feels natural.",
-          "Great capture with a clear focal point.",
-          "What made you choose this #{base} moment?",
-          "Nice visual balance in this story frame.",
-          "The #{base} adds a strong touch."
+          "This #{base} moment feels super genuine ✨",
+          "Love this #{base} energy.",
+          "The way this comes together feels natural.",
+          "This #{base} has a nice personal touch.",
+          "Such an easy one to connect with 🙂",
+          "What made this #{base} moment the one to share?",
+          "The mood here feels warm and real.",
+          "This #{base} stands out in a good way."
         ]
       else
         [
-          "Great focus on the #{base}.",
-          "The #{base} detail lands well.",
-          "Clean composition with a clear focal point.",
-          "The framing around this #{base} works nicely.",
-          "This #{base} gives the post character.",
-          "What inspired this #{base} setup?",
-          "Strong visual balance in this frame.",
-          "The #{base} detail stands out."
+          "This #{base} moment feels genuine ✨",
+          "Really like this #{base} energy.",
+          "This one feels natural and easy to connect with.",
+          "The #{base} adds a relatable touch.",
+          "Solid share with a good vibe 🙂",
+          "What inspired this #{base} moment?",
+          "The mood here feels real.",
+          "This #{base} stands out in a good way."
         ]
       end
     end

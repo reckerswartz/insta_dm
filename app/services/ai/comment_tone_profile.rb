@@ -7,20 +7,20 @@ module Ai
     CHANNEL_PROFILES = {
       "post" => {
         label: "post_comment",
-        guidance: "Slightly richer and contextual while remaining concise.",
+        guidance: "Casual, socially native, and warm: like a real friend replying on Instagram.",
         writing_rules: [
-          "Reference visual details or caption context when available.",
-          "Keep tone friendly and public-safe.",
-          "Avoid overreactive slang unless strongly grounded in profile voice."
+          "Use natural conversational phrasing and keep it context-aware.",
+          "Use light emoji sparingly when it adds tone (not every line).",
+          "Avoid robotic visual narration or camera-analysis wording."
         ]
       },
       "story" => {
         label: "story_reply",
-        guidance: "Short, reactive, and lightweight for fast story engagement.",
+        guidance: "Quick, chatty, and relatable with light Gen Z energy.",
         writing_rules: [
-          "Prioritize quick reactions over long statements.",
-          "Keep suggestions punchy and conversational.",
-          "Avoid deep assumptions about background details."
+          "Prioritize short human reactions over formal commentary.",
+          "Add a personal touch or light question when naturally grounded.",
+          "Keep it socially safe and avoid overfamiliar assumptions."
         ]
       },
       "dm" => {

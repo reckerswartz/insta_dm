@@ -75,6 +75,8 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     assert_includes prompt, "\"generation_policy\""
     assert_includes prompt, "\"channel\":\"story\""
     assert_includes prompt, "\"tone_plan\""
+    assert_includes prompt, "\"voice_directives\""
+    assert_includes prompt, "\"emoji_policy\""
     assert_includes prompt, "\"occasion_context\""
     assert_includes prompt, "\"visual_anchors\""
     assert_includes prompt, "\"comparison\""

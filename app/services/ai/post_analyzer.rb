@@ -21,6 +21,8 @@ module Ai
         - Decide whether we should store this post (relevant) or ignore it (irrelevant) based on tags/rules in the payload.
         - Provide only safe, non-deceptive interaction suggestions.
         - Style for generated comments: modern Gen Z voice, light slang, playful energy, and occasional emojis.
+        - Keep comments conversational and relatable, like a real social reply.
+        - Avoid mechanical camera-analysis wording (e.g., frame/composition/focal point narration).
         - Keep it socially engaging and authentic without being offensive, sexual, manipulative, or overfamiliar.
         - First produce a concise, visual image_description; then base comment suggestions on that description.
       SYS
@@ -38,7 +40,7 @@ module Ai
         - suggested_actions: array of strings from ["ignore","review","like_suggestion","comment_suggestion"]
         - recommended_next_action: one of ["ignore","review","comment_suggestion","like_suggestion"]
         - engagement_score: number 0-1
-        - comment_suggestions: array of 5 short comments (friendly/contextual, Gen Z-style voice, based on image_description, may include emojis)
+        - comment_suggestions: array of 5 short comments (friendly/contextual, Gen Z-style voice, based on image_description, light emojis only when relevant)
         - personalization_tokens: array of short contextual tokens we can safely reference
         - confidence: number 0-1
         - evidence: short string
