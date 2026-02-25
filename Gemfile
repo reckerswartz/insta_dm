@@ -60,7 +60,7 @@ group :development, :test do
 end
 
 group :test do
-  gem "parallel_tests", "~> 4.0"
+  gem "parallel_tests", "~> 5.6"
   gem "rspec-rails", "~> 8.0"
   gem "simplecov", "~> 0.22", require: false
   gem "vcr", "~> 6.3"
