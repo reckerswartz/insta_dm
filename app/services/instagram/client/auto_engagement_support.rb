@@ -61,6 +61,41 @@ module Instagram
           media_url = story[:media_url].to_s
           next if media_url.blank?
 
+          trust_policy = media_download_policy_decision(profile: profile, media_url: media_url)
+          if ActiveModel::Type::Boolean.new.cast(trust_policy[:blocked])
+            reason_code = trust_policy[:reason_code].to_s.presence || "media_download_policy_blocked"
+            marker_text = trust_policy[:marker].to_s.presence
+            result[:reply_skipped] = true
+            result[:reply_skip_reason] = reason_code
+            capture_task_html(
+              driver: driver,
+              task_name: "auto_engage_story_skipped",
+              status: "ok",
+              meta: {
+                username: username,
+                story_id: story_id,
+                story_ref: story_ref,
+                reason: reason_code,
+                marker_text: marker_text
+              }.compact
+            )
+            log_automation_event(
+              event: "story_media_skipped",
+              reason_code: reason_code,
+              reason: marker_text,
+              profile: profile,
+              extra: {
+                username: username,
+                story_id: story_id,
+                story_ref: story_ref,
+                media_url: media_url,
+                signal_source: trust_policy[:source].to_s.presence,
+                signal_confidence: trust_policy[:confidence].to_s.presence
+              }.compact
+            )
+            next
+          end
+
           download = download_media_with_metadata(url: media_url, user_agent: @account.user_agent)
           downloaded_at = Time.current
           downloaded_event = profile.record_event!(
@@ -106,7 +141,7 @@ module Instagram
             payload: payload,
             analysis: analysis
           )
-          comment_text = suggestions.first.to_s.strip
+          comment_text = StoryReplyTextSanitizer.call(suggestions.first)
           next if comment_text.blank?
 
           comment_result = comment_on_story_via_api!(story_id: story_id, story_username: username, comment_text: comment_text)
@@ -139,7 +174,48 @@ module Instagram
             )
             attach_reply_comment_to_downloaded_event!(downloaded_event: downloaded_event, comment_text: comment_text)
           end
-        rescue StandardError
+        rescue MediaDownloadService::BlockedMediaSourceError => e
+          result[:reply_skipped] = true
+          result[:reply_skip_reason] = "blocked_media_source"
+          capture_task_html(
+            driver: driver,
+            task_name: "auto_engage_story_skipped",
+            status: "ok",
+            meta: {
+              username: username,
+              story_id: story_id,
+              story_ref: story_ref,
+              reason: "blocked_media_source",
+              marker_text: e.message.to_s.byteslice(0, 180)
+            }
+          )
+          log_automation_event(
+            event: "story_media_skipped",
+            reason_code: "blocked_media_source",
+            reason: e.message.to_s.byteslice(0, 180),
+            profile: profile,
+            extra: {
+              username: username,
+              story_id: story_id,
+              story_ref: story_ref,
+              media_url: media_url
+            }
+          )
+        rescue StandardError => e
+          log_automation_event(
+            event: "story_processing_failed",
+            reason_code: "story_processing_error",
+            reason: "Unhandled story processing exception",
+            profile: profile,
+            extra: {
+              username: username,
+              story_id: story_id,
+              story_ref: story_ref,
+              media_url: media_url,
+              error_class: e.class.name,
+              error_message: e.message.to_s.byteslice(0, 180)
+            }
+          )
           next
         end
 
@@ -155,18 +231,71 @@ module Instagram
       end
 
       def auto_engage_feed_post!(driver:, item:)
-        shortcode = item[:shortcode].to_s
-        username = normalize_username(item[:author_username].to_s)
-        profile = find_or_create_profile_for_auto_engagement!(username: username)
+        normalized_item = item.is_a?(Hash) ? item.deep_dup : {}
+        metadata = normalized_item[:metadata].is_a?(Hash) ? normalized_item[:metadata].deep_stringify_keys : {}
+        normalized_item[:metadata] = metadata
+
+        shortcode = normalized_item[:shortcode].to_s
+        username = normalize_username(normalized_item[:author_username].to_s)
 
         capture_task_html(
           driver: driver,
           task_name: "auto_engage_post_selected",
           status: "ok",
-          meta: { shortcode: shortcode, username: username, media_url: item[:media_url] }
+          meta: { shortcode: shortcode, username: username, media_url: normalized_item[:media_url] }
         )
 
-        download = download_media_with_metadata(url: item[:media_url], user_agent: @account.user_agent)
+        skip_reason = feed_item_skip_reason(item: normalized_item)
+        if skip_reason.present?
+          capture_task_html(
+            driver: driver,
+            task_name: "auto_engage_post_skipped",
+            status: "ok",
+            meta: { shortcode: shortcode, username: username, reason: skip_reason }
+          )
+          return { shortcode: shortcode, username: username, comment_posted: false, skipped: true, skip_reason: skip_reason }
+        end
+
+        profile_resolution = resolve_feed_profile_for_action(item: normalized_item)
+        profile = profile_resolution[:profile]
+        if profile.nil?
+          reason = profile_resolution[:reason].to_s.presence || "profile_not_in_follow_graph"
+          capture_task_html(
+            driver: driver,
+            task_name: "auto_engage_post_skipped",
+            status: "ok",
+            meta: { shortcode: shortcode, username: username, reason: reason }
+          )
+          return { shortcode: shortcode, username: username, comment_posted: false, skipped: true, skip_reason: reason }
+        end
+
+        trust_policy = media_download_policy_decision(profile: profile, media_url: normalized_item[:media_url])
+        if ActiveModel::Type::Boolean.new.cast(trust_policy[:blocked])
+          reason_code = trust_policy[:reason_code].to_s.presence || "media_download_policy_blocked"
+          marker_text = trust_policy[:marker].to_s.presence
+          capture_task_html(
+            driver: driver,
+            task_name: "auto_engage_post_skipped",
+            status: "ok",
+            meta: { shortcode: shortcode, username: username, reason: reason_code, marker_text: marker_text }.compact
+          )
+          log_automation_event(
+            event: "feed_media_skipped",
+            reason_code: reason_code,
+            reason: marker_text,
+            profile: profile,
+            extra: {
+              shortcode: shortcode,
+              username: username,
+              media_url: normalized_item[:media_url],
+              signal_source: trust_policy[:source].to_s.presence,
+              signal_confidence: trust_policy[:confidence].to_s.presence
+            }.compact
+          )
+          return { shortcode: shortcode, username: username, comment_posted: false, skipped: true, skip_reason: reason_code }
+        end
+
+        download = download_media_with_metadata(url: normalized_item[:media_url], user_agent: @account.user_agent)
         downloaded_at = Time.current
         downloaded_event = profile.record_event!(
           kind: "feed_post_image_downloaded",
@@ -175,10 +304,10 @@ module Instagram
           metadata: {
             source: "selenium_home_feed",
             shortcode: shortcode,
-            download_link: item[:media_url],
+            download_link: normalized_item[:media_url],
             original_image_size_bytes: download[:bytes].bytesize,
-            original_image_width: item.dig(:metadata, :natural_width),
-            original_image_height: item.dig(:metadata, :natural_height),
+            original_image_width: metadata["natural_width"],
+            original_image_height: metadata["natural_height"],
             content_type: download[:content_type],
             final_url: download[:final_url]
           }
@@ -192,7 +321,7 @@ module Instagram
         payload = build_auto_engagement_post_payload(
           profile: profile,
           shortcode: shortcode,
-          caption: item[:caption],
+          caption: normalized_item[:caption],
           permalink: "#{INSTAGRAM_BASE_URL}/p/#{shortcode}/",
           include_story_history: false
         )
@@ -201,7 +330,7 @@ module Instagram
           payload: payload,
           bytes: download[:bytes],
           content_type: download[:content_type],
-          source_url: item[:media_url]
+          source_url: normalized_item[:media_url]
         )
         suggestions = generate_comment_suggestions_from_analysis!(
           profile: profile,
@@ -233,6 +362,35 @@ module Instagram
           comment_posted: posted,
           posted_comment: comment_text
         }
+      rescue MediaDownloadService::BlockedMediaSourceError => e
+        capture_task_html(
+          driver: driver,
+          task_name: "auto_engage_post_skipped",
+          status: "ok",
+          meta: { shortcode: shortcode, username: username, reason: "blocked_media_source", error: e.message.to_s.byteslice(0, 180) }
+        )
+        log_automation_event(
+          event: "feed_media_skipped",
+          reason_code: "blocked_media_source",
+          reason: e.message.to_s.byteslice(0, 180),
+          profile: profile,
+          extra: {
+            shortcode: shortcode,
+            username: username,
+            media_url: normalized_item[:media_url]
+          }.compact
+        )
+        { shortcode: shortcode, username: username, comment_posted: false, skipped: true, skip_reason: "blocked_media_source" }
+      end
+
+      def media_download_policy_decision(profile:, media_url:)
+        Instagram::MediaDownloadTrustPolicy.evaluate(
+          account: @account,
+          profile: profile,
+          media_url: media_url
+        )
+      rescue StandardError
+        { blocked: false }
       end
 
       def find_or_create_profile_for_auto_engagement!(username:)

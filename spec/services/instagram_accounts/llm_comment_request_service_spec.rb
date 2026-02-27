@@ -71,7 +71,7 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
           "run_id" => "run-keep-1",
           "status" => "failed",
           "steps" => {
-            "ocr_analysis" => { "status" => "succeeded" }
+            "metadata_extraction" => { "status" => "succeeded" }
           }
         }
       }
@@ -109,7 +109,7 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
           "run_id" => "run-clear-1",
           "status" => "failed",
           "steps" => {
-            "ocr_analysis" => { "status" => "succeeded" }
+            "metadata_extraction" => { "status" => "succeeded" }
           }
         }
       }
@@ -207,7 +207,7 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
           "status" => "running",
           "created_at" => 2.minutes.ago.iso8601,
           "steps" => {
-            "ocr_analysis" => {
+            "face_recognition" => {
               "status" => "completed",
               "queue_wait_ms" => 1200,
               "run_duration_ms" => 3400,
@@ -230,7 +230,7 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
 
     expect(result.status).to eq(:accepted)
     expect(result.payload[:llm_pipeline_step_rollup]).to be_a(Hash)
-    expect(result.payload[:llm_pipeline_step_rollup]["ocr_analysis"]).to include(status: "completed", total_duration_ms: 4600)
+    expect(result.payload[:llm_pipeline_step_rollup]["face_recognition"]).to include(status: "completed", total_duration_ms: 4600)
     expect(result.payload[:llm_pipeline_timing]).to include(run_id: "run-42", status: "running")
   end
 
@@ -314,7 +314,7 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
           "created_at" => 2.minutes.ago.iso8601,
           "updated_at" => Time.current.iso8601,
           "steps" => {
-            "ocr_analysis" => { "status" => "running" }
+            "metadata_extraction" => { "status" => "running" }
           }
         }
       }
@@ -351,6 +351,18 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
         },
         "manual_review_reason" => "insufficient_verified_signals",
         "auto_post_allowed" => false,
+        "generation_inputs" => {
+          "selected_topics" => %w[airport outfit],
+          "media_topics" => %w[airport],
+          "visual_anchors" => %w[airport outfit],
+          "context_keywords" => %w[airport outfit travel],
+          "content_mode" => "portrait",
+          "signal_score" => 4
+        },
+        "policy_diagnostics" => {
+          "rejected_reason_counts" => { "generic_phrase" => 2 },
+          "rejected_samples" => [ { "comment" => "Nice post", "reasons" => [ "generic_phrase" ] } ]
+        },
         "generation_policy" => {
           "allow_comment" => false,
           "reason_code" => "identity_likelihood_low",
@@ -379,6 +391,42 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     expect(result.payload[:llm_policy_source]).to eq("verified_story_insight_builder")
     expect(result.payload[:llm_comment_last_error_preview]).to include("Local story intelligence unavailable")
     expect(result.payload[:llm_model_label]).to eq("-")
+    expect(result.payload[:llm_input_topics]).to include("airport", "outfit")
+    expect(result.payload[:llm_input_visual_anchors]).to include("airport")
+    expect(result.payload[:llm_input_content_mode]).to eq("portrait")
+    expect(result.payload[:llm_rejected_reason_counts]).to include("generic_phrase" => 2)
+  end
+
+  it "does not expose failure diagnostics from allow-comment generation policy when no failure exists" do
+    event = create_story_event(
+      profile: profile,
+      llm_comment_status: "not_requested",
+      llm_comment_metadata: {
+        "generation_policy" => {
+          "allow_comment" => true,
+          "reason_code" => "verified_context_available",
+          "reason" => "Verified context is sufficient.",
+          "source" => "verified_story_insight_builder"
+        }
+      }
+    )
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      provider: "local",
+      model: nil,
+      status_only: true,
+      queue_inspector: queue_inspector
+    ).call
+
+    expect(result.status).to eq(:ok)
+    expect(result.payload).to include(status: "not_requested", event_id: event.id)
+    expect(result.payload[:llm_policy_allow_comment]).to eq(true)
+    expect(result.payload[:llm_failure_reason_code]).to be_nil
+    expect(result.payload[:llm_failure_source]).to be_nil
+    expect(result.payload[:llm_failure_message]).to be_nil
+    expect(result.payload[:llm_manual_review_reason]).to be_nil
   end
 
   def create_story_event(profile:, **attrs)

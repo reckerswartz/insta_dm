@@ -409,7 +409,7 @@ export default class extends Controller {
     entries.forEach((entry) => stateByKey.set(String(entry.key), String(entry.state || "pending").toLowerCase()))
 
     const phases = [
-      ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "metadata_extraction"]],
+      ["analysis", ["parallel_services", "metadata_extraction"]],
       ["context", ["context_matching", "prompt_construction"]],
       ["generation", ["llm_generation", "relevance_scoring"]],
       ["eligibility", ["engagement_eligibility"]],
@@ -476,8 +476,6 @@ export default class extends Controller {
       video_analysis: 12,
       audio_extraction: 14,
       speech_transcription: 16,
-      ocr_analysis: 20,
-      vision_detection: 24,
       face_recognition: 28,
       metadata_extraction: 32,
       context_matching: 40,
@@ -573,6 +571,12 @@ export default class extends Controller {
     const relevanceScore = data?.llm_comment_relevance_score ?? data?.relevance_score ?? data?.generation_result?.relevance_score
     const failureMessage = String(data?.error || data?.llm_comment_last_error || data?.llm_failure_message || data?.message || "").trim()
     const generationPolicy = data?.llm_generation_policy && typeof data.llm_generation_policy === "object" ? data.llm_generation_policy : null
+    const generationInputs = data?.llm_generation_inputs && typeof data.llm_generation_inputs === "object" ?
+      data.llm_generation_inputs :
+      (data?.generation_result?.generation_inputs && typeof data.generation_result.generation_inputs === "object" ? data.generation_result.generation_inputs : null)
+    const policyDiagnostics = data?.llm_policy_diagnostics && typeof data.llm_policy_diagnostics === "object" ?
+      data.llm_policy_diagnostics :
+      (data?.generation_result?.policy_diagnostics && typeof data.generation_result.policy_diagnostics === "object" ? data.generation_result.policy_diagnostics : null)
     const failureReasonCode = String(data?.llm_failure_reason_code || data?.reason || "").trim()
     const failureSource = String(data?.llm_failure_source || data?.source || "").trim()
     const failureErrorClass = String(data?.llm_failure_error_class || "").trim()
@@ -580,11 +584,51 @@ export default class extends Controller {
     const policyReasonCode = String(data?.llm_policy_reason_code || generationPolicy?.reason_code || "").trim()
     const policyReason = String(data?.llm_policy_reason || generationPolicy?.reason || "").trim()
     const policySource = String(data?.llm_policy_source || generationPolicy?.source || "").trim()
+    const hasQueueName = Object.prototype.hasOwnProperty.call(data || {}, "llm_queue_name")
+    const hasQueueState = Object.prototype.hasOwnProperty.call(data || {}, "llm_queue_state")
+    const hasBlockingStep = Object.prototype.hasOwnProperty.call(data || {}, "llm_blocking_step")
+    const hasPendingReasonCode = Object.prototype.hasOwnProperty.call(data || {}, "llm_pending_reason_code")
+    const hasPendingReason = Object.prototype.hasOwnProperty.call(data || {}, "llm_pending_reason")
+    const hasScheduleService = Object.prototype.hasOwnProperty.call(data || {}, "llm_schedule_service")
+    const hasScheduleRunAt = Object.prototype.hasOwnProperty.call(data || {}, "llm_schedule_run_at")
+    const queueName = String(data?.llm_queue_name || "").trim()
+    const queueState = String(data?.llm_queue_state || "").trim()
+    const blockingStep = String(data?.llm_blocking_step || "").trim()
+    const pendingReasonCode = String(data?.llm_pending_reason_code || "").trim()
+    const pendingReason = String(data?.llm_pending_reason || "").trim()
+    const scheduleService = String(data?.llm_schedule_service || "").trim()
+    const scheduleRunAt = String(data?.llm_schedule_run_at || "").trim()
+    const hasScheduleIntentional = Object.prototype.hasOwnProperty.call(data || {}, "llm_schedule_intentional")
+    const scheduleIntentional = hasScheduleIntentional ? this.coerceBoolean(data?.llm_schedule_intentional) : null
     const hasPolicyAllow = Object.prototype.hasOwnProperty.call(data || {}, "llm_policy_allow_comment")
     const policyAllow = hasPolicyAllow ? this.coerceBoolean(data?.llm_policy_allow_comment) : null
     const hasAutoPostAllowed = Object.prototype.hasOwnProperty.call(data || {}, "llm_auto_post_allowed")
     const autoPostAllowed = hasAutoPostAllowed ? this.coerceBoolean(data?.llm_auto_post_allowed) : null
     const modelLabel = String(data?.llm_model_label || "").trim()
+    const hasPipelineStatus = Object.prototype.hasOwnProperty.call(data || {}, "llm_pipeline_status")
+    const hasPipelineRunId = Object.prototype.hasOwnProperty.call(data || {}, "llm_pipeline_run_id")
+    const hasPipelineProvider = Object.prototype.hasOwnProperty.call(data || {}, "llm_pipeline_provider")
+    const hasPipelineModel = Object.prototype.hasOwnProperty.call(data || {}, "llm_pipeline_model")
+    const hasPipelineResumeMode = Object.prototype.hasOwnProperty.call(data || {}, "llm_pipeline_resume_mode")
+    const hasPipelineRequiredSteps = Object.prototype.hasOwnProperty.call(data || {}, "llm_pipeline_required_steps")
+    const hasPipelineDeferredSteps = Object.prototype.hasOwnProperty.call(data || {}, "llm_pipeline_deferred_steps")
+    const pipelineStatus = String(data?.llm_pipeline_status || "").trim()
+    const pipelineRunId = String(data?.llm_pipeline_run_id || "").trim()
+    const pipelineProvider = String(data?.llm_pipeline_provider || "").trim()
+    const pipelineModel = String(data?.llm_pipeline_model || "").trim()
+    const pipelineResumeMode = String(data?.llm_pipeline_resume_mode || "").trim()
+    const pipelineRequiredSteps = Array.isArray(data?.llm_pipeline_required_steps) ? data.llm_pipeline_required_steps : []
+    const pipelineDeferredSteps = Array.isArray(data?.llm_pipeline_deferred_steps) ? data.llm_pipeline_deferred_steps : []
+    const inputTopics = Array.isArray(data?.llm_input_topics) ? data.llm_input_topics : []
+    const inputMediaTopics = Array.isArray(data?.llm_input_media_topics) ? data.llm_input_media_topics : []
+    const inputProfileTopics = Array.isArray(data?.llm_input_profile_topics) ? data.llm_input_profile_topics : []
+    const inputVisualAnchors = Array.isArray(data?.llm_input_visual_anchors) ? data.llm_input_visual_anchors : []
+    const inputKeywords = Array.isArray(data?.llm_input_keywords) ? data.llm_input_keywords : []
+    const inputContentMode = String(data?.llm_input_content_mode || "").trim()
+    const hasInputSignalScore = Object.prototype.hasOwnProperty.call(data || {}, "llm_input_signal_score")
+    const inputSignalScore = Number(data?.llm_input_signal_score)
+    const rejectedReasonCounts = data?.llm_rejected_reason_counts && typeof data.llm_rejected_reason_counts === "object" ? data.llm_rejected_reason_counts : null
+    const rejectedSamples = Array.isArray(data?.llm_rejected_samples) ? data.llm_rejected_samples : []
 
     const patch = {}
     if (normalizedStatus) patch.llm_comment_status = normalizedStatus
@@ -596,6 +640,13 @@ export default class extends Controller {
     if (String(data?.llm_comment_model || data?.model || "").trim()) patch.llm_comment_model = String(data?.llm_comment_model || data?.model)
     if (String(data?.llm_comment_provider || data?.provider || "").trim()) patch.llm_comment_provider = String(data?.llm_comment_provider || data?.provider)
     if (modelLabel) patch.llm_model_label = modelLabel
+    if (hasPipelineStatus) patch.llm_pipeline_status = pipelineStatus || null
+    if (hasPipelineRunId) patch.llm_pipeline_run_id = pipelineRunId || null
+    if (hasPipelineProvider) patch.llm_pipeline_provider = pipelineProvider || null
+    if (hasPipelineModel) patch.llm_pipeline_model = pipelineModel || null
+    if (hasPipelineResumeMode) patch.llm_pipeline_resume_mode = pipelineResumeMode || null
+    if (hasPipelineRequiredSteps) patch.llm_pipeline_required_steps = pipelineRequiredSteps
+    if (hasPipelineDeferredSteps) patch.llm_pipeline_deferred_steps = pipelineDeferredSteps
     if (Number.isFinite(Number(relevanceScore))) patch.llm_comment_relevance_score = Number(relevanceScore)
     if (relevanceBreakdown && typeof relevanceBreakdown === "object") patch.llm_relevance_breakdown = relevanceBreakdown
     if (rankedCandidates.length > 0) patch.llm_ranked_candidates = rankedCandidates
@@ -606,6 +657,17 @@ export default class extends Controller {
     if (manualReviewReason) patch.llm_manual_review_reason = manualReviewReason
     if (hasAutoPostAllowed) patch.llm_auto_post_allowed = autoPostAllowed
     if (generationPolicy && Object.keys(generationPolicy).length > 0) patch.llm_generation_policy = generationPolicy
+    if (generationInputs && Object.keys(generationInputs).length > 0) patch.llm_generation_inputs = generationInputs
+    if (policyDiagnostics && Object.keys(policyDiagnostics).length > 0) patch.llm_policy_diagnostics = policyDiagnostics
+    if (inputTopics.length > 0) patch.llm_input_topics = inputTopics
+    if (inputMediaTopics.length > 0) patch.llm_input_media_topics = inputMediaTopics
+    if (inputProfileTopics.length > 0) patch.llm_input_profile_topics = inputProfileTopics
+    if (inputVisualAnchors.length > 0) patch.llm_input_visual_anchors = inputVisualAnchors
+    if (inputKeywords.length > 0) patch.llm_input_keywords = inputKeywords
+    if (inputContentMode) patch.llm_input_content_mode = inputContentMode
+    if (hasInputSignalScore && Number.isFinite(inputSignalScore)) patch.llm_input_signal_score = inputSignalScore
+    if (rejectedReasonCounts && Object.keys(rejectedReasonCounts).length > 0) patch.llm_rejected_reason_counts = rejectedReasonCounts
+    if (rejectedSamples.length > 0) patch.llm_rejected_samples = rejectedSamples
     if (failureReasonCode) patch.llm_failure_reason_code = failureReasonCode
     if (failureSource) patch.llm_failure_source = failureSource
     if (failureErrorClass) patch.llm_failure_error_class = failureErrorClass
@@ -613,6 +675,14 @@ export default class extends Controller {
     if (policyReasonCode) patch.llm_policy_reason_code = policyReasonCode
     if (policyReason) patch.llm_policy_reason = policyReason
     if (policySource) patch.llm_policy_source = policySource
+    if (hasQueueName) patch.llm_queue_name = queueName || null
+    if (hasQueueState) patch.llm_queue_state = queueState || null
+    if (hasBlockingStep) patch.llm_blocking_step = blockingStep || null
+    if (hasPendingReasonCode) patch.llm_pending_reason_code = pendingReasonCode || null
+    if (hasPendingReason) patch.llm_pending_reason = pendingReason || null
+    if (hasScheduleService) patch.llm_schedule_service = scheduleService || null
+    if (hasScheduleRunAt) patch.llm_schedule_run_at = scheduleRunAt || null
+    if (hasScheduleIntentional) patch.llm_schedule_intentional = scheduleIntentional
     if (["failed", "skipped"].includes(normalizedStatus) && failureMessage) {
       patch.llm_comment_last_error = failureMessage
       patch.llm_comment_last_error_preview = failureMessage.slice(0, 180)
@@ -661,8 +731,6 @@ export default class extends Controller {
     return {
       queue_wait: { label: "Queue Wait", state: "queued", progress: 0, order: 5 },
       parallel_services: { label: "Parallel Stage Jobs", state: "pending", progress: 0, order: 10 },
-      ocr_analysis: { label: "OCR Analysis", state: "pending", progress: 0, order: 20 },
-      vision_detection: { label: "Video/Image Analysis", state: "pending", progress: 0, order: 24 },
       face_recognition: { label: "Face Recognition (Deferred)", state: "pending", progress: 0, order: 28 },
       metadata_extraction: { label: "Metadata Extraction", state: "pending", progress: 0, order: 32 },
       context_matching: { label: "Context Matching", state: "pending", progress: 0, order: 40 },

@@ -11,9 +11,29 @@ class ApplicationJob < ActiveJob::Base
   # Most jobs are safe to ignore if the underlying records are no longer available
   # discard_on ActiveJob::DeserializationError
 
+  after_enqueue do |job|
+    context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
+    job.send(
+      :record_job_lifecycle_transition!,
+      status: "queued",
+      context: context,
+      metadata: { transition_source: "active_job_after_enqueue" }
+    )
+  end
+
   discard_on Instagram::AuthenticationRequiredError do |job, error|
     context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
     job.send(:apply_auth_backoff!, context: context, error: error)
+    job.send(
+      :record_job_lifecycle_transition!,
+      status: "discarded",
+      context: context,
+      error: error,
+      metadata: {
+        discard_reason: "authentication_required",
+        transition_source: "active_job_discard"
+      }
+    )
 
     Rails.logger.warn(
       "[jobs.auth_required] #{job.class.name} discarded: #{error.message} " \
@@ -35,10 +55,32 @@ class ApplicationJob < ActiveJob::Base
     )
   end
 
-  discard_on ActiveRecord::RecordNotUnique
+  discard_on ActiveRecord::RecordNotUnique do |job, error|
+    context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
+    job.send(
+      :record_job_lifecycle_transition!,
+      status: "discarded",
+      context: context,
+      error: error,
+      metadata: {
+        discard_reason: "record_not_unique",
+        transition_source: "active_job_discard"
+      }
+    )
+  end
 
   discard_on ActiveRecord::RecordNotFound do |job, error|
     context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
+    job.send(
+      :record_job_lifecycle_transition!,
+      status: "discarded",
+      context: context,
+      error: error,
+      metadata: {
+        discard_reason: "record_not_found",
+        transition_source: "active_job_discard"
+      }
+    )
     Ops::StructuredLogger.warn(
       event: "job.record_not_found_discarded",
       payload: {
@@ -53,8 +95,29 @@ class ApplicationJob < ActiveJob::Base
 
   around_perform do |job, block|
     context = Jobs::ContextExtractor.from_active_job_arguments(job.arguments)
+    if job.send(:skip_deleted_account_job?, context: context)
+      job.send(
+        :record_job_lifecycle_transition!,
+        status: "discarded",
+        context: context,
+        transition_at: Time.current,
+        metadata: {
+          discard_reason: "account_deleted",
+          transition_source: "active_job_around_perform"
+        }
+      )
+      next
+    end
+
     started_at = Time.current
     started_monotonic = Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue nil
+    job.send(
+      :record_job_lifecycle_transition!,
+      status: "running",
+      context: context,
+      transition_at: started_at,
+      metadata: { transition_source: "active_job_around_perform" }
+    )
 
     Current.set(
       active_job_id: job.job_id,
@@ -129,10 +192,27 @@ class ApplicationJob < ActiveJob::Base
           },
           throttle_key: "jobs_changed"
         )
+
+        job.send(
+          :record_job_lifecycle_transition!,
+          status: "completed",
+          context: context,
+          transition_at: Time.current,
+          metadata: { transition_source: "active_job_around_perform" }
+        )
       end
     end
   rescue StandardError => e
     begin
+      job.send(
+        :record_job_lifecycle_transition!,
+        status: "failed",
+        context: context,
+        transition_at: Time.current,
+        error: e,
+        metadata: { transition_source: "active_job_around_perform" }
+      )
+
       queue_adapter = Rails.application.config.active_job.queue_adapter.to_s
       solid_id =
         begin
@@ -221,6 +301,28 @@ class ApplicationJob < ActiveJob::Base
   end
 
   private
+
+  def skip_deleted_account_job?(context:)
+    account_id = context[:instagram_account_id]
+    return false if account_id.blank?
+
+    !InstagramAccount.exists?(id: account_id)
+  rescue StandardError
+    false
+  end
+
+  def record_job_lifecycle_transition!(status:, context:, transition_at: Time.current, error: nil, metadata: nil)
+    Ops::BackgroundJobLifecycleRecorder.record_active_job_transition(
+      job: self,
+      status: status,
+      context: context,
+      transition_at: transition_at,
+      error: error,
+      metadata: metadata.to_h
+    )
+  rescue StandardError
+    nil
+  end
 
   def safe_json(value)
     JSON.generate(value)

@@ -6,6 +6,17 @@ require "uri"
 class DownloadInstagramProfileAvatarJob < ApplicationJob
   queue_as :avatars
 
+  class BlockedMediaSourceError < StandardError
+    attr_reader :context
+
+    def initialize(context)
+      @context = context.is_a?(Hash) ? context.deep_symbolize_keys : {}
+      reason_code = @context[:reason_code].to_s.presence || "blocked_media_source"
+      marker = @context[:marker].to_s.presence || "unknown"
+      super("Blocked media source: #{reason_code} (#{marker})")
+    end
+  end
+
   def perform(instagram_account_id:, instagram_profile_id:, broadcast: true, force: false, profile_action_log_id: nil)
     account = InstagramAccount.find(instagram_account_id)
     profile = account.instagram_profiles.find(instagram_profile_id)
@@ -33,6 +44,25 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
           profile_pic_url_raw: raw_url.presence
         },
         log_text: raw_url.present? ? "Avatar URL invalid/placeholder; skipped download" : "Avatar URL blank; marked as synced with no attachment"
+      )
+      return
+    end
+
+    trust_policy = Instagram::MediaDownloadTrustPolicy.evaluate(
+      account: account,
+      profile: profile,
+      media_url: url
+    )
+    if ActiveModel::Type::Boolean.new.cast(trust_policy[:blocked])
+      profile.update!(avatar_synced_at: Time.current)
+      action_log.mark_succeeded!(
+        extra_metadata: {
+          skipped: true,
+          reason: trust_policy[:reason_code].to_s.presence || "blocked_media_source",
+          policy: trust_policy,
+          profile_pic_url_raw: raw_url.presence
+        },
+        log_text: "Avatar download skipped by trust policy."
       )
       return
     end
@@ -89,6 +119,16 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
     action_log.mark_succeeded!(
       extra_metadata: { fingerprint: fp, avatar_changed: avatar_changed, profile_pic_url: url },
       log_text: "Avatar sync complete"
+    )
+  rescue BlockedMediaSourceError => e
+    profile&.update!(avatar_synced_at: Time.current)
+    action_log&.mark_succeeded!(
+      extra_metadata: {
+        skipped: true,
+        reason: e.context[:reason_code].to_s.presence || "blocked_media_source",
+        policy: e.context
+      },
+      log_text: "Avatar download skipped by trust policy."
     )
   rescue StandardError => e
     if broadcast
@@ -154,6 +194,8 @@ class DownloadInstagramProfileAvatarJob < ApplicationJob
 
   def fetch_url(url, user_agent:, redirects_left: 4)
     raise "Too many redirects" if redirects_left.negative?
+    blocked_context = Instagram::MediaDownloadTrustPolicy.blocked_source_context(url: url)
+    raise BlockedMediaSourceError, blocked_context if blocked_context.present?
 
     uri = URI.parse(url)
     raise "Invalid URL" unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)

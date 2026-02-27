@@ -7,6 +7,11 @@ class DownloadMissingAvatarsJob < ApplicationJob
     limit = limit.to_i.clamp(1, 2_000)
     profiles = account.instagram_profiles
       .where.not(profile_pic_url: [nil, ""])
+      .where(
+        "following = :truthy OR follows_you = :truthy OR LOWER(username) = :account_username",
+        truthy: true,
+        account_username: account.username.to_s.downcase
+      )
       .left_joins(:avatar_attachment)
       .where(active_storage_attachments: { id: nil })
       .limit(limit)

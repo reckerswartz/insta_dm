@@ -29,32 +29,16 @@ module Ops
         started_at = monotonic_started_at
         checked_at = Time.current
 
-        microservice_required = local_microservice_required?
-        microservice_enabled = local_microservice_enabled?
-        microservice =
-          if microservice_enabled
-            Ai::LocalMicroserviceClient.new.test_connection!
-          else
-            {
-              ok: !microservice_required,
-              skipped: true,
-              message: "Local AI microservice checks disabled by USE_LOCAL_AI_MICROSERVICE=false"
-            }
-          end
         ollama = Ai::OllamaClient.new.test_connection!
 
-        microservice_ok = ActiveModel::Type::Boolean.new.cast(extract_ok_value(microservice))
         ollama_ok = ActiveModel::Type::Boolean.new.cast(extract_ok_value(ollama))
-        ok = ollama_ok && (!microservice_required || microservice_ok)
         result = {
-          ok: ok,
+          ok: ollama_ok,
           checked_at: checked_at.iso8601(3),
           details: {
-            microservice: microservice,
             ollama: ollama,
             policy: {
-              microservice_enabled: microservice_enabled,
-              microservice_required: microservice_required
+              execution_mode: "ollama_only"
             }
           }
         }
@@ -100,7 +84,7 @@ module Ops
             operation: "health_check",
             category: "healthcheck",
             started_at: started_at,
-            error: "One or more local AI components are unavailable",
+            error: "Ollama is unavailable",
             metadata: result[:details]
           )
         end
@@ -109,16 +93,6 @@ module Ops
       def extract_ok_value(payload)
         row = payload.is_a?(Hash) ? payload : {}
         row[:ok].nil? ? row["ok"] : row[:ok]
-      end
-
-      def local_microservice_enabled?
-        ActiveModel::Type::Boolean.new.cast(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "false"))
-      end
-
-      def local_microservice_required?
-        ActiveModel::Type::Boolean.new.cast(
-          ENV.fetch("LOCAL_AI_MICROSERVICE_REQUIRED", "false")
-        )
       end
 
       def annotate_status(payload, source:)

@@ -31,6 +31,13 @@ module Ai
       /\b[a-z0-9_]+\s+and\s+[a-z0-9_]+,\s+an\s+[a-z0-9_]+\s+duo\b/i
     ].freeze
 
+    THIRD_PERSON_PERSPECTIVE_PATTERNS = [
+      /\b(?:that|this)\s+(?:person|guy|girl|man|woman|dude|bro|sis|kid)\b/i,
+      /\b(?:he|she|they)\s+(?:looks?|look|is|are|has|have|seems?|feel|feels)\b/i,
+      /\b(?:his|her|their)\s+(?:look|outfit|style|vibe|energy|smile|hair|face|moment)\b/i,
+      /\beveryone\b(?:\s+\w+){0,3}\s+(?:looks?|look|is|are|has|have|seems?|feel|feels|being)\b/i
+    ].freeze
+
     NON_VISUAL_CONTEXT_TOKENS = %w[
       detected
       visual
@@ -95,12 +102,13 @@ module Ai
       feels
     ].freeze
 
-    def evaluate(suggestions:, historical_comments: [], context_keywords: [], max_suggestions: 8)
+    def evaluate(suggestions:, historical_comments: [], context_keywords: [], max_suggestions: 8, channel: nil, require_direct_address: nil)
       accepted = []
       rejected = []
       history = Array(historical_comments).map(&:to_s)
       context_tokens = tokenize(Array(context_keywords).join(" "))
       recent_openers = Array(history).map { |row| opening_signature(row) }.reject(&:blank?)
+      direct_address_required = direct_address_required?(channel: channel, require_direct_address: require_direct_address)
 
       Array(suggestions).each do |raw|
         text = normalize_comment(raw)
@@ -114,6 +122,7 @@ module Ai
         reasons << "batch_similarity" if repetitive_within_batch?(text, accepted: accepted)
         reasons << "generic_phrase" if generic_phrase?(text)
         reasons << "robotic_meta_phrase" if robotic_meta_phrase?(text)
+        reasons << "third_person_perspective" if direct_address_required && third_person_perspective?(text)
         reasons << "weak_visual_grounding" if weak_visual_grounding?(text, context_tokens)
         reasons << "low_information" if low_information_comment?(text)
 
@@ -155,6 +164,16 @@ module Ai
 
     def robotic_meta_phrase?(comment)
       ROBOTIC_META_PATTERNS.any? { |pattern| comment.to_s.match?(pattern) }
+    end
+
+    def third_person_perspective?(comment)
+      THIRD_PERSON_PERSPECTIVE_PATTERNS.any? { |pattern| comment.to_s.match?(pattern) }
+    end
+
+    def direct_address_required?(channel:, require_direct_address:)
+      return ActiveModel::Type::Boolean.new.cast(require_direct_address) unless require_direct_address.nil?
+
+      channel.to_s.downcase == "story"
     end
 
     def repetitive_against_history?(comment, history)

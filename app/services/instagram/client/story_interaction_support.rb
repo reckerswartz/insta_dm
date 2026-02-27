@@ -27,6 +27,9 @@ module Instagram
       end
 
       def comment_on_story_via_ui!(driver:, comment_text:)
+        text = StoryReplyTextSanitizer.call(comment_text)
+        return { posted: false, reason: "blank_comment_text" } if text.blank?
+
         field = wait_for_comment_textbox(driver: driver, timeout: 12)
         if !field
           availability = detect_story_reply_availability(driver)
@@ -38,7 +41,7 @@ module Instagram
         end
 
         capture_task_html(driver: driver, task_name: "auto_engage_story_reply_box_ready", status: "ok")
-        focus_and_type(driver: driver, field: field, text: comment_text)
+        focus_and_type(driver: driver, field: field, text: text)
         posted = click_comment_post_button(driver: driver)
         if posted
           return { posted: true, reason: "post_button_clicked" }
@@ -56,7 +59,7 @@ module Instagram
       # 1) POST /api/v1/direct_v2/create_group_thread/ with recipient_users=["<reel_user_id>"]
       # 2) POST /api/v1/direct_v2/threads/broadcast/reel_share/ with media_id="<story_id>_<reel_user_id>", reel_id, thread_id, text
       def comment_on_story_via_api!(story_id:, story_username:, comment_text:)
-        text = comment_text.to_s.strip
+        text = StoryReplyTextSanitizer.call(comment_text)
         return { posted: false, method: "api", reason: "blank_comment_text" } if text.blank?
 
         sid = normalize_story_id_token(story_id)

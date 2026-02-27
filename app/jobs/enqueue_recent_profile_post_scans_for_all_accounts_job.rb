@@ -30,9 +30,23 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
 
     enqueued_accounts = 0
     scheduler_lease_skipped = 0
+    backlog_skipped = 0
 
     batch[:accounts].each do |account|
       next if account.cookies.blank?
+      gate_snapshot = Pipeline::SequentialProcessingGate.new(account: account).snapshot
+      if ActiveModel::Type::Boolean.new.cast(gate_snapshot[:blocked])
+        backlog_skipped += 1
+        Ops::StructuredLogger.info(
+          event: "profile_scan.all_accounts_skipped_pending_backlog",
+          payload: {
+            account_id: account.id,
+            blocking_reasons: Array(gate_snapshot[:blocking_reasons]),
+            blocking_counts: gate_snapshot[:blocking_counts].is_a?(Hash) ? gate_snapshot[:blocking_counts] : {}
+          }
+        )
+        next
+      end
 
       scheduler_lease = AutonomousSchedulerLease.reserve!(account: account, source: self.class.name)
       unless scheduler_lease.reserved
@@ -86,6 +100,7 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
         accounts_enqueued: enqueued_accounts,
         scanned_accounts: batch[:accounts].length,
         scheduler_lease_skipped: scheduler_lease_skipped,
+        backlog_skipped: backlog_skipped,
         limit_per_account: limit_per_account,
         posts_limit: posts_limit_i,
         comments_limit: comments_limit_i,
@@ -99,6 +114,7 @@ class EnqueueRecentProfilePostScansForAllAccountsJob < ApplicationJob
       accounts_enqueued: enqueued_accounts,
       scanned_accounts: batch[:accounts].length,
       scheduler_lease_skipped: scheduler_lease_skipped,
+      backlog_skipped: backlog_skipped,
       continuation_job_id: continuation_job&.job_id
     }
   end

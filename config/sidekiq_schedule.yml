@@ -5,9 +5,9 @@ development:
     queue: sync
     args:
       - limit: 120
-    cron: "*/10 * * * *"
-  ai_microservice_health_check:
-    class: CheckAiMicroserviceHealthJob
+    cron: "0 3 * * *"
+  local_ai_health_check:
+    class: CheckLocalAiHealthJob
     active_job: true
     queue: maintenance
     cron: "*/10 * * * *"
@@ -43,8 +43,11 @@ development:
     queue: story_auto_reply_orchestration
     args:
       - max_stories: 10
+        profile_limit: 1
+        auto_reply: false
+        require_auto_reply_tag: false
         force_analyze_all: false
-    cron: "0 */2 * * *"
+    cron: "*/5 * * * *"
   feed_auto_engagement_all_accounts:
     class: EnqueueFeedAutoEngagementForAllAccountsJob
     active_job: true
@@ -76,9 +79,9 @@ production:
     queue: sync
     args:
       - limit: 500
-    cron: "*/8 * * * *"
-  ai_microservice_health_check:
-    class: CheckAiMicroserviceHealthJob
+    cron: "0 3 * * *"
+  local_ai_health_check:
+    class: CheckLocalAiHealthJob
     active_job: true
     queue: maintenance
     cron: "*/10 * * * *"
@@ -133,15 +136,18 @@ production:
     queue: profiles
     args:
       - limit_per_account: 20
-    cron: "0 */2 * * *"
+    cron: "30 3 * * *"
   story_auto_reply_all_accounts:
     class: EnqueueStoryAutoRepliesForAllAccountsJob
     active_job: true
     queue: story_auto_reply_orchestration
     args:
       - max_stories: 10
+        profile_limit: 1
+        auto_reply: false
+        require_auto_reply_tag: false
         force_analyze_all: false
-    cron: "22 * * * *"
+    cron: "*/5 * * * *"
   feed_auto_engagement_all_accounts:
     class: EnqueueFeedAutoEngagementForAllAccountsJob
     active_job: true

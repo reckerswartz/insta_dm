@@ -134,6 +134,9 @@ export default class extends Controller {
 
         <div class="technical-sections">
           ${this.displaySection("Story Timeline", data.timeline || {})}
+          ${this.displaySection("Generation Inputs", data.generation_inputs || {})}
+          ${this.displaySection("Policy Diagnostics", data.policy_diagnostics || {})}
+          ${this.displaySection("Ranked Candidates", data.ranked_candidates || [])}
           ${this.displaySection("Media Information", details.media_info || {})}
           ${this.displaySection("Local Story Intelligence", details.local_story_intelligence || {})}
           ${this.displaySection("Analysis", details.analysis || {})}
@@ -161,7 +164,7 @@ export default class extends Controller {
             <span class="meta">Provider: ${this.esc(data.provider || "-")}</span>
             <span class="meta">Status: ${this.esc(data.status || "-")}</span>
             <span class="meta">Relevance: ${this.esc(data.relevance_score ?? "-")}</span>
-            <span class="meta">Pipeline: local vision + OCR + local LLM</span>
+            <span class="meta">Pipeline: local story intelligence + local LLM</span>
           </div>
         </div>
       </div>

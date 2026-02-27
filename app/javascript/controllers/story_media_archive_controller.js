@@ -5,7 +5,7 @@ import { notifyApp } from "../lib/notifications"
 const INTERACTIVE_SELECTOR = "a,button,input,textarea,select,label,[role='button'],video,.plyr"
 
 export default class extends Controller {
-  static targets = ["gallery", "loader", "empty", "scroll", "dateInput", "refreshSignal", "loadButton"]
+  static targets = ["gallery", "loader", "empty", "scroll", "dateInput", "statusSelect", "reasonCodeInput", "refreshSignal", "loadButton"]
   static values = { url: String, accountId: Number, autoload: { type: Boolean, default: false } }
 
   connect() {
@@ -92,6 +92,22 @@ export default class extends Controller {
     this.refresh()
   }
 
+  changeReasonCode() {
+    if (!this.bootstrapped) {
+      this.bootstrap()
+      return
+    }
+    this.refresh()
+  }
+
+  changeStatus() {
+    if (!this.bootstrapped) {
+      this.bootstrap()
+      return
+    }
+    this.refresh()
+  }
+
   onScroll() {
     if (!this.bootstrapped) return
     if (!this.hasMore || this.loading) return
@@ -120,7 +136,9 @@ export default class extends Controller {
         this.emptyTarget.hidden = false
       }
 
-      const prepared = items.filter((item) => item && typeof item.id !== "undefined" && item.id !== null)
+      const prepared = items
+        .filter((item) => item && typeof item.id !== "undefined" && item.id !== null)
+        .map((item) => this.normalizeArchiveItem(item))
       prepared.forEach((item) => {
         this.itemsById.set(String(item.id), item)
       })
@@ -224,7 +242,26 @@ export default class extends Controller {
     url.searchParams.set("per_page", String(this.perPage))
     const on = this.hasDateInputTarget ? this.dateInputTarget.value : ""
     if (on) url.searchParams.set("on", on)
+    const status = this.normalizedStatusFilter()
+    if (status) url.searchParams.set("status", status)
+    const reasonCode = this.normalizedReasonCode()
+    if (reasonCode) url.searchParams.set("reason_code", reasonCode)
     return url.toString()
+  }
+
+  normalizedStatusFilter() {
+    if (!this.hasStatusSelectTarget) return ""
+    const value = String(this.statusSelectTarget.value || "").trim().toLowerCase()
+    const allowed = new Set(["not_requested", "queued", "running", "completed", "failed", "skipped"])
+    return allowed.has(value) ? value : ""
+  }
+
+  normalizedReasonCode() {
+    if (!this.hasReasonCodeInputTarget) return ""
+    return String(this.reasonCodeInputTarget.value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_.:-]/g, "")
   }
 
   cardHtml(item) {
@@ -234,6 +271,8 @@ export default class extends Controller {
     const videoStatic = this.videoIsStatic(item)
     const storyIdentifier = item.story_id ? `Story #${item.story_id}` : `Story Event #${eventId}`
     const postedAt = this.formatDate(item.story_posted_at || item.downloaded_at)
+    const mediaSize = this.formatBytes(item.media_bytes)
+    const dimensions = (item.media_width && item.media_height) ? `${item.media_width}x${item.media_height}` : "-"
     const previewHtml = isVideo ?
       `
         <div class="story-media-preview story-video-player-shell ${videoStatic ? "story-video-static-preview" : ""}">
@@ -295,7 +334,12 @@ export default class extends Controller {
 
         <div class="story-media-meta">
           <p class="story-card-title"><strong>${this.esc(storyIdentifier)}</strong></p>
-          <p class="meta">${this.esc(postedAt)}</p>
+          <p class="meta"><strong>Posted:</strong> ${this.esc(postedAt)}</p>
+          <div class="story-card-facts">
+            <span class="story-card-fact"><strong>Type</strong> ${this.esc(contentType || "-")}</span>
+            <span class="story-card-fact"><strong>Size</strong> ${this.esc(mediaSize)}</span>
+            <span class="story-card-fact"><strong>Dimensions</strong> ${this.esc(dimensions)}</span>
+          </div>
           ${this.buildLlmCommentSection(item)}
         </div>
       </article>
@@ -303,11 +347,12 @@ export default class extends Controller {
   }
 
   buildLlmCommentSection(item) {
+    const normalizedGeneratedComment = this.normalizeCommentText(item.llm_generated_comment)
     const state = this.resolveLlmCardState({
       status: item.llm_comment_status,
       workflowStatus: item.llm_workflow_status,
       hasComment: item.has_llm_comment,
-      generatedComment: item.llm_generated_comment,
+      generatedComment: normalizedGeneratedComment,
     })
     const manual = this.resolveManualSendState(item.manual_send_status)
     const manualMessage = this.manualSendMessageForItem(item, manual)
@@ -319,8 +364,16 @@ export default class extends Controller {
       item.llm_workflow_progress
     )
     const stageLastText = this.formatLastStageText(this.latestStageFromItem(item))
+    const commentPreview = normalizedGeneratedComment.length > 0 ? this.textPreview(normalizedGeneratedComment, 180) : ""
     const modelSummary = this.renderModelSummary(item, { compact: true })
-    const diagnostics = this.renderDecisionDiagnostics(item, { llmState: state, manualState: manual, compact: true })
+    const diagnostics = this.renderDecisionDiagnostics(item, {
+      llmState: state,
+      manualState: manual,
+      compact: true,
+      actionableOnly: true,
+      maxRows: 1,
+    })
+    const showManualState = manual.code !== "ready" || Boolean(manualMessage)
 
     return `
       <div class="llm-comment-section" data-event-id="${this.esc(String(item.id))}" data-llm-status="${this.esc(state.code)}">
@@ -328,16 +381,16 @@ export default class extends Controller {
           <span class="story-status-chip ${this.esc(state.chipClass)}" data-role="llm-status">${this.esc(state.label)}</span>
           <p class="meta llm-completion-row ${state.code === "completed" ? "" : "hidden"}" data-role="llm-completion">Completed ${this.esc(generatedAt)}</p>
         </div>
+        <p class="meta llm-comment-preview ${commentPreview ? "" : "hidden"}">${commentPreview ? this.esc(commentPreview) : ""}</p>
         <p class="meta llm-progress-compact ${progressText ? "" : "hidden"}" data-role="llm-progress-compact">${this.esc(progressText || "")}</p>
         <p class="meta llm-stage-last ${stageLastText ? "" : "hidden"}" data-role="llm-stage-last">${stageLastText ? `Latest: ${this.esc(stageLastText)}` : ""}</p>
         ${modelSummary}
         ${diagnostics}
-        <div class="manual-send-state" data-event-id="${this.esc(String(item.id))}" data-manual-status="${this.esc(manual.code)}">
+        <div class="manual-send-state ${showManualState ? "" : "hidden"}" data-event-id="${this.esc(String(item.id))}" data-manual-status="${this.esc(manual.code)}">
           <span class="story-status-chip ${this.esc(manual.chipClass)}" data-role="manual-send-status">${this.esc(manual.label)}</span>
           <p class="meta ${manualMessage ? "" : "hidden"}" data-role="manual-send-message">${this.esc(manualMessage || "")}</p>
         </div>
         <div class="llm-card-actions">
-          ${this.renderPrimarySendButton(item, manual, { className: "btn small secondary", baseLabel: "Send" })}
           <button
             type="button"
             class="btn small secondary generate-comment-btn ${state.inFlight ? "loading" : ""}"
@@ -349,13 +402,15 @@ export default class extends Controller {
           >
             ${this.esc(state.buttonLabel)}
           </button>
+          ${this.renderPrimarySendButton(item, manual, { className: "btn small secondary", baseLabel: "Send" })}
+          <a class="btn small secondary" href="${this.esc(item.media_download_url)}" target="_blank" rel="noreferrer">Download</a>
           <button
             type="button"
             class="btn small secondary"
             data-event-id="${this.esc(String(item.id))}"
             data-action="click->story-media-archive#openStoryModal"
           >
-            View Details
+            Open
           </button>
         </div>
       </div>
@@ -434,10 +489,19 @@ export default class extends Controller {
     if (Object.prototype.hasOwnProperty.call(patch, "llm_comment_last_error")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_manual_review_reason")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_generation_policy")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_generation_inputs")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_policy_diagnostics")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_reason_code")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_source")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_message")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_model_label")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_status")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_provider")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_model")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_run_id")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_resume_mode")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_required_steps")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_deferred_steps")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "manual_send_status")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "manual_send_reason")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "manual_send_message")) return true
@@ -454,11 +518,28 @@ export default class extends Controller {
     if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_step_rollup")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_timing")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_generation_policy")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_generation_inputs")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_policy_diagnostics")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_manual_review_reason")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_reason_code")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_source")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_failure_message")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "llm_model_label")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_status")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_provider")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_model")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_run_id")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_resume_mode")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_required_steps")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pipeline_deferred_steps")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_queue_name")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_queue_state")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_blocking_step")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pending_reason_code")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_pending_reason")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_schedule_service")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_schedule_run_at")) return true
+    if (Object.prototype.hasOwnProperty.call(patch, "llm_schedule_intentional")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "manual_send_status")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "manual_send_reason")) return true
     if (Object.prototype.hasOwnProperty.call(patch, "manual_send_message")) return true
@@ -490,6 +571,14 @@ export default class extends Controller {
       const currentPolicy = existing?.llm_generation_policy && typeof existing.llm_generation_policy === "object" ? existing.llm_generation_policy : {}
       merged.llm_generation_policy = { ...currentPolicy, ...patch.llm_generation_policy }
     }
+    if (patch?.llm_generation_inputs && typeof patch.llm_generation_inputs === "object") {
+      const currentInputs = existing?.llm_generation_inputs && typeof existing.llm_generation_inputs === "object" ? existing.llm_generation_inputs : {}
+      merged.llm_generation_inputs = { ...currentInputs, ...patch.llm_generation_inputs }
+    }
+    if (patch?.llm_policy_diagnostics && typeof patch.llm_policy_diagnostics === "object") {
+      const currentDiagnostics = existing?.llm_policy_diagnostics && typeof existing.llm_policy_diagnostics === "object" ? existing.llm_policy_diagnostics : {}
+      merged.llm_policy_diagnostics = { ...currentDiagnostics, ...patch.llm_policy_diagnostics }
+    }
     if (typeof patch?.llm_workflow_status === "string" && patch.llm_workflow_status.length > 0) {
       merged.llm_workflow_status = patch.llm_workflow_status
     }
@@ -499,7 +588,7 @@ export default class extends Controller {
     if (String(merged.llm_generated_comment || "").trim().length > 0) {
       merged.has_llm_comment = true
     }
-    return merged
+    return this.normalizeArchiveItem(merged)
   }
 
   mergeStageMaps(primary, secondary) {
@@ -515,6 +604,48 @@ export default class extends Controller {
     append(primary)
     append(secondary)
     return merged
+  }
+
+  normalizeArchiveItem(item) {
+    if (!item || typeof item !== "object") return item
+
+    const normalized = { ...item }
+    normalized.llm_generated_comment = this.normalizeCommentText(item.llm_generated_comment)
+    normalized.reply_comment = this.normalizeCommentText(item.reply_comment)
+    normalized.manual_send_last_comment = this.normalizeCommentText(item.manual_send_last_comment)
+    normalized.llm_ranked_candidates = this.normalizedCandidateRows(item.llm_ranked_candidates)
+    if (Array.isArray(item.llm_ranked_suggestions)) {
+      normalized.llm_ranked_suggestions = item.llm_ranked_suggestions
+        .map((value) => this.normalizeCommentText(value))
+        .filter((value) => value.length > 0)
+    }
+    if (normalized.llm_generated_comment.length > 0) {
+      normalized.has_llm_comment = true
+    }
+    return normalized
+  }
+
+  normalizedCandidateRows(rows) {
+    return Array.isArray(rows) ?
+      rows
+        .filter((row) => row && typeof row === "object")
+        .map((row) => {
+          const comment = this.normalizeCommentText(row.comment)
+          if (!comment) return null
+          return { ...row, comment }
+        })
+        .filter(Boolean) :
+      []
+  }
+
+  normalizedSuggestionRows(suggestions) {
+    return this.normalizedCandidateRows(suggestions).map((row) => {
+      const score = Number(row?.score)
+      return {
+        comment: row.comment,
+        scoreText: Number.isFinite(score) ? score.toFixed(2) : "",
+      }
+    })
   }
 
   refreshCardCommentSection(eventId) {
@@ -574,11 +705,12 @@ export default class extends Controller {
       ` :
       `<img src="${this.esc(item.media_url)}" alt="Story media" />`
 
+    const normalizedGeneratedComment = this.normalizeCommentText(item.llm_generated_comment)
     const llmState = this.resolveLlmCardState({
       status: item.llm_comment_status,
       workflowStatus: item.llm_workflow_status,
       hasComment: item.has_llm_comment,
-      generatedComment: item.llm_generated_comment,
+      generatedComment: normalizedGeneratedComment,
     })
     const manual = this.resolveManualSendState(item.manual_send_status)
     const manualMessage = this.manualSendMessageForItem(item, manual)
@@ -593,13 +725,15 @@ export default class extends Controller {
     const breakdown = item.llm_relevance_breakdown && typeof item.llm_relevance_breakdown === "object" ? item.llm_relevance_breakdown : {}
     const processingDetails = this.renderProcessingDetailsSection(item)
     const contextSummary = this.renderContextAndFaceSummary(item)
+    const generationInputsSummary = this.renderGenerationInputsSummary(item)
     const modelSummary = this.renderModelSummary(item, { compact: false })
     const decisionDetails = this.renderDecisionDiagnostics(item, { llmState, manualState: manual, compact: false })
-    const comment = item.llm_generated_comment ?
+    const analysisSummary = this.analysisStatusSummary(item, { includeReason: true, includeError: true })
+    const comment = normalizedGeneratedComment ?
       `
         <section class="story-modal-section">
           <h4>AI Suggestion</h4>
-          <p class="llm-generated-comment">${this.esc(item.llm_generated_comment)}</p>
+          <p class="llm-generated-comment">${this.esc(normalizedGeneratedComment)}</p>
           ${this.renderRelevanceBreakdown(breakdown)}
           <div class="llm-card-actions">
             ${this.renderPrimarySendButton(item, manual, { className: "btn secondary", baseLabel: "Send" })}
@@ -616,7 +750,7 @@ export default class extends Controller {
             </button>
             ${this.renderRegenerateAllButton(item, llmState)}
           </div>
-          ${this.renderSuggestionPreviewList(item, suggestions)}
+          ${this.renderSuggestionPreviewList(item, suggestions, manual)}
         </section>
       ` :
       `
@@ -635,7 +769,7 @@ export default class extends Controller {
           </button>
           ${this.renderRegenerateAllButton(item, llmState)}
           <p class="meta llm-progress-hint">${this.esc(llmHint)}</p>
-          ${this.renderSuggestionPreviewList(item, suggestions)}
+          ${this.renderSuggestionPreviewList(item, suggestions, manual)}
           ${llmFailed && llmError ? `<p class="meta error-text">Last error: ${this.esc(llmError)}</p>` : ""}
           ${llmSkipped && llmError ? `<p class="meta">Skipped: ${this.esc(llmError)}</p>` : ""}
         </section>
@@ -661,7 +795,7 @@ export default class extends Controller {
                 <p class="meta ${manualMessage ? "" : "hidden"}" data-role="manual-send-message">${this.esc(manualMessage || "")}</p>
               </div>
               <section class="story-modal-section">
-                <h4>Image Metadata</h4>
+                <h4>Media Metadata</h4>
                 <p class="meta"><strong>Type:</strong> ${this.esc(contentType || "-")}</p>
                 <p class="meta"><strong>Size:</strong> ${this.esc(mediaSize)}</p>
                 <p class="meta"><strong>Dimensions:</strong> ${this.esc(dimensions)}</p>
@@ -669,7 +803,9 @@ export default class extends Controller {
               ${videoStatic ? `<p class="meta"><strong>Playback mode:</strong> Static visual + optional audio/video playback.</p>` : ""}
               ${item.reply_comment ? `<p><strong>Reply sent:</strong> ${this.esc(item.reply_comment)}</p>` : ""}
               ${item.skipped && item.skip_reason ? `<p class="meta story-skipped-badge">Skipped: ${this.esc(item.skip_reason)}</p>` : ""}
+              ${analysisSummary ? `<p class="meta"><strong>Analysis:</strong> ${this.esc(analysisSummary)}</p>` : ""}
               ${contextSummary}
+              ${generationInputsSummary}
               ${modelSummary}
               ${decisionDetails}
               ${comment}
@@ -691,11 +827,11 @@ export default class extends Controller {
   }
 
   renderPrimarySendButton(item, manualState, { className = "btn secondary", baseLabel = "Send" } = {}) {
-    const commentText = String(item?.llm_generated_comment || "").trim()
+    const commentText = this.normalizeCommentText(item?.llm_generated_comment)
     if (!commentText) return ""
 
-    const sendDisabled = manualState.sending || manualState.code === "sent" || manualState.code === "expired_removed"
-    const sendLabel = manualState.sending ? "Sending..." : (manualState.code === "sent" ? "Sent" : (manualState.code === "expired_removed" ? "Expired" : baseLabel))
+    const sendDisabled = manualState.sending || manualState.code === "expired_removed"
+    const sendLabel = manualState.sending ? "Sending..." : (manualState.code === "expired_removed" ? "Expired" : (manualState.code === "sent" ? `${baseLabel} Again` : baseLabel))
 
     return `
       <button
@@ -762,7 +898,7 @@ export default class extends Controller {
     event.preventDefault()
     const button = event.currentTarget
     const eventId = button?.dataset?.eventId || button?.closest("[data-event-id]")?.dataset?.eventId
-    const text = String(button?.dataset?.commentText || "").trim()
+    const text = this.normalizeCommentText(button?.dataset?.commentText)
     if (!eventId || !text) return
 
     this.updateManualSendState(eventId, {
@@ -870,7 +1006,7 @@ export default class extends Controller {
     const reason = String(payload?.reason || "").trim()
     const error = String(payload?.error || "").trim()
     const updatedAt = payload?.updated_at || payload?.manual_send_updated_at || null
-    const commentText = payload?.comment_text || payload?.manual_send_last_comment || null
+    const commentText = this.normalizeCommentText(payload?.comment_text || payload?.manual_send_last_comment || null)
 
     const item = this.itemsById.get(key)
     if (item) {
@@ -890,6 +1026,7 @@ export default class extends Controller {
       .querySelectorAll(`.manual-send-state[data-event-id="${this.escapeSelector(key)}"]`)
       .forEach((section) => {
         section.dataset.manualStatus = state.code
+        section.classList.toggle("hidden", state.code === "ready" && !message)
 
         const statusEl = section.querySelector("[data-role='manual-send-status']")
         if (statusEl) {
@@ -970,11 +1107,6 @@ export default class extends Controller {
           button.textContent = "Sending..."
           return
         }
-        if (state.code === "sent") {
-          button.disabled = true
-          button.textContent = "Sent"
-          return
-        }
         if (state.code === "expired_removed") {
           button.disabled = true
           button.textContent = "Expired"
@@ -982,29 +1114,45 @@ export default class extends Controller {
         }
 
         button.disabled = false
-        button.textContent = baseLabel
+        button.textContent = state.code === "sent" ? `${baseLabel} Again` : baseLabel
       })
   }
 
-  renderSuggestionPreviewList(item, suggestions) {
-    const rows = Array.isArray(suggestions) ? suggestions : []
+  renderSuggestionPreviewList(item, suggestions, manualState = null) {
+    const rows = this.normalizedSuggestionRows(suggestions)
     if (rows.length === 0) return ""
+    const resolvedManual = manualState || this.resolveManualSendState(item?.manual_send_status)
+    const disableSend = resolvedManual.sending || resolvedManual.code === "expired_removed"
 
     const html = rows
       .slice(0, 5)
-      .map((row) => {
-        const comment = String(row?.comment || "").trim()
-        if (!comment) return ""
-        const score = Number(row?.score)
-        const scoreText = Number.isFinite(score) ? ` (${score.toFixed(2)})` : ""
-        return `<li>${this.esc(comment)}${this.esc(scoreText)}</li>`
+      .map((row, index) => {
+        const scoreText = row.scoreText ? ` (${row.scoreText})` : ""
+        const baseLabel = `Send #${index + 1}`
+        const label = resolvedManual.sending ? "Sending..." : (resolvedManual.code === "expired_removed" ? "Expired" : (resolvedManual.code === "sent" ? `${baseLabel} Again` : baseLabel))
+        return `
+          <li>
+            <span>${this.esc(row.comment)}${this.esc(scoreText)}</span>
+            <button
+              type="button"
+              class="btn small secondary manual-send-btn"
+              data-event-id="${this.esc(String(item.id))}"
+              data-comment-text="${this.esc(row.comment)}"
+              data-base-label="${this.esc(baseLabel)}"
+              data-action="click->story-media-archive#sendSuggestion"
+              ${disableSend ? "disabled" : ""}
+            >
+              ${this.esc(label)}
+            </button>
+          </li>
+        `
       })
       .join("")
 
     return `
       <div class="llm-suggestions-preview">
         <p class="meta"><strong>Top candidate comments:</strong></p>
-        <ul class="meta">${html}</ul>
+        <ul class="meta llm-suggestions-preview-list">${html}</ul>
       </div>
     `
   }
@@ -1064,15 +1212,16 @@ export default class extends Controller {
   renderPipelineTiming(item) {
     const stepRollup = item?.llm_pipeline_step_rollup && typeof item.llm_pipeline_step_rollup === "object" ? item.llm_pipeline_step_rollup : {}
     const timing = item?.llm_pipeline_timing && typeof item.llm_pipeline_timing === "object" ? item.llm_pipeline_timing : {}
+    const schedule = this.renderScheduleSummary(item)
 
-    const stepRows = this.pipelineStepKeys()
+    const stepRows = this.pipelineStepKeys(item)
       .map((key) => ({ key, row: stepRollup[key] }))
       .filter(({ row }) => row && typeof row === "object")
 
     const totalMs = Number(timing?.pipeline_duration_ms)
     const generationMs = Number(timing?.generation_duration_ms)
     const hasTiming = Number.isFinite(totalMs) || Number.isFinite(generationMs)
-    if (stepRows.length === 0 && !hasTiming) return ""
+    if (stepRows.length === 0 && !hasTiming && !schedule) return ""
 
     const summaryParts = []
     if (Number.isFinite(totalMs)) summaryParts.push(`Total ${this.formatDurationMs(totalMs)}`)
@@ -1099,6 +1248,7 @@ export default class extends Controller {
     return `
       <div class="llm-processing-block">
         <h4>Queue & Timing</h4>
+        ${schedule}
         ${summaryText ? `<p class="meta">${this.esc(summaryText)}</p>` : ""}
         <div class="table-scroll">
           <table class="table llm-timing-table">
@@ -1118,8 +1268,59 @@ export default class extends Controller {
     `
   }
 
-  pipelineStepKeys() {
-    return ["ocr_analysis", "vision_detection", "face_recognition", "metadata_extraction"]
+  renderScheduleSummary(item) {
+    const queueStateRaw = String(item?.llm_queue_state || item?.llm_comment_status || "").trim()
+    const queueState = queueStateRaw.toLowerCase()
+    const queueName = String(item?.llm_queue_name || "").trim()
+    const service = String(item?.llm_schedule_service || "").trim()
+    const reason = String(item?.llm_pending_reason || "").trim()
+    const reasonCode = String(item?.llm_pending_reason_code || "").trim()
+    const runAt = item?.llm_schedule_run_at || item?.llm_estimated_ready_at || null
+    const runAtAbsolute = this.formatDate(runAt)
+    const runAtRelative = this.formatRelativeDate(runAt)
+    const hasRunAt = runAtAbsolute !== "-"
+    const stateLabel = this.queueStateLabel(queueState)
+    const reasonText = reason || (reasonCode ? this.humanizeReasonCode(reasonCode) : "")
+    const reasonCodeText = reasonCode ? `<code>${this.esc(reasonCode)}</code>` : ""
+    const runText = hasRunAt ?
+      `Scheduled for ${this.esc(runAtAbsolute)} (${this.esc(runAtRelative)})` :
+      "Scheduled run time not available yet."
+
+    if (!queueState && !queueName && !service && !reasonText && !hasRunAt) return ""
+
+    return `
+      <div class="llm-schedule-summary">
+        <p class="meta"><strong>Queue state:</strong> ${this.esc(stateLabel)}</p>
+        ${queueName ? `<p class="meta"><strong>Queue:</strong> <code>${this.esc(queueName)}</code></p>` : ""}
+        <p class="meta"><strong>Run time:</strong> ${runText}</p>
+        ${service ? `<p class="meta"><strong>Scheduler:</strong> ${this.esc(service)}</p>` : ""}
+        ${reasonText ? `<p class="meta"><strong>Reason:</strong> ${this.esc(reasonText)} ${reasonCodeText}</p>` : ""}
+      </div>
+    `
+  }
+
+  pipelineStepKeys(item = null) {
+    const stepRollup = item?.llm_pipeline_step_rollup && typeof item.llm_pipeline_step_rollup === "object" ? item.llm_pipeline_step_rollup : {}
+    const fromRollup = Object.keys(stepRollup)
+    if (fromRollup.length > 0) {
+      return fromRollup.sort((a, b) => {
+        const diff = this.stageSortWeight(a) - this.stageSortWeight(b)
+        return diff === 0 ? String(a).localeCompare(String(b)) : diff
+      })
+    }
+
+    const configuredRequired = this.uniqueStrings(item?.llm_pipeline_required_steps)
+    const configuredDeferred = this.uniqueStrings(item?.llm_pipeline_deferred_steps)
+    const configured = [...configuredRequired, ...configuredDeferred]
+      .filter((value, index, rows) => rows.indexOf(value) === index)
+    if (configured.length > 0) {
+      return configured.sort((a, b) => {
+        const diff = this.stageSortWeight(a) - this.stageSortWeight(b)
+        return diff === 0 ? String(a).localeCompare(String(b)) : diff
+      })
+    }
+
+    return ["metadata_extraction", "face_recognition"]
   }
 
   renderStageList(stages) {
@@ -1190,8 +1391,6 @@ export default class extends Controller {
     const order = {
       queue_wait: 5,
       parallel_services: 10,
-      ocr_analysis: 20,
-      vision_detection: 24,
       face_recognition: 28,
       metadata_extraction: 32,
       context_matching: 40,
@@ -1217,12 +1416,22 @@ export default class extends Controller {
     return "Pending"
   }
 
+  queueStateLabel(state) {
+    const normalized = String(state || "").toLowerCase()
+    if (normalized === "scheduled") return "Scheduled"
+    if (normalized === "queued") return "Queued"
+    if (normalized === "processing" || normalized === "running") return "Processing"
+    if (normalized === "ready" || normalized === "completed") return "Ready"
+    if (normalized === "failed") return "Failed"
+    return normalized ? this.humanizeStageKey(normalized) : "Queued"
+  }
+
   phaseStates(entries) {
     const stateByKey = new Map()
     entries.forEach((entry) => stateByKey.set(String(entry.key), String(entry.state || "pending").toLowerCase()))
 
     const phases = [
-      ["analysis", ["parallel_services", "ocr_analysis", "vision_detection", "metadata_extraction"]],
+      ["analysis", ["parallel_services", "metadata_extraction"]],
       ["context", ["context_matching", "prompt_construction"]],
       ["generation", ["llm_generation", "relevance_scoring"]],
       ["eligibility", ["engagement_eligibility"]],
@@ -1266,17 +1475,117 @@ export default class extends Controller {
     `
   }
 
-  renderModelSummary(item, { compact = true } = {}) {
-    const provider = String(item?.llm_comment_provider || "").trim()
-    const model = String(item?.llm_comment_model || "").trim()
-    const explicitLabel = String(item?.llm_model_label || "").trim()
-    const contentType = String(item?.media_content_type || "").trim() || "unknown"
-    const modelLabel = explicitLabel || (provider && model ? `${provider} / ${model}` : (provider || model || "Pending"))
-    const title = compact ? "Model" : "Comment model"
-    return `<p class="meta llm-model-row"><strong>${this.esc(title)}:</strong> ${this.esc(modelLabel)} <span class="llm-model-media">(${this.esc(contentType)})</span></p>`
+  renderGenerationInputsSummary(item) {
+    const inputs = item?.llm_generation_inputs && typeof item.llm_generation_inputs === "object" ? item.llm_generation_inputs : {}
+    const diagnostics = item?.llm_policy_diagnostics && typeof item.llm_policy_diagnostics === "object" ? item.llm_policy_diagnostics : {}
+    const topics = this.uniqueStrings(item?.llm_input_topics || inputs?.selected_topics).slice(0, 8)
+    const profileTopics = this.uniqueStrings(item?.llm_input_profile_topics || inputs?.profile_topics).slice(0, 8)
+    const anchors = this.uniqueStrings(item?.llm_input_visual_anchors || inputs?.visual_anchors).slice(0, 8)
+    const rejectedReasonCounts = item?.llm_rejected_reason_counts && typeof item.llm_rejected_reason_counts === "object" ?
+      item.llm_rejected_reason_counts :
+      (diagnostics?.rejected_reason_counts && typeof diagnostics.rejected_reason_counts === "object" ? diagnostics.rejected_reason_counts : {})
+    const reasonSummary = Object.entries(rejectedReasonCounts)
+      .filter(([reason]) => String(reason || "").trim().length > 0)
+      .slice(0, 5)
+      .map(([reason, count]) => `${this.humanizeReasonCode(reason)} (${Number(count) || 0})`)
+      .join(", ")
+    const rejectedTotal = Object.values(rejectedReasonCounts)
+      .map((count) => Number(count) || 0)
+      .reduce((sum, value) => sum + value, 0)
+    const contentMode = String(item?.llm_input_content_mode || inputs?.content_mode || "").trim()
+    const signalScoreRaw = item?.llm_input_signal_score ?? inputs?.signal_score
+    const signalScore = Number(signalScoreRaw)
+    if (topics.length === 0 && profileTopics.length === 0 && anchors.length === 0 && !reasonSummary && !contentMode && !Number.isFinite(signalScore) && rejectedTotal <= 0) {
+      return ""
+    }
+
+    return `
+      <section class="story-modal-section">
+        <h4>Generation Inputs</h4>
+        ${topics.length > 0 ? `<p class="meta"><strong>Selected topics:</strong> ${this.esc(topics.join(", "))}</p>` : ""}
+        ${profileTopics.length > 0 ? `<p class="meta"><strong>Profile context:</strong> ${this.esc(profileTopics.join(", "))}</p>` : ""}
+        ${anchors.length > 0 ? `<p class="meta"><strong>Visual anchors:</strong> ${this.esc(anchors.join(", "))}</p>` : ""}
+        ${contentMode ? `<p class="meta"><strong>Detected mode:</strong> ${this.esc(contentMode)}</p>` : ""}
+        ${Number.isFinite(signalScore) ? `<p class="meta"><strong>Signal score:</strong> ${this.esc(String(signalScore))}</p>` : ""}
+        ${rejectedTotal > 0 ? `<p class="meta"><strong>Filtered candidates:</strong> ${this.esc(String(rejectedTotal))}</p>` : ""}
+        ${reasonSummary ? `<p class="meta"><strong>Filtered candidate reasons:</strong> ${this.esc(reasonSummary)}</p>` : ""}
+      </section>
+    `
   }
 
-  renderDecisionDiagnostics(item, { llmState = null, manualState = null, compact = true } = {}) {
+  uniqueStrings(values) {
+    return Array(values)
+      .map((value) => String(value || "").trim())
+      .filter((value) => value.length > 0)
+      .filter((value, index, rows) => rows.indexOf(value) === index)
+  }
+
+  renderModelSummary(item, { compact = true } = {}) {
+    const pipeline = this.pipelineSummary(item)
+    const required = pipeline.requiredSteps.map((value) => this.humanizeStageKey(value)).join(", ")
+    const deferred = pipeline.deferredSteps.map((value) => this.humanizeStageKey(value)).join(", ")
+    const statusText = this.pipelineStatusLabel(pipeline.status)
+    const modelLabel = pipeline.modelLabel || "Pending local model"
+
+    if (compact) {
+      return `
+        <div class="llm-model-stack">
+          <p class="meta llm-model-row"><strong>Pipeline:</strong> ${this.esc(statusText)}${required ? ` | Required: ${this.esc(required)}` : ""}</p>
+          <p class="meta llm-model-row"><strong>Model:</strong> ${this.esc(modelLabel)}</p>
+        </div>
+      `
+    }
+
+    return `
+      <section class="story-modal-section">
+        <h4>Pipeline Overview</h4>
+        <p class="meta llm-model-row"><strong>Status:</strong> ${this.esc(statusText)}</p>
+        ${required ? `<p class="meta llm-model-row"><strong>Required stages:</strong> ${this.esc(required)}</p>` : ""}
+        ${deferred ? `<p class="meta llm-model-row"><strong>Deferred stages:</strong> ${this.esc(deferred)}</p>` : ""}
+        ${pipeline.resumeMode ? `<p class="meta llm-model-row"><strong>Run mode:</strong> ${this.esc(this.humanizeReasonCode(pipeline.resumeMode))}</p>` : ""}
+        ${pipeline.runId ? `<p class="meta llm-model-row"><strong>Run ID:</strong> <code>${this.esc(pipeline.runId)}</code></p>` : ""}
+        <p class="meta llm-model-row"><strong>Model:</strong> ${this.esc(modelLabel)}</p>
+      </section>
+    `
+  }
+
+  pipelineSummary(item) {
+    const explicitLabel = String(item?.llm_model_label || "").trim()
+    const provider = String(item?.llm_pipeline_provider || item?.llm_comment_provider || "").trim()
+    const model = String(item?.llm_pipeline_model || item?.llm_comment_model || "").trim()
+    const joinedModel = provider && model ? `${provider} / ${model}` : (provider || model || "")
+    const modelLabel = explicitLabel && explicitLabel !== "-" ? explicitLabel : joinedModel
+    const deferredSet = this.pipelineDeferredStepSet(item)
+    const requiredSteps = this.pipelineStepKeys(item).filter((key) => !deferredSet.has(key))
+    return {
+      status: String(item?.llm_pipeline_status || item?.llm_workflow_status || item?.llm_comment_status || "").toLowerCase(),
+      runId: String(item?.llm_pipeline_run_id || "").trim(),
+      resumeMode: String(item?.llm_pipeline_resume_mode || "").trim(),
+      requiredSteps,
+      deferredSteps: Array.from(deferredSet),
+      modelLabel: modelLabel || "",
+    }
+  }
+
+  pipelineDeferredStepSet(item) {
+    const fromPayload = this.uniqueStrings(item?.llm_pipeline_deferred_steps)
+    const out = new Set(fromPayload)
+    if (out.size > 0) return out
+    return new Set(["face_recognition"])
+  }
+
+  pipelineStatusLabel(status) {
+    const normalized = String(status || "").toLowerCase()
+    if (normalized === "running" || normalized === "processing" || normalized === "started") return "Running"
+    if (normalized === "queued" || normalized === "scheduled") return "Queued"
+    if (normalized === "completed" || normalized === "ready") return "Completed"
+    if (normalized === "failed" || normalized === "error") return "Failed"
+    if (normalized === "skipped") return "Skipped"
+    if (!normalized || normalized === "not_requested") return "Ready"
+    return this.humanizeStageKey(normalized)
+  }
+
+  renderDecisionDiagnostics(item, { llmState = null, manualState = null, compact = true, actionableOnly = false, maxRows = 0 } = {}) {
     const resolvedLlmState = llmState || this.resolveLlmCardState({
       status: item?.llm_comment_status,
       workflowStatus: item?.llm_workflow_status,
@@ -1288,9 +1597,12 @@ export default class extends Controller {
       this.llmDecisionReason(item, resolvedLlmState),
       this.manualDecisionReason(item, resolvedManualState),
     ].filter(Boolean)
-    if (rows.length === 0) return ""
+    const filteredRows = rows
+      .filter((row) => !actionableOnly || row.levelClass === "warning" || row.levelClass === "failed")
+      .slice(0, Number(maxRows) > 0 ? Number(maxRows) : undefined)
+    if (filteredRows.length === 0) return ""
 
-    const notes = rows.map((row) => {
+    const notes = filteredRows.map((row) => {
       const codeLabel = row?.reasonCode ? this.humanizeReasonCode(row.reasonCode) : ""
       const sourceLabel = row?.source ? this.humanizeReasonCode(row.source) : ""
       const metaParts = []
@@ -1316,6 +1628,29 @@ export default class extends Controller {
     `
   }
 
+  analysisStatusSummary(item, { includeReason = true, includeError = true } = {}) {
+    const status = String(item?.analysis_status || "").trim().toLowerCase()
+    const label = this.analysisStatusLabel(status)
+    if (!label) return ""
+
+    const reason = String(item?.analysis_failure_reason || item?.analysis_status_reason || "").trim()
+    const error = String(item?.analysis_error_message || "").trim()
+    const parts = [label]
+    if (includeReason && reason) parts.push(this.humanizeReasonCode(reason))
+    if (includeError && error) parts.push(error)
+    return parts.join(" | ")
+  }
+
+  analysisStatusLabel(status) {
+    const normalized = String(status || "").toLowerCase()
+    if (!normalized) return ""
+    if (normalized === "completed") return "Completed"
+    if (normalized === "queued") return "Queued"
+    if (normalized === "started" || normalized === "running" || normalized === "processing") return "In progress"
+    if (normalized === "failed") return "Failed"
+    return this.humanizeStageKey(normalized)
+  }
+
   llmDecisionReason(item, llmState) {
     const stateCode = String(llmState?.code || "").toLowerCase()
     const manualReviewReason = String(item?.llm_manual_review_reason || "").trim()
@@ -1337,6 +1672,15 @@ export default class extends Controller {
     const autoPostAllowed = this.resolveAutoPostAllowed(item)
     const mediaUnsupported = !this.supportedStoryMediaType(item?.media_content_type)
     const reasonCode = reasonCodeRaw || (mediaUnsupported ? "unsupported_media_type" : "")
+    const normalizedReasonCode = reasonCode.toLowerCase()
+    const normalizedSource = sourceRaw.toLowerCase()
+    const contextUnavailable = (
+      normalizedSource === "unavailable" ||
+      normalizedReasonCode === "local_microservice_disabled" ||
+      normalizedReasonCode === "local_microservice_backoff_active" ||
+      normalizedReasonCode === "local_microservice_unavailable" ||
+      normalizedReasonCode === "local_ai_extraction_empty"
+    )
 
     if (stateCode === "completed" && (manualReviewReason || autoPostAllowed === false)) {
       return {
@@ -1366,6 +1710,17 @@ export default class extends Controller {
         message: failureMessage || policyReason || "The generation pipeline failed before producing a comment.",
         reasonCode: reasonCode || "generation_failed",
         source: sourceRaw || "llm_pipeline",
+        rawCode: reasonCodeRaw,
+        levelClass: "failed",
+      }
+    }
+
+    if (contextUnavailable) {
+      return {
+        title: "AI context unavailable",
+        message: failureMessage || "Story intelligence is unavailable, so comment generation could not proceed.",
+        reasonCode: reasonCode || "local_story_intelligence_unavailable",
+        source: sourceRaw || "unavailable",
         rawCode: reasonCodeRaw,
         levelClass: "failed",
       }
@@ -1479,6 +1834,9 @@ export default class extends Controller {
     const labels = {
       vision_model_error: "Vision model error",
       local_ai_extraction_empty: "No usable AI extraction",
+      local_microservice_disabled: "Local story intelligence service is disabled",
+      local_microservice_backoff_active: "Local story intelligence is in backoff",
+      local_microservice_unavailable: "Local story intelligence service unavailable",
       local_story_intelligence_blank: "No local story intelligence",
       identity_likelihood_low: "Low ownership confidence",
       insufficient_verified_signals: "Insufficient verified signals",
@@ -1502,6 +1860,17 @@ export default class extends Controller {
       validated_story_policy: "Validated story policy",
       media_validation: "Media validation",
       profile_comment_preparation: "Profile context preparation",
+      queued_llm_generation: "Queued for LLM generation",
+      running_llm_generation: "LLM generation in progress",
+      pipeline_finalizing: "Waiting for pipeline finalizer",
+      resource_guard_delay: "Deferred by local resource guard",
+      timeout_resume_delay: "Queued after timeout resume",
+      dependency_wait_poll: "Dependency polling wait",
+      retry_backoff: "Retry backoff delay",
+      account_batch_continuation: "Batch continuation delay",
+      account_batch_stagger: "Batch stagger delay",
+      scheduled_delay: "Scheduled delay",
+      unknown_scheduled_delay: "Unclassified scheduled delay",
       unavailable: "Upstream context unavailable",
       unknown: "Unknown",
     }
@@ -1713,10 +2082,64 @@ export default class extends Controller {
     }
   }
 
+  textPreview(value, max = 160) {
+    const text = String(value || "").trim()
+    if (!text) return ""
+    if (!Number.isFinite(Number(max)) || Number(max) <= 0) return text
+    if (text.length <= Number(max)) return text
+    return `${text.slice(0, Number(max)).trim()}...`
+  }
+
+  normalizeCommentText(value) {
+    let text = String(value || "").trim()
+    if (!text) return ""
+
+    const quotePairs = [
+      ['"', '"'],
+      ["'", "'"],
+      ["“", "”"],
+      ["‘", "’"],
+    ]
+
+    quotePairs.forEach(([start, ending]) => {
+      if (text.length <= (start.length + ending.length)) return
+      if (text.startsWith(start) && text.endsWith(ending)) {
+        text = text.slice(start.length, text.length - ending.length).trim()
+      }
+    })
+
+    text = text.replace(/^[\"'“”‘’]+/, "").replace(/[\"'“”‘’]+$/, "").trim()
+    return text
+  }
+
   formatDate(value) {
     if (!value) return "-"
     const date = new Date(value)
     return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString()
+  }
+
+  formatRelativeDate(value) {
+    if (!value) return "-"
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return "-"
+
+    const diffSeconds = Math.round((date.getTime() - Date.now()) / 1000)
+    const absSeconds = Math.abs(diffSeconds)
+    if (absSeconds <= 5) return "now"
+
+    const unit =
+      absSeconds < 60 ? { value: diffSeconds, unit: "second" } :
+      absSeconds < 3600 ? { value: Math.round(diffSeconds / 60), unit: "minute" } :
+      absSeconds < 86_400 ? { value: Math.round(diffSeconds / 3600), unit: "hour" } :
+      { value: Math.round(diffSeconds / 86_400), unit: "day" }
+
+    if (typeof Intl !== "undefined" && typeof Intl.RelativeTimeFormat === "function") {
+      const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" })
+      return formatter.format(unit.value, unit.unit)
+    }
+
+    if (unit.value > 0) return `in ${Math.abs(unit.value)} ${unit.unit}${Math.abs(unit.value) === 1 ? "" : "s"}`
+    return `${Math.abs(unit.value)} ${unit.unit}${Math.abs(unit.value) === 1 ? "" : "s"} ago`
   }
 
   coerceBoolean(value) {

@@ -33,6 +33,7 @@ module Instagram
               queued_actions = 0
               skipped_posts = 0
               skipped_reasons = Hash.new(0)
+              item_outcomes = []
               processed_shortcodes = Set.new
 
               items.each do |it|
@@ -46,6 +47,11 @@ module Instagram
                 metadata = it[:metadata].is_a?(Hash) ? it[:metadata] : {}
                 round_num = metadata["capture_page"].to_i
                 round_num = 1 if round_num <= 0
+                outcome_seed = {
+                  shortcode: shortcode,
+                  username: normalize_username(it[:author_username].to_s),
+                  capture_page: round_num
+                }
 
                 profile_resolution = resolve_feed_profile_for_action(item: it)
                 profile = profile_resolution[:profile]
@@ -71,6 +77,10 @@ module Instagram
                 if skip_reason.present?
                   skipped_posts += 1
                   skipped_reasons[skip_reason] += 1
+                  item_outcomes << outcome_seed.merge(
+                    status: "rejected",
+                    reason: skip_reason
+                  )
                   next
                 end
 
@@ -91,10 +101,26 @@ module Instagram
 
                 enqueue_result = enqueue_workspace_processing_for_feed_post!(profile: profile, post: profile_post)
                 queued_actions += 1 if ActiveModel::Type::Boolean.new.cast(enqueue_result[:enqueued])
+                media_downloaded =
+                  ActiveModel::Type::Boolean.new.cast(enqueue_result[:download_enqueued]) ||
+                    ActiveModel::Type::Boolean.new.cast(enqueue_result[:media_attached])
+                item_outcomes << outcome_seed.merge(
+                  status: "processed",
+                  username: profile.username.to_s.presence || outcome_seed[:username],
+                  media_downloaded: media_downloaded,
+                  moved_to_action_queue: ActiveModel::Type::Boolean.new.cast(enqueue_result[:enqueued]),
+                  post_created: ActiveModel::Type::Boolean.new.cast(profile_post_result[:created]),
+                  post_updated: ActiveModel::Type::Boolean.new.cast(profile_post_result[:updated])
+                )
                 break if new_posts >= max_new_i
               rescue StandardError => e
                 skipped_posts += 1
                 skipped_reasons["item_processing_error"] += 1
+                item_outcomes << outcome_seed.merge(
+                  status: "rejected",
+                  reason: "item_processing_error",
+                  note: e.message.to_s.byteslice(0, 180)
+                )
                 Ops::StructuredLogger.warn(
                   event: "feed_capture_home.item_failed",
                   payload: {
@@ -108,6 +134,8 @@ module Instagram
                 next
               end
 
+              capture_details = feed_capture_details(item_outcomes: item_outcomes)
+
               result = {
                 seen_posts: seen,
                 new_posts: new_posts,
@@ -115,6 +143,12 @@ module Instagram
                 queued_actions: queued_actions,
                 skipped_posts: skipped_posts,
                 skipped_reasons: skipped_reasons.sort.to_h,
+                downloaded_media_count: capture_details[:downloaded_media_count].to_i,
+                moved_to_action_queue_count: capture_details[:moved_to_action_queue_count].to_i,
+                rejected_items_count: capture_details[:rejected_items_count].to_i,
+                downloaded_media_items: capture_details[:downloaded_media_items],
+                queued_action_items: capture_details[:queued_action_items],
+                rejected_items: capture_details[:rejected_items],
                 fetched_items: items.length,
                 fetch_source: retrieval[:source].to_s.presence || "unknown",
                 fetch_pages: retrieval[:pages_fetched].to_i,
@@ -540,6 +574,8 @@ module Instagram
       def enqueue_workspace_processing_for_feed_post!(profile:, post:)
         return { enqueued: false, reason: "post_missing" } unless profile && post
 
+        media_attached = ActiveModel::Type::Boolean.new.cast(post.media.attached?)
+        download_enqueued = false
         if post.source_media_url.to_s.present? || post.media.attached?
           DownloadInstagramProfilePostMediaJob.perform_later(
             instagram_account_id: @account.id,
@@ -547,21 +583,69 @@ module Instagram
             instagram_profile_post_id: post.id,
             trigger_analysis: false
           )
+          download_enqueued = true
         end
 
-        WorkspaceProcessActionsTodoPostJob.enqueue_if_needed!(
+        queue_result = WorkspaceProcessActionsTodoPostJob.enqueue_if_needed!(
           account: @account,
           profile: profile,
           post: post,
           requested_by: "feed_capture_home"
         )
+        normalized_queue_result = queue_result.is_a?(Hash) ? queue_result : { enqueued: ActiveModel::Type::Boolean.new.cast(queue_result) }
+        normalized_queue_result.merge(
+          enqueued: ActiveModel::Type::Boolean.new.cast(normalized_queue_result[:enqueued]),
+          download_enqueued: download_enqueued,
+          media_attached: media_attached
+        )
       rescue StandardError => e
         {
           enqueued: false,
+          download_enqueued: false,
+          media_attached: ActiveModel::Type::Boolean.new.cast(post&.media&.attached?),
           reason: "workspace_enqueue_failed",
           error_class: e.class.name,
           error_message: e.message.to_s
         }
+      end
+
+      def feed_capture_details(item_outcomes:, limit: 12)
+        rows = Array(item_outcomes).select { |row| row.is_a?(Hash) }
+        cap = limit.to_i.clamp(4, 30)
+        downloaded_rows = rows.select { |row| ActiveModel::Type::Boolean.new.cast(row[:media_downloaded]) }
+        queued_rows = rows.select { |row| ActiveModel::Type::Boolean.new.cast(row[:moved_to_action_queue]) }
+        rejected_rows = rows.select { |row| row[:status].to_s == "rejected" }
+
+        {
+          downloaded_media_count: downloaded_rows.length,
+          moved_to_action_queue_count: queued_rows.length,
+          rejected_items_count: rejected_rows.length,
+          downloaded_media_items: feed_capture_detail_rows(rows: downloaded_rows, limit: cap),
+          queued_action_items: feed_capture_detail_rows(rows: queued_rows, limit: cap),
+          rejected_items: feed_capture_detail_rows(rows: rejected_rows, limit: cap)
+        }
+      rescue StandardError
+        {
+          downloaded_media_count: 0,
+          moved_to_action_queue_count: 0,
+          rejected_items_count: 0,
+          downloaded_media_items: [],
+          queued_action_items: [],
+          rejected_items: []
+        }
+      end
+
+      def feed_capture_detail_rows(rows:, limit:)
+        Array(rows).first(limit.to_i).map do |row|
+          {
+            shortcode: row[:shortcode].to_s.presence,
+            username: row[:username].to_s.presence,
+            reason: row[:reason].to_s.presence,
+            note: row[:note].to_s.presence
+          }.compact
+        end
+      rescue StandardError
+        []
       end
     end
   end

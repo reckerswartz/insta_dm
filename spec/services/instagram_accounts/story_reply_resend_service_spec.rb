@@ -188,6 +188,36 @@ RSpec.describe InstagramAccounts::StoryReplyResendService do
     expect(result.payload[:status]).to eq("sent")
   end
 
+  it "strips wrapping quotes and trailing punctuation before sending manual comment text" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile, event = build_event(
+      account: account,
+      metadata: { "story_id" => "77889900", "reply_comment" => "fallback" }
+    )
+    client = instance_double(Instagram::Client)
+    allow(client).to receive(:story_reply_eligibility).and_return(
+      { eligible: true, status: "eligible", reason_code: nil }
+    )
+    expect(client).to receive(:send_story_reply_via_api!).with(
+      story_id: "77889900",
+      story_username: profile.username.to_s,
+      comment_text: "Manual text"
+    ).and_return(
+      { posted: true, method: "api", api_thread_id: "thread_4", api_item_id: "item_4" }
+    )
+    allow(ActionCable.server).to receive(:broadcast)
+
+    result = described_class.new(
+      account: account,
+      event_id: event.id,
+      comment_text: "\"Manual text\",",
+      instagram_client: client
+    ).call
+
+    expect(result.status).to eq(:ok)
+    expect(result.payload[:status]).to eq("sent")
+  end
+
   it "does not resend when the same comment was already posted" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile, event = build_event(

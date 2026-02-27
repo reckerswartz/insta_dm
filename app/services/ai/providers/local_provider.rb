@@ -7,13 +7,6 @@ module Ai
         ENV.fetch("LOCAL_PROVIDER_LIGHTWEIGHT_MODE", "true")
       )
       MIN_LOCAL_SIGNALS_FOR_VISION_SKIP = ENV.fetch("LOCAL_PROVIDER_MIN_LOCAL_SIGNALS_FOR_VISION_SKIP", "3").to_i.clamp(1, 24)
-      ENABLE_LOCAL_MEDIA_PREANALYSIS = ActiveModel::Type::Boolean.new.cast(
-        if ENV.key?("LOCAL_PROVIDER_ENABLE_LOCAL_MEDIA_PREANALYSIS")
-          ENV.fetch("LOCAL_PROVIDER_ENABLE_LOCAL_MEDIA_PREANALYSIS", "false")
-        else
-          ENV.fetch("LOCAL_PROVIDER_ENABLE_LEGACY_MEDIA_ANALYSIS", "false")
-        end
-      )
 
       def initialize(
         setting: nil,
@@ -48,23 +41,16 @@ module Ai
       end
 
       def test_key!
-        # Test both microservice and Ollama
-        microservice_result = client.test_connection!
         ollama_result = ollama_client.test_connection!
-        
-        if microservice_result[:ok] && ollama_result[:ok]
-          { 
-            ok: true, 
+
+        if ollama_result[:ok]
+          {
+            ok: true,
             message: "Local AI services are healthy",
-            microservice: microservice_result[:services],
             ollama: ollama_result[:models]
           }
         else
-          errors = []
-          errors << "Microservice: #{microservice_result[:message]}" unless microservice_result[:ok]
-          errors << "Ollama: #{ollama_result[:message]}" unless ollama_result[:ok]
-          
-          { ok: false, message: errors.join(" | ") }
+          { ok: false, message: "Ollama: #{ollama_result[:message]}" }
         end
       rescue StandardError => e
         { ok: false, message: e.message.to_s }
@@ -76,16 +62,11 @@ module Ai
         Array(media).each do |item|
           next unless item.is_a?(Hash)
 
-          if item[:url].to_s.start_with?("http://", "https://")
-            vision = client.analyze_image_uri!(item[:url], features: image_features)
-            image_labels.concat(extract_image_labels(vision))
-          elsif item[:bytes].present?
-            vision = client.analyze_image_bytes!(item[:bytes], features: image_features)
-            image_labels.concat(extract_image_labels(vision))
-          end
+          image_labels.concat(profile_labels_from_media_item(item))
         rescue StandardError => e
           image_labels << "image_analysis_error:#{e.class.name}"
         end
+        image_labels = image_labels.map(&:to_s).map(&:strip).reject(&:blank?).uniq
 
         bio = profile_payload[:bio].to_s
         recent_messages = Array(profile_payload[:recent_outgoing_messages]).map { |m| m[:body].to_s }.join(" ")
@@ -468,12 +449,7 @@ module Ai
       end
 
       def should_run_local_media_preanalysis?(options:)
-        opts = options.is_a?(Hash) ? options : {}
-        return true if ActiveModel::Type::Boolean.new.cast(opts[:include_faces] || opts["include_faces"])
-        return true if ActiveModel::Type::Boolean.new.cast(opts[:include_ocr] || opts["include_ocr"])
-        return true if LIGHTWEIGHT_VISION_MODE && ActiveModel::Type::Boolean.new.cast(opts[:visual_only] || opts["visual_only"])
-
-        ENABLE_LOCAL_MEDIA_PREANALYSIS
+        false
       end
 
       def classify_video_processing(media)
@@ -550,6 +526,32 @@ module Ai
         ann = video_response.dig("response", "annotationResults", 0)
         arr = Array(ann&.dig("segmentLabelAnnotations")) + Array(ann&.dig("shotLabelAnnotations"))
         arr.map { |item| item.dig("entity", "description").to_s.downcase.strip }.reject(&:blank?).uniq
+      end
+
+      def profile_labels_from_media_item(item)
+        bytes = item[:bytes].to_s.b
+        return [] if bytes.blank?
+        return [] unless vision_understanding_service.respond_to?(:enabled?) && vision_understanding_service.enabled?
+
+        result = vision_understanding_service.summarize(
+          image_bytes_list: [ bytes ],
+          candidate_topics: [],
+          media_type: "image"
+        )
+        profile_labels_from_vision_result(result)
+      rescue StandardError => e
+        [ "image_analysis_error:#{e.class.name}" ]
+      end
+
+      def profile_labels_from_vision_result(result)
+        payload = result.is_a?(Hash) ? result : {}
+        topics = payload[:topics] || payload["topics"]
+        objects = payload[:objects] || payload["objects"]
+        summary = payload[:summary] || payload["summary"]
+
+        labels = merge_visual_labels(topics, objects)
+        labels.concat(summary.to_s.downcase.scan(/[a-z0-9]+/).first(12))
+        labels.map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(20)
       end
 
       def infer_author_type(tags)

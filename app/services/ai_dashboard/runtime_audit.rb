@@ -37,14 +37,6 @@ module AiDashboard
         port: 11434,
         process_pattern: "ollama serve",
         impact: "Primary local LLM inference engine."
-      },
-      {
-        key: "local_microservice",
-        service_name: "Local AI Microservice",
-        required: false,
-        port: 8000,
-        process_pattern: "ai_microservice/main.py",
-        impact: "Optional CV/OCR/Whisper endpoints used by selected steps."
       }
     ].freeze
 
@@ -58,7 +50,7 @@ module AiDashboard
       metrics_by_key = queue_metrics_by_key
       queue_eta_by_queue = queue_estimates_by_queue_name
       architecture = architecture_snapshot
-      host_services = build_host_services(architecture: architecture)
+      host_services = build_host_services
       concurrent_services = build_concurrent_services(
         metrics_by_key: metrics_by_key,
         queue_eta_by_queue: queue_eta_by_queue
@@ -132,22 +124,14 @@ module AiDashboard
       end
     end
 
-    def build_host_services(architecture:)
-      microservice_enabled = ActiveModel::Type::Boolean.new.cast(architecture[:microservice_enabled])
-      microservice_required = ActiveModel::Type::Boolean.new.cast(architecture[:microservice_required])
-
+    def build_host_services
       HOST_SERVICE_ROWS.map do |row|
         port = row[:port]
         process_pattern = row[:process_pattern].to_s
         process_count = process_pattern.present? ? process_count_for(pattern: process_pattern) : 0
         port_open = port.present? ? port_open?(port: port.to_i) : nil
         active = ActiveModel::Type::Boolean.new.cast(port_open) || process_count.positive?
-        required =
-          if row[:key].to_s == "local_microservice"
-            microservice_enabled || microservice_required
-          else
-            ActiveModel::Type::Boolean.new.cast(row[:required])
-          end
+        required = ActiveModel::Type::Boolean.new.cast(row[:required])
 
         {
           service_key: row[:key].to_s,
@@ -168,7 +152,6 @@ module AiDashboard
 
     def architecture_snapshot
       details = @service_status[:details].is_a?(Hash) ? @service_status[:details].deep_symbolize_keys : {}
-      microservice = details[:microservice].is_a?(Hash) ? details[:microservice] : {}
       ollama = details[:ollama].is_a?(Hash) ? details[:ollama] : {}
       policy = details[:policy].is_a?(Hash) ? details[:policy] : {}
 
@@ -183,10 +166,7 @@ module AiDashboard
 
       {
         stack_status: @service_status[:status].to_s,
-        microservice_ok: ActiveModel::Type::Boolean.new.cast(extract_ok(microservice)),
-        microservice_enabled: ActiveModel::Type::Boolean.new.cast(policy[:microservice_enabled]),
-        microservice_required: ActiveModel::Type::Boolean.new.cast(policy[:microservice_required]),
-        microservice_services: normalize_service_map(microservice[:services]),
+        execution_mode: policy[:execution_mode].to_s.presence || "ollama_only",
         ollama_ok: ActiveModel::Type::Boolean.new.cast(extract_ok(ollama)),
         ollama_available_models: available_models,
         configured_models: configured_models,
@@ -206,7 +186,7 @@ module AiDashboard
       rows << secondary_face_queue_candidate(metrics_by_key: metrics_by_key)
       rows << deprecated_queue_config_candidate
       rows << unused_models_candidate(architecture: architecture)
-      rows.concat(host_service_candidates(host_services: host_services, architecture: architecture))
+      rows.concat(host_service_candidates(host_services: host_services))
       rows.concat(idle_lane_candidates(concurrent_services: concurrent_services))
       rows.concat(high_failure_lane_candidates(concurrent_services: concurrent_services))
       rows.compact
@@ -276,29 +256,8 @@ module AiDashboard
       }
     end
 
-    def host_service_candidates(host_services:, architecture:)
+    def host_service_candidates(host_services:)
       rows = []
-      microservice = Array(host_services).find { |row| row[:service_key].to_s == "local_microservice" }
-      if microservice.is_a?(Hash)
-        microservice_enabled = ActiveModel::Type::Boolean.new.cast(architecture[:microservice_enabled])
-        if !microservice_enabled && ActiveModel::Type::Boolean.new.cast(microservice[:active])
-          rows << {
-            id: "orphan_local_microservice",
-            status: "safe_to_remove",
-            title: "Local AI microservice is running but disabled in policy",
-            evidence: "active=#{microservice[:active]}, required=#{microservice[:required]}, port_open=#{microservice[:port_open]}",
-            recommended_action: "Stop microservice process to free CPU/RAM, or set `USE_LOCAL_AI_MICROSERVICE=true` if required."
-          }
-        elsif microservice_enabled && !ActiveModel::Type::Boolean.new.cast(microservice[:active])
-          rows << {
-            id: "missing_local_microservice",
-            status: "review",
-            title: "Local AI microservice is enabled but not running",
-            evidence: "active=#{microservice[:active]}, required=#{microservice[:required]}, port_open=#{microservice[:port_open]}",
-            recommended_action: "Start microservice (`bin/local_ai_services start`) or disable it with `USE_LOCAL_AI_MICROSERVICE=false`."
-          }
-        end
-      end
 
       sidekiq = Array(host_services).find { |row| row[:service_key].to_s == "sidekiq_worker" }
       if sidekiq.is_a?(Hash) && sidekiq[:process_count].to_i > 1
@@ -314,7 +273,6 @@ module AiDashboard
       Array(host_services).each do |service|
         row = service.is_a?(Hash) ? service : {}
         service_key = row[:service_key].to_s
-        next if service_key == "local_microservice"
         next unless ActiveModel::Type::Boolean.new.cast(row[:required])
         next if ActiveModel::Type::Boolean.new.cast(row[:active])
 
@@ -423,14 +381,6 @@ module AiDashboard
       payload["ok"]
     rescue StandardError
       false
-    end
-
-    def normalize_service_map(payload)
-      return {} unless payload.is_a?(Hash)
-
-      payload.transform_keys(&:to_s).transform_values { |value| ActiveModel::Type::Boolean.new.cast(value) }
-    rescue StandardError
-      {}
     end
 
     def normalize_string_array(values)

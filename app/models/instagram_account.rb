@@ -21,6 +21,10 @@ class InstagramAccount < ApplicationRecord
   has_many :instagram_story_people, dependent: :destroy
   has_many :app_issues, dependent: :nullify
   has_many :active_storage_ingestions, dependent: :nullify
+  has_many :background_job_lifecycles, dependent: :nullify
+  has_many :background_job_failures, dependent: :nullify
+  has_many :background_job_execution_metrics, dependent: :nullify
+  has_many :service_output_audits, dependent: :nullify
 
   encryption = Rails.application.config.active_record.encryption
   if encryption.primary_key.present? &&
@@ -36,6 +40,9 @@ class InstagramAccount < ApplicationRecord
   validates :continuous_processing_state, inclusion: { in: CONTINUOUS_PROCESSING_STATES }, allow_nil: true
 
   scope :continuous_processing_enabled, -> { where(continuous_processing_enabled: true) }
+
+  after_commit :enqueue_initial_avatar_sync, on: :create
+  before_destroy :cleanup_runtime_artifacts_for_account_deletion, prepend: true
 
   def continuous_processing_backoff_active?
     continuous_processing_retry_after_at.present? && continuous_processing_retry_after_at > Time.current
@@ -112,7 +119,36 @@ class InstagramAccount < ApplicationRecord
     login_state.to_s == "authenticated" && sessionid_cookie_present?
   end
 
+  def last_story_sync_completed_at
+    background_job_lifecycles
+      .story_related
+      .where(status: "completed")
+      .where.not(completed_at: nil)
+      .maximum(:completed_at)
+  end
+
   private
+
+  def cleanup_runtime_artifacts_for_account_deletion
+    InstagramAccounts::AccountDeletionCleanupService.new(account: self).call
+  rescue InstagramAccounts::AccountDeletionCleanupService::CleanupError => e
+    errors.add(:base, e.message.to_s)
+    throw :abort
+  end
+
+  def enqueue_initial_avatar_sync
+    SyncInitialAccountAvatarJob.perform_later(instagram_account_id: id)
+  rescue StandardError => e
+    Ops::StructuredLogger.warn(
+      event: "instagram_account.initial_avatar_sync_enqueue_failed",
+      payload: {
+        instagram_account_id: id,
+        error_class: e.class.name,
+        error_message: e.message.to_s
+      }
+    )
+    nil
+  end
 
   def parse_json_array(value)
     return [] if value.blank?

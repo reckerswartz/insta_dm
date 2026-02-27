@@ -4,6 +4,17 @@ require "set"
 
 module Instagram
   class ProfileAnalysisCollector
+    class BlockedMediaSourceError < StandardError
+      attr_reader :context
+
+      def initialize(context)
+        @context = context.is_a?(Hash) ? context.deep_symbolize_keys : {}
+        reason_code = @context[:reason_code].to_s.presence || "blocked_media_source"
+        marker = @context[:marker].to_s.presence || "unknown"
+        super("Blocked media source: #{reason_code} (#{marker})")
+      end
+    end
+
     MAX_POST_IMAGE_BYTES = 6 * 1024 * 1024
     MAX_POST_VIDEO_BYTES = 80 * 1024 * 1024
 
@@ -212,6 +223,16 @@ module Instagram
       url = media_url.to_s.strip
       return false if url.blank?
 
+      trust_policy = media_download_policy_decision(media_url: url)
+      if ActiveModel::Type::Boolean.new.cast(trust_policy[:blocked])
+        mark_media_sync_skipped!(
+          post: post,
+          reason: trust_policy[:reason_code].to_s.presence || "blocked_media_source",
+          details: trust_policy
+        )
+        return false
+      end
+
       incoming_media_id = media_id.to_s.strip
       existing_metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
       existing_media_id = existing_metadata["media_id"].to_s.strip
@@ -234,8 +255,23 @@ module Instagram
         identify: false
       )
       attach_blob_to_post!(post: post, blob: blob)
-      post.update!(media_url_fingerprint: fp)
+      post.update!(
+        media_url_fingerprint: fp,
+        metadata: merged_metadata(post).merge(
+          "download_status" => "downloaded",
+          "download_skip_reason" => nil,
+          "download_skip_details" => nil,
+          "download_error" => nil
+        )
+      )
       true
+    rescue BlockedMediaSourceError => e
+      mark_media_sync_skipped!(
+        post: post,
+        reason: e.context[:reason_code].to_s.presence || "blocked_media_source",
+        details: e.context
+      )
+      false
     rescue StandardError => e
       Rails.logger.warn("[ProfileAnalysisCollector] media sync failed for shortcode=#{post.shortcode}: #{e.class}: #{e.message}")
       false
@@ -352,6 +388,9 @@ module Instagram
     end
 
     def download_media(url, redirects_left: 4)
+      blocked_context = blocked_source_context(url: url)
+      raise BlockedMediaSourceError, blocked_context if blocked_context.present?
+
       uri = URI.parse(url)
       raise "invalid media URL" unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
 
@@ -389,6 +428,58 @@ module Instagram
       io = StringIO.new(body)
       io.set_encoding(Encoding::BINARY) if io.respond_to?(:set_encoding)
       [io, content_type, "profile_post_#{Digest::SHA256.hexdigest(url)[0, 12]}.#{ext}"]
+    end
+
+    def mark_media_sync_skipped!(post:, reason:, details:)
+      post.update!(
+        metadata: merged_metadata(post).merge(
+          "download_status" => "skipped",
+          "download_skip_reason" => reason.to_s,
+          "download_skip_details" => normalize_skip_details(details),
+          "download_error" => nil
+        )
+      )
+      Ops::StructuredLogger.info(
+        event: "profile_collector.media_sync_skipped",
+        payload: {
+          instagram_account_id: @account.id,
+          instagram_profile_id: @profile.id,
+          instagram_profile_post_id: post.id,
+          shortcode: post.shortcode,
+          reason: reason.to_s
+        }
+      )
+    rescue StandardError
+      nil
+    end
+
+    def media_download_policy_decision(media_url:)
+      Instagram::MediaDownloadTrustPolicy.evaluate(
+        account: @account,
+        profile: @profile,
+        media_url: media_url
+      )
+    rescue StandardError
+      { blocked: false }
+    end
+
+    def blocked_source_context(url:)
+      Instagram::MediaDownloadTrustPolicy.blocked_source_context(url: url)
+    rescue StandardError
+      nil
+    end
+
+    def normalize_skip_details(details)
+      value = details.is_a?(Hash) ? details.deep_stringify_keys : {}
+      value.present? ? value : nil
+    rescue StandardError
+      nil
+    end
+
+    def merged_metadata(post)
+      post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+    rescue StandardError
+      {}
     end
 
     def normalize_redirect_url(base_uri:, location:)

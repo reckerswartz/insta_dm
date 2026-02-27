@@ -19,13 +19,6 @@ RSpec.describe AiDashboard::RuntimeAudit do
     service_status = {
       status: "online",
       details: {
-        microservice: {
-          ok: true,
-          services: {
-            "vision" => true,
-            "face" => true
-          }
-        },
         ollama: {
           ok: true,
           models: [
@@ -35,8 +28,7 @@ RSpec.describe AiDashboard::RuntimeAudit do
           ]
         },
         policy: {
-          microservice_enabled: true,
-          microservice_required: false
+          execution_mode: "ollama_only"
         }
       }
     }
@@ -63,7 +55,9 @@ RSpec.describe AiDashboard::RuntimeAudit do
     ).call
 
     expect(result[:queue_backend]).to eq("sidekiq")
+    expect(result.dig(:architecture, :execution_mode)).to eq("ollama_only")
     expect(result.dig(:totals, :total_lanes).to_i).to be > 0
+    expect(result[:host_services]).not_to include(hash_including(service_key: "local_microservice"))
     expect(result[:concurrent_services]).to include(
       hash_including(service_key: "llm_comment_generation", queue_pending: 2)
     )

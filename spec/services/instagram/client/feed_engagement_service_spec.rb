@@ -60,6 +60,11 @@ RSpec.describe Instagram::Client do
     expect(result[:new_posts]).to eq(1)
     expect(result[:queued_actions]).to eq(1)
     expect(result[:skipped_posts]).to eq(0)
+    expect(result[:downloaded_media_count]).to eq(1)
+    expect(result[:moved_to_action_queue_count]).to eq(1)
+    expect(result[:rejected_items_count]).to eq(0)
+    expect(result[:downloaded_media_items]).to include(include(shortcode: shortcode))
+    expect(result[:queued_action_items]).to include(include(shortcode: shortcode))
 
     post = profile.instagram_profile_posts.find_by(shortcode: shortcode)
     expect(post).to be_present
@@ -125,6 +130,8 @@ RSpec.describe Instagram::Client do
     expect(result[:skipped_posts]).to eq(2)
     expect(result[:skipped_reasons]["profile_not_in_follow_graph"]).to eq(1)
     expect(result[:skipped_reasons]["profile_policy_non_personal_profile_page"]).to eq(1)
+    expect(result[:rejected_items_count]).to eq(2)
+    expect(result[:rejected_items]).to include(include(reason: "profile_not_in_follow_graph"))
     expect(page_like.instagram_profile_posts.count).to eq(0)
     expect(unfollowed.instagram_profile_posts.count).to eq(0)
     expect(DownloadInstagramPostMediaJob).not_to have_received(:perform_later)

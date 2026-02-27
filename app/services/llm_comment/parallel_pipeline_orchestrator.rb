@@ -33,7 +33,14 @@ module LlmComment
         steps: steps_to_enqueue
       )
       reused_steps = ParallelPipelineState::STEP_KEYS - steps_to_enqueue
-      finalizer = enqueue_finalizer(run_id: run_id)
+      generation_job = nil
+      finalizer = nil
+      if steps_to_enqueue.empty?
+        generation_job = enqueue_generation(run_id: run_id)
+        finalizer = enqueue_finalizer(run_id: run_id) unless generation_job
+      else
+        finalizer = enqueue_finalizer(run_id: run_id)
+      end
 
       Ops::StructuredLogger.info(
         event: "llm_comment.parallel_pipeline.started",
@@ -53,6 +60,8 @@ module LlmComment
           stage_jobs_requested: steps_to_enqueue,
           stage_jobs_reused: reused_steps,
           stage_jobs: enqueued_steps,
+          generation_job_id: generation_job&.job_id,
+          generation_queue_name: generation_job&.queue_name,
           finalizer_job_id: finalizer&.job_id,
           finalizer_queue_name: finalizer&.queue_name
         }.compact
@@ -68,6 +77,7 @@ module LlmComment
         stage_jobs_requested: steps_to_enqueue,
         stage_jobs_reused: reused_steps,
         stage_jobs: enqueued_steps,
+        generation_job_id: generation_job&.job_id,
         finalizer_job_id: finalizer&.job_id
       }
     end
@@ -155,6 +165,40 @@ module LlmComment
         requested_by: requested_by,
         attempts: 0
       )
+    rescue StandardError
+      nil
+    end
+
+    def enqueue_generation(run_id:)
+      job = GenerateStoryCommentFromPipelineJob.perform_later(
+        instagram_profile_event_id: event.id,
+        pipeline_run_id: run_id,
+        provider: provider,
+        model: model,
+        requested_by: requested_by
+      )
+
+      event.record_llm_processing_stage!(
+        stage: "parallel_services",
+        state: "completed",
+        progress: 40,
+        message: "No blocking analysis steps required; generation worker queued.",
+        details: {
+          pipeline_run_id: run_id
+        }
+      )
+      event.record_llm_processing_stage!(
+        stage: "context_matching",
+        state: "queued",
+        progress: 42,
+        message: "Queued LLM generation worker.",
+        details: {
+          pipeline_run_id: run_id,
+          generation_job_id: job&.job_id.to_s.presence
+        }.compact
+      )
+
+      job
     rescue StandardError
       nil
     end

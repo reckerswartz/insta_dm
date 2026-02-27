@@ -1,6 +1,6 @@
 # Post Analysis Pipeline
 
-Last updated: 2026-02-22
+Last updated: 2026-02-25
 
 ## Scope
 
@@ -23,16 +23,22 @@ Primary code surfaces:
 `DownloadInstagramProfilePostMediaJob`:
 
 1. Resolves source media URL from `source_media_url` or metadata fallbacks.
-2. Reuses local cache blobs when possible.
-3. Performs integrity checks on existing blobs.
-4. Writes download status to `post.metadata`.
-5. Applies `Instagram::ProfileScanPolicy` before enqueueing analysis.
-6. Enqueues `AnalyzeInstagramProfilePostJob` unless blocked/skipped.
+2. Applies `Instagram::MediaDownloadTrustPolicy` before any attach/download:
+   - blocks promotional/ad URLs (`ad_related_media_source`, `promotional_media_host`, `promotional_media_query`)
+   - blocks profiles not connected in follow graph (`profile_not_connected`)
+3. Reuses local cache blobs when possible.
+4. Performs integrity checks on existing blobs.
+5. Writes download status to `post.metadata`.
+6. Applies `Instagram::ProfileScanPolicy` before enqueueing analysis.
+7. Enqueues `AnalyzeInstagramProfilePostJob` unless blocked/skipped.
 
 Important outcomes:
 
 - `download_status`: `downloaded`, `already_downloaded`, `skipped`, `failed`, `corrupt_detected`
+- `download_skip_reason`: includes `profile_not_connected` and media-source policy reason codes
 - `ai_status` may be set to `pending`
+
+`Instagram::ProfileAnalysisCollector#sync_media!` applies the same trust policy for direct collector-driven media sync paths, so manual/profile dataset captures cannot bypass these source checks.
 
 ## 2) Orchestrator Boot
 

@@ -2,13 +2,16 @@ require 'active_support/concern'
 
 module InstagramProfileEvent::CommentGenerationCoordinator
   extend ActiveSupport::Concern
+  GENERATION_TOPIC_NOISE_TOKENS = %w[
+    account analysis analyzed camera comment comments content context detected detection
+    element elements frame generation image inferred lifestyle local media message moment object objects person people
+    photo pipeline profile scene scenes signal signals story summary text topic topics
+    unknown user users video visual
+  ].freeze
   LLM_PROCESSING_STAGE_TEMPLATE = {
     "queue_wait" => { "group" => "orchestration", "label" => "Queue Wait", "state" => "pending", "progress" => 0 },
     "parallel_services" => { "group" => "orchestration", "label" => "Parallel Stage Jobs", "state" => "pending", "progress" => 0 },
-    "ocr_analysis" => { "group" => "media_analysis", "label" => "OCR Analysis", "state" => "pending", "progress" => 0 },
-    "vision_detection" => { "group" => "media_analysis", "label" => "Vision Detection", "state" => "pending", "progress" => 0 },
     "face_recognition" => { "group" => "media_analysis", "label" => "Face Recognition (Deferred)", "state" => "pending", "progress" => 0 },
-    "metadata_extraction" => { "group" => "media_analysis", "label" => "Metadata Extraction", "state" => "pending", "progress" => 0 },
     "context_matching" => { "group" => "context_enrichment", "label" => "Context Matching", "state" => "pending", "progress" => 0 },
     "prompt_construction" => { "group" => "comment_generation", "label" => "Prompt Construction", "state" => "pending", "progress" => 0 },
     "llm_generation" => { "group" => "comment_generation", "label" => "Generating Comments", "state" => "pending", "progress" => 0 },
@@ -210,20 +213,25 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         errors.add(:llm_generated_comment, "must be present when generated_at is set")
       end
     end
-    def build_comment_context
+    def build_comment_context(local_story_intelligence: nil)
       profile = instagram_profile
       raw_metadata = metadata.is_a?(Hash) ? metadata : {}
-      local_story_intelligence = local_story_intelligence_payload
+      resolved_local_story_intelligence =
+        if local_story_intelligence.is_a?(Hash)
+          local_story_intelligence.deep_symbolize_keys
+        else
+          local_story_intelligence_payload
+        end
       validated_story_insights = Ai::VerifiedStoryInsightBuilder.new(
         profile: profile,
-        local_story_intelligence: local_story_intelligence,
+        local_story_intelligence: resolved_local_story_intelligence,
         metadata: raw_metadata
       ).build
       verified_story_facts = validated_story_insights[:verified_story_facts].is_a?(Hash) ? validated_story_insights[:verified_story_facts] : {}
       Ai::ProfileInsightStore.new.ingest_story!(
         profile: profile,
         event: self,
-        intelligence: verified_story_facts.presence || local_story_intelligence
+        intelligence: verified_story_facts.presence || resolved_local_story_intelligence
       )
 
       post_payload = {
@@ -246,10 +254,19 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         }
       }
 
-      image_description = build_story_image_description(local_story_intelligence: verified_story_facts.presence || local_story_intelligence)
+      image_description = build_story_image_description(local_story_intelligence: verified_story_facts.presence || resolved_local_story_intelligence)
 
       historical_comments = recent_llm_comments_for_profile(profile)
-      topics = (Array(verified_story_facts[:topics]) + extract_topics_from_profile(profile)).map(&:to_s).reject(&:blank?).uniq.first(20)
+      profile_topics = extract_topics_from_profile(profile)
+      media_topics = generation_media_topics_from_verified_facts(verified_story_facts)
+      description_topics = generation_topics_from_image_description(image_description)
+      topics = if media_topics.any?
+        media_topics.first(12)
+      elsif description_topics.any?
+        description_topics.first(8)
+      else
+        []
+      end
       historical_story_context = recent_story_intelligence_context(profile)
       profile_preparation = latest_profile_comment_preparation(profile)
       verified_profile_history = recent_analyzed_profile_history(profile)
@@ -266,7 +283,7 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         limit: 12
       )
       historical_comparison = build_historical_comparison(
-        current: verified_story_facts.presence || local_story_intelligence,
+        current: verified_story_facts.presence || resolved_local_story_intelligence,
         historical_story_context: historical_story_context
       )
       validated_story_insights = apply_historical_validation(
@@ -275,7 +292,7 @@ module InstagramProfileEvent::CommentGenerationCoordinator
       )
       story_ownership_classification = validated_story_insights[:ownership_classification].is_a?(Hash) ? validated_story_insights[:ownership_classification] : {}
       generation_policy = validated_story_insights[:generation_policy].is_a?(Hash) ? validated_story_insights[:generation_policy] : {}
-      cv_ocr_evidence = build_cv_ocr_evidence(local_story_intelligence: verified_story_facts.presence || local_story_intelligence)
+      cv_ocr_evidence = build_cv_ocr_evidence(local_story_intelligence: verified_story_facts.presence || resolved_local_story_intelligence)
 
       post_payload[:historical_comparison] = historical_comparison
       post_payload[:cv_ocr_evidence] = cv_ocr_evidence
@@ -302,8 +319,10 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         historical_story_context: historical_story_context,
         historical_comparison: historical_comparison,
         cv_ocr_evidence: cv_ocr_evidence,
-        local_story_intelligence: local_story_intelligence,
+        local_story_intelligence: resolved_local_story_intelligence,
         verified_story_facts: verified_story_facts,
+        media_topics: media_topics,
+        profile_topics: profile_topics,
         story_ownership_classification: story_ownership_classification,
         generation_policy: generation_policy,
         validated_story_insights: validated_story_insights,
@@ -312,6 +331,37 @@ module InstagramProfileEvent::CommentGenerationCoordinator
         conversational_voice: conversational_voice,
         scored_context: scored_context
       }
+    end
+
+    def generation_media_topics_from_verified_facts(verified_story_facts)
+      facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      raw_topics = []
+      raw_topics.concat(Array(facts[:topics] || facts["topics"]))
+      raw_topics.concat(Array(facts[:objects] || facts["objects"]))
+      raw_topics.concat(Array(facts[:hashtags] || facts["hashtags"]).map { |value| value.to_s.delete_prefix("#") })
+      raw_topics.concat(Array(facts[:scenes] || facts["scenes"]).map do |row|
+        row.is_a?(Hash) ? (row[:type] || row["type"]).to_s : row.to_s
+      end)
+
+      normalize_generation_topics(raw_topics)
+    end
+
+    def normalize_generation_topics(values)
+      Array(values)
+        .flat_map { |value| value.to_s.split(/[,\n]+/) }
+        .map { |value| value.to_s.downcase.strip.delete_prefix("#").delete_prefix("@") }
+        .reject(&:blank?)
+        .reject { |value| value.match?(/\A\d+\z/) }
+        .reject { |value| value.length < 3 }
+        .reject { |value| GENERATION_TOPIC_NOISE_TOKENS.include?(value) }
+        .uniq
+        .first(24)
+    end
+
+    def generation_topics_from_image_description(text)
+      normalize_generation_topics(
+        text.to_s.downcase.scan(/[a-z0-9_]+/).reject { |token| token.length < 4 }
+      )
     end
 
   end

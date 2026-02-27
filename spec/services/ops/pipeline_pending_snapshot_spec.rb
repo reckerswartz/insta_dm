@@ -27,8 +27,8 @@ RSpec.describe Ops::PipelinePendingSnapshot do
         occurred_at: Time.current,
         llm_comment_status: "running",
         llm_pipeline_run_id: "story-run-1",
-        llm_blocking_step: "ocr_analysis",
-        llm_pending_reason_code: "queued_ocr_analysis",
+        llm_blocking_step: "metadata_extraction",
+        llm_pending_reason_code: "queued_metadata_extraction",
         llm_estimated_ready_at: 3.minutes.from_now,
         metadata: { "story_id" => "story_123" }
       )
@@ -44,8 +44,8 @@ RSpec.describe Ops::PipelinePendingSnapshot do
       expect(post_reason).to include(reason_code: "queued_visual", blocking_step: "visual")
       expect(post_reason[:count]).to be >= 1
 
-      story_reason = Array(snapshot.dig(:story_events, :reasons)).find { |row| row[:reason_code] == "queued_ocr_analysis" }
-      expect(story_reason).to include(reason_code: "queued_ocr_analysis")
+      story_reason = Array(snapshot.dig(:story_events, :reasons)).find { |row| row[:reason_code] == "queued_metadata_extraction" }
+      expect(story_reason).to include(reason_code: "queued_metadata_extraction")
       expect(story_reason[:count]).to be >= 1
 
       post_item = Array(snapshot.dig(:posts, :items)).find { |row| row[:pipeline_run_id] == "post-run-1" }
@@ -61,8 +61,8 @@ RSpec.describe Ops::PipelinePendingSnapshot do
       story_item = Array(snapshot.dig(:story_events, :items)).find { |row| row[:pipeline_run_id] == "story-run-1" }
       expect(story_item).to include(
         pipeline_run_id: "story-run-1",
-        blocking_step: "ocr_analysis",
-        pending_reason_code: "queued_ocr_analysis",
+        blocking_step: "metadata_extraction",
+        pending_reason_code: "queued_metadata_extraction",
         status: "running",
         story_id: "story_123"
       )
@@ -105,7 +105,7 @@ RSpec.describe Ops::PipelinePendingSnapshot do
         external_id: "evt_#{SecureRandom.hex(4)}",
         detected_at: Time.current,
         llm_comment_status: "queued",
-        llm_pending_reason_code: "queued_ocr_analysis",
+        llm_pending_reason_code: "queued_metadata_extraction",
         llm_estimated_ready_at: 2.minutes.from_now
       )
 

@@ -51,9 +51,15 @@ class InstagramAccountsController < ApplicationController
   end
 
   def destroy
-    @account.destroy!
-    session[:instagram_account_id] = nil if session[:instagram_account_id].to_i == @account.id
-    redirect_to instagram_accounts_path, notice: "Account removed."
+    if @account.destroy
+      session[:instagram_account_id] = nil if session[:instagram_account_id].to_i == @account.id
+      redirect_to instagram_accounts_path, notice: "Account removed."
+      return
+    end
+
+    detail = @account.errors.full_messages.to_sentence.presence ||
+      "Failed to destroy InstagramAccount with id=#{@account.id}"
+    redirect_to instagram_account_path(@account), alert: "Unable to remove account: #{detail}"
   rescue StandardError => e
     redirect_to instagram_account_path(@account), alert: "Unable to remove account: #{e.message}"
   end
@@ -291,7 +297,9 @@ class InstagramAccountsController < ApplicationController
       account: @account,
       page: params.fetch(:page, 1),
       per_page: params.fetch(:per_page, 12),
-      on: params[:on]
+      on: params[:on],
+      status: params[:status],
+      reason_code: params[:reason_code]
     ).call
 
     render json: {

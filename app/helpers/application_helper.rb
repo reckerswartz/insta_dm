@@ -46,6 +46,8 @@ module ApplicationHelper
       'transcription'
     when 'video'
       'analysis'
+    when 'ollama'
+      'models'
     else
       nil
     end

@@ -164,6 +164,11 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     expect(telemetry[:eval_count]).to eq(55)
     expect(telemetry[:total_duration_ns]).to eq(1_250_000_000)
     expect(telemetry[:load_duration_ns]).to eq(120_000_000)
+    expect(result[:prompt_inputs]).to be_a(Hash)
+    expect(Array(result[:prompt_inputs][:selected_topics])).to include("plant")
+    expect(Array(result[:prompt_inputs][:visual_anchors])).not_to be_empty
+    expect(result[:policy_diagnostics]).to be_a(Hash)
+    expect(result[:policy_diagnostics]).to have_key(:rejected_reason_counts)
   end
 
   it "returns anchored fallback suggestions when generation output is empty" do
@@ -187,6 +192,76 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     expect(result[:source]).to eq("fallback")
     expect(result[:comment_suggestions].first.downcase).to include("plant")
     expect(result[:comment_suggestions].none? { |row| row.include?("story media moment") }).to eq(true)
+    expect(result.dig(:policy_diagnostics, :fallback_policy_applied)).to eq(true)
+  end
+
+  it "runs policy filtering on fallback comments before returning suggestions" do
+    fake_client = Class.new do
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        { "response" => "{\"comment_suggestions\":[]}" }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
+    allow(generator).to receive(:fallback_comments).and_return(
+      [
+        "That person looks amazing.",
+        "The vibe across everyone feels real.",
+        "Your outfit color combo is super clean.",
+        "What inspired you to share this look?"
+      ]
+    )
+
+    result = generator.generate!(
+      post_payload: {},
+      image_description: "Visual elements: outfit, style.",
+      topics: ["outfit", "style"],
+      author_type: "personal",
+      channel: "story",
+      verified_story_facts: { objects: ["outfit"], topics: ["style"] },
+      scored_context: {}
+    )
+
+    suggestions = Array(result[:comment_suggestions]).map(&:downcase)
+    expect(suggestions).to include("your outfit color combo is super clean.")
+    expect(suggestions.any? { |row| row.include?("that person looks") }).to eq(false)
+    expect(suggestions.any? { |row| row.include?("everyone feels") }).to eq(false)
+    expect(result.dig(:policy_diagnostics, :fallback_policy_applied)).to eq(true)
+  end
+
+  it "filters third-person phrasing for story suggestions and keeps direct-address tone" do
+    fake_client = Class.new do
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        {
+          "response" => {
+            comment_suggestions: [
+              "That person looks cool in this outfit.",
+              "You look cool in this outfit.",
+              "Love your outfit combo here.",
+              "This is such a clean look.",
+              "Everyone looks great in this shot."
+            ]
+          }.to_json
+        }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
+    result = generator.generate!(
+      post_payload: {},
+      image_description: "Visual elements: outfit, style.",
+      topics: ["outfit", "style"],
+      author_type: "personal",
+      channel: "story",
+      verified_story_facts: { objects: ["outfit"], topics: ["style"] },
+      scored_context: {}
+    )
+
+    suggestions = Array(result[:comment_suggestions]).map(&:downcase)
+    expect(result[:source]).to eq("ollama")
+    expect(suggestions).to include("you look cool in this outfit.")
+    expect(suggestions.any? { |row| row.include?("that person looks") }).to eq(false)
+    expect(suggestions.any? { |row| row.include?("everyone looks") }).to eq(false)
   end
 
   it "uses text-focused fallback templates for OCR-heavy stories" do
@@ -231,7 +306,8 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
     )
 
     suggestions = Array(result[:comment_suggestions]).map(&:downcase)
-    expect(suggestions.any? { |row| row.include?("group") || row.include?("everyone") }).to eq(true)
+    expect(suggestions.any? { |row| row.include?("group") || row.include?("you all") }).to eq(true)
+    expect(result.dig(:policy_diagnostics, :fallback_policy_applied)).to eq(true)
   end
 
   it "prioritizes strong specific detection anchors over weak generic object anchors" do
@@ -259,6 +335,139 @@ RSpec.describe Ai::LocalEngagementCommentGenerator do
 
     expect(anchors.first).to eq("bottle")
     expect(anchors).not_to include("sink")
+  end
+
+  it "does not blend unrelated profile-store signals into visual anchors" do
+    fake_client = Class.new do
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        { "response" => "{\"comment_suggestions\":[]}" }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
+    anchors = generator.send(
+      :build_visual_anchors,
+      image_description: "A person standing next to a parked car.",
+      topics: %w[car],
+      verified_story_facts: {
+        topics: %w[person car],
+        objects: %w[person car],
+        object_detections: [
+          { label: "person", confidence: 0.92 },
+          { label: "car", confidence: 0.89 }
+        ]
+      },
+      scored_context: {
+        prioritized_signals: [
+          { value: "car", source: "store", overlap_tokens: 1, score: 4.2 },
+          { value: "tv", source: "store", overlap_tokens: 0, score: 4.1 },
+          { value: "wine glass", source: "store", overlap_tokens: 0, score: 4.0 }
+        ]
+      }
+    )
+
+    expect(anchors).to include("car")
+    expect(anchors).not_to include("tv")
+    expect(anchors).not_to include("wine glass")
+  end
+
+  it "parses plain-text numbered suggestions" do
+    fake_client = Class.new do
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        { "response" => "{\"comment_suggestions\":[]}" }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
+    parsed = generator.send(
+      :parse_comment_suggestions,
+      {
+        "response" => <<~TEXT
+          1. Love this car moment.
+          2. This angle looks clean.
+          3. What made you share this one?
+          4. Super real vibe here.
+        TEXT
+      }
+    )
+
+    expect(parsed.length).to eq(4)
+    expect(parsed.first).to eq("Love this car moment.")
+  end
+
+  it "filters scaffold artifacts and strips quote-comma wrappers from plain text responses" do
+    fake_client = Class.new do
+      def generate(model:, prompt:, temperature:, max_tokens:)
+        { "response" => "{\"comment_suggestions\":[]}" }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
+    parsed = generator.send(
+      :parse_comment_suggestions,
+      {
+        "response" => <<~TEXT
+          Here are the comment_suggestions in JSON:
+          {
+            "comment_suggestions": [
+              "Traffic light vibes only! 😎",
+              "City energy is unreal tonight.",
+              "Which corner in this view is your favorite?",
+            ]
+          }
+        TEXT
+      }
+    )
+
+    expect(parsed).to eq(
+      [
+        "Traffic light vibes only! 😎",
+        "City energy is unreal tonight.",
+        "Which corner in this view is your favorite?"
+      ]
+    )
+  end
+
+  it "requests json-formatted generation when client supports format option" do
+    fake_client = Class.new do
+      attr_reader :formats
+
+      def initialize
+        @formats = []
+      end
+
+      def generate(model:, prompt:, temperature:, max_tokens:, format: nil)
+        @formats << format
+        {
+          "response" => {
+            comment_suggestions: [
+              "Plant corner looks super calm tonight.",
+              "Love how the light hits the plant here.",
+              "This green setup feels clean and cozy.",
+              "That texture + light combo works so well.",
+              "The framing makes this corner feel intentional.",
+              "Which plant in this setup is your favorite?",
+              "The mood here is soft and refreshing.",
+              "Such a nice balance of green and light."
+            ]
+          }.to_json
+        }
+      end
+    end.new
+
+    generator = Ai::LocalEngagementCommentGenerator.new(ollama_client: fake_client, model: "llama3.2-vision:11b")
+    generator.generate!(
+      post_payload: {},
+      image_description: "Visual elements: potted plant, window light.",
+      topics: ["plant"],
+      author_type: "personal",
+      channel: "story",
+      verified_story_facts: { objects: ["potted plant"] },
+      scored_context: {}
+    )
+
+    expect(fake_client.formats).not_to be_empty
+    expect(fake_client.formats.all? { |row| row == "json" }).to eq(true)
   end
 
   it "matches fixture-backed quality and structure rules for story suggestions" do

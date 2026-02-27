@@ -102,7 +102,8 @@ class CaptureHomeFeedJob < ApplicationJob
       account: account,
       status: "succeeded",
       source: trigger_source,
-      message: "Completed feed capture job #{job_id}: new=#{result[:new_posts].to_i}, updated=#{result[:updated_posts].to_i}, queued=#{result[:queued_actions].to_i}, seen=#{result[:seen_posts].to_i}, skipped=#{result[:skipped_posts].to_i}, next_cursor=#{result[:next_max_id].to_s.presence || 'none'}, continuation=#{continuation_job.present? ? 'yes' : 'no'}."
+      message: "Completed feed capture job #{job_id}: new=#{result[:new_posts].to_i}, updated=#{result[:updated_posts].to_i}, queued=#{result[:queued_actions].to_i}, seen=#{result[:seen_posts].to_i}, skipped=#{result[:skipped_posts].to_i}, next_cursor=#{result[:next_max_id].to_s.presence || 'none'}, continuation=#{continuation_job.present? ? 'yes' : 'no'}.",
+      details: activity_details_from_result(result: result)
     )
 
     Turbo::StreamsChannel.broadcast_append_to(
@@ -163,5 +164,23 @@ class CaptureHomeFeedJob < ApplicationJob
       }
     )
     nil
+  end
+
+  def activity_details_from_result(result:)
+    payload = result.is_a?(Hash) ? result : {}
+    {
+      seen_posts: payload[:seen_posts].to_i,
+      new_posts: payload[:new_posts].to_i,
+      updated_posts: payload[:updated_posts].to_i,
+      fetched_items: payload[:fetched_items].to_i,
+      downloaded_media_count: payload[:downloaded_media_count].to_i,
+      moved_to_action_queue_count: payload[:moved_to_action_queue_count].to_i,
+      rejected_items_count: payload[:rejected_items_count].to_i,
+      downloaded_media_items: Array(payload[:downloaded_media_items]).first(12),
+      queued_action_items: Array(payload[:queued_action_items]).first(12),
+      rejected_items: Array(payload[:rejected_items]).first(12)
+    }
+  rescue StandardError
+    {}
   end
 end

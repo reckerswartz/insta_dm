@@ -2,6 +2,7 @@
 <% stats = queue_result[:stats].is_a?(Hash) ? queue_result[:stats] : {} %>
 <% refreshed_time = begin Time.zone.parse(stats[:refreshed_at].to_s) rescue nil end %>
 <% service_queue_metrics = Array(stats[:service_queue_metrics]) %>
+<% ordering_rule = stats[:ordering_rule].to_s.presence %>
 
 <div class="workspace-actions-stats-row">
   <span class="pill queued">Total: <%= stats[:total_items].to_i %></span>
@@ -19,6 +20,9 @@
     <span class="meta">Updated <%= relative_time_with_tooltip(refreshed_time) %></span>
   <% end %>
 </div>
+<% if ordering_rule.present? %>
+  <p class="meta workspace-ordering-note"><strong>Queue order:</strong> <%= ordering_rule %></p>
+<% end %>
 
 <% if service_queue_metrics.any? %>
   <div class="workspace-actions-stats-row">
@@ -36,12 +40,13 @@
     <table class="table workspace-actions-table">
       <thead>
         <tr>
+          <th class="workspace-col-order">Queue</th>
           <th>Posted by</th>
           <th>Preview</th>
           <th>Post data</th>
           <th>Suggested comments</th>
           <th>Status</th>
-          <th>Actions</th>
+          <th class="workspace-col-actions">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -52,6 +57,9 @@
           <% suggestions = Array(item[:suggestions]).first(3) %>
           <% status = item[:processing_status].to_s %>
           <% lifecycle_state = item[:lifecycle_state].to_s.presence || "queued" %>
+          <% queue_rank = item[:queue_rank].to_i %>
+          <% queue_priority_label = item[:queue_priority_label].to_s.presence || lifecycle_state.humanize %>
+          <% queue_priority_reason = item[:queue_priority_reason].to_s.presence || status.humanize %>
           <% progress_completed = item[:progress_completed].to_i %>
           <% progress_total = item[:progress_total].to_i %>
           <% progress_percent = item[:progress_percent].to_i %>
@@ -72,6 +80,19 @@
               else
                 "queued"
               end %>
+          <% processing_status_class =
+               case status
+               when "failed"
+                 "failed"
+               when "running", "waiting_post_analysis", "waiting_comment_generation", "waiting_build_history", "waiting_profile_analysis"
+                 "running"
+               when "ready"
+                 "sent"
+               when "skipped_unsuitable_content", "skipped_page_profile", "skipped_deleted_source", "skipped_non_user_post"
+                 "partial"
+               else
+                 "queued"
+               end %>
           <% avatar_url =
               if profile.avatar.attached?
                 rails_blob_path(profile.avatar, only_path: true)
@@ -100,6 +121,11 @@
           <% media_download_url = post.media.attached? ? rails_blob_path(post.media, disposition: "attachment") : nil %>
 
           <tr>
+            <td class="workspace-col-order">
+              <div class="workspace-queue-rank">#<%= queue_rank %></div>
+              <span class="pill <%= status_class %>"><%= queue_priority_label %></span>
+              <p class="meta compact-meta-top"><%= queue_priority_reason %></p>
+            </td>
             <td>
               <div class="workspace-profile-cell">
                 <% if avatar_url.present? %>
@@ -160,8 +186,12 @@
             </td>
             <td>
               <span class="pill <%= status_class %>"><%= lifecycle_state.humanize %></span>
+              <span class="pill <%= processing_status_class %>"><%= status.humanize %></span>
               <p class="meta compact-meta-top"><%= item[:processing_message].to_s.presence || "Queued for background processing." %></p>
-              <p class="meta compact-meta-top">Progress: <strong><%= progress_completed %>/<%= progress_total %></strong> (<%= progress_percent %>%)</p>
+              <div class="workspace-progress-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<%= progress_percent %>">
+                <span class="workspace-progress-fill" style="width: <%= progress_percent %>%"></span>
+              </div>
+              <p class="meta compact-meta-top">Progress: <strong><%= progress_completed %>/<%= progress_total %></strong> steps (<%= progress_percent %>%)</p>
               <% if insights.any? %>
                 <p class="meta compact-meta-top">
                   Type: <%= insights[:content_type].to_s.presence || "unknown" %>,
@@ -205,9 +235,9 @@
                 </details>
               <% end %>
             </td>
-            <td class="table-actions">
-              <%= link_to "Profile", instagram_profile_path(profile), class: "btn small secondary" %>
-              <%= button_to "Regenerate",
+            <td class="table-actions workspace-col-actions">
+              <%= link_to "View Profile", instagram_profile_path(profile), class: "btn small secondary" %>
+              <%= button_to "Retry Suggestions",
                     analyze_instagram_profile_instagram_profile_post_path(profile, post),
                     method: :post,
                     params: {
@@ -221,7 +251,7 @@
                       retry_on_incomplete_profile: false
                     },
                     class: "btn small secondary" %>
-              <%= button_to "Regenerate All",
+              <%= button_to "Retry Full Pipeline",
                     analyze_instagram_profile_instagram_profile_post_path(profile, post),
                     method: :post,
                     params: {

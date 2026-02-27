@@ -6,6 +6,17 @@ require "timeout"
 class SyncInstagramProfileStoriesJob < ApplicationJob
   queue_as :story_processing
 
+  class BlockedStoryMediaSourceError < StandardError
+    attr_reader :context
+
+    def initialize(context)
+      @context = context.is_a?(Hash) ? context.deep_symbolize_keys : {}
+      reason_code = @context[:reason_code].to_s.presence || "blocked_media_source"
+      marker = @context[:marker].to_s.presence || "unknown"
+      super("Blocked story media source: #{reason_code} (#{marker})")
+    end
+  end
+
   MAX_STORIES = 10
   MEDIA_DOWNLOAD_ATTEMPTS = 3
 
@@ -148,6 +159,24 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         next
       end
 
+      blocked_story_source = blocked_story_media_source_context(url: media_url)
+      if blocked_story_source.present?
+        profile.record_event!(
+          kind: "story_skipped_debug",
+          external_id: "story_skipped_debug:#{story_id}:#{Time.current.utc.iso8601(6)}",
+          occurred_at: Time.current,
+          metadata: base_story_metadata(profile: profile, story: story).merge(
+            skip_reason: blocked_story_source[:reason_code].to_s,
+            skip_category: "media_policy",
+            skip_marker: blocked_story_source[:marker].to_s,
+            skip_source: blocked_story_source[:source].to_s.presence || "media_source_policy",
+            story_index: stories.find_index(story),
+            total_stories: stories.size
+          )
+        )
+        next
+      end
+
       existing_download_event = latest_story_download_event(profile: profile, story_id: story_id)
       reused_media = load_existing_story_media(event: existing_download_event)
       reused_media ||= load_existing_story_media_from_ingested_story(profile: profile, story_id: story_id)
@@ -201,6 +230,36 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         attach_media_to_event(downloaded_event, bytes: bytes, filename: filename, content_type: content_type)
         InstagramProfileEvent.broadcast_story_archive_refresh!(account: account)
         downloaded_count += 1
+      end
+
+      unless ensure_event_media_attached!(
+        event: downloaded_event,
+        bytes: bytes,
+        filename: filename,
+        content_type: content_type,
+        fallback_blob: reused_media.is_a?(Hash) ? reused_media[:blob] : nil
+      )
+        failure = {
+          reason: "story_media_attach_failed",
+          category: "media_attach",
+          retryable: true,
+          resolution: "Retry story sync after verifying ActiveStorage service health."
+        }
+        record_story_sync_failed_event(
+          profile: profile,
+          story: story,
+          story_id: story_id,
+          failure: failure
+        )
+        story_failures << {
+          story_id: story_id,
+          reason: failure[:reason],
+          category: failure[:category],
+          retryable: failure[:retryable],
+          error_class: nil,
+          error_message: "story_download_event_missing_media_attachment"
+        }
+        next
       end
 
       attach_media_to_event(upload_event, bytes: bytes, filename: filename, content_type: content_type)
@@ -281,6 +340,10 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       }
     )
 
+    synced_at = Time.current
+    profile.update!(last_synced_at: synced_at)
+    account.update!(last_synced_at: synced_at)
+
     Turbo::StreamsChannel.broadcast_append_to(
       account,
       target: "notifications",
@@ -294,6 +357,7 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
         downloaded: downloaded_count,
         reused_downloads: reused_download_count,
         analysis_jobs_queued: analysis_queued_count,
+        synced_at: synced_at.iso8601(3),
         failed_story_count: story_failures.length,
         failed_stories: story_failures.first(15)
       },
@@ -452,6 +516,20 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     nil
   end
 
+  def ensure_event_media_attached!(event:, bytes:, filename:, content_type:, fallback_blob: nil)
+    return false unless event
+    return true if event.media.attached?
+
+    attach_blob_to_event(event, blob: fallback_blob) if fallback_blob.present?
+    unless event.media.attached?
+      attach_media_to_event(event, bytes: bytes, filename: filename, content_type: content_type)
+    end
+    event.reload
+    event.media.attached?
+  rescue StandardError
+    false
+  end
+
   def enqueue_story_preview_generation!(event:, story:, user_agent:)
     return false unless event&.media&.attached?
     return false unless event.media.blob&.content_type.to_s.start_with?("video/")
@@ -488,6 +566,9 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     event = profile.instagram_profile_events.find_by(kind: "story_analysis_queued", external_id: "story_analysis_queued:#{story_id}")
     return false unless event
 
+    normalize_stale_story_analysis_queue_event!(event)
+    event.reload
+
     metadata = event.metadata.is_a?(Hash) ? event.metadata : {}
     status = metadata["status"].to_s
     return false if %w[completed failed].include?(status)
@@ -497,9 +578,31 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     false
   end
 
+  def normalize_stale_story_analysis_queue_event!(event)
+    return false unless event
+    return false unless story_analysis_queue_inspector.stale_job?(event: event)
+
+    metadata = event.metadata.is_a?(Hash) ? event.metadata.deep_dup : {}
+    now = Time.current
+    metadata["status"] = "failed"
+    metadata["status_reason"] = "stale_or_missing_job"
+    metadata["status_updated_at"] = now.iso8601(3)
+    metadata["failed_at"] = now.iso8601(3)
+    metadata["error_message"] = "Previous story analysis job appears stalled or missing. Re-queueing analysis."
+    event.update!(metadata: metadata)
+    true
+  rescue StandardError
+    false
+  end
+
+  def story_analysis_queue_inspector
+    @story_analysis_queue_inspector ||= InstagramAccounts::StoryAnalysisQueueInspector.new
+  end
+
   def enqueue_story_analysis!(account:, profile:, story:, downloaded_event:, ingested_story:, auto_reply:)
     story_id = story[:story_id].to_s.strip
     return false if story_id.blank? || downloaded_event.blank?
+    return false unless downloaded_event.media.attached?
     return false if story_analysis_already_queued?(profile: profile, story_id: story_id)
 
     queue_event = profile.record_event!(
@@ -565,11 +668,15 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       skip_reason: skip_reason
     )
     return { downloaded: false, reused: true, event: reused_media[:event] } if reused_media
+    return { downloaded: false, reused: false, event: nil } unless allow_skipped_story_media_download?
 
     media_url = story[:media_url].to_s.strip
     return { downloaded: false, reused: false, event: nil } if media_url.blank?
 
-    bytes, content_type, filename = download_story_media_with_retry(url: media_url, user_agent: account.user_agent)
+    bytes, content_type, filename = download_story_media_with_retry(
+      url: media_url,
+      user_agent: account.user_agent
+    )
     downloaded_at = Time.current
     event = profile.record_event!(
       kind: "story_downloaded",
@@ -613,6 +720,15 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     klass = error.class.name.to_s
     message = error.message.to_s
     normalized = message.downcase
+
+    if error.is_a?(BlockedStoryMediaSourceError)
+      return {
+        reason: "story_media_source_blocked",
+        category: "media_policy",
+        retryable: false,
+        resolution: "Story media source blocked by media-source policy."
+      }
+    end
 
     if transient_failure?(error: error, normalized: normalized)
       return {
@@ -714,6 +830,9 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   end
 
   def download_story_media(url:, user_agent:)
+    blocked_context = blocked_story_media_source_context(url: url)
+    raise BlockedStoryMediaSourceError, blocked_context if blocked_context.present?
+
     uri = URI.parse(url)
     raise "Invalid story media URL" unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
 
@@ -730,7 +849,10 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     res = http.request(req)
 
     if res.is_a?(Net::HTTPRedirection) && res["location"].present?
-      return download_story_media(url: res["location"], user_agent: user_agent)
+      redirected_url = normalize_redirect_url(base_uri: uri, location: res["location"])
+      raise "Invalid story media redirect URL" if redirected_url.blank?
+
+      return download_story_media(url: redirected_url, user_agent: user_agent)
     end
 
     raise "HTTP #{res.code}" unless res.is_a?(Net::HTTPSuccess)
@@ -744,6 +866,20 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
     filename = "story_#{digest}.#{ext}"
 
     [ bytes, content_type, filename ]
+  end
+
+  def blocked_story_media_source_context(url:)
+    Instagram::MediaDownloadTrustPolicy.blocked_source_context(url: url)
+  rescue StandardError
+    nil
+  end
+
+  def allow_skipped_story_media_download?
+    ActiveModel::Type::Boolean.new.cast(
+      ENV.fetch("STORY_SYNC_DOWNLOAD_SKIPPED_MEDIA", "false")
+    )
+  rescue StandardError
+    false
   end
 
   def extension_for_content_type(content_type:)

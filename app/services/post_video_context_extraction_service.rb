@@ -15,20 +15,11 @@ class PostVideoContextExtractionService
   )
   DYNAMIC_KEYFRAME_LIMIT = ENV.fetch("POST_VIDEO_DYNAMIC_KEYFRAME_LIMIT", "2").to_i.clamp(1, 8)
   DYNAMIC_FRAME_INTERVAL_SECONDS = ENV.fetch("POST_VIDEO_DYNAMIC_FRAME_INTERVAL_SECONDS", "5.0").to_f.clamp(1.0, 20.0)
-  ENABLE_LOCAL_VIDEO_INTELLIGENCE = ActiveModel::Type::Boolean.new.cast(
-    if ENV.key?("POST_VIDEO_ENABLE_LOCAL_VIDEO_INTELLIGENCE")
-      ENV.fetch("POST_VIDEO_ENABLE_LOCAL_VIDEO_INTELLIGENCE", "false")
-    else
-      ENV.fetch("POST_VIDEO_ENABLE_LEGACY_INTELLIGENCE", "false")
-    end
-  )
-
   def initialize(
     video_frame_change_detector_service: VideoFrameChangeDetectorService.new,
     video_metadata_service: VideoMetadataService.new,
     video_audio_extraction_service: VideoAudioExtractionService.new,
     speech_transcription_service: SpeechTranscriptionService.new,
-    local_microservice_client: Ai::LocalMicroserviceClient.new,
     content_understanding_service: StoryContentUnderstandingService.new,
     video_frame_extraction_service: VideoFrameExtractionService.new,
     vision_understanding_service: Ai::VisionUnderstandingService.new
@@ -37,7 +28,6 @@ class PostVideoContextExtractionService
     @video_metadata_service = video_metadata_service
     @video_audio_extraction_service = video_audio_extraction_service
     @speech_transcription_service = speech_transcription_service
-    @local_microservice_client = local_microservice_client
     @content_understanding_service = content_understanding_service
     @video_frame_extraction_service = video_frame_extraction_service
     @vision_understanding_service = vision_understanding_service
@@ -333,92 +323,16 @@ class PostVideoContextExtractionService
   end
 
   def extract_local_video_intelligence_if_allowed(bytes:, reference_id:, static_video:)
-    unless ENABLE_LOCAL_VIDEO_INTELLIGENCE
-      return {
-        data: {},
-        metadata: { reason: "local_dynamic_intelligence_disabled" }
-      }
-    end
-
-    if static_video
-      return {
-        data: {},
-        metadata: { reason: "static_video_routed_to_image" }
-      }
-    end
-    if bytes.bytesize > MAX_DYNAMIC_INTELLIGENCE_BYTES
-      return {
-        data: {},
-        metadata: { reason: "video_too_large_for_dynamic_intelligence" }
-      }
-    end
-
-    data = @local_microservice_client.analyze_video_story_intelligence!(
-      video_bytes: bytes,
-      usage_context: {
-        workflow: "post_analysis_pipeline",
-        task: "video_context",
-        reference_id: reference_id.to_s
-      }
-    )
-    {
-      data: data.is_a?(Hash) ? data : {},
-      metadata: (data.is_a?(Hash) ? data["metadata"] : nil).is_a?(Hash) ? data["metadata"] : {}
-    }
-  rescue StandardError => e
     {
       data: {},
-      metadata: {
-        reason: "dynamic_intelligence_error",
-        error_class: e.class.name,
-        error_message: e.message.to_s
-      }
+      metadata: { reason: "local_dynamic_intelligence_disabled" }
     }
   end
 
   def extract_static_frame_intelligence_if_available(mode:, reference_id:, static_video:)
-    unless ENABLE_LOCAL_VIDEO_INTELLIGENCE
-      return {
-        data: {},
-        metadata: { reason: "local_static_frame_intelligence_disabled" }
-      }
-    end
-
-    unless static_video
-      return {
-        data: {},
-        metadata: { reason: "dynamic_video_no_static_frame_analysis" }
-      }
-    end
-
-    frame_bytes = mode[:frame_bytes].to_s.b
-    if frame_bytes.blank?
-      return {
-        data: {},
-        metadata: { reason: "static_frame_missing" }
-      }
-    end
-
-    data = @local_microservice_client.detect_faces_and_ocr!(
-      image_bytes: frame_bytes,
-      usage_context: {
-        workflow: "post_analysis_pipeline",
-        task: "video_static_frame_context",
-        reference_id: reference_id.to_s
-      }
-    )
-    {
-      data: data.is_a?(Hash) ? data : {},
-      metadata: (data.is_a?(Hash) ? data["metadata"] : nil).is_a?(Hash) ? data["metadata"] : {}
-    }
-  rescue StandardError => e
     {
       data: {},
-      metadata: {
-        reason: "static_frame_intelligence_error",
-        error_class: e.class.name,
-        error_message: e.message.to_s
-      }
+      metadata: { reason: "local_static_frame_intelligence_disabled" }
     }
   end
 

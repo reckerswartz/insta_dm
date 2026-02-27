@@ -16,18 +16,13 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     )
   end
 
-  it "enqueues independent stage jobs and finalizer with pipeline state tracking" do
+  it "enqueues generation immediately when no required stage jobs exist" do
     event = create_story_event
-    ocr_job = instance_double(ActiveJob::Base, job_id: "ocr-job-1", queue_name: "ai_ocr_queue")
-    vision_job = instance_double(ActiveJob::Base, job_id: "vision-job-1", queue_name: "ai_visual_queue")
-    metadata_job = instance_double(ActiveJob::Base, job_id: "meta-job-1", queue_name: "ai_metadata_queue")
-    finalizer_job = instance_double(ActiveJob::Base, job_id: "finalizer-job-1", queue_name: "ai_pipeline_orchestration_queue")
+    generation_job = instance_double(ActiveJob::Base, job_id: "generation-job-1", queue_name: "ai_llm_comment_queue")
 
-    allow(ProcessStoryCommentOcrJob).to receive(:perform_later).and_return(ocr_job)
-    allow(ProcessStoryCommentVisionJob).to receive(:perform_later).and_return(vision_job)
     allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
-    allow(ProcessStoryCommentMetadataJob).to receive(:perform_later).and_return(metadata_job)
-    allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later).and_return(finalizer_job)
+    allow(GenerateStoryCommentFromPipelineJob).to receive(:perform_later).and_return(generation_job)
+    allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later)
 
     result = described_class.new(
       event: event,
@@ -39,23 +34,19 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
 
     expect(result[:status]).to eq("pipeline_enqueued")
     expect(result[:run_id]).to be_present
-    expect(result[:finalizer_job_id]).to eq("finalizer-job-1")
+    expect(result[:generation_job_id]).to eq("generation-job-1")
+    expect(result[:finalizer_job_id]).to be_nil
 
-    expect(ProcessStoryCommentOcrJob).to have_received(:perform_later).once
-    expect(ProcessStoryCommentVisionJob).to have_received(:perform_later).once
     expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
-    expect(ProcessStoryCommentMetadataJob).to have_received(:perform_later).once
-    expect(FinalizeStoryCommentPipelineJob).to have_received(:perform_later).once
+    expect(GenerateStoryCommentFromPipelineJob).to have_received(:perform_later).once
+    expect(FinalizeStoryCommentPipelineJob).not_to have_received(:perform_later)
 
     pipeline = event.reload.llm_comment_metadata["parallel_pipeline"]
     expect(pipeline).to be_a(Hash)
     expect(pipeline["run_id"]).to eq(result[:run_id])
     expect(pipeline["status"]).to eq("running")
-    expect(result[:stage_jobs_requested]).to match_array(%w[ocr_analysis vision_detection metadata_extraction])
-    expect(pipeline.dig("steps", "ocr_analysis", "status")).to eq("queued")
-    expect(pipeline.dig("steps", "vision_detection", "status")).to eq("queued")
+    expect(result[:stage_jobs_requested]).to eq([])
     expect(pipeline.dig("steps", "face_recognition", "status")).to eq("pending")
-    expect(pipeline.dig("steps", "metadata_extraction", "status")).to eq("queued")
   end
 
   it "reuses the active pipeline run when one is already running" do
@@ -72,7 +63,7 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
       }
     )
 
-    allow(ProcessStoryCommentOcrJob).to receive(:perform_later)
+    allow(GenerateStoryCommentFromPipelineJob).to receive(:perform_later)
     allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later)
 
     result = described_class.new(
@@ -84,11 +75,11 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     ).call
 
     expect(result).to include(status: "pipeline_already_running", run_id: "run-existing-1")
-    expect(ProcessStoryCommentOcrJob).not_to have_received(:perform_later)
+    expect(GenerateStoryCommentFromPipelineJob).not_to have_received(:perform_later)
     expect(FinalizeStoryCommentPipelineJob).not_to have_received(:perform_later)
   end
 
-  it "enqueues only failed or incomplete steps when resuming a failed pipeline" do
+  it "resumes a failed pipeline and re-queues generation when no required steps remain" do
     event = create_story_event
     event.update!(
       llm_comment_metadata: {
@@ -96,22 +87,16 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
           "run_id" => "run-failed-1",
           "status" => "failed",
           "steps" => {
-            "ocr_analysis" => { "status" => "succeeded", "attempts" => 1 },
-            "vision_detection" => { "status" => "failed", "attempts" => 1, "error" => "timeout" },
-            "face_recognition" => { "status" => "succeeded", "attempts" => 1 },
-            "metadata_extraction" => { "status" => "succeeded", "attempts" => 1 }
+            "face_recognition" => { "status" => "succeeded", "attempts" => 1 }
           }
         }
       }
     )
 
-    vision_job = instance_double(ActiveJob::Base, job_id: "vision-resume-1", queue_name: "ai_visual_queue")
-    finalizer_job = instance_double(ActiveJob::Base, job_id: "finalizer-resume-1", queue_name: "ai_pipeline_orchestration_queue")
-    allow(ProcessStoryCommentOcrJob).to receive(:perform_later)
-    allow(ProcessStoryCommentVisionJob).to receive(:perform_later).and_return(vision_job)
+    generation_job = instance_double(ActiveJob::Base, job_id: "generation-resume-1", queue_name: "ai_llm_comment_queue")
     allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
-    allow(ProcessStoryCommentMetadataJob).to receive(:perform_later)
-    allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later).and_return(finalizer_job)
+    allow(GenerateStoryCommentFromPipelineJob).to receive(:perform_later).and_return(generation_job)
+    allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later)
 
     result = described_class.new(
       event: event,
@@ -123,12 +108,12 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
 
     expect(result[:status]).to eq("pipeline_enqueued")
     expect(result[:resume_mode]).to eq("resume_incomplete")
-    expect(result[:stage_jobs_requested]).to match_array(%w[vision_detection])
-    expect(result[:stage_jobs].keys).to match_array(%w[vision_detection])
-    expect(ProcessStoryCommentVisionJob).to have_received(:perform_later).once
-    expect(ProcessStoryCommentOcrJob).not_to have_received(:perform_later)
+    expect(result[:stage_jobs_requested]).to eq([])
+    expect(result[:stage_jobs]).to eq({})
+    expect(result[:generation_job_id]).to eq("generation-resume-1")
+    expect(GenerateStoryCommentFromPipelineJob).to have_received(:perform_later).once
+    expect(FinalizeStoryCommentPipelineJob).not_to have_received(:perform_later)
     expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
-    expect(ProcessStoryCommentMetadataJob).not_to have_received(:perform_later)
   end
 
   it "skips stage job enqueue entirely when all analysis steps are already complete" do
@@ -139,21 +124,16 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
           "run_id" => "run-failed-after-analysis",
           "status" => "failed",
           "steps" => {
-            "ocr_analysis" => { "status" => "succeeded" },
-            "vision_detection" => { "status" => "succeeded" },
-            "face_recognition" => { "status" => "succeeded" },
-            "metadata_extraction" => { "status" => "succeeded" }
+            "face_recognition" => { "status" => "succeeded" }
           }
         }
       }
     )
 
-    allow(ProcessStoryCommentOcrJob).to receive(:perform_later)
-    allow(ProcessStoryCommentVisionJob).to receive(:perform_later)
     allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
-    allow(ProcessStoryCommentMetadataJob).to receive(:perform_later)
-    finalizer_job = instance_double(ActiveJob::Base, job_id: "finalizer-only-1", queue_name: "ai_pipeline_orchestration_queue")
-    allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later).and_return(finalizer_job)
+    generation_job = instance_double(ActiveJob::Base, job_id: "generation-only-1", queue_name: "ai_llm_comment_queue")
+    allow(GenerateStoryCommentFromPipelineJob).to receive(:perform_later).and_return(generation_job)
+    allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later)
 
     result = described_class.new(
       event: event,
@@ -165,10 +145,9 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
 
     expect(result[:stage_jobs]).to eq({})
     expect(result[:stage_jobs_requested]).to eq([])
-    expect(FinalizeStoryCommentPipelineJob).to have_received(:perform_later).once
-    expect(ProcessStoryCommentOcrJob).not_to have_received(:perform_later)
-    expect(ProcessStoryCommentVisionJob).not_to have_received(:perform_later)
+    expect(result[:generation_job_id]).to eq("generation-only-1")
+    expect(GenerateStoryCommentFromPipelineJob).to have_received(:perform_later).once
+    expect(FinalizeStoryCommentPipelineJob).not_to have_received(:perform_later)
     expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
-    expect(ProcessStoryCommentMetadataJob).not_to have_received(:perform_later)
   end
 end

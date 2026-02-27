@@ -109,6 +109,8 @@ class InstagramProfileEvent < ApplicationRecord
         final_prompt: context[:post_payload],
         image_description: context[:image_description],
         topics_used: context[:topics],
+        media_topics: Array(context[:media_topics]).first(16),
+        profile_topics: Array(context[:profile_topics]).first(10),
         author_classification: context[:author_type],
         historical_context: context[:historical_context],
         historical_story_context: Array(context[:historical_story_context]).first(10),

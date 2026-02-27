@@ -6,6 +6,15 @@ module StoryIntelligence
   class PayloadBuilder
     include ActiveModel::Validations
 
+    SUMMARY_TOPIC_STOPWORDS = %w[
+      about after again against along also and are around because been before being between
+      both but can could does doing down during each few from have having into itself just
+      like many more most much only other over same should some such than that their there
+      these they this those through under very what when where which while with without your
+      image video story frame scene visual context detected looks showing appears includes
+      instagram post clip
+    ].freeze
+
     def initialize(event:)
       @event = event
     end
@@ -279,12 +288,6 @@ module StoryIntelligence
     def extract_live_intelligence(story_id)
       content_type = event.media&.blob&.content_type.to_s
       return {} if content_type.blank?
-      unless local_microservice_enabled?
-        return unavailable_live_intelligence(reason: "local_microservice_disabled")
-      end
-      if Ai::LocalMicroserviceClient.service_backoff_active?
-        return unavailable_live_intelligence(reason: "local_microservice_backoff_active")
-      end
 
       if content_type.start_with?("image/")
         extract_image_intelligence(story_id)
@@ -295,75 +298,59 @@ module StoryIntelligence
       end
     rescue StandardError => e
       unavailable_live_intelligence(
-        reason: "local_microservice_unavailable",
+        reason: "llm_media_intelligence_unavailable",
         error: "#{e.class}: #{e.message}".byteslice(0, 240)
       )
     end
 
-    def extract_image_intelligence(story_id)
+    def extract_image_intelligence(_story_id)
       image_bytes = event.media.download
-      detection = FaceDetectionService.new.detect(
-        media_payload: { story_id: story_id.to_s, image_bytes: image_bytes }
-      )
+      return unavailable_live_intelligence(reason: "image_bytes_missing") if image_bytes.to_s.b.blank?
+
       stage_started_at = monotonic_time
-      extraction_threads = {}
-      extraction_results = {}
-      extraction_errors = {}
-
-      extraction_threads[:ocr_vision] = Thread.new do
-        StoryContentUnderstandingService.new.build(
-          media_type: "image",
-          detections: [detection],
-          transcript_text: nil
-        )
-      end
-      extraction_threads[:face_detection] = Thread.new do
-        {
-          face_count: Array(detection[:faces]).length,
-          faces: Array(detection[:faces])
-        }
-      end
-      extraction_threads[:metadata_extraction] = Thread.new do
-        {
-          source: detection.dig(:metadata, :source).to_s.presence || "local_ai",
-          reason: detection.dig(:metadata, :reason).to_s.presence,
-          warnings: Array(detection.dig(:metadata, :warnings)).first(20)
-        }
-      end
-
-      extraction_threads.each do |key, thread|
-        extraction_results[key] = thread.value
-      rescue StandardError => e
-        extraction_errors[key] = { error_class: e.class.name, error_message: e.message.to_s }
-      end
-
-      understanding = extraction_results[:ocr_vision].is_a?(Hash) ? extraction_results[:ocr_vision] : {}
-      face_payload = extraction_results[:face_detection].is_a?(Hash) ? extraction_results[:face_detection] : {}
-      metadata_payload = extraction_results[:metadata_extraction].is_a?(Hash) ? extraction_results[:metadata_extraction] : {}
-      people = event.send(:resolve_people_from_faces, detected_faces: Array(detection[:faces]), fallback_image_bytes: image_bytes, story_id: story_id)
+      vision = vision_understanding_service.summarize(
+        image_bytes_list: [ image_bytes.to_s.b ],
+        transcript: nil,
+        candidate_topics: [],
+        media_type: "image"
+      )
       duration_ms = ((monotonic_time - stage_started_at) * 1000.0).round
+      vision_meta = vision[:metadata].is_a?(Hash) ? vision[:metadata].deep_stringify_keys : {}
+      summary = vision[:summary].to_s.strip
+      summary_tokens = summary_topic_tokens(summary)
+      hashtags = summary.scan(/#[a-zA-Z0-9_]+/).map(&:downcase).uniq.first(20)
+      mentions = summary.scan(/@[a-zA-Z0-9._]+/).map(&:downcase).uniq.first(20)
+      profile_handles = summary.scan(/\b[a-zA-Z0-9._]{3,30}\b/)
+        .map(&:downcase)
+        .select { |token| token.include?("_") || token.include?(".") }
+        .reject { |token| token.include?("instagram.com") }
+        .uniq
+        .first(30)
+      topics = merge_unique_values(vision[:topics], summary_tokens, hashtags.map { |tag| tag.to_s.delete_prefix("#") })
+      objects = merge_unique_values(vision[:objects], topics.first(10))
+      reason = vision_meta["reason"].to_s.presence
 
       processing_stages = {
         ocr_analysis: stage_row(
           label: "OCR Analysis",
           group: "media_analysis",
-          state: "completed",
+          state: "completed_with_warnings",
           progress: 100,
-          message: "OCR extraction completed"
+          message: "Dedicated OCR microservice disabled; visible text inferred from LLM vision context."
         ),
         vision_detection: stage_row(
           label: "Image Analysis",
           group: "media_analysis",
-          state: "completed",
+          state: topics.any? || objects.any? || summary.present? ? "completed" : "completed_with_warnings",
           progress: 100,
-          message: "Vision/object extraction completed"
+          message: topics.any? || objects.any? || summary.present? ? "LLM vision analysis completed." : "LLM vision analysis returned limited context."
         ),
         face_recognition: stage_row(
           label: "Face Recognition",
           group: "media_analysis",
-          state: "completed",
+          state: "completed_with_warnings",
           progress: 100,
-          message: "Face detection completed"
+          message: "Face microservice disabled; face-specific enrichment skipped."
         ),
         metadata_extraction: stage_row(
           label: "Metadata Extraction",
@@ -375,48 +362,62 @@ module StoryIntelligence
         parallel_services: stage_row(
           label: "Parallel AI Services",
           group: "media_analysis",
-          state: extraction_errors.empty? ? "completed" : "completed_with_warnings",
+          state: "completed",
           progress: 100,
-          message: "OCR, vision, face, and metadata extraction processed in parallel.",
+          message: "Media context extracted directly via LLM vision analysis.",
           details: {
             duration_ms: duration_ms,
-            warnings: extraction_errors.presence
+            model: vision_meta["model"].to_s.presence,
+            reason: reason
           }.compact
         )
       }
 
-      {
-        ocr_text: understanding[:ocr_text].to_s.presence,
-        transcript: understanding[:transcript].to_s.presence,
-        objects: Array(understanding[:objects]).map(&:to_s).reject(&:blank?).uniq.first(30),
-        hashtags: Array(understanding[:hashtags]).map(&:to_s).reject(&:blank?).uniq.first(20),
-        mentions: Array(understanding[:mentions]).map(&:to_s).reject(&:blank?).uniq.first(20),
-        profile_handles: Array(understanding[:profile_handles]).map(&:to_s).reject(&:blank?).uniq.first(30),
-        topics: Array(understanding[:topics]).map(&:to_s).reject(&:blank?).uniq.first(30),
-        scenes: Array(understanding[:scenes]).first(80),
-        ocr_blocks: Array(understanding[:ocr_blocks]).first(120),
-        object_detections: event.send(:normalize_object_detections, understanding[:object_detections], limit: 120),
-        face_count: face_payload[:face_count].to_i,
-        people: people,
-        reason: metadata_payload[:reason].to_s.presence,
-        source: "live_local_vision_ocr_parallel",
+      payload = {
+        ocr_text: nil,
+        transcript: nil,
+        objects: objects,
+        hashtags: hashtags,
+        mentions: mentions,
+        profile_handles: profile_handles,
+        topics: topics,
+        scenes: [],
+        ocr_blocks: [],
+        object_detections: [],
+        face_count: 0,
+        people: [],
+        reason: reason,
+        source: "live_llm_vision_image_context",
         processing_stages: processing_stages,
         processing_log: [
           {
-            stage: "parallel_extraction",
-            state: extraction_errors.empty? ? "completed" : "completed_with_warnings",
+            stage: "llm_vision_extraction",
+            state: topics.any? || objects.any? || summary.present? ? "completed" : "completed_with_warnings",
             progress: 100,
-            message: "OCR, vision, face, and metadata extraction processed in parallel.",
+            message: summary.presence || "LLM vision extracted image context.",
             duration_ms: duration_ms,
-            warnings: extraction_errors
+            model: vision_meta["model"].to_s.presence,
+            reason: reason
           }
         ]
       }
+
+      if payload_blank?(payload)
+        return {
+          source: "unavailable",
+          reason: reason.to_s.presence || "llm_image_intelligence_empty",
+          processing_stages: payload[:processing_stages],
+          processing_log: payload[:processing_log]
+        }
+      end
+
+      payload.delete(:reason) if payload[:reason].to_s.blank?
+      payload
     end
 
     def extract_video_intelligence(story_id, content_type)
       video_bytes = event.media.download
-      extraction = PostVideoContextExtractionService.new.extract(
+      extraction = llm_only_video_context_service.extract(
         video_bytes: video_bytes,
         reference_id: story_id.to_s,
         content_type: content_type
@@ -441,7 +442,7 @@ module StoryIntelligence
         face_count: extraction[:face_count].to_i,
         people: normalize_people_rows(extraction[:people]).first(12),
         media_type: "video",
-        source: "live_local_video_context",
+        source: "live_llm_video_context",
         reason: extraction_reason_from_metadata(extraction),
         processing_stages: video_processing_stages(extraction),
         processing_log: video_processing_log(extraction)
@@ -619,10 +620,12 @@ module StoryIntelligence
       }
     end
 
-    def local_microservice_enabled?
-      ActiveModel::Type::Boolean.new.cast(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "false"))
-    rescue StandardError
-      false
+    def vision_understanding_service
+      @vision_understanding_service ||= Ai::VisionUnderstandingService.new
+    end
+
+    def llm_only_video_context_service
+      @llm_only_video_context_service ||= PostVideoContextExtractionService.new
     end
 
     def unavailable_live_intelligence(reason:, error: nil)
@@ -649,6 +652,14 @@ module StoryIntelligence
         .reject(&:blank?)
         .uniq
         .first(40)
+    end
+
+    def summary_topic_tokens(text)
+      text.to_s.downcase.scan(/[a-z0-9_]+/)
+        .reject { |token| token.length < 3 }
+        .reject { |token| SUMMARY_TOPIC_STOPWORDS.include?(token) }
+        .uniq
+        .first(24)
     end
 
     def normalize_hash_array(*values)

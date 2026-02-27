@@ -77,4 +77,26 @@ RSpec.describe "EnqueueFeedAutoEngagementForAllAccountsJobTest" do
     expect(result[:scheduler_lease_skipped]).to eq(1)
     expect(enqueued_ids).to contain_exactly(second.id, third.id)
   end
+
+  it "skips accounts with pending backlog" do
+    account = create_account_with_session
+    profile = account.instagram_profiles.create!(username: "person_#{SecureRandom.hex(4)}")
+    profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "pending_#{SecureRandom.hex(3)}",
+      ai_status: "pending"
+    )
+
+    result = EnqueueFeedAutoEngagementForAllAccountsJob.perform_now(
+      batch_size: 1,
+      max_posts: 2,
+      include_story: false,
+      story_hold_seconds: 12,
+      cursor_id: account.id - 1
+    )
+
+    enqueued_feed_jobs = enqueued_jobs.select { |row| row[:job] == AutoEngageHomeFeedJob }
+    expect(enqueued_feed_jobs).to eq([])
+    expect(result[:backlog_skipped]).to eq(1)
+  end
 end

@@ -39,39 +39,39 @@ RSpec.describe LlmComment::ParallelPipelineState do
       )
       state.mark_step_queued!(
         run_id: run_id,
-        step: "ocr_analysis",
-        queue_name: "ai_ocr_queue",
-        active_job_id: "ocr-job-1"
+        step: "face_recognition",
+        queue_name: "ai_face_queue",
+        active_job_id: "face-job-1"
       )
     end
 
     travel_to(start_at + 4.seconds) do
       state.mark_step_running!(
         run_id: run_id,
-        step: "ocr_analysis",
-        queue_name: "ai_ocr_queue",
-        active_job_id: "ocr-job-1"
+        step: "face_recognition",
+        queue_name: "ai_face_queue",
+        active_job_id: "face-job-1"
       )
     end
 
     travel_to(start_at + 13.seconds) do
       state.mark_step_completed!(
         run_id: run_id,
-        step: "ocr_analysis",
+        step: "face_recognition",
         status: "succeeded",
         result: { ok: true }
       )
     end
 
-    row = state.step_state(run_id: run_id, step: "ocr_analysis")
+    row = state.step_state(run_id: run_id, step: "face_recognition")
     expect(row["queue_wait_ms"]).to eq(4000)
     expect(row["run_duration_ms"]).to eq(9000)
     expect(row["total_duration_ms"]).to eq(13000)
 
     rollup = state.step_rollup(run_id: run_id)
-    expect(rollup.dig("ocr_analysis", "queue_wait_ms")).to eq(4000)
-    expect(rollup.dig("ocr_analysis", "run_duration_ms")).to eq(9000)
-    expect(rollup.dig("ocr_analysis", "total_duration_ms")).to eq(13000)
+    expect(rollup.dig("face_recognition", "queue_wait_ms")).to eq(4000)
+    expect(rollup.dig("face_recognition", "run_duration_ms")).to eq(9000)
+    expect(rollup.dig("face_recognition", "total_duration_ms")).to eq(13000)
   end
 
   it "captures pipeline and generation durations in pipeline timing rollup" do
@@ -117,28 +117,10 @@ RSpec.describe LlmComment::ParallelPipelineState do
       "run_id" => "run-old-1",
       "status" => "failed",
       "steps" => {
-        "ocr_analysis" => {
-          "status" => "succeeded",
-          "attempts" => 1,
-          "result" => { "text_present" => true },
-          "queued_at" => 3.minutes.ago.iso8601,
-          "started_at" => 3.minutes.ago.iso8601,
-          "finished_at" => 2.minutes.ago.iso8601,
-          "total_duration_ms" => 1100
-        },
-        "vision_detection" => {
-          "status" => "failed",
-          "attempts" => 2,
-          "error" => "timeout"
-        },
         "face_recognition" => {
           "status" => "succeeded",
           "attempts" => 1,
           "result" => { "face_count" => 1 }
-        },
-        "metadata_extraction" => {
-          "status" => "pending",
-          "attempts" => 0
         }
       },
       "shared_payload" => {
@@ -163,14 +145,11 @@ RSpec.describe LlmComment::ParallelPipelineState do
     expect(result[:resumed_from_run_id]).to eq("run-old-1")
 
     pipeline = state.pipeline_for(run_id: "run-new-1")
-    expect(pipeline.dig("steps", "ocr_analysis", "status")).to eq("succeeded")
     expect(pipeline.dig("steps", "face_recognition", "status")).to eq("succeeded")
-    expect(pipeline.dig("steps", "vision_detection", "status")).to eq("pending")
-    expect(pipeline.dig("steps", "metadata_extraction", "status")).to eq("pending")
     expect(pipeline.dig("shared_payload", "status")).to eq("ready")
     expect(pipeline.dig("shared_payload", "payload", "ocr_text")).to eq("hello world")
 
-    expect(state.steps_requiring_execution(run_id: "run-new-1")).to match_array(%w[vision_detection metadata_extraction])
+    expect(state.steps_requiring_execution(run_id: "run-new-1")).to eq([])
   end
 
   it "skips resume reuse when regenerate_all is requested" do
@@ -181,7 +160,7 @@ RSpec.describe LlmComment::ParallelPipelineState do
           "run_id" => "run-old-2",
           "status" => "failed",
           "steps" => {
-            "ocr_analysis" => { "status" => "succeeded" }
+            "face_recognition" => { "status" => "succeeded" }
           },
           "shared_payload" => {
             "status" => "ready",
@@ -204,7 +183,7 @@ RSpec.describe LlmComment::ParallelPipelineState do
 
     expect(result[:resume_mode]).to eq("regenerate_all")
     pipeline = state.pipeline_for(run_id: "run-new-2")
-    expect(pipeline.dig("steps", "ocr_analysis", "status")).to eq("pending")
+    expect(pipeline.dig("steps", "face_recognition", "status")).to eq("pending")
     expect(pipeline["shared_payload"]).to be_nil
     expect(state.steps_requiring_execution(run_id: "run-new-2")).to match_array(LlmComment::ParallelPipelineState::STEP_KEYS)
   end
@@ -220,10 +199,7 @@ RSpec.describe LlmComment::ParallelPipelineState do
           "created_at" => stale_time.iso8601,
           "updated_at" => stale_time.iso8601,
           "steps" => {
-            "ocr_analysis" => { "status" => "succeeded", "result" => { "text_present" => true } },
-            "vision_detection" => { "status" => "running", "attempts" => 1 },
-            "face_recognition" => { "status" => "pending" },
-            "metadata_extraction" => { "status" => "pending" }
+            "face_recognition" => { "status" => "running", "attempts" => 1 }
           }
         }
       }
@@ -242,8 +218,8 @@ RSpec.describe LlmComment::ParallelPipelineState do
     expect(result[:started]).to eq(true)
     expect(result[:resume_mode]).to eq("resume_incomplete")
     expect(result[:resumed_from_run_id]).to eq("run-stale-1")
-    expect(state.pipeline_for(run_id: "run-resumed-1").dig("steps", "ocr_analysis", "status")).to eq("succeeded")
-    expect(state.steps_requiring_execution(run_id: "run-resumed-1")).to include("vision_detection")
+    expect(state.pipeline_for(run_id: "run-resumed-1").dig("steps", "face_recognition", "status")).to eq("pending")
+    expect(state.steps_requiring_execution(run_id: "run-resumed-1")).to include("face_recognition")
   end
 
   it "treats deferred steps as non-blocking for generation readiness" do
@@ -260,16 +236,7 @@ RSpec.describe LlmComment::ParallelPipelineState do
       run_id: run_id
     )
 
-    %w[ocr_analysis vision_detection metadata_extraction].each do |step|
-      state.mark_step_completed!(
-        run_id: run_id,
-        step: step,
-        status: "succeeded",
-        result: { ok: true }
-      )
-    end
-
-    expect(state.required_steps(run_id: run_id)).to match_array(%w[ocr_analysis vision_detection metadata_extraction])
+    expect(state.required_steps(run_id: run_id)).to eq([])
     expect(state.required_steps_terminal?(run_id: run_id)).to eq(true)
     expect(state.all_steps_terminal?(run_id: run_id)).to eq(true)
     expect(state.step_state(run_id: run_id, step: "face_recognition").to_h["status"]).to eq("pending")

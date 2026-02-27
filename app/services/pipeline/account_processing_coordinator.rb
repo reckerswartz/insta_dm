@@ -21,36 +21,52 @@ module Pipeline
 
       health = Ops::LocalAiHealth.check
       stats[:local_ai_health] = health
+      gate_snapshot = SequentialProcessingGate.new(account: @account, now: @now).snapshot
+      stats[:priority_gate] = gate_snapshot
 
-      if due_for_story_sync?
-        if health_ok?(health)
-          enqueue_story_sync!(stats)
-          @account.continuous_processing_next_story_sync_at = next_time(STORY_SYNC_INTERVAL)
-        else
-          stats[:skipped_jobs] << { job: "SyncHomeStoryCarouselJob", reason: "local_ai_unhealthy" }
+      if backlog_blocked?(gate_snapshot)
+        record_backlog_skips!(stats: stats, gate_snapshot: gate_snapshot)
+      else
+        enqueued_phase = nil
+
+        if due_for_story_sync?
+          if health_ok?(health)
+            enqueue_story_sync!(stats)
+            @account.continuous_processing_next_story_sync_at = next_time(STORY_SYNC_INTERVAL)
+            enqueued_phase = :story_sync
+          else
+            stats[:skipped_jobs] << { job: "SyncHomeStoryCarouselJob", reason: "local_ai_unhealthy" }
+          end
         end
-      end
 
-      if due_for_feed_sync?
-        if health_ok?(health)
-          enqueue_feed_engagement!(stats)
-          @account.continuous_processing_next_feed_sync_at = next_time(FEED_SYNC_INTERVAL)
-        else
-          stats[:skipped_jobs] << { job: "CaptureHomeFeedJob", reason: "local_ai_unhealthy" }
+        if enqueued_phase.nil? && due_for_feed_sync?
+          if health_ok?(health)
+            enqueue_feed_engagement!(stats)
+            @account.continuous_processing_next_feed_sync_at = next_time(FEED_SYNC_INTERVAL)
+            enqueued_phase = :feed_sync
+          else
+            stats[:skipped_jobs] << { job: "CaptureHomeFeedJob", reason: "local_ai_unhealthy" }
+          end
         end
-      end
 
-      if due_for_profile_scan?
-        if health_ok?(health)
-          enqueue_profile_scan!(stats)
-          @account.continuous_processing_next_profile_scan_at = next_time(PROFILE_SCAN_INTERVAL)
-        else
-          enqueue_profile_refresh_fallback!(stats)
-          @account.continuous_processing_next_profile_scan_at = next_time(FALLBACK_PROFILE_REFRESH_INTERVAL)
+        if enqueued_phase.nil?
+          workspace_stats = enqueue_workspace_actions!(stats)
+          enqueued_phase = :workspace_actions if workspace_stats[:enqueued_now].to_i.positive?
         end
-      end
 
-      enqueue_workspace_actions!(stats)
+        if enqueued_phase.nil? && due_for_profile_scan?
+          if health_ok?(health)
+            enqueue_profile_scan!(stats)
+            @account.continuous_processing_next_profile_scan_at = next_time(PROFILE_SCAN_INTERVAL)
+          else
+            enqueue_profile_refresh_fallback!(stats)
+            @account.continuous_processing_next_profile_scan_at = next_time(FALLBACK_PROFILE_REFRESH_INTERVAL)
+          end
+          enqueued_phase = :profile_scan
+        end
+
+        record_priority_deferrals!(stats: stats, enqueued_phase: enqueued_phase) if enqueued_phase.present?
+      end
 
       @account.update!(
         continuous_processing_last_heartbeat_at: Time.current,
@@ -216,6 +232,7 @@ module Pipeline
           total_items: queue_stats[:total_items].to_i
         }
       )
+      queue_stats
     rescue StandardError => e
       stats[:skipped_jobs] << {
         job: "Workspace::ActionsTodoQueueService",
@@ -232,6 +249,41 @@ module Pipeline
           error_message: e.message.to_s.byteslice(0, 280)
         }
       )
+      {}
+    end
+
+    def backlog_blocked?(gate_snapshot)
+      ActiveModel::Type::Boolean.new.cast(gate_snapshot.is_a?(Hash) ? gate_snapshot[:blocked] : false)
+    end
+
+    def record_backlog_skips!(stats:, gate_snapshot:)
+      reasons = Array(gate_snapshot[:blocking_reasons]).map(&:to_s).reject(&:blank?)
+      counts = gate_snapshot[:blocking_counts].is_a?(Hash) ? gate_snapshot[:blocking_counts] : {}
+
+      base_payload = {
+        reason: "pending_backlog",
+        blocking_reasons: reasons,
+        blocking_counts: counts
+      }
+
+      stats[:skipped_jobs] << { job: "SyncHomeStoryCarouselJob", **base_payload } if due_for_story_sync?
+      stats[:skipped_jobs] << { job: "CaptureHomeFeedJob", **base_payload } if due_for_feed_sync?
+      stats[:skipped_jobs] << { job: "Workspace::ActionsTodoQueueService", **base_payload }
+      stats[:skipped_jobs] << { job: "EnqueueRecentProfilePostScansForAccountJob", **base_payload } if due_for_profile_scan?
+    end
+
+    def record_priority_deferrals!(stats:, enqueued_phase:)
+      case enqueued_phase
+      when :story_sync
+        stats[:skipped_jobs] << { job: "CaptureHomeFeedJob", reason: "higher_priority_phase_enqueued", blocking_phase: "story_sync" } if due_for_feed_sync?
+        stats[:skipped_jobs] << { job: "Workspace::ActionsTodoQueueService", reason: "higher_priority_phase_enqueued", blocking_phase: "story_sync" }
+        stats[:skipped_jobs] << { job: "EnqueueRecentProfilePostScansForAccountJob", reason: "higher_priority_phase_enqueued", blocking_phase: "story_sync" } if due_for_profile_scan?
+      when :feed_sync
+        stats[:skipped_jobs] << { job: "Workspace::ActionsTodoQueueService", reason: "higher_priority_phase_enqueued", blocking_phase: "feed_sync" }
+        stats[:skipped_jobs] << { job: "EnqueueRecentProfilePostScansForAccountJob", reason: "higher_priority_phase_enqueued", blocking_phase: "feed_sync" } if due_for_profile_scan?
+      when :workspace_actions
+        stats[:skipped_jobs] << { job: "EnqueueRecentProfilePostScansForAccountJob", reason: "higher_priority_phase_enqueued", blocking_phase: "workspace_actions" } if due_for_profile_scan?
+      end
     end
 
     def next_time(interval)

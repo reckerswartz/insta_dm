@@ -1,6 +1,6 @@
 # Account Sync and Processing Workflow
 
-Last updated: 2026-02-20
+Last updated: 2026-02-25
 
 ## 1) Follow Graph Sync (Primary Network Refresh)
 
@@ -48,6 +48,9 @@ Core flow (`FetchInstagramProfileDetailsJob`):
    - DM interaction state + retry timestamps
 3. Applies scan-policy tag behavior (`profile_scan_excluded` for page-like accounts).
 4. Queues avatar refresh if avatar fingerprint changed.
+5. Avatar download path enforces `Instagram::MediaDownloadTrustPolicy`:
+   - skips promotional/ad avatar URLs
+   - skips profiles outside follow graph/self/trusted tags (`profile_not_connected`)
 
 Key code:
 

@@ -1368,6 +1368,31 @@ pre {
   margin: 0;
 }
 
+.story-card-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 2px;
+}
+
+.story-card-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(110, 148, 216, 0.3);
+  background: rgba(23, 40, 72, 0.48);
+  color: #cbdcf7;
+  font-size: 0.7rem;
+  line-height: 1.2;
+}
+
+.story-card-fact strong {
+  color: #e5efff;
+  font-weight: 700;
+}
+
 .llm-comment-section {
   margin-top: 4px;
   display: grid;
@@ -1447,6 +1472,17 @@ pre {
   gap: 8px;
 }
 
+.llm-comment-preview {
+  margin: 0;
+  color: #dce8ff;
+  line-height: 1.35;
+}
+
+.llm-model-stack {
+  display: grid;
+  gap: 4px;
+}
+
 .llm-generated-comment {
   margin: 0;
   color: #e5efff;
@@ -1459,6 +1495,30 @@ pre {
 .llm-progress-hint {
   margin: 0;
   color: #9fc0ef;
+}
+
+.llm-suggestions-preview {
+  display: grid;
+  gap: 6px;
+}
+
+.llm-suggestions-preview-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.llm-suggestions-preview-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.llm-suggestions-preview-list li span {
+  overflow-wrap: anywhere;
 }
 
 .llm-progress-compact {
@@ -2535,12 +2595,66 @@ textarea.form-control {
   margin-bottom: 10px;
 }
 
+.workspace-ordering-note {
+  margin: 0 0 10px;
+}
+
 .workspace-actions-table-scroll {
   max-height: 72vh;
 }
 
 .workspace-actions-table td {
   vertical-align: top;
+}
+
+.workspace-actions-table .workspace-col-order {
+  min-width: 132px;
+}
+
+.workspace-actions-table .workspace-col-actions {
+  min-width: 176px;
+}
+
+.workspace-actions-table th.workspace-col-actions,
+.workspace-actions-table td.workspace-col-actions {
+  position: sticky;
+  right: 0;
+}
+
+.workspace-actions-table th.workspace-col-actions {
+  z-index: 3;
+}
+
+.workspace-actions-table td.workspace-col-actions {
+  z-index: 1;
+  background: rgba(11, 20, 38, 0.92);
+  border-left: 1px solid var(--line-soft);
+}
+
+.workspace-actions-table tbody tr:hover td.workspace-col-actions {
+  background: rgba(27, 44, 78, 0.95);
+}
+
+.workspace-queue-rank {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #dfeaff;
+}
+
+.workspace-progress-meter {
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(112, 142, 200, 0.32);
+  background: rgba(16, 31, 58, 0.55);
+  overflow: hidden;
+  margin-top: 6px;
+}
+
+.workspace-progress-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(255, 159, 28, 0.95), rgba(46, 204, 143, 0.86));
 }
 
 .workspace-profile-cell {
@@ -2622,6 +2736,27 @@ textarea.form-control {
 .workspace-suggestion-actions form.button_to {
   display: inline-flex;
   margin: 0;
+}
+
+.feed-capture-summary-cell {
+  min-width: 360px;
+}
+
+.feed-capture-inline-stats {
+  margin: 0;
+  color: #d8e7ff;
+}
+
+.feed-capture-flow-cell {
+  min-width: 140px;
+}
+
+.feed-capture-details-box {
+  margin-top: 6px;
+}
+
+.feed-capture-details-box summary {
+  font-size: 0.76rem;
 }
 
 .audit-comment-pre {
@@ -3664,6 +3799,20 @@ input[type="submit"]:active {
     flex-direction: column;
     align-items: stretch;
     min-width: 120px;
+  }
+
+  .llm-suggestions-preview-list li {
+    grid-template-columns: 1fr;
+  }
+
+  .llm-suggestions-preview-list li .btn {
+    width: 100%;
+  }
+
+  .workspace-actions-table th.workspace-col-actions,
+  .workspace-actions-table td.workspace-col-actions {
+    position: static;
+    right: auto;
   }
 
   .tabulator .tabulator-row .table-actions {

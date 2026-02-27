@@ -52,12 +52,13 @@ RSpec.describe InstagramAccounts::TechnicalDetailsPayloadService do
     expect(result.payload[:timeline][:downloaded_to_system_at]).to eq("2026-02-18T09:05:00Z")
   end
 
-  it "falls back gracefully when technical details hydration raises" do
+  it "returns stored technical details without rehydrating context" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     event = create_story_event_for(account: account)
     event.update!(llm_comment_metadata: { "technical_details" => { "analysis" => { "x" => 1 } } })
     allow(InstagramProfileEvent).to receive(:find).with(event.id).and_return(event)
-    allow(event).to receive(:send).with(:build_comment_context).and_raise(StandardError, "hydrate error")
+    expect(event).not_to receive(:build_comment_context)
+    expect(event).not_to receive(:capture_technical_details)
 
     result = described_class.new(account: account, event_id: event.id).call
 

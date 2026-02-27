@@ -33,6 +33,18 @@ RSpec.describe FinalizeStoryCommentPipelineJob do
     event = create_story_event
     run_id = "run-wait-1"
     prepare_pipeline(event: event, run_id: run_id)
+    event.with_lock do
+      event.reload
+      metadata = event.llm_comment_metadata.deep_dup
+      pipeline = metadata["parallel_pipeline"]
+      pipeline["required_steps"] = [ "face_recognition" ]
+      pipeline["steps"]["face_recognition"] = {
+        "status" => "running",
+        "attempts" => 1
+      }
+      metadata["parallel_pipeline"] = pipeline
+      event.update_columns(llm_comment_metadata: metadata, updated_at: Time.current)
+    end
 
     allow(described_class).to receive(:set).and_return(described_class)
     allow(described_class).to receive(:perform_later)

@@ -4,6 +4,17 @@ require "digest"
 class DownloadInstagramPostMediaJob < ApplicationJob
   queue_as :post_downloads
 
+  class BlockedMediaSourceError < StandardError
+    attr_reader :context
+
+    def initialize(context)
+      @context = context.is_a?(Hash) ? context.deep_symbolize_keys : {}
+      reason_code = @context[:reason_code].to_s.presence || "blocked_media_source"
+      marker = @context[:marker].to_s.presence || "unknown"
+      super("Blocked media source: #{reason_code} (#{marker})")
+    end
+  end
+
   MAX_IMAGE_BYTES = 6 * 1024 * 1024
   MAX_VIDEO_BYTES = 80 * 1024 * 1024
 
@@ -17,6 +28,16 @@ class DownloadInstagramPostMediaJob < ApplicationJob
     url = post.media_url.to_s.strip
     return if url.blank?
 
+    trust_policy = media_download_policy_decision(post: post, media_url: url)
+    if ActiveModel::Type::Boolean.new.cast(trust_policy[:blocked])
+      mark_download_skipped!(
+        post: post,
+        reason: trust_policy[:reason_code].to_s.presence || "blocked_media_source",
+        details: trust_policy
+      )
+      return
+    end
+
     return if attach_media_from_local_cache!(post: post)
 
     io, content_type, filename = download(url)
@@ -27,7 +48,21 @@ class DownloadInstagramPostMediaJob < ApplicationJob
       identify: false
     )
     attach_blob_to_post!(post: post, blob: blob)
-    post.update!(media_downloaded_at: Time.current)
+    post.update!(
+      media_downloaded_at: Time.current,
+      metadata: merged_metadata(post: post).merge(
+        "download_status" => "downloaded",
+        "download_skip_reason" => nil,
+        "download_skip_details" => nil,
+        "download_error" => nil
+      )
+    )
+  rescue BlockedMediaSourceError => e
+    mark_download_skipped!(
+      post: post,
+      reason: e.context[:reason_code].to_s.presence || "blocked_media_source",
+      details: e.context
+    )
   rescue StandardError
     post&.update!(purge_at: 6.hours.from_now) if post
     raise
@@ -42,6 +77,9 @@ class DownloadInstagramPostMediaJob < ApplicationJob
   private
 
   def download(url)
+    blocked_context = blocked_source_context(url: url)
+    raise BlockedMediaSourceError, blocked_context if blocked_context.present?
+
     uri = URI.parse(url)
     http = Net::HTTP.new(uri.host, uri.port)
     http.use_ssl = (uri.scheme == "https")
@@ -139,7 +177,15 @@ class DownloadInstagramPostMediaJob < ApplicationJob
     return false unless blob
 
     attach_blob_to_post!(post: post, blob: blob)
-    post.update!(media_downloaded_at: Time.current)
+    post.update!(
+      media_downloaded_at: Time.current,
+      metadata: merged_metadata(post: post).merge(
+        "download_status" => "downloaded",
+        "download_skip_reason" => nil,
+        "download_skip_details" => nil,
+        "download_error" => nil
+      )
+    )
     true
   rescue StandardError => e
     Rails.logger.warn("[DownloadInstagramPostMediaJob] local media cache attach failed post_id=#{post.id}: #{e.class}: #{e.message}")
@@ -171,6 +217,56 @@ class DownloadInstagramPostMediaJob < ApplicationJob
       return blob if blob_integrity_for(blob)[:valid]
     end
 
+    nil
+  end
+
+  def mark_download_skipped!(post:, reason:, details: nil)
+    post.update!(
+      media_downloaded_at: nil,
+      metadata: merged_metadata(post: post).merge(
+        "download_status" => "skipped",
+        "download_skip_reason" => reason.to_s,
+        "download_skip_details" => normalize_skip_details(details),
+        "download_error" => nil
+      )
+    )
+    Ops::StructuredLogger.info(
+      event: "feed_post_media_download.skipped",
+      payload: {
+        instagram_post_id: post.id,
+        instagram_account_id: post.instagram_account_id,
+        instagram_profile_id: post.instagram_profile_id,
+        reason: reason.to_s
+      }
+    )
+  rescue StandardError
+    nil
+  end
+
+  def media_download_policy_decision(post:, media_url:)
+    Instagram::MediaDownloadTrustPolicy.evaluate(
+      account: post.instagram_account,
+      profile: post.instagram_profile,
+      media_url: media_url
+    )
+  rescue StandardError
+    { blocked: false }
+  end
+
+  def blocked_source_context(url:)
+    Instagram::MediaDownloadTrustPolicy.blocked_source_context(url: url)
+  rescue StandardError
+    nil
+  end
+
+  def merged_metadata(post:)
+    post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
+  end
+
+  def normalize_skip_details(details)
+    value = details.is_a?(Hash) ? details.deep_stringify_keys : {}
+    value.present? ? value : nil
+  rescue StandardError
     nil
   end
 end

@@ -17,7 +17,16 @@ if defined?(MissionControl::Jobs) && defined?(ActiveJob::QueueAdapters::SidekiqA
         end
 
         def clear_queue(queue_name)
-          Sidekiq::Queue.new(queue_name).clear
+          queue = Sidekiq::Queue.new(queue_name)
+          queue.each do |entry|
+            Ops::BackgroundJobLifecycleRecorder.record_sidekiq_removal(
+              entry: entry,
+              reason: "queue_cleared"
+            )
+          end
+          queue.clear
+        rescue StandardError
+          queue&.clear
         end
 
         def supports_queue_pausing?
@@ -121,11 +130,24 @@ if defined?(MissionControl::Jobs) && defined?(ActiveJob::QueueAdapters::SidekiqA
             end
 
             def discard_all
-              entries(status_filtered: true).each(&:delete)
+              entries(status_filtered: true).each do |entry|
+                Ops::BackgroundJobLifecycleRecorder.record_sidekiq_removal(
+                  entry: entry,
+                  reason: "manual_discard_all"
+                )
+                entry.delete
+              end
             end
 
             def discard(job_id)
-              find_entry(job_id)&.delete
+              entry = find_entry(job_id)
+              return unless entry
+
+              Ops::BackgroundJobLifecycleRecorder.record_sidekiq_removal(
+                entry: entry,
+                reason: "manual_discard"
+              )
+              entry.delete
             end
 
             def find(job_id)

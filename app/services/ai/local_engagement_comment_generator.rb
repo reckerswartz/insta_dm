@@ -10,10 +10,11 @@ module Ai
     MAX_SUGGESTIONS = 8
     PRIMARY_TEMPERATURE = ENV.fetch("LLM_COMMENT_PRIMARY_TEMPERATURE", "0.65").to_f.clamp(0.1, 1.2)
     QUALITY_TEMPERATURE = ENV.fetch("LLM_COMMENT_QUALITY_TEMPERATURE", "0.55").to_f.clamp(0.1, 1.2)
-    PRIMARY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_PRIMARY_MAX_TOKENS", "110").to_i.clamp(80, 360)
-    PRIMARY_RETRY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_PRIMARY_RETRY_MAX_TOKENS", "90").to_i.clamp(60, 280)
-    QUALITY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_QUALITY_MAX_TOKENS", "150").to_i.clamp(120, 420)
-    QUALITY_RETRY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_QUALITY_RETRY_MAX_TOKENS", "110").to_i.clamp(80, 300)
+    PRIMARY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_PRIMARY_MAX_TOKENS", "220").to_i.clamp(120, 520)
+    PRIMARY_RETRY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_PRIMARY_RETRY_MAX_TOKENS", "180").to_i.clamp(100, 420)
+    QUALITY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_QUALITY_MAX_TOKENS", "260").to_i.clamp(150, 620)
+    QUALITY_RETRY_MAX_TOKENS = ENV.fetch("LLM_COMMENT_QUALITY_RETRY_MAX_TOKENS", "220").to_i.clamp(120, 520)
+    RESPONSE_FORMAT = "json".freeze
     ESCALATION_MIN_ACCEPTED_SUGGESTIONS = ENV.fetch("LLM_COMMENT_ESCALATION_MIN_ACCEPTED", "5").to_i.clamp(MIN_SUGGESTIONS, MAX_SUGGESTIONS)
     ESCALATION_MAX_REJECT_RATIO = ENV.fetch("LLM_COMMENT_ESCALATION_MAX_REJECT_RATIO", "0.45").to_f.clamp(0.0, 1.0)
     ESCALATION_MIN_GROUNDED_RATIO = ENV.fetch("LLM_COMMENT_ESCALATION_MIN_GROUNDED_RATIO", "0.55").to_f.clamp(0.0, 1.0)
@@ -50,6 +51,9 @@ module Ai
       scenes
       transitions
       inferred
+      element
+      elements
+      lifestyle
       topics
       story
       media
@@ -66,6 +70,7 @@ module Ai
       facts
       content
     ].freeze
+    MIN_MEDIA_ANCHORS_BEFORE_CONTEXT_BLEND = 6
     TRANSIENT_ERRORS = [
       Net::OpenTimeout,
       Net::ReadTimeout,
@@ -85,6 +90,7 @@ module Ai
     end
 
     def generate!(post_payload:, image_description:, topics:, author_type:, channel: "post", historical_comments: [], historical_context: nil, historical_story_context: [], local_story_intelligence: {}, historical_comparison: {}, cv_ocr_evidence: {}, verified_story_facts: {}, story_ownership_classification: {}, generation_policy: {}, profile_preparation: {}, verified_profile_history: [], conversational_voice: {}, scored_context: {}, **_extra)
+      @last_prompt_inputs = {}
       if generation_policy.is_a?(Hash) && generation_policy.key?(:allow_comment) && !ActiveModel::Type::Boolean.new.cast(generation_policy[:allow_comment] || generation_policy["allow_comment"])
         return {
           model: @model,
@@ -94,7 +100,9 @@ module Ai
           status: "blocked_by_policy",
           fallback_used: false,
           error_message: generation_policy[:reason].to_s.presence || generation_policy["reason"].to_s.presence || "Generation blocked by verified story policy.",
-          comment_suggestions: []
+          comment_suggestions: [],
+          prompt_inputs: {},
+          policy_diagnostics: {}
         }
       end
 
@@ -118,6 +126,7 @@ module Ai
         conversational_voice: conversational_voice,
         scored_context: scored_context
       )
+      prompt_inputs = @last_prompt_inputs.is_a?(Hash) ? @last_prompt_inputs.deep_dup : {}
       @last_topics_for_policy = Array(topics).map(&:to_s)
       @last_image_description_for_policy = image_description.to_s
 
@@ -153,6 +162,7 @@ module Ai
 
       selected_pass = choose_best_model_pass(primary_pass: primary_pass, quality_pass: quality_pass)
       suggestions = Array(selected_pass[:suggestions]).first(MAX_SUGGESTIONS)
+      policy_diagnostics = selected_pass[:policy_diagnostics].is_a?(Hash) ? selected_pass[:policy_diagnostics] : {}
       llm_telemetry = merge_model_telemetry(
         selected_pass: selected_pass,
         primary_pass: primary_pass,
@@ -162,13 +172,14 @@ module Ai
       )
 
       if suggestions.size < MIN_SUGGESTIONS
-        fallback = fallback_comments(
+        fallback_result = policy_checked_fallback(
           image_description: image_description,
           topics: topics,
           channel: channel,
           scored_context: scored_context,
-          verified_story_facts: verified_story_facts
-        ).first(MAX_SUGGESTIONS)
+          verified_story_facts: verified_story_facts,
+          historical_comments: historical_comments
+        )
         return {
           model: selected_pass[:model] || @model,
           prompt: prompt,
@@ -178,7 +189,9 @@ module Ai
           fallback_used: true,
           llm_telemetry: llm_telemetry,
           error_message: "Generated suggestions were insufficient (#{suggestions.size}/#{MIN_SUGGESTIONS})",
-          comment_suggestions: fallback
+          comment_suggestions: fallback_result[:suggestions],
+          prompt_inputs: prompt_inputs,
+          policy_diagnostics: fallback_result[:policy_diagnostics].is_a?(Hash) ? fallback_result[:policy_diagnostics] : policy_diagnostics
         }
       end
 
@@ -191,11 +204,21 @@ module Ai
         fallback_used: false,
         llm_telemetry: llm_telemetry,
         error_message: nil,
-        comment_suggestions: suggestions.first(MAX_SUGGESTIONS)
+        comment_suggestions: suggestions.first(MAX_SUGGESTIONS),
+        prompt_inputs: prompt_inputs,
+        policy_diagnostics: policy_diagnostics
       }
     rescue *TRANSIENT_ERRORS
       raise
     rescue StandardError => e
+      fallback_result = policy_checked_fallback(
+        image_description: image_description,
+        topics: topics,
+        channel: channel,
+        scored_context: scored_context,
+        verified_story_facts: verified_story_facts,
+        historical_comments: historical_comments
+      )
       {
         model: @model,
         prompt: prompt,
@@ -207,13 +230,9 @@ module Ai
           prompt_chars: prompt.to_s.length
         },
         error_message: e.message.to_s,
-        comment_suggestions: fallback_comments(
-          image_description: image_description,
-          topics: topics,
-          channel: channel,
-          scored_context: scored_context,
-          verified_story_facts: verified_story_facts
-        ).first(MAX_SUGGESTIONS)
+        comment_suggestions: fallback_result[:suggestions],
+        prompt_inputs: (@last_prompt_inputs.is_a?(Hash) ? @last_prompt_inputs : {}),
+        policy_diagnostics: fallback_result[:policy_diagnostics].is_a?(Hash) ? fallback_result[:policy_diagnostics] : {}
       }
     end
 
@@ -258,6 +277,15 @@ module Ai
         topics: topics,
         verified_story_facts: verified_story_facts,
         scored_context: scored_context
+      )
+      @last_prompt_inputs = build_prompt_input_summary(
+        topics: topics,
+        visual_anchors: visual_anchors,
+        image_description: image_description,
+        verified_story_facts: verified_story_facts,
+        scored_context: scored_context,
+        situational_cues: situational_cues,
+        content_mode: content_mode
       )
 
       context_json = {
@@ -312,6 +340,8 @@ module Ai
         Requirements:
         - Return strict JSON only with key "comment_suggestions"
         - Exactly 8 suggestions, each <= 140 chars
+        - Speak directly to the creator: prefer second-person language ("you"/"your") or direct reactions ("this is ...")
+        - Never describe the creator in third person (avoid "that person", "he", "she", "they", "everyone looks")
         - Every suggestion must reference current_story.topics or current_story.visual_anchors
         - Sound natural, friendly, and socially conversational for a Gen Z audience
         - Avoid mechanical descriptions and camera-analysis wording like "this frame", "strong composition", or "detected objects"
@@ -347,7 +377,7 @@ module Ai
       max_tokens = tier_token_budget(tier: tier, prompt: prompt)
       retry_max_tokens = tier_retry_token_budget(tier: tier, prompt: prompt)
 
-      resp = @ollama_client.generate(
+      resp = generate_with_json_format(
         model: model,
         prompt: prompt,
         temperature: temperature,
@@ -360,6 +390,7 @@ module Ai
         suggestions: parsed_suggestions,
         historical_comments: historical_comments,
         scored_context: scored_context,
+        channel: channel,
         include_diagnostics: true
       )
       suggestions = diversify_suggestions(
@@ -372,7 +403,7 @@ module Ai
 
       retry_used = false
       if suggestions.size < MIN_SUGGESTIONS
-        retry_resp = @ollama_client.generate(
+        retry_resp = generate_with_json_format(
           model: model,
           prompt: "#{prompt}\n\nReturn strict JSON only. Ensure 8 non-empty suggestions and follow voice_directives.",
           temperature: [temperature - 0.15, 0.2].max,
@@ -384,6 +415,7 @@ module Ai
           suggestions: retry_parsed,
           historical_comments: historical_comments,
           scored_context: scored_context,
+          channel: channel,
           include_diagnostics: true
         )
         retry_suggestions = diversify_suggestions(
@@ -417,6 +449,7 @@ module Ai
           verified_story_facts: verified_story_facts,
           scored_context: scored_context
         ),
+        policy_diagnostics: summarize_policy_diagnostics(evaluation),
         retry_used: retry_used,
         tier: tier.to_s
       }
@@ -439,6 +472,25 @@ module Ai
       return [baseline - 20, 60].max if prompt_chars > 7000
 
       baseline
+    end
+
+    def generate_with_json_format(model:, prompt:, temperature:, max_tokens:)
+      @ollama_client.generate(
+        model: model,
+        prompt: prompt,
+        temperature: temperature,
+        max_tokens: max_tokens,
+        format: RESPONSE_FORMAT
+      )
+    rescue ArgumentError => e
+      raise unless e.message.to_s.include?("unknown keyword: :format")
+
+      @ollama_client.generate(
+        model: model,
+        prompt: prompt,
+        temperature: temperature,
+        max_tokens: max_tokens
+      )
     end
 
     def escalation_reasons_for(pass:)
@@ -532,6 +584,14 @@ module Ai
           "visual signals",
           "clean shot"
         ],
+        perspective: "direct_second_person",
+        avoid_third_person_subjects: [
+          "that person",
+          "he",
+          "she",
+          "they",
+          "everyone looks"
+        ],
         neutral_only: ownership_label.present? && ownership_label != "owned_by_profile"
       }
     end
@@ -561,7 +621,7 @@ module Ai
       0.0
     end
 
-    def evaluate_suggestions(suggestions:, historical_comments:, scored_context: {}, include_diagnostics: false)
+    def evaluate_suggestions(suggestions:, historical_comments:, scored_context: {}, channel: "post", include_diagnostics: false)
       memory_comments = []
       memory_comments.concat(Array(historical_comments))
       memory_comments.concat(Array(scored_context.dig(:engagement_memory, :recent_generated_comments)))
@@ -583,7 +643,9 @@ module Ai
         suggestions: suggestions,
         historical_comments: memory_comments,
         context_keywords: context_keywords,
-        max_suggestions: MAX_SUGGESTIONS
+        max_suggestions: MAX_SUGGESTIONS,
+        channel: channel,
+        require_direct_address: Ai::CommentToneProfile.normalize(channel) == "story"
       )
       accepted = Array(result[:accepted])
       return accepted unless include_diagnostics
@@ -596,6 +658,34 @@ module Ai
         rejected_count: rejected.size,
         reject_ratio: (Array(suggestions).size > 0 ? (rejected.size.to_f / Array(suggestions).size.to_f) : 0.0)
       }
+    end
+
+    def summarize_policy_diagnostics(evaluation)
+      diagnostics = evaluation.is_a?(Hash) ? evaluation : {}
+      rejected = Array(diagnostics[:rejected]).select { |row| row.is_a?(Hash) }
+      reason_counts = Hash.new(0)
+      rejected.each do |row|
+        Array(row[:reasons] || row["reasons"]).each do |reason|
+          token = reason.to_s.strip
+          next if token.blank?
+          reason_counts[token] += 1
+        end
+      end
+
+      {
+        raw_count: diagnostics[:raw_count].to_i,
+        rejected_count: diagnostics[:rejected_count].to_i,
+        reject_ratio: diagnostics[:reject_ratio].to_f.round(3),
+        rejected_reason_counts: reason_counts.sort_by { |_, count| -count }.to_h,
+        rejected_samples: rejected.first(5).map do |row|
+          {
+            comment: row[:comment].to_s,
+            reasons: Array(row[:reasons] || row["reasons"]).map(&:to_s).reject(&:blank?).first(4)
+          }
+        end
+      }
+    rescue StandardError
+      {}
     end
 
     def diversify_suggestions(suggestions:, topics:, image_description:, channel:, scored_context:)
@@ -637,15 +727,123 @@ module Ai
     end
 
     def normalize_comment(value)
-      text = value.to_s.gsub(/\s+/, " ").strip
+      text = strip_markdown_fences(value.to_s)
+      text = text.gsub(/\A(?:[-*•]|\d+[.)])\s*/, "").strip
+      text = text.gsub(/\s+/, " ").strip
+      text = strip_trailing_separator(text)
+      text = strip_wrapping_quotes(text)
       return nil if text.blank?
+      return nil if scaffolding_artifact?(text)
 
       text.byteslice(0, 140)
     end
 
     def parse_comment_suggestions(response_payload)
-      parsed = JSON.parse(response_payload["response"]) rescue nil
-      Array(parsed&.dig("comment_suggestions")).map { |v| normalize_comment(v) }.compact.uniq
+      raw = response_payload.is_a?(Hash) ? (response_payload["response"] || response_payload[:response]) : response_payload
+      return [] if raw.blank?
+
+      parsed = parse_comment_suggestions_payload(raw)
+      suggestions = extracted_comment_suggestions(parsed)
+      return suggestions if suggestions.any?
+
+      parse_comment_suggestions_from_text(raw.to_s)
+    rescue StandardError
+      []
+    end
+
+    def parse_comment_suggestions_payload(raw)
+      return raw if raw.is_a?(Hash) || raw.is_a?(Array)
+
+      text = raw.to_s
+      return {} if text.blank?
+
+      JSON.parse(text)
+    rescue JSON::ParserError
+      parse_embedded_comment_json(text)
+    end
+
+    def parse_embedded_comment_json(text)
+      object_start = text.index("{")
+      object_end = text.rindex("}")
+      if object_start && object_end && object_end > object_start
+        candidate = text[object_start..object_end]
+        parsed = JSON.parse(candidate) rescue nil
+        return parsed if parsed.is_a?(Hash)
+      end
+
+      array_start = text.index("[")
+      array_end = text.rindex("]")
+      if array_start && array_end && array_end > array_start
+        candidate = text[array_start..array_end]
+        parsed = JSON.parse(candidate) rescue nil
+        return { "comment_suggestions" => parsed } if parsed.is_a?(Array)
+      end
+
+      {}
+    rescue StandardError
+      {}
+    end
+
+    def extracted_comment_suggestions(parsed)
+      rows =
+        if parsed.is_a?(Hash)
+          parsed["comment_suggestions"] || parsed[:comment_suggestions]
+        elsif parsed.is_a?(Array)
+          parsed
+        else
+          []
+        end
+
+      Array(rows).map { |value| normalize_comment(value) }.compact.uniq.first(MAX_SUGGESTIONS)
+    rescue StandardError
+      []
+    end
+
+    def parse_comment_suggestions_from_text(text)
+      rows = text.to_s.lines.filter_map do |line|
+        row = line.to_s.strip
+        next if row.blank?
+        next if row.start_with?("```")
+
+        normalize_comment(row)
+      end
+
+      rows.uniq.first(MAX_SUGGESTIONS)
+    end
+
+    def strip_markdown_fences(text)
+      cleaned = text.to_s.strip
+      cleaned = cleaned.sub(/\A```(?:json)?\s*/i, "")
+      cleaned = cleaned.sub(/\s*```\z/, "")
+      cleaned.strip
+    end
+
+    def strip_trailing_separator(text)
+      text.to_s.strip.sub(/,\z/, "").strip
+    end
+
+    def strip_wrapping_quotes(text)
+      cleaned = text.to_s.strip
+      loop do
+        break if cleaned.length < 2
+        break unless (cleaned.start_with?("\"") && cleaned.end_with?("\"")) ||
+          (cleaned.start_with?("'") && cleaned.end_with?("'")) ||
+          (cleaned.start_with?("`") && cleaned.end_with?("`"))
+
+        cleaned = cleaned[1...-1].to_s.strip
+      end
+      cleaned
+    end
+
+    def scaffolding_artifact?(text)
+      normalized = text.to_s.downcase.gsub(/\s+/, " ").strip
+      return true if normalized.blank?
+      return true if %w[{ } [ ]].include?(normalized)
+      return true if normalized.match?(/\A["']?(comment_suggestions|suggestions?)["']?\s*:?\s*\[?\]?\s*\z/)
+      return true if normalized.match?(/\Ahere(?:'s| are)\b.*\b(comment_suggestions|suggestions?|json)\b/)
+      return true if normalized.match?(/\A(?:return\s+)?(?:strict\s+)?json(?:\s+only)?\.?\z/)
+
+      false
     end
 
     def fallback_comments(image_description:, topics:, channel:, scored_context:, verified_story_facts:)
@@ -683,6 +881,71 @@ module Ai
         repost_fallback_comments(anchor: anchor, channel: channel)
       else
         generic_fallback_comments(anchor: anchor, channel: channel)
+      end
+    end
+
+    def policy_checked_fallback(image_description:, topics:, channel:, scored_context:, verified_story_facts:, historical_comments:)
+      fallback_candidates = fallback_comments(
+        image_description: image_description,
+        topics: topics,
+        channel: channel,
+        scored_context: scored_context,
+        verified_story_facts: verified_story_facts
+      ).first(MAX_SUGGESTIONS)
+      evaluation = evaluate_suggestions(
+        suggestions: fallback_candidates,
+        historical_comments: historical_comments,
+        scored_context: scored_context,
+        channel: channel,
+        include_diagnostics: true
+      )
+      filtered = diversify_suggestions(
+        suggestions: evaluation[:accepted],
+        topics: topics,
+        image_description: image_description,
+        channel: channel,
+        scored_context: scored_context
+      ).first(MAX_SUGGESTIONS)
+      filtered = emergency_fallback_comments(channel: channel, topics: topics) if filtered.empty?
+
+      {
+        suggestions: filtered.first(MAX_SUGGESTIONS),
+        policy_diagnostics: summarize_policy_diagnostics(evaluation).merge(
+          fallback_policy_applied: true,
+          fallback_candidate_count: fallback_candidates.size
+        )
+      }
+    rescue StandardError
+      {
+        suggestions: fallback_comments(
+          image_description: image_description,
+          topics: topics,
+          channel: channel,
+          scored_context: scored_context,
+          verified_story_facts: verified_story_facts
+        ).first(MAX_SUGGESTIONS),
+        policy_diagnostics: {
+          fallback_policy_applied: false
+        }
+      }
+    end
+
+    def emergency_fallback_comments(channel:, topics:)
+      anchor = normalize_anchor(Array(topics).first) || "moment"
+      if Ai::CommentToneProfile.normalize(channel) == "story"
+        [
+          "Your #{anchor} moment feels natural and easy to connect with.",
+          "You made this #{anchor} update feel clear and personal.",
+          "What made you pick this #{anchor} moment to share?",
+          "Your #{anchor} energy comes through right away."
+        ]
+      else
+        [
+          "This #{anchor} moment feels natural and easy to connect with.",
+          "Strong #{anchor} update with a clear point of view.",
+          "What inspired this #{anchor} moment?",
+          "This #{anchor} share feels authentic."
+        ]
       end
     end
 
@@ -800,8 +1063,8 @@ module Ai
       apply_aggressive_context_compaction!(data)
       return data if prompt_context_within_budget?(data)
 
-      data[:conversational_voice] = {}
-      data[:profile_preparation] = {}
+      data[:conversational_voice] = compact_minimal_conversational_voice(data[:conversational_voice])
+      data[:profile_preparation] = compact_minimal_profile_preparation(data[:profile_preparation])
       data[:historical_context][:comparison] = {} if data[:historical_context].is_a?(Hash)
       data
     rescue StandardError
@@ -992,6 +1255,21 @@ module Ai
       }
     end
 
+    def compact_minimal_profile_preparation(payload)
+      data = payload.is_a?(Hash) ? payload : {}
+      identity = data[:identity_consistency].is_a?(Hash) ? data[:identity_consistency] : (data["identity_consistency"].is_a?(Hash) ? data["identity_consistency"] : {})
+
+      {
+        ready_for_comment_generation: ActiveModel::Type::Boolean.new.cast(data[:ready_for_comment_generation] || data["ready_for_comment_generation"]),
+        reason_code: data[:reason_code] || data["reason_code"],
+        reason: truncate_text(data[:reason] || data["reason"], max: 140),
+        identity_consistency: {
+          consistent: ActiveModel::Type::Boolean.new.cast(identity[:consistent] || identity["consistent"]),
+          reason_code: identity[:reason_code] || identity["reason_code"]
+        }.compact
+      }.compact
+    end
+
     def compact_verified_profile_history(rows)
       Array(rows).first(4).map do |row|
         data = row.is_a?(Hash) ? row : {}
@@ -1036,6 +1314,26 @@ module Ai
           can_respond_to_existing_messages: ActiveModel::Type::Boolean.new.cast(conversation_state[:can_respond_to_existing_messages] || conversation_state["can_respond_to_existing_messages"]),
           outgoing_message_count: (conversation_state[:outgoing_message_count] || conversation_state["outgoing_message_count"]).to_i
         }
+      }.compact
+    end
+
+    def compact_minimal_conversational_voice(payload)
+      data = payload.is_a?(Hash) ? payload : {}
+      conversation_state = data[:conversation_state].is_a?(Hash) ? data[:conversation_state] : (data["conversation_state"].is_a?(Hash) ? data["conversation_state"] : {})
+
+      {
+        author_type: data[:author_type] || data["author_type"],
+        recurring_topics: Array(data[:recurring_topics] || data["recurring_topics"]).first(3),
+        suggested_openers: Array(data[:suggested_openers] || data["suggested_openers"]).map { |value| truncate_text(value, max: 52) }.first(2),
+        recent_incoming_messages: Array(data[:recent_incoming_messages] || data["recent_incoming_messages"]).map do |row|
+          next unless row.is_a?(Hash)
+
+          { body: truncate_text(row[:body] || row["body"], max: 70) }
+        end.compact.first(1),
+        conversation_state: {
+          has_incoming_messages: ActiveModel::Type::Boolean.new.cast(conversation_state[:has_incoming_messages] || conversation_state["has_incoming_messages"]),
+          can_respond_to_existing_messages: ActiveModel::Type::Boolean.new.cast(conversation_state[:can_respond_to_existing_messages] || conversation_state["can_respond_to_existing_messages"])
+        }.compact
       }.compact
     end
 
@@ -1232,30 +1530,92 @@ module Ai
       facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
       prioritized_detections = prioritized_object_anchor_labels(facts)
       suppress_generic_object_tokens = prioritized_detections.any? { |label| !generic_object_anchor?(label) }
-      anchors = []
-      anchors.concat(prioritized_detections)
-      anchors.concat(filter_anchor_values(Array(topics), suppress_generic_object_tokens: suppress_generic_object_tokens))
-      anchors.concat(filter_anchor_values(Array(facts[:topics] || facts["topics"]), suppress_generic_object_tokens: suppress_generic_object_tokens))
-      anchors.concat(filter_anchor_values(Array(facts[:objects] || facts["objects"]), suppress_generic_object_tokens: suppress_generic_object_tokens))
-      anchors.concat(Array(facts[:hashtags] || facts["hashtags"]).map(&:to_s))
-      anchors.concat(Array(facts[:mentions] || facts["mentions"]).map(&:to_s))
-      anchors.concat(Array(facts[:profile_handles] || facts["profile_handles"]).map(&:to_s))
-      anchors.concat(filter_anchor_values(
-        Array(scored_context[:prioritized_signals] || scored_context["prioritized_signals"]).map do |row|
-          row.is_a?(Hash) ? (row[:value] || row["value"]).to_s : row.to_s
-        end,
-        suppress_generic_object_tokens: suppress_generic_object_tokens
-      ))
-      anchors.concat(filter_anchor_values(
+      media_anchors = []
+      media_anchors.concat(prioritized_detections)
+      media_anchors.concat(filter_anchor_values(Array(topics), suppress_generic_object_tokens: suppress_generic_object_tokens))
+      media_anchors.concat(filter_anchor_values(Array(facts[:topics] || facts["topics"]), suppress_generic_object_tokens: suppress_generic_object_tokens))
+      media_anchors.concat(filter_anchor_values(Array(facts[:objects] || facts["objects"]), suppress_generic_object_tokens: suppress_generic_object_tokens))
+      media_anchors.concat(Array(facts[:hashtags] || facts["hashtags"]).map(&:to_s))
+      media_anchors.concat(Array(facts[:mentions] || facts["mentions"]).map(&:to_s))
+      media_anchors.concat(Array(facts[:profile_handles] || facts["profile_handles"]).map(&:to_s))
+      media_anchors.concat(filter_anchor_values(
         extract_keywords_from_text(image_description.to_s),
         suppress_generic_object_tokens: suppress_generic_object_tokens
       ))
+      media_anchors = media_anchors
+        .map { |value| normalize_anchor(value) }
+        .reject(&:blank?)
+        .uniq
+      media_anchor_tokens = media_anchors.flat_map { |value| tokenize_text(value) }.uniq
+
+      anchors = media_anchors.dup
+      if anchors.size < MIN_MEDIA_ANCHORS_BEFORE_CONTEXT_BLEND
+        anchors.concat(
+          filter_anchor_values(
+            contextual_scored_context_anchor_values(
+              scored_context: scored_context,
+              media_anchor_tokens: media_anchor_tokens
+            ),
+            suppress_generic_object_tokens: suppress_generic_object_tokens
+          )
+        )
+      end
 
       anchors
         .map { |value| normalize_anchor(value) }
         .reject(&:blank?)
         .uniq
         .first(18)
+    end
+
+    def contextual_scored_context_anchor_values(scored_context:, media_anchor_tokens:)
+      rows = Array(scored_context[:prioritized_signals] || scored_context["prioritized_signals"])
+      rows.filter_map do |row|
+        next unless row.is_a?(Hash)
+
+        value = (row[:value] || row["value"]).to_s
+        source = (row[:source] || row["source"]).to_s.downcase
+        overlap_tokens = (row[:overlap_tokens] || row["overlap_tokens"]).to_i
+        anchor = normalize_anchor(value)
+        next if anchor.blank?
+        # Historical profile-store signals can dominate; keep them only when they overlap current media.
+        next if source == "store" && overlap_tokens <= 0
+
+        anchor_tokens = tokenize_text(anchor)
+        if media_anchor_tokens.any? && source == "store"
+          next if (anchor_tokens & media_anchor_tokens).empty?
+        end
+        anchor
+      end
+    rescue StandardError
+      []
+    end
+
+    def build_prompt_input_summary(topics:, visual_anchors:, image_description:, verified_story_facts:, scored_context:, situational_cues:, content_mode:)
+      facts = verified_story_facts.is_a?(Hash) ? verified_story_facts : {}
+      keyword_pool = []
+      keyword_pool.concat(Array(topics))
+      keyword_pool.concat(Array(visual_anchors))
+      keyword_pool.concat(Array(facts[:topics] || facts["topics"]))
+      keyword_pool.concat(Array(facts[:objects] || facts["objects"]))
+      keyword_pool.concat(Array(facts[:hashtags] || facts["hashtags"]))
+      keyword_pool.concat(Array(facts[:mentions] || facts["mentions"]))
+      keyword_pool.concat(contextual_scored_context_anchor_values(scored_context: scored_context, media_anchor_tokens: []))
+      keyword_pool.concat(extract_keywords_from_text(image_description.to_s))
+
+      {
+        selected_topics: Array(topics).map { |value| normalize_anchor(value) }.compact.uniq.first(12),
+        visual_anchors: Array(visual_anchors).map { |value| normalize_anchor(value) }.compact.uniq.first(12),
+        context_keywords: keyword_pool
+          .flat_map { |value| tokenize_text(value) }
+          .reject { |token| NON_VISUAL_CONTEXT_TOKENS.include?(token) }
+          .uniq
+          .first(18),
+        situational_cues: Array(situational_cues).map(&:to_s).reject(&:blank?).first(6),
+        content_mode: content_mode.to_s.presence || "general"
+      }.compact
+    rescue StandardError
+      {}
     end
 
     def prioritized_object_anchor_labels(facts)
@@ -1338,7 +1698,7 @@ module Ai
       base = anchor.to_s.presence || "message"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "That #{base} is super clear right away, easy to follow 📌",
+          "Your #{base} is super clear right away, easy to follow 📌",
           "Text-first but still feels natural, nice flow.",
           "The message in this one lands quick ⚡",
           "This #{base} feels intentional without trying too hard.",
@@ -1365,7 +1725,7 @@ module Ai
       base = anchor.to_s.presence || "action moment"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "That #{base} moment goes hard, love the energy ⚽",
+          "Your #{base} moment goes hard, love the energy ⚽",
           "The timing here is actually so good.",
           "You can feel the game-day rush in this one 🔥",
           "This #{base} has big momentum.",
@@ -1392,13 +1752,13 @@ module Ai
       base = anchor.to_s.presence || "group moment"
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
-          "This #{base} feels wholesome, everyone looks locked in 🫶",
+          "This #{base} feels wholesome, you all look locked in 🫶",
           "Such a good group moment.",
-          "The energy between everyone feels genuine.",
+          "The energy in your crew feels genuine.",
           "This one feels like core memory material.",
           "Group vibes are super warm here ✨",
           "Where did this #{base} happen?",
-          "Everyone looks naturally in the moment.",
+          "You all look naturally in the moment.",
           "This group pic hits different ❤️"
         ]
       else
@@ -1423,7 +1783,7 @@ module Ai
           "The colors on this are so satisfying.",
           "Love how the #{base} is presented.",
           "This meal moment feels cozy.",
-          "That #{base} has major comfort-food energy 🍜",
+          "Your #{base} has major comfort-food energy 🍜",
           "What was your favorite bite from this #{base}?",
           "This food update feels super inviting.",
           "The #{base} here is making me want a repeat."
@@ -1474,7 +1834,7 @@ module Ai
       if Ai::CommentToneProfile.normalize(channel) == "story"
         [
           "This repost mood is relatable fr 😌",
-          "The #{base} comes through immediately.",
+          "Your #{base} comes through immediately.",
           "Text + visual combo feels intentional.",
           "This one carries a real feeling.",
           "The tone here is easy to connect with.",

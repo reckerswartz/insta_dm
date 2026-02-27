@@ -10,10 +10,7 @@ module LlmComment
     TERMINAL_STEP_STATUSES = %w[succeeded failed skipped].freeze
     PIPELINE_TERMINAL_STATUSES = %w[completed failed].freeze
     STEP_TO_QUEUE_SERVICE_KEY = {
-      "ocr_analysis" => :ocr_analysis,
-      "vision_detection" => :visual_analysis,
       "face_recognition" => :face_analysis,
-      "metadata_extraction" => :metadata_tagging,
       "llm_generation" => :llm_comment_generation
     }.freeze
     DEFAULT_PENDING_ESTIMATE_SECONDS = ENV.fetch("LLM_PIPELINE_DEFAULT_PENDING_ESTIMATE_SECONDS", "120").to_i.clamp(20, 7_200)
@@ -629,14 +626,17 @@ module LlmComment
     end
 
     def blocking_step_for(pipeline:)
-      generation_status = pipeline.dig("generation", "status").to_s
-      return "llm_generation" if generation_status == "running"
-
       steps = pipeline["steps"].is_a?(Hash) ? pipeline["steps"] : {}
       required = Array(pipeline["required_steps"]).map(&:to_s)
-      required.find do |step|
+      pending_required = required.find do |step|
         !TERMINAL_STEP_STATUSES.include?(steps.dig(step, "status").to_s)
       end
+      return pending_required if pending_required.present?
+
+      generation_status = pipeline.dig("generation", "status").to_s
+      return "llm_generation" if generation_status.in?(%w[pending running])
+
+      nil
     rescue StandardError
       nil
     end

@@ -15,24 +15,6 @@ module LlmComment
 
     STEPS = [
       Step.new(
-        key: "ocr_analysis",
-        job_class_name: "ProcessStoryCommentOcrJob",
-        blocking: true,
-        queued_progress: 8,
-        running_progress: 14,
-        completed_progress: 26,
-        failed_progress: 26
-      ),
-      Step.new(
-        key: "vision_detection",
-        job_class_name: "ProcessStoryCommentVisionJob",
-        blocking: true,
-        queued_progress: 9,
-        running_progress: 16,
-        completed_progress: 30,
-        failed_progress: 30
-      ),
-      Step.new(
         key: "face_recognition",
         job_class_name: "ProcessStoryCommentFaceJob",
         blocking: false,
@@ -40,15 +22,6 @@ module LlmComment
         running_progress: 18,
         completed_progress: 34,
         failed_progress: 34
-      ),
-      Step.new(
-        key: "metadata_extraction",
-        job_class_name: "ProcessStoryCommentMetadataJob",
-        blocking: true,
-        queued_progress: 11,
-        running_progress: 20,
-        completed_progress: 38,
-        failed_progress: 38
       )
     ].freeze
 

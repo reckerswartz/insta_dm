@@ -465,25 +465,69 @@
           <table class="table" data-table-standard-target="table">
           <thead>
             <tr>
-              <th>When</th>
+              <th>Queued</th>
+              <th>Scheduled for</th>
               <th>Job</th>
               <th>Queue</th>
+              <th>Queue state</th>
+              <th>Scheduler</th>
+              <th>Scheduling reason</th>
               <th>Scope</th>
               <th>Context</th>
-              <th>Status</th>
               <th>Active Job ID</th>
               <th>Details</th>
             </tr>
           </thead>
           <tbody>
             <% @recent_jobs.each do |j| %>
+              <% queued_at = j[:created_at] %>
+              <% scheduled_for_at = j[:scheduled_for_at] %>
+              <% queue_state = j[:queue_state].to_s.presence || j[:status].to_s %>
+              <% state_class =
+                  case queue_state
+                  when "scheduled", "queued", "processing"
+                    "queued"
+                  when "retry", "dead", "failed"
+                    "failed"
+                  when "finished", "completed"
+                    "sent"
+                  else
+                    ""
+                  end %>
               <tr>
-                <td><%= relative_time_with_tooltip(j[:created_at]) %></td>
+                <td>
+                  <% if queued_at.present? %>
+                    <%= relative_time_with_tooltip(queued_at) %>
+                    <div class="meta"><%= queued_at.in_time_zone.strftime("%Y-%m-%d %H:%M:%S %Z") %></div>
+                  <% else %>
+                    -
+                  <% end %>
+                </td>
+                <td>
+                  <% if scheduled_for_at.present? %>
+                    <%= relative_time_with_tooltip(scheduled_for_at) %>
+                    <div class="meta"><%= scheduled_for_at.in_time_zone.strftime("%Y-%m-%d %H:%M:%S %Z") %></div>
+                  <% elsif queue_state == "queued" %>
+                    <span class="meta">Immediate (no delay)</span>
+                  <% else %>
+                    -
+                  <% end %>
+                </td>
                 <td><code><%= j[:class_name] %></code></td>
-                <td><%= j[:queue_name] %></td>
+                <td><code><%= j[:queue_name].presence || "-" %></code></td>
+                <td><span class="pill <%= state_class %>"><%= queue_state.presence || "-" %></span></td>
+                <td class="meta"><%= j[:scheduler_service].presence || "-" %></td>
+                <td class="meta">
+                  <strong><%= j[:scheduling_reason].presence || "-" %></strong>
+                  <% if j[:scheduling_reason_code].to_s.present? %>
+                    <div><code><%= j[:scheduling_reason_code] %></code></div>
+                  <% end %>
+                  <% if !j[:scheduling_intentional].nil? %>
+                    <div class="pill <%= j[:scheduling_intentional] ? "sent" : "failed" %>"><%= j[:scheduling_intentional] ? "intentional" : "review config" %></div>
+                  <% end %>
+                </td>
                 <td><span class="pill"><%= j[:job_scope] %></span></td>
                 <td class="meta"><%= j[:context_label] %></td>
-                <td><%= j[:status] %></td>
                 <td><code><%= j[:active_job_id].presence || "-" %></code></td>
                 <td class="job-details-cell">
                   <details>

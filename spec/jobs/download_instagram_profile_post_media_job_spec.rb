@@ -30,7 +30,11 @@ RSpec.describe "DownloadInstagramProfilePostMediaJobTest" do
     )
 
     account = InstagramAccount.create!(username: "dst_acct_#{SecureRandom.hex(3)}")
-    profile = account.instagram_profiles.create!(username: "dst_profile_#{SecureRandom.hex(3)}", followers_count: 1500)
+    profile = account.instagram_profiles.create!(
+      username: "dst_profile_#{SecureRandom.hex(3)}",
+      followers_count: 1500,
+      following: true
+    )
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,
       shortcode: "shared_shortcode_profile_1",
@@ -76,7 +80,11 @@ RSpec.describe "DownloadInstagramProfilePostMediaJobTest" do
     )
 
     account = InstagramAccount.create!(username: "dst_block_#{SecureRandom.hex(3)}")
-    profile = account.instagram_profiles.create!(username: "dst_block_profile_#{SecureRandom.hex(3)}", followers_count: 45_000)
+    profile = account.instagram_profiles.create!(
+      username: "dst_block_profile_#{SecureRandom.hex(3)}",
+      followers_count: 45_000,
+      following: true
+    )
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,
       shortcode: "shared_shortcode_profile_2",
@@ -103,7 +111,11 @@ RSpec.describe "DownloadInstagramProfilePostMediaJobTest" do
 
   it "re-downloads media when existing attached blob is corrupt on disk" do
     account = InstagramAccount.create!(username: "corrupt_fix_acct_#{SecureRandom.hex(3)}")
-    profile = account.instagram_profiles.create!(username: "corrupt_fix_profile_#{SecureRandom.hex(3)}", followers_count: 1500)
+    profile = account.instagram_profiles.create!(
+      username: "corrupt_fix_profile_#{SecureRandom.hex(3)}",
+      followers_count: 1500,
+      following: true
+    )
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,
       shortcode: "corrupt_profile_media_1",
@@ -145,7 +157,11 @@ RSpec.describe "DownloadInstagramProfilePostMediaJobTest" do
 
   it "attaches preview image for downloaded video posts using the poster URL" do
     account = InstagramAccount.create!(username: "video_preview_acct_#{SecureRandom.hex(3)}")
-    profile = account.instagram_profiles.create!(username: "video_preview_profile_#{SecureRandom.hex(3)}", followers_count: 1200)
+    profile = account.instagram_profiles.create!(
+      username: "video_preview_profile_#{SecureRandom.hex(3)}",
+      followers_count: 1200,
+      following: true
+    )
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,
       shortcode: "video_preview_shortcode_1",
@@ -192,7 +208,11 @@ RSpec.describe "DownloadInstagramProfilePostMediaJobTest" do
 
   it "enqueues background preview generation when direct preview extraction fails" do
     account = InstagramAccount.create!(username: "video_preview_bg_acct_#{SecureRandom.hex(3)}")
-    profile = account.instagram_profiles.create!(username: "video_preview_bg_profile_#{SecureRandom.hex(3)}", followers_count: 1200)
+    profile = account.instagram_profiles.create!(
+      username: "video_preview_bg_profile_#{SecureRandom.hex(3)}",
+      followers_count: 1200,
+      following: true
+    )
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,
       shortcode: "video_preview_bg_shortcode_1",
@@ -235,5 +255,73 @@ RSpec.describe "DownloadInstagramProfilePostMediaJobTest" do
     assert post.media.attached?
     assert_equal "video/mp4", post.media.blob.content_type
     refute post.preview_image.attached?
+  end
+
+  it "skips media download when the source URL is promotional" do
+    account = InstagramAccount.create!(username: "promo_skip_acct_#{SecureRandom.hex(3)}")
+    profile = account.instagram_profiles.create!(
+      username: "promo_skip_profile_#{SecureRandom.hex(3)}",
+      followers_count: 1200,
+      following: true
+    )
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "promo_skip_shortcode_1",
+      source_media_url: "https://cdn.example.com/promo.jpg?campaign_id=12345",
+      metadata: { "media_id" => "promo_skip_media_1", "media_type" => 1 },
+      ai_status: "failed"
+    )
+
+    assert_no_enqueued_jobs only: AnalyzeInstagramProfilePostJob do
+      DownloadInstagramProfilePostMediaJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        trigger_analysis: true
+      )
+    end
+
+    post.reload
+    refute post.media.attached?
+    assert_equal "skipped", post.metadata["download_status"]
+    assert_equal "promotional_media_query", post.metadata["download_skip_reason"]
+    assert profile.instagram_profile_events.exists?(kind: "profile_post_media_download_skipped")
+  end
+
+  it "skips media download for profiles outside the follow graph" do
+    account = InstagramAccount.create!(username: "out_of_network_acct_#{SecureRandom.hex(3)}")
+    profile = account.instagram_profiles.create!(
+      username: "out_of_network_profile_#{SecureRandom.hex(3)}",
+      followers_count: 1200,
+      following: false,
+      follows_you: false
+    )
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "out_of_network_shortcode_1",
+      source_media_url: "https://cdn.example.com/normal.jpg",
+      metadata: { "media_id" => "out_of_network_media_1", "media_type" => 1 },
+      ai_status: "failed"
+    )
+
+    job = DownloadInstagramProfilePostMediaJob.new
+    allow(job).to receive(:download_media) do
+      raise "download should not run for out-of-network profiles"
+    end
+
+    assert_no_enqueued_jobs only: AnalyzeInstagramProfilePostJob do
+      job.perform(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        instagram_profile_post_id: post.id,
+        trigger_analysis: true
+      )
+    end
+
+    post.reload
+    refute post.media.attached?
+    assert_equal "skipped", post.metadata["download_status"]
+    assert_equal "profile_not_connected", post.metadata["download_skip_reason"]
+    assert profile.instagram_profile_events.exists?(kind: "profile_post_media_download_skipped")
   end
 end

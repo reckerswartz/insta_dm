@@ -22,4 +22,28 @@ namespace :ai do
     result = service.requeue_generation!
     puts JSON.pretty_generate(result)
   end
+
+  desc "Requeue pending video story comments (not_requested) so each item gets explicit terminal status. Usage: rake ai:requeue_pending_video_story_comments[account_id,limit]"
+  task :requeue_pending_video_story_comments, [ :account_id, :limit ] => :environment do |_task, args|
+    service = Ops::LocalStoryIntelligenceBackfill.new(
+      account_id: args[:account_id],
+      limit: args[:limit],
+      enqueue_comments: false
+    )
+    result = service.requeue_pending_video_generation!
+    puts JSON.pretty_generate(result)
+  end
+
+  desc "Audit story comment specificity and optional regenerate. Usage: rake ai:audit_story_comment_specificity[account_id,story_ids_csv,limit,regenerate,wait]"
+  task :audit_story_comment_specificity, [ :account_id, :story_ids, :limit, :regenerate, :wait ] => :environment do |_task, args|
+    service = Ops::StoryCommentSpecificityAudit.new(
+      account_id: args[:account_id],
+      story_ids: args[:story_ids],
+      limit: args[:limit],
+      regenerate: args[:regenerate],
+      wait: args[:wait]
+    )
+    result = service.call
+    puts JSON.pretty_generate(result)
+  end
 end

@@ -246,24 +246,62 @@ module InstagramAccounts
 
     def llm_diagnostics_payload(event:, llm_meta: nil)
       data = llm_meta.is_a?(Hash) ? llm_meta : (event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {})
+      pipeline = hash_value(data, :parallel_pipeline).is_a?(Hash) ? hash_value(data, :parallel_pipeline) : {}
+      required_steps = pipeline_required_steps_for(pipeline: pipeline)
+      deferred_steps = LlmComment::ParallelPipelineState::STEP_KEYS - required_steps
       generation_policy = generation_policy_for(event: event, llm_meta: data)
+      generation_inputs = generation_inputs_for(llm_meta: data)
+      policy_diagnostics = policy_diagnostics_for(llm_meta: data)
       last_failure = last_failure_for(llm_meta: data)
+      schedule = llm_schedule_payload(event: event, llm_meta: data)
 
       {
         llm_comment_last_error: event.llm_comment_last_error,
         llm_comment_last_error_preview: text_preview(event.llm_comment_last_error, max: 180),
-        llm_failure_reason_code: hash_value(last_failure, :reason).to_s.presence || hash_value(generation_policy, :reason_code).to_s.presence,
-        llm_failure_source: hash_value(last_failure, :source).to_s.presence || hash_value(generation_policy, :source).to_s.presence,
+        llm_failure_reason_code: hash_value(last_failure, :reason).to_s.presence || (
+          generation_policy_blocks_comment?(generation_policy) ? hash_value(generation_policy, :reason_code).to_s.presence : nil
+        ),
+        llm_failure_source: hash_value(last_failure, :source).to_s.presence || (
+          generation_policy_blocks_comment?(generation_policy) ? hash_value(generation_policy, :source).to_s.presence : nil
+        ),
         llm_failure_error_class: hash_value(last_failure, :error_class).to_s.presence,
-        llm_failure_message: hash_value(last_failure, :error_message).to_s.presence || event.llm_comment_last_error.to_s.presence || hash_value(generation_policy, :reason).to_s.presence,
-        llm_manual_review_reason: hash_value(data, :manual_review_reason).to_s.presence || hash_value(generation_policy, :manual_review_reason).to_s.presence || hash_value(generation_policy, :reason).to_s.presence,
+        llm_failure_message: hash_value(last_failure, :error_message).to_s.presence || event.llm_comment_last_error.to_s.presence || (
+          generation_policy_blocks_comment?(generation_policy) ? hash_value(generation_policy, :reason).to_s.presence : nil
+        ),
+        llm_manual_review_reason: llm_manual_review_reason(llm_meta: data, generation_policy: generation_policy),
         llm_auto_post_allowed: ActiveModel::Type::Boolean.new.cast(hash_value(data, :auto_post_allowed)),
         llm_generation_policy: generation_policy,
         llm_policy_allow_comment: llm_policy_allow_comment(generation_policy),
         llm_policy_reason_code: hash_value(generation_policy, :reason_code).to_s.presence,
         llm_policy_reason: hash_value(generation_policy, :reason).to_s.presence,
         llm_policy_source: hash_value(generation_policy, :source).to_s.presence,
-        llm_model_label: llm_model_label_for(event)
+        llm_generation_inputs: generation_inputs,
+        llm_input_topics: array_from_hash(generation_inputs, :selected_topics, limit: 12),
+        llm_input_media_topics: array_from_hash(generation_inputs, :media_topics, limit: 12),
+        llm_input_profile_topics: array_from_hash(generation_inputs, :profile_topics, limit: 8),
+        llm_input_visual_anchors: array_from_hash(generation_inputs, :visual_anchors, limit: 12),
+        llm_input_keywords: array_from_hash(generation_inputs, :context_keywords, limit: 18),
+        llm_input_content_mode: hash_value(generation_inputs, :content_mode).to_s.presence,
+        llm_input_signal_score: hash_value(generation_inputs, :signal_score).to_i,
+        llm_policy_diagnostics: policy_diagnostics,
+        llm_rejected_reason_counts: hash_value(policy_diagnostics, :rejected_reason_counts).is_a?(Hash) ? hash_value(policy_diagnostics, :rejected_reason_counts) : {},
+        llm_rejected_samples: hash_array_from_hash(policy_diagnostics, :rejected_samples, limit: 5),
+        llm_model_label: llm_model_label_for(event, pipeline: pipeline),
+        llm_pipeline_run_id: pipeline["run_id"].to_s.presence,
+        llm_pipeline_status: pipeline["status"].to_s.presence,
+        llm_pipeline_provider: pipeline["provider"].to_s.presence || event.llm_comment_provider.to_s.presence,
+        llm_pipeline_model: pipeline["model"].to_s.presence || event.llm_comment_model.to_s.presence,
+        llm_pipeline_resume_mode: pipeline["resume_mode"].to_s.presence,
+        llm_pipeline_required_steps: required_steps,
+        llm_pipeline_deferred_steps: deferred_steps,
+        llm_queue_name: schedule[:queue_name],
+        llm_queue_state: schedule[:queue_state],
+        llm_blocking_step: schedule[:blocking_step],
+        llm_pending_reason_code: schedule[:reason_code],
+        llm_pending_reason: schedule[:reason],
+        llm_schedule_service: schedule[:service],
+        llm_schedule_run_at: schedule[:run_at],
+        llm_schedule_intentional: schedule[:intentional]
       }
     end
 
@@ -392,6 +430,54 @@ module InstagramAccounts
       nil
     end
 
+    def llm_manual_review_reason(llm_meta:, generation_policy:)
+      explicit_reason = hash_value(llm_meta, :manual_review_reason).to_s.presence
+      return explicit_reason if explicit_reason.present?
+      return nil unless ActiveModel::Type::Boolean.new.cast(hash_value(generation_policy, :manual_review_required))
+
+      hash_value(generation_policy, :manual_review_reason).to_s.presence ||
+        hash_value(generation_policy, :reason).to_s.presence
+    rescue StandardError
+      nil
+    end
+
+    def generation_inputs_for(llm_meta:)
+      row = hash_value(llm_meta, :generation_inputs)
+      row.is_a?(Hash) ? row : {}
+    rescue StandardError
+      {}
+    end
+
+    def policy_diagnostics_for(llm_meta:)
+      row = hash_value(llm_meta, :policy_diagnostics)
+      row.is_a?(Hash) ? row : {}
+    rescue StandardError
+      {}
+    end
+
+    def array_from_hash(row, key, limit:)
+      value = hash_value(row, key)
+      Array(value).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(limit.to_i.clamp(1, 64))
+    rescue StandardError
+      []
+    end
+
+    def hash_array_from_hash(row, key, limit:)
+      value = hash_value(row, key)
+      Array(value).select { |entry| entry.is_a?(Hash) }.first(limit.to_i.clamp(1, 64))
+    rescue StandardError
+      []
+    end
+
+    def generation_policy_blocks_comment?(generation_policy)
+      return false unless generation_policy.is_a?(Hash)
+      return false unless generation_policy.key?("allow_comment") || generation_policy.key?(:allow_comment)
+
+      !ActiveModel::Type::Boolean.new.cast(hash_value(generation_policy, :allow_comment))
+    rescue StandardError
+      false
+    end
+
     def llm_comment_estimated_seconds(event:, include_queue: false)
       queue_estimate = llm_queue_estimate_payload
       queue_wait_seconds = queue_estimate[:estimated_new_item_wait_seconds].to_f
@@ -476,16 +562,45 @@ module InstagramAccounts
       nil
     end
 
-    def llm_model_label_for(event)
-      provider_name = event.llm_comment_provider.to_s.strip
-      model_name = event.llm_comment_model.to_s.strip
-      return "-" if provider_name.blank? && model_name.blank?
+    def llm_model_label_for(event, pipeline: {})
+      pipeline_label = model_label_for(
+        provider: pipeline.is_a?(Hash) ? pipeline["provider"] : nil,
+        model: pipeline.is_a?(Hash) ? pipeline["model"] : nil
+      )
+      event_status = event.llm_comment_status.to_s
+      pipeline_status = pipeline.is_a?(Hash) ? pipeline["status"].to_s : ""
+      if event_status.in?(%w[queued running]) || pipeline_status == "running"
+        return pipeline_label if pipeline_label.present?
+      end
+
+      event_label = model_label_for(provider: event.llm_comment_provider, model: event.llm_comment_model)
+      return event_label if event_label.present?
+      return pipeline_label if pipeline_label.present?
+
+      "-"
+    rescue StandardError
+      "-"
+    end
+
+    def model_label_for(provider:, model:)
+      provider_name = provider.to_s.strip
+      model_name = model.to_s.strip
+      return nil if provider_name.blank? && model_name.blank?
       return provider_name if provider_name.present? && model_name.blank?
       return model_name if model_name.present? && provider_name.blank?
 
       "#{provider_name} / #{model_name}"
+    end
+
+    def pipeline_required_steps_for(pipeline:)
+      configured = Array(pipeline.is_a?(Hash) ? pipeline["required_steps"] : nil).map(&:to_s).select do |step|
+        LlmComment::ParallelPipelineState::STEP_KEYS.include?(step)
+      end
+      return configured if configured.present?
+
+      LlmComment::ParallelPipelineState::REQUIRED_STEP_KEYS
     rescue StandardError
-      "-"
+      LlmComment::ParallelPipelineState::REQUIRED_STEP_KEYS
     end
 
     def text_preview(raw, max:)
@@ -493,6 +608,14 @@ module InstagramAccounts
       return text if text.length <= max
 
       "#{text[0, max]}..."
+    end
+
+    def llm_schedule_payload(event:, llm_meta:)
+      serializer = InstagramAccounts::StoryArchiveItemSerializer.new(event: event)
+      raw = serializer.send(:llm_schedule_payload, llm_meta: llm_meta)
+      raw.is_a?(Hash) ? raw.deep_symbolize_keys : {}
+    rescue StandardError
+      {}
     end
 
     def hash_value(row, key)

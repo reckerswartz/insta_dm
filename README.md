@@ -117,7 +117,7 @@ Useful env vars:
 - `LOCAL_AI_SERVICE_URL` (default `http://localhost:8000`)
 - `OLLAMA_URL` (default `http://localhost:11434`)
 - `OLLAMA_MODEL` (default `llama3.2:3b`)
-- `OLLAMA_VISION_MODEL` (default `llava:7b`)
+- `OLLAMA_VISION_MODEL` (default `llama3.2-vision:11b`)
 
 ### Active Record Encryption Bootstrap
 

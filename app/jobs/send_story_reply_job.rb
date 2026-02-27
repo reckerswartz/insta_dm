@@ -22,7 +22,7 @@ class SendStoryReplyJob < ApplicationJob
     return unless account && profile
 
     sid = story_id.to_s.strip
-    text = reply_text.to_s.strip
+    text = StoryReplyTextSanitizer.call(reply_text)
     return if sid.blank? || text.blank?
     return if story_reply_sent?(profile: profile, story_id: sid)
 

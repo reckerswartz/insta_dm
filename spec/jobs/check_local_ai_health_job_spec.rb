@@ -1,9 +1,10 @@
 require "rails_helper"
 
-RSpec.describe CheckAiMicroserviceHealthJob, type: :job do
+RSpec.describe CheckLocalAiHealthJob, type: :job do
   before do
+    Rails.cache.delete("ops:check_local_ai_health_job:last_checked_at")
     Rails.cache.delete("ops:check_ai_microservice_health_job:last_checked_at")
-    CheckAiMicroserviceHealthJob.instance_variable_set(:@last_checked_at_fallback, nil)
+    CheckLocalAiHealthJob.instance_variable_set(:@last_checked_at_fallback, nil)
   end
 
   it "throttles repeated checks inside the minimum interval" do

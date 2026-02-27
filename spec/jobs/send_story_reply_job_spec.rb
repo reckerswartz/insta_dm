@@ -29,6 +29,35 @@ RSpec.describe SendStoryReplyJob do
     expect(sent_event.metadata["ai_reply_text"]).to eq("Nice story!")
   end
 
+  it "sanitizes wrapped quotes and trailing punctuation before sending" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_user_#{SecureRandom.hex(3)}", ig_user_id: "8801")
+
+    messenger = instance_double(Messaging::IntegrationService)
+    allow(Messaging::IntegrationService).to receive(:new).and_return(messenger)
+    expect(messenger).to receive(:send_text!).with(
+      recipient_id: "8801",
+      text: "Looks great!",
+      context: hash_including(source: "story_auto_reply", story_id: "abc999")
+    ).and_return({ ok: true, provider_message_id: "msg_999" })
+
+    described_class.perform_now(
+      instagram_account_id: account.id,
+      instagram_profile_id: profile.id,
+      story_id: "abc999",
+      reply_text: "\"Looks great!\",",
+      story_metadata: { source: "spec" }
+    )
+
+    message = account.instagram_messages.order(id: :desc).first
+    expect(message).to be_present
+    expect(message.body).to eq("Looks great!")
+
+    sent_event = profile.instagram_profile_events.find_by(kind: "story_reply_sent", external_id: "story_reply_sent:abc999")
+    expect(sent_event).to be_present
+    expect(sent_event.metadata["ai_reply_text"]).to eq("Looks great!")
+  end
+
   it "does not send duplicate reply when story reply has already been sent" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "story_user_#{SecureRandom.hex(3)}")

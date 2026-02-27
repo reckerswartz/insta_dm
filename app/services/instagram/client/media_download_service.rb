@@ -3,6 +3,8 @@ require "timeout"
 module Instagram
   class Client
     class MediaDownloadService
+      class BlockedMediaSourceError < StandardError; end
+
       DEFAULT_USER_AGENT = "Mozilla/5.0".freeze
       MAX_ATTEMPTS = 3
 
@@ -14,11 +16,13 @@ module Instagram
         with_transient_retry do
           uri = URI.parse(url.to_s)
           raise "Invalid media URL" unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
+          raise_blocked_media_source!(uri.to_s)
 
           res = http_request(uri: uri, user_agent: user_agent)
 
           if res.is_a?(Net::HTTPRedirection) && res["location"].present? && redirect_limit.to_i.positive?
             redirected = URI.join(uri.to_s, res["location"].to_s).to_s
+            raise_blocked_media_source!(redirected)
             return call(url: redirected, user_agent: user_agent, redirect_limit: redirect_limit.to_i - 1)
           end
 
@@ -32,6 +36,8 @@ module Instagram
           raise "Downloaded media is empty" if body.blank?
 
           content_type = res["content-type"].to_s.split(";").first.presence || "image/jpeg"
+          raise BlockedMediaSourceError, "Blocked media source: html_payload" if html_payload?(body: body, content_type: content_type)
+
           digest = Digest::SHA256.hexdigest("#{uri.path}-#{body.bytesize}")[0, 12]
 
           {
@@ -60,6 +66,8 @@ module Instagram
       end
 
       def transient_error?(error)
+        return false if error.is_a?(BlockedMediaSourceError)
+
         return true if error.is_a?(Net::OpenTimeout) || error.is_a?(Net::ReadTimeout)
         return true if error.is_a?(Errno::ECONNRESET) || error.is_a?(Errno::ECONNREFUSED)
         return true if error.is_a?(Timeout::Error)
@@ -84,6 +92,22 @@ module Instagram
         req["Accept"] = "*/*"
         req["Referer"] = @base_url
         http.request(req)
+      end
+
+      def raise_blocked_media_source!(url)
+        context = MediaSourcePolicy.blocked_source_context(url: url)
+        return if context.blank?
+
+        raise BlockedMediaSourceError, "Blocked media source: #{context[:reason_code]} (#{context[:marker]})"
+      end
+
+      def html_payload?(body:, content_type:)
+        return true if content_type.to_s.downcase.include?("text/html")
+
+        sample = body.to_s.byteslice(0, 4096).to_s.downcase
+        sample.include?("<html") || sample.start_with?("<!doctype html")
+      rescue StandardError
+        false
       end
 
       def extension_for_content_type(content_type:)

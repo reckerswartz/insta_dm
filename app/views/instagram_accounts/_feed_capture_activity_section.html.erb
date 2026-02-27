@@ -17,7 +17,7 @@
   </p>
 
   <% if feed_capture_activity_entries.any? %>
-    <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="feed-capture-activity-table-v1" data-table-standard-pagination-size-value="15">
+    <div class="tabulator-shell" data-controller="table-standard" data-table-standard-storage-key-value="feed-capture-activity-table-v2" data-table-standard-pagination-size-value="15">
       <div class="table-scroll">
         <table class="table" data-table-standard-target="table">
           <thead>
@@ -25,11 +25,21 @@
               <th>When</th>
               <th>Status</th>
               <th>Source</th>
-              <th>Message</th>
+              <th>Summary</th>
+              <th>Media Downloaded</th>
+              <th>Moved to Queue</th>
+              <th>Rejected</th>
             </tr>
           </thead>
           <tbody>
             <% feed_capture_activity_entries.each do |entry| %>
+              <% details = entry[:details].is_a?(Hash) ? entry[:details] : {} %>
+              <% downloaded_items = Array(details[:downloaded_media_items]) %>
+              <% queued_items = Array(details[:queued_action_items]) %>
+              <% rejected_items = Array(details[:rejected_items]) %>
+              <% downloaded_count = details[:downloaded_media_count].to_i %>
+              <% queued_count = details[:moved_to_action_queue_count].to_i %>
+              <% rejected_count = details[:rejected_items_count].to_i %>
               <% pill_state =
                    case entry[:status].to_s
                    when "failed"
@@ -43,7 +53,78 @@
                 <td><%= relative_time_with_tooltip(entry[:occurred_at]) %></td>
                 <td><span class="pill <%= pill_state %>"><%= entry[:status] %></span></td>
                 <td><%= entry[:source].presence || "-" %></td>
-                <td class="meta"><%= entry[:message] %></td>
+                <td class="meta feed-capture-summary-cell">
+                  <% if details[:seen_posts].to_i.positive? || details[:new_posts].to_i.positive? || details[:updated_posts].to_i.positive? %>
+                    <p class="feed-capture-inline-stats">
+                      Seen <strong><%= details[:seen_posts].to_i %></strong>,
+                      New <strong><%= details[:new_posts].to_i %></strong>,
+                      Updated <strong><%= details[:updated_posts].to_i %></strong>
+                    </p>
+                  <% end %>
+                  <p class="meta compact-meta-top"><%= entry[:message] %></p>
+                </td>
+                <td class="feed-capture-flow-cell">
+                  <span class="pill <%= downloaded_count.positive? ? "sent" : "queued" %>"><%= downloaded_count %></span>
+                  <% if downloaded_items.any? %>
+                    <details class="details-box feed-capture-details-box">
+                      <summary>View media</summary>
+                      <ul class="compact-list tight meta">
+                        <% downloaded_items.each do |row| %>
+                          <li>
+                            <code><%= row[:shortcode].to_s.presence || "-" %></code>
+                            <% if row[:username].to_s.present? %>
+                              by @<%= row[:username] %>
+                            <% end %>
+                          </li>
+                        <% end %>
+                      </ul>
+                    </details>
+                  <% end %>
+                </td>
+                <td class="feed-capture-flow-cell">
+                  <span class="pill <%= queued_count.positive? ? "running" : "queued" %>"><%= queued_count %></span>
+                  <% if queued_items.any? %>
+                    <details class="details-box feed-capture-details-box">
+                      <summary>View queued items</summary>
+                      <ul class="compact-list tight meta">
+                        <% queued_items.each do |row| %>
+                          <li>
+                            <code><%= row[:shortcode].to_s.presence || "-" %></code>
+                            <% if row[:username].to_s.present? %>
+                              by @<%= row[:username] %>
+                            <% end %>
+                          </li>
+                        <% end %>
+                      </ul>
+                    </details>
+                  <% end %>
+                </td>
+                <td class="feed-capture-flow-cell">
+                  <span class="pill <%= rejected_count.positive? ? "failed" : "sent" %>"><%= rejected_count %></span>
+                  <% if rejected_items.any? %>
+                    <details class="details-box feed-capture-details-box">
+                      <summary>View reasons</summary>
+                      <ul class="compact-list tight meta">
+                        <% rejected_items.each do |row| %>
+                          <li>
+                            <code><%= row[:shortcode].to_s.presence || "-" %></code>
+                            <% if row[:username].to_s.present? %>
+                              by @<%= row[:username] %>
+                            <% end %>
+                            <% reason = row[:reason].to_s.presence %>
+                            <% note = row[:note].to_s.presence %>
+                            <% if reason.present? %>
+                              - <%= reason.humanize %>
+                            <% end %>
+                            <% if note.present? %>
+                              (<%= note %>)
+                            <% end %>
+                          </li>
+                        <% end %>
+                      </ul>
+                    </details>
+                  <% end %>
+                </td>
               </tr>
             <% end %>
           </tbody>

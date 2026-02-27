@@ -122,6 +122,70 @@ RSpec.describe Instagram::Client::StoryScraperService do
     expect(reply_skip).to be_present
   end
 
+  it "queues comment generation for downloaded video stories" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = InstagramProfile.create!(instagram_account: account, username: "story_user_#{SecureRandom.hex(3)}")
+    client = Instagram::Client.new(account: account)
+    driver = build_story_driver(url: "https://www.instagram.com/stories/#{profile.username}/123/")
+
+    stub_story_sync_environment(client: client, driver: driver, account_profile: profile)
+    allow(client).to receive(:find_story_network_profile).and_return(profile)
+    allow(client).to receive(:current_story_context).and_return(
+      {
+        ref: "#{profile.username}:123",
+        username: profile.username,
+        story_id: "123",
+        story_key: "#{profile.username}:123"
+      }
+    )
+    allow(client).to receive(:normalized_story_context_for_processing).and_wrap_original { |_m, **kwargs| kwargs[:context] }
+    allow(client).to receive(:resolve_story_media_with_retry).and_return(
+      {
+        media: {
+          url: "https://cdn.example/story_123.mp4",
+          media_type: "video",
+          source: "api_reels_media",
+          image_url: nil,
+          video_url: "https://cdn.example/story_123.mp4",
+          width: 1080,
+          height: 1920,
+          media_variant_count: 1,
+          primary_media_source: "root",
+          primary_media_index: 0,
+          carousel_media: []
+        },
+        attempts: [ { attempt: 1, source: "api_reels_media", resolved: true } ]
+      }
+    )
+    allow(client).to receive(:download_media_with_metadata).and_return(
+      bytes: ("video-bytes" * 500).b,
+      content_type: "video/mp4",
+      filename: "story_123.mp4"
+    )
+    ingestor = instance_double(StoryIngestionService, ingest!: true)
+    allow(StoryIngestionService).to receive(:new).with(account: account, profile: profile).and_return(ingestor)
+    llm_job = instance_double(ActiveJob::Base, job_id: "job-video-llm-1", queue_name: "ai_llm_comment_generation")
+    allow(GenerateLlmCommentJob).to receive(:perform_later).and_return(llm_job)
+
+    result = client.sync_home_story_carousel!(story_limit: 1, auto_reply_only: false)
+
+    expect(result[:stories_visited]).to eq(1)
+    expect(result[:downloaded]).to eq(1)
+    expect(result[:analyzed]).to eq(1)
+    expect(result[:skipped_video]).to eq(0)
+    downloaded_event = profile.instagram_profile_events.where(kind: "story_downloaded").order(id: :desc).first
+    expect(downloaded_event).to be_present
+    expect(downloaded_event.llm_comment_status).to eq("queued")
+    expect(downloaded_event.llm_comment_job_id).to eq("job-video-llm-1")
+    expect(GenerateLlmCommentJob).to have_received(:perform_later).with(
+      hash_including(
+        instagram_profile_event_id: downloaded_event.id,
+        provider: "local",
+        requested_by: "home_story_carousel_sync"
+      )
+    )
+  end
+
   it "does not consume the fetch limit for unresolved story ids" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = InstagramProfile.create!(instagram_account: account, username: "story_user_#{SecureRandom.hex(3)}")
@@ -546,6 +610,59 @@ RSpec.describe Instagram::Client::StoryScraperService do
     expect(failure).to be_present
     expect(failure.metadata["existing_story_username"]).to eq(profile_a.username)
     expect(failure.metadata["conflicting_story_username"]).to eq(profile_b.username)
+  end
+
+  it "skips out-of-network stories before downloading media" do
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    account_profile = InstagramProfile.create!(instagram_account: account, username: account.username)
+    stranger_username = "stranger_#{SecureRandom.hex(3)}"
+    client = Instagram::Client.new(account: account)
+    driver = build_story_driver(url: "https://www.instagram.com/stories/#{stranger_username}/123/")
+
+    stub_story_sync_environment(client: client, driver: driver, account_profile: account_profile)
+    allow(client).to receive(:find_story_network_profile) do |username:|
+      account.instagram_profiles.find_by(username: username)
+    end
+    allow(client).to receive(:current_story_context).and_return(
+      {
+        ref: "#{stranger_username}:123",
+        username: stranger_username,
+        story_id: "123",
+        story_key: "#{stranger_username}:123"
+      }
+    )
+    allow(client).to receive(:normalized_story_context_for_processing).and_wrap_original { |_m, **kwargs| kwargs[:context] }
+    allow(client).to receive(:resolve_story_media_with_retry).and_return(
+      {
+        media: {
+          url: "https://cdn.example/story_123.jpg",
+          media_type: "image",
+          source: "api_reels_media",
+          image_url: "https://cdn.example/story_123.jpg",
+          video_url: nil,
+          width: 1080,
+          height: 1920,
+          media_variant_count: 1,
+          primary_media_source: "root",
+          primary_media_index: 0,
+          carousel_media: []
+        },
+        attempts: [ { attempt: 1, source: "api_reels_media", resolved: true } ]
+      }
+    )
+    allow(client).to receive(:click_next_story_in_carousel!).and_return(false)
+    expect(client).not_to receive(:download_media_with_metadata)
+
+    result = client.sync_home_story_carousel!(story_limit: 1, auto_reply_only: false)
+
+    expect(result[:stories_visited]).to eq(1)
+    expect(result[:downloaded]).to eq(0)
+    expect(result[:skipped_out_of_network]).to eq(1)
+    skip_event = account_profile.instagram_profile_events.where(kind: "story_reply_skipped").order(id: :desc).find do |event|
+      event.metadata["reason"].to_s == "profile_not_in_network"
+    end
+    expect(skip_event).to be_present
+    expect(account.instagram_profiles.where(username: stranger_username)).to be_empty
   end
 
   def build_story_driver(url:)

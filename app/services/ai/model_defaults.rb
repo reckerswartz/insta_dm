@@ -3,7 +3,7 @@
 module Ai
   module ModelDefaults
     DEFAULT_TEXT_MODEL = "llama3.2:3b".freeze
-    DEFAULT_VISION_MODEL = "llava:7b".freeze
+    DEFAULT_VISION_MODEL = "llama3.2-vision:11b".freeze
 
     module_function
 

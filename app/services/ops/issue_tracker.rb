@@ -43,10 +43,17 @@ module Ops
       end
 
       def record_ai_service_check!(ok:, message:, metadata: {})
+        current_fingerprint = fingerprint_for("ai_service_health", "AiDashboardController", nil, nil, "local_ai_stack_offline")
+        legacy_fingerprint = fingerprint_for("ai_service_health", "AiDashboardController", nil, nil, "ai_microservice_offline")
+
         if ok
           resolve_by_fingerprint!(
-            fingerprint: fingerprint_for("ai_service_health", "AiDashboardController", nil, nil, "ai_microservice_offline"),
-            notes: "AI microservice healthy again."
+            fingerprint: current_fingerprint,
+            notes: "Local AI stack healthy again."
+          )
+          resolve_by_fingerprint!(
+            fingerprint: legacy_fingerprint,
+            notes: "Local AI stack healthy again."
           )
           return
         end
@@ -55,10 +62,10 @@ module Ops
           issue_type: "ai_service_unavailable",
           source: "AiDashboardController",
           severity: "critical",
-          title: "AI microservice unavailable",
+          title: "Local AI stack unavailable",
           details: message.to_s,
           metadata: metadata,
-          fingerprint: fingerprint_for("ai_service_health", "AiDashboardController", nil, nil, "ai_microservice_offline")
+          fingerprint: current_fingerprint
         )
       end
 

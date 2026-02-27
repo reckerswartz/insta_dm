@@ -236,6 +236,24 @@ module Instagram
         { has_external_profile_link: false, linked_username: "", linked_profile_url: "", marker_text: "" }
       end
 
+      def blocked_story_media_source_context(url)
+        context = MediaSourcePolicy.blocked_source_context(url: url)
+        return context if context.present?
+
+        hint = ad_hint_from_media_url(url)
+        return nil if hint.blank?
+
+        {
+          blocked: true,
+          reason_code: "ad_related_media_source",
+          marker: hint[:marker].to_s,
+          confidence: hint[:confidence].to_s.presence || "low",
+          source: "story_media_url_hint"
+        }
+      rescue StandardError
+        nil
+      end
+
       def ad_hint_from_media_url(url)
         value = url.to_s.strip
         return nil if value.blank?

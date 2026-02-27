@@ -56,6 +56,7 @@ module Workspace
           average_progress_percent: avg_progress_percent,
           enqueued_now: enqueue_result[:enqueued_count].to_i,
           enqueue_blocked_reason: enqueue_result[:blocked_reason].to_s.presence,
+          ordering_rule: "Failed and in-progress rows first, then queued, then ready. Tie-breakers: stage progress, profile activity, and post recency.",
           service_queue_metrics: service_queue_metrics,
           refreshed_at: @now.iso8601(3)
         }
@@ -79,6 +80,7 @@ module Workspace
           average_progress_percent: 0,
           enqueued_now: 0,
           enqueue_blocked_reason: nil,
+          ordering_rule: "Failed and in-progress rows first, then queued, then ready. Tie-breakers: stage progress, profile activity, and post recency.",
           service_queue_metrics: [],
           refreshed_at: now.iso8601(3)
         }
@@ -331,7 +333,7 @@ module Workspace
         "skipped_page_profile" => 0
       }
 
-      items.sort_by do |item|
+      ordered = items.sort_by do |item|
         [
           lifecycle_priority[item[:lifecycle_state].to_s].to_i,
           status_priority[item[:processing_status].to_s].to_i,
@@ -340,6 +342,40 @@ module Workspace
           item[:post_taken_at] || Time.at(0)
         ]
       end.reverse
+
+      ordered.each_with_index.map do |item, index|
+        item.merge(
+          queue_rank: index + 1,
+          queue_priority_label: queue_priority_label(
+            lifecycle_state: item[:lifecycle_state],
+            processing_status: item[:processing_status]
+          ),
+          queue_priority_reason: queue_priority_reason(
+            lifecycle_state: item[:lifecycle_state],
+            processing_status: item[:processing_status]
+          )
+        )
+      end
+    end
+
+    def queue_priority_label(lifecycle_state:, processing_status:)
+      lifecycle = lifecycle_state.to_s
+      status = processing_status.to_s
+      return "Critical" if lifecycle == "failed" || status == "failed"
+      return "Active" if lifecycle == "processing" || status == "running"
+      return "Queued" if lifecycle == "queued"
+      return "Review" if lifecycle == "partial"
+      return "Ready" if lifecycle == "ready"
+
+      "Queued"
+    end
+
+    def queue_priority_reason(lifecycle_state:, processing_status:)
+      lifecycle_text = lifecycle_state.to_s.humanize
+      status_text = processing_status.to_s.humanize
+      return lifecycle_text if status_text.blank?
+
+      "#{lifecycle_text} - #{status_text}"
     end
 
     def enqueue_processing_jobs(items:)

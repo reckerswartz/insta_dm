@@ -32,7 +32,14 @@ module StoryIntelligence
       )
 
       analysis = run.dig(:result, :analysis)
-      return { ok: false } unless analysis.is_a?(Hash)
+      unless analysis.is_a?(Hash)
+        return {
+          ok: false,
+          failure_reason: "analysis_payload_missing",
+          error_class: "AnalysisPayloadMissingError",
+          error_message: "AI analysis payload was missing or malformed."
+        }
+      end
 
       raw_metadata = analyzable.metadata.is_a?(Hash) ? analyzable.metadata : {}
       local_story_intelligence = analyzable.respond_to?(:local_story_intelligence_payload) ? analyzable.local_story_intelligence_payload : {}
@@ -55,8 +62,13 @@ module StoryIntelligence
         generation_policy: generation_policy,
         ownership_classification: ownership_classification
       }
-    rescue StandardError
-      { ok: false }
+    rescue StandardError => e
+      {
+        ok: false,
+        failure_reason: "analysis_error",
+        error_class: e.class.name,
+        error_message: e.message.to_s.byteslice(0, 500)
+      }
     end
 
     def story_reply_decision(analysis:, story_id:)
@@ -308,7 +320,9 @@ module StoryIntelligence
         suggestions: candidates,
         historical_comments: history,
         context_keywords: context_keywords,
-        max_suggestions: 8
+        max_suggestions: 8,
+        channel: "story",
+        require_direct_address: true
       )[:accepted]
       candidates = Array(filtered).presence || candidates
 

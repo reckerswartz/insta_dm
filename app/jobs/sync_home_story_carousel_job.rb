@@ -92,6 +92,10 @@ class SyncHomeStoryCarouselJob < ApplicationJob
       primary_failure_reason: primary_failure_reason,
       failure_reasons: failure_reasons
     }.compact
+    synced_at = Time.current
+    account.update!(last_synced_at: synced_at)
+    account_profile.update!(last_synced_at: synced_at)
+    metadata[:synced_at] = synced_at.iso8601(3)
     if has_failure
       action_log&.mark_failed!(error_message: message, extra_metadata: metadata)
     else

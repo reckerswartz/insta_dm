@@ -75,7 +75,7 @@
         </div>
         <div class="error-message">
           <strong>Error:</strong> <%= @service_status[:message] %>
-          <p class="hint mb-0">Verify Ollama and local microservice endpoints are reachable.</p>
+          <p class="hint mb-0">Verify the local Ollama endpoint is reachable.</p>
         </div>
       <% end %>
     </div>
@@ -92,9 +92,8 @@
       <div class="info-item">
         <h4>Policy</h4>
         <p class="mb-1">
-          Microservice:
-          <code>enabled=<%= architecture[:microservice_enabled] %></code>
-          <code>required=<%= architecture[:microservice_required] %></code>
+          Execution mode:
+          <code><%= architecture[:execution_mode].to_s.presence || "ollama_only" %></code>
         </p>
         <p class="mb-0">
           Stack status:
@@ -322,38 +321,9 @@
     <h2>Available Tests</h2>
     <div class="test-grid">
       <div class="test-category">
-        <h3>Vision</h3>
+        <h3>Ollama</h3>
         <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="vision" data-test="labels">Object detection</button>
-        </div>
-      </div>
-
-      <div class="test-category">
-        <h3>Face</h3>
-        <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="face" data-test="detection">Face detection</button>
-          <button class="btn btn-small test-service-btn" data-service="face" data-test="embedding">Face embedding</button>
-        </div>
-      </div>
-
-      <div class="test-category">
-        <h3>OCR</h3>
-        <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="ocr" data-test="text_extraction">Text extraction</button>
-        </div>
-      </div>
-
-      <div class="test-category">
-        <h3>Whisper</h3>
-        <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="whisper" data-test="transcription">Audio transcription</button>
-        </div>
-      </div>
-
-      <div class="test-category">
-        <h3>Video</h3>
-        <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="video" data-test="analysis">Video analysis</button>
+          <button class="btn btn-small test-service-btn" data-service="ollama" data-test="models">List models</button>
         </div>
       </div>
     </div>
@@ -364,7 +334,7 @@
     <div class="info-grid">
       <div class="info-item">
         <h4>Configuration</h4>
-        <p class="mb-1">Microservice endpoint: <code><%= Ai::LocalMicroserviceClient::BASE_URL %></code></p>
+        <p class="mb-1">Execution mode: <code>ollama_only</code></p>
         <p class="mb-0">Ollama endpoint: <code><%= Ai::OllamaClient::BASE_URL %></code></p>
       </div>
 

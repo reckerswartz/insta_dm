@@ -162,6 +162,10 @@ module Admin
         else
           steps << "Queued in #{row[:queue_name].to_s.presence || '-'}."
         end
+        if row[:scheduled_for_at].present?
+          reason = row[:scheduling_reason].to_s.presence || "delay reason not provided"
+          steps << "Scheduled for #{row[:scheduled_for_at].iso8601} (#{reason})."
+        end
 
         if action_log
           steps << "Action log '#{action_log.action}' recorded with status '#{action_log.status}'."

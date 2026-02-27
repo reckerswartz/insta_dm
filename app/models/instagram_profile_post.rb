@@ -4,6 +4,7 @@ class InstagramProfilePost < ApplicationRecord
   has_many :instagram_profile_post_comments, dependent: :destroy
   has_many :instagram_post_faces, dependent: :destroy
   has_many :ai_analyses, as: :analyzable, dependent: :destroy
+  has_many :background_job_lifecycles, dependent: :nullify
 
   has_one_attached :media
   has_one_attached :preview_image

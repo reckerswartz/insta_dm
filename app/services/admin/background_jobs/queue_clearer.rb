@@ -18,10 +18,24 @@ module Admin
       def clear_sidekiq_jobs!
         require "sidekiq/api"
 
-        Sidekiq::Queue.all.each(&:clear)
-        Sidekiq::ScheduledSet.new.clear
-        Sidekiq::RetrySet.new.clear
-        Sidekiq::DeadSet.new.clear
+        Sidekiq::Queue.all.each do |queue|
+          queue.each do |entry|
+            Ops::BackgroundJobLifecycleRecorder.record_sidekiq_removal(
+              entry: entry,
+              reason: "admin_clear_queue"
+            )
+          end
+          queue.clear
+        end
+        [ Sidekiq::ScheduledSet.new, Sidekiq::RetrySet.new, Sidekiq::DeadSet.new ].each do |set|
+          set.each do |entry|
+            Ops::BackgroundJobLifecycleRecorder.record_sidekiq_removal(
+              entry: entry,
+              reason: "admin_clear_queue"
+            )
+          end
+          set.clear
+        end
 
         Sidekiq::ProcessSet.new.each do |process|
           process.quiet! if process.alive?

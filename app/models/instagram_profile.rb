@@ -7,6 +7,7 @@ class InstagramProfile < ApplicationRecord
   has_many :instagram_profile_analyses, dependent: :destroy
   has_many :instagram_profile_action_logs, dependent: :destroy
   has_many :instagram_profile_posts, dependent: :destroy
+  has_many :instagram_posts, dependent: :destroy
   has_many :instagram_post_faces, through: :instagram_profile_posts
   has_many :instagram_profile_post_comments, dependent: :destroy
   has_many :instagram_profile_insights, dependent: :destroy
@@ -20,6 +21,7 @@ class InstagramProfile < ApplicationRecord
   has_many :profile_tags, through: :instagram_profile_taggings
   has_many :app_issues, dependent: :nullify
   has_many :active_storage_ingestions, dependent: :nullify
+  has_many :background_job_lifecycles, dependent: :nullify
   has_one :instagram_profile_behavior_profile, dependent: :destroy
 
   has_one_attached :avatar
@@ -116,6 +118,14 @@ class InstagramProfile < ApplicationRecord
         content: chunk.content.to_s
       }
     end
+  end
+
+  def last_story_sync_completed_at
+    background_job_lifecycles
+      .story_related
+      .where(status: "completed")
+      .where.not(completed_at: nil)
+      .maximum(:completed_at)
   end
 
   private

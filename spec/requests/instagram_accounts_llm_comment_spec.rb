@@ -24,7 +24,7 @@ RSpec.describe "InstagramAccounts generate_llm_comment", type: :request do
           "run_id" => "run-old-req-1",
           "status" => "failed",
           "steps" => {
-            "ocr_analysis" => { "status" => "succeeded" }
+            "metadata_extraction" => { "status" => "succeeded" }
           }
         }
       },
@@ -67,7 +67,7 @@ RSpec.describe "InstagramAccounts generate_llm_comment", type: :request do
           "run_id" => "run-old-req-2",
           "status" => "failed",
           "steps" => {
-            "ocr_analysis" => { "status" => "succeeded" }
+            "metadata_extraction" => { "status" => "succeeded" }
           }
         }
       },

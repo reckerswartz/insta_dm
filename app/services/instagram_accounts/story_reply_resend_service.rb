@@ -184,14 +184,14 @@ module InstagramAccounts
     end
 
     def resolved_message_text(event:)
-      candidate = comment_text.strip
+      candidate = sanitize_comment_text(comment_text)
       return candidate if candidate.present?
 
       meta = story_metadata(event: event)
-      saved = meta["reply_comment"].to_s.strip
+      saved = sanitize_comment_text(meta["reply_comment"])
       return saved if saved.present?
 
-      event.llm_generated_comment.to_s.strip
+      sanitize_comment_text(event.llm_generated_comment)
     end
 
     def story_id_for(event:)
@@ -595,7 +595,11 @@ module InstagramAccounts
     end
 
     def normalize_comment(text)
-      text.to_s.downcase.gsub(/\s+/, " ").strip
+      sanitize_comment_text(text).downcase.gsub(/\s+/, " ").strip
+    end
+
+    def sanitize_comment_text(text)
+      StoryReplyTextSanitizer.call(text)
     end
 
     def reason_indicates_story_expired?(reason, event: nil)

@@ -57,23 +57,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     end
   end
 
-  class StubLocalVideoClient
-    attr_reader :calls
-
-    def initialize(result:, raise_on_call: false)
-      @result = result
-      @raise_on_call = raise_on_call
-      @calls = 0
-    end
-
-    def analyze_video_story_intelligence!(**_kwargs)
-      @calls += 1
-      raise "local intelligence should not run for this case" if @raise_on_call
-
-      @result
-    end
-  end
-
   class StubContentUnderstanding
     attr_reader :calls
 
@@ -158,7 +141,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
         metadata: { source: "whisper" }
       }
     )
-    local_client = StubLocalVideoClient.new(result: {}, raise_on_call: true)
     understanding = StubContentUnderstanding.new(
       result: {
         topics: [ "portrait", "music" ],
@@ -178,7 +160,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
       video_metadata_service: probe,
       video_audio_extraction_service: audio,
       speech_transcription_service: transcriber,
-      local_microservice_client: local_client,
       content_understanding_service: understanding,
       vision_understanding_service: vision
     )
@@ -199,7 +180,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     assert_equal [ "person" ], result[:objects]
     assert_equal 1, audio.calls
     assert_equal 1, transcriber.calls
-    assert_equal 0, local_client.calls
     assert_equal "image", understanding.calls.first[:media_type]
     assert_equal true, ActiveModel::Type::Boolean.new.cast(result.dig(:metadata, :parallel_execution, :enabled))
     assert_equal 2, result.dig(:metadata, :parallel_execution, :branch_count).to_i
@@ -235,19 +215,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
         metadata: { reason: "audio_unavailable" }
       }
     )
-    local_client = StubLocalVideoClient.new(
-      result: {
-        "content_labels" => [ "mountain", "hiking" ],
-        "object_detections" => [ { "label" => "person", "confidence" => 0.82 } ],
-        "scenes" => [ { "type" => "outdoor", "timestamp" => 1.2 } ],
-        "ocr_text" => "#trail @buddy",
-        "ocr_blocks" => [ { "text" => "#trail @buddy" } ],
-        "mentions" => [ "@buddy" ],
-        "hashtags" => [ "#trail" ],
-        "profile_handles" => [ "buddy.profile" ],
-        "metadata" => { "source" => "stub_video_intel" }
-      }
-    )
     understanding = StoryContentUnderstandingService.new
     frame_extractor = StubFrameExtractor.new(
       result: {
@@ -279,7 +246,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
       video_metadata_service: probe,
       video_audio_extraction_service: audio,
       speech_transcription_service: transcriber,
-      local_microservice_client: local_client,
       content_understanding_service: understanding,
       video_frame_extraction_service: frame_extractor,
       vision_understanding_service: vision
@@ -298,7 +264,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     assert_equal false, ActiveModel::Type::Boolean.new.cast(result[:has_audio])
     assert_nil result[:transcript]
     assert_equal 1, probe.calls
-    assert_equal 0, local_client.calls
     assert_equal 0, audio.calls
     assert_equal 1, frame_extractor.calls
     assert_equal 1, vision.calls.length
@@ -346,7 +311,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
         metadata: { source: "whisper" }
       }
     )
-    local_client = StubLocalVideoClient.new(result: {}, raise_on_call: true)
     understanding = StubContentUnderstanding.new(
       result: {
         topics: [],
@@ -368,7 +332,7 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
     vision = StubVisionUnderstanding.new(
       result: {
         ok: true,
-        model: "llava:7b",
+        model: "llama3.2-vision:11b",
         summary: "unused",
         topics: [ "unused" ],
         objects: [ "unused" ],
@@ -382,7 +346,6 @@ RSpec.describe "PostVideoContextExtractionServiceTest" do
       video_metadata_service: probe,
       video_audio_extraction_service: audio,
       speech_transcription_service: transcriber,
-      local_microservice_client: local_client,
       content_understanding_service: understanding,
       video_frame_extraction_service: frame_extractor,
       vision_understanding_service: vision

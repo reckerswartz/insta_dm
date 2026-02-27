@@ -141,6 +141,19 @@ RSpec.describe Ai::Providers::LocalProvider do
     assert_includes analysis["topics"], "city"
   end
 
+  it "checks provider health from ollama only" do
+    provider = StubLocalProvider.new
+    allow(provider).to receive(:ollama_client).and_return(
+      instance_double(Ai::OllamaClient, test_connection!: { ok: true, models: [ "llama3.2-vision:11b" ] })
+    )
+    allow(provider).to receive(:client).and_raise("microservice health check should not run")
+
+    result = provider.test_key!
+
+    assert_equal true, result[:ok]
+    assert_equal [ "llama3.2-vision:11b" ], result[:ollama]
+  end
+
   def post_payload
     {
       author_profile: { tags: [] },

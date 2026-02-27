@@ -30,7 +30,7 @@ module Ai
       { ok: false, message: e.message.to_s }
     end
     
-    def generate(model:, prompt:, temperature: 0.8, max_tokens: 900, num_ctx: nil, num_thread: nil)
+    def generate(model:, prompt:, temperature: 0.8, max_tokens: 900, num_ctx: nil, num_thread: nil, format: nil)
       payload = {
         model: model || @default_model,
         prompt: prompt,
@@ -43,6 +43,7 @@ module Ai
         keep_alive: ENV.fetch("OLLAMA_KEEP_ALIVE", "10m"),
         stream: false
       }
+      payload[:format] = format.to_s if format.to_s.present?
       
       response = post_json("/api/generate", payload)
       

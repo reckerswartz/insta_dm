@@ -21,6 +21,25 @@ RSpec.describe StoryIntelligence::PayloadBuilder do
     event
   end
 
+  def build_image_event
+    account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_profile_#{SecureRandom.hex(4)}")
+    event = profile.record_event!(
+      kind: "story_downloaded",
+      external_id: "story_downloaded:#{SecureRandom.hex(6)}",
+      metadata: {
+        "story_id" => SecureRandom.hex(8),
+        "media_type" => "image"
+      }
+    )
+    event.media.attach(
+      io: StringIO.new("image-bytes"),
+      filename: "story.jpg",
+      content_type: "image/jpeg"
+    )
+    event
+  end
+
   it "hydrates video payload from lightweight video context extraction" do
     event = build_video_event
     extractor = instance_double(PostVideoContextExtractionService)
@@ -51,7 +70,7 @@ RSpec.describe StoryIntelligence::PayloadBuilder do
 
     payload = described_class.new(event: event).build_payload
 
-    expect(payload[:source]).to eq("live_local_video_context")
+    expect(payload[:source]).to eq("live_llm_video_context")
     expect(payload[:transcript]).to eq("Morning run soundtrack")
     expect(payload[:objects]).to include("person", "shoe")
     expect(payload[:topics]).to include("run", "morning")
@@ -90,5 +109,34 @@ RSpec.describe StoryIntelligence::PayloadBuilder do
 
     expect(payload[:source]).to eq("unavailable")
     expect(payload[:reason]).to eq("video_too_large_for_context_extraction")
+  end
+
+  it "hydrates image payload from direct llm vision extraction without microservice dependency" do
+    event = build_image_event
+    vision_service = instance_double(Ai::VisionUnderstandingService)
+    allow(Ai::VisionUnderstandingService).to receive(:new).and_return(vision_service)
+    allow(vision_service).to receive(:summarize).and_return(
+      {
+        ok: true,
+        summary: "Street style shot near downtown with #city and @creator",
+        topics: [ "street", "downtown", "city" ],
+        objects: [ "person", "street" ],
+        metadata: {
+          status: "completed",
+          source: "ollama_vision",
+          model: "llama3.2-vision:11b"
+        }
+      }
+    )
+
+    payload = described_class.new(event: event).build_payload
+
+    expect(payload[:source]).to eq("live_llm_vision_image_context")
+    expect(payload[:topics]).to include("street", "downtown", "city")
+    expect(payload[:objects]).to include("person")
+    expect(payload[:hashtags]).to include("#city")
+    expect(payload[:mentions]).to include("@creator")
+    expect(payload[:face_count]).to eq(0)
+    expect(Array(payload[:processing_log])).not_to be_empty
   end
 end

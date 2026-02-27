@@ -1,6 +1,6 @@
 # Story Intelligence Pipeline
 
-Last updated: 2026-02-21
+Last updated: 2026-02-25
 
 Related reference:
 - `docs/workflows/story-sync-api-reference.md`
@@ -23,7 +23,9 @@ Related reference:
 - Data source: `Instagram::Client#fetch_profile_story_dataset!`
 - Behavior:
   - upserts profile snapshot fields
-  - downloads/reuses story media
+  - downloads/reuses story media with media-source policy checks (`Instagram::MediaDownloadTrustPolicy`)
+  - blocks promotional/ad media URLs before download (`ad_related_media_source`, `promotional_media_host`, `promotional_media_query`)
+  - default behavior no longer downloads remote media for already-skipped stories (`STORY_SYNC_DOWNLOAD_SKIPPED_MEDIA=false`)
   - records `story_uploaded`, `story_viewed`, `story_downloaded` event stream
   - optionally queues reply actions when `auto_reply=true`
 

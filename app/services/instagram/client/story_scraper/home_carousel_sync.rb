@@ -422,8 +422,8 @@ module Instagram
 
                   stats[:stories_visited] += 1
                   network_profile = find_story_network_profile(username: story_username)
-                  profile = network_profile || find_or_create_profile_for_auto_engagement!(username: story_username)
-                  out_of_network_profile = network_profile.nil?
+                  profile = network_profile
+                  out_of_network_profile = profile.nil?
 
                   ad_context = detect_story_ad_context(driver: driver, media: media)
                   capture_task_html(
@@ -479,6 +479,44 @@ module Instagram
                         story_ref: ref,
                         reason: ad_context[:reason],
                         marker_text: ad_context[:marker_text]
+                      }
+                    )
+                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                    unless moved
+                      exit_reason = "next_navigation_failed"
+                      break
+                    end
+                    next
+                  end
+
+                  if out_of_network_profile
+                    stats[:skipped_out_of_network] += 1
+                    account_profile.record_event!(
+                      kind: "story_reply_skipped",
+                      external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                      occurred_at: Time.current,
+                      metadata: {
+                        source: "home_story_carousel",
+                        story_id: story_id,
+                        story_ref: ref,
+                        story_url: story_url,
+                        media_url: media[:url],
+                        media_source: media[:source],
+                        reason: "profile_not_in_network",
+                        status: "Out of network",
+                        username: story_username
+                      }
+                    )
+                    capture_task_html(
+                      driver: driver,
+                      task_name: "home_story_sync_out_of_network_skipped",
+                      status: "ok",
+                      meta: {
+                        story_id: story_id,
+                        story_ref: ref,
+                        username: story_username,
+                        reason: "profile_not_in_network",
+                        media_url: media[:url].to_s.byteslice(0, 220)
                       }
                     )
                     moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
@@ -588,6 +626,47 @@ module Instagram
                   )
                   reused_download = load_story_download_media_for_profile(profile: profile, story_id: story_id)
                   media_download_url = normalize_story_media_download_url(media[:url])
+                  blocked_source = blocked_story_media_source_context(media_download_url.presence || media[:url])
+                  if blocked_source.present?
+                    stats[:skipped_ads] += 1
+                    profile.record_event!(
+                      kind: "story_ad_skipped",
+                      external_id: "story_ad_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                      occurred_at: Time.current,
+                      metadata: {
+                        source: "home_story_carousel",
+                        story_id: story_id,
+                        story_ref: ref,
+                        story_url: story_url,
+                        media_url: media[:url],
+                        media_download_url: media_download_url,
+                        media_source: media[:source],
+                        reason: blocked_source[:reason_code],
+                        marker_text: blocked_source[:marker],
+                        signal_source: blocked_source[:source],
+                        signal_confidence: blocked_source[:confidence]
+                      }
+                    )
+                    capture_task_html(
+                      driver: driver,
+                      task_name: "home_story_sync_media_source_blocked",
+                      status: "ok",
+                      meta: {
+                        story_id: story_id,
+                        story_ref: ref,
+                        reason: blocked_source[:reason_code],
+                        marker_text: blocked_source[:marker],
+                        signal_source: blocked_source[:source],
+                        signal_confidence: blocked_source[:confidence]
+                      }
+                    )
+                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                    unless moved
+                      exit_reason = "next_navigation_failed"
+                      break
+                    end
+                    next
+                  end
 
                   if media[:media_type].to_s == "video"
                     begin
@@ -651,6 +730,61 @@ module Instagram
                         content_type: download[:content_type],
                         filename: download[:filename]
                       )
+                      archive_link = archive_link_metadata(downloaded_event: downloaded_event)
+                      enqueue_result = enqueue_story_comment_generation!(downloaded_event: downloaded_event)
+                      if enqueue_result[:queued]
+                        stats[:analyzed] += 1
+                      elsif enqueue_result[:reason].to_s != "comment_generation_already_completed"
+                        profile.record_event!(
+                          kind: "story_reply_skipped",
+                          external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                          occurred_at: Time.current,
+                          metadata: {
+                            source: "home_story_carousel",
+                            story_id: story_id,
+                            story_ref: ref,
+                            story_url: story_url,
+                            media_url: media[:url],
+                            media_source: media[:source],
+                            reason: enqueue_result[:reason].to_s.presence || "comment_generation_enqueue_failed",
+                            status: "Comment generation not queued",
+                            queue_name: enqueue_result[:queue_name],
+                            active_job_id: enqueue_result[:job_id],
+                            error_class: enqueue_result[:error_class],
+                            error_message: enqueue_result[:error_message]
+                          }.merge(archive_link)
+                        )
+                      end
+                      capture_task_html(
+                        driver: driver,
+                        task_name: "home_story_sync_video_comment_enqueue",
+                        status: enqueue_result[:queued] ? "ok" : "error",
+                        meta: {
+                          story_id: story_id,
+                          story_ref: ref,
+                          queued: enqueue_result[:queued],
+                          reason: enqueue_result[:reason],
+                          queue_name: enqueue_result[:queue_name],
+                          active_job_id: enqueue_result[:job_id]
+                        }
+                      )
+                    rescue MediaDownloadService::BlockedMediaSourceError => e
+                      stats[:skipped_ads] += 1
+                      profile.record_event!(
+                        kind: "story_ad_skipped",
+                        external_id: "story_ad_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                        occurred_at: Time.current,
+                        metadata: {
+                          source: "home_story_carousel",
+                          story_id: story_id,
+                          story_ref: ref,
+                          story_url: story_url,
+                          media_url: media[:url],
+                          media_source: media[:source],
+                          reason: "blocked_media_source",
+                          marker_text: e.message.to_s.byteslice(0, 200)
+                        }
+                      )
                     rescue StandardError => e
                       stats[:failed] += 1
                       profile.record_event!(
@@ -667,8 +801,11 @@ module Instagram
                         )
                       )
                     end
-                    stats[:skipped_video] += 1
-                    next unless click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                    moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
+                    unless moved
+                      exit_reason = "next_navigation_failed"
+                      break
+                    end
                     next
                   end
 
@@ -806,45 +943,6 @@ module Instagram
                     )
                     archive_link = archive_link_metadata(downloaded_event: downloaded_event)
 
-                    if out_of_network_profile
-                      stats[:skipped_out_of_network] += 1
-                      profile.record_event!(
-                        kind: "story_reply_skipped",
-                        external_id: "story_reply_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
-                        occurred_at: Time.current,
-                        metadata: {
-                          source: "home_story_carousel",
-                          story_id: story_id,
-                          story_ref: ref,
-                          story_url: story_url,
-                          media_url: media[:url],
-                          media_source: media[:source],
-                          reason: "profile_not_in_network",
-                          status: "Out of network",
-                          username: story_username
-                        }.merge(archive_link)
-                      )
-                      capture_task_html(
-                        driver: driver,
-                        task_name: "home_story_sync_out_of_network_archived",
-                        status: "ok",
-                        meta: {
-                          story_id: story_id,
-                          story_ref: ref,
-                          username: story_username,
-                          reason: "profile_not_in_network",
-                          media_url: media[:url].to_s.byteslice(0, 220),
-                          archive_event_id: downloaded_event.id
-                        }
-                      )
-                      moved = click_next_story_in_carousel!(driver: driver, current_ref: ref)
-                      unless moved
-                        exit_reason = "next_navigation_failed"
-                        break
-                      end
-                      next
-                    end
-
                     payload = build_auto_engagement_post_payload(
                       profile: profile,
                       shortcode: story_id,
@@ -862,7 +960,7 @@ module Instagram
                     stats[:analyzed] += 1 if analysis.present?
 
                     suggestions = generate_comment_suggestions_from_analysis!(profile: profile, payload: payload, analysis: analysis)
-                    comment_text = suggestions.first.to_s.strip
+                    comment_text = StoryReplyTextSanitizer.call(suggestions.first)
                     capture_task_html(
                       driver: driver,
                       task_name: "home_story_sync_comment_generation",
@@ -1096,6 +1194,23 @@ module Instagram
                         end
                       end
                     end
+                  rescue MediaDownloadService::BlockedMediaSourceError => e
+                    stats[:skipped_ads] += 1
+                    profile.record_event!(
+                      kind: "story_ad_skipped",
+                      external_id: "story_ad_skipped:#{story_id}:#{Time.current.utc.iso8601(6)}",
+                      occurred_at: Time.current,
+                      metadata: {
+                        source: "home_story_carousel",
+                        story_id: story_id,
+                        story_ref: ref,
+                        story_url: story_url,
+                        media_url: media[:url],
+                        media_source: media[:source],
+                        reason: "blocked_media_source",
+                        marker_text: e.message.to_s.byteslice(0, 200)
+                      }
+                    )
                   rescue StandardError => e
                     stats[:failed] += 1
                     profile.record_event!(
@@ -1543,9 +1658,43 @@ module Instagram
           msg.include?("timeout") || msg.include?("http 429") || msg.include?("http 502") || msg.include?("http 503") || msg.include?("http 504")
         end
 
+        def enqueue_story_comment_generation!(downloaded_event:)
+          return { queued: false, reason: "comment_generation_missing_archive_event" } unless downloaded_event&.persisted?
+          return { queued: false, reason: "comment_generation_already_completed" } if downloaded_event.has_llm_generated_comment?
+
+          if downloaded_event.llm_comment_in_progress?
+            return {
+              queued: false,
+              reason: "comment_generation_already_queued",
+              job_id: downloaded_event.llm_comment_job_id.to_s.presence
+            }
+          end
+
+          job = GenerateLlmCommentJob.perform_later(
+            instagram_profile_event_id: downloaded_event.id,
+            provider: "local",
+            model: nil,
+            requested_by: "home_story_carousel_sync"
+          )
+          downloaded_event.queue_llm_comment_generation!(job_id: job.job_id)
+
+          {
+            queued: true,
+            job_id: job.job_id,
+            queue_name: job.queue_name
+          }
+        rescue StandardError => e
+          {
+            queued: false,
+            reason: "comment_generation_enqueue_failed",
+            error_class: e.class.name,
+            error_message: e.message.to_s
+          }
+        end
+
         def enqueue_story_reply_delivery!(profile:, story_id:, comment_text:, downloaded_event:, metadata:)
           sid = story_id.to_s.strip
-          text = comment_text.to_s.strip
+          text = StoryReplyTextSanitizer.call(comment_text)
           return { queued: false, reason: "missing_story_id" } if sid.blank?
           return { queued: false, reason: "blank_comment" } if text.blank?
 

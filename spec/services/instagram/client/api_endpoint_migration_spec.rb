@@ -428,4 +428,24 @@ RSpec.describe Instagram::Client do
     expect(result[:posted]).to eq(true)
     expect(captured_form[:media_id]).to eq("44556677_42")
   end
+
+  it "sanitizes story reply text before sending reel share payload" do
+    captured_form = nil
+    client.define_singleton_method(:story_user_id_for) { |username:| "42" }
+    client.define_singleton_method(:direct_thread_id_for_user) { |user_id:| "thread_42" }
+    client.define_singleton_method(:ig_api_post_form_json) do |path:, referer:, form:, endpoint:, username:, retries:|
+      captured_form = form
+      { "status" => "ok", "payload" => { "thread_id" => "thread_42", "item_id" => "item_42" } }
+    end
+
+    result = client.send(
+      :comment_on_story_via_api!,
+      story_id: "99887766",
+      story_username: "target.user",
+      comment_text: "\"Great frame!\","
+    )
+
+    expect(result[:posted]).to eq(true)
+    expect(captured_form[:text]).to eq("Great frame!")
+  end
 end

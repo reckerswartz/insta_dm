@@ -4,11 +4,12 @@ module LlmComment
   class EventGenerationPipeline
     MIN_VALIDATION_SCORE = ENV.fetch("LLM_COMMENT_MIN_VALIDATION_SCORE", "1.0").to_f.clamp(0.0, 3.0)
 
-    def initialize(event:, provider:, model:, skip_media_stage_reporting: false)
+    def initialize(event:, provider:, model:, skip_media_stage_reporting: false, local_story_intelligence: nil)
       @event = event
       @provider = provider.to_s
       @model = model
       @skip_media_stage_reporting = ActiveModel::Type::Boolean.new.cast(skip_media_stage_reporting)
+      @local_story_intelligence = normalize_hash(local_story_intelligence)
     end
 
     def call
@@ -17,39 +18,19 @@ module LlmComment
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) rescue nil
       unless skip_media_stage_reporting?
         report_stage!(
-          stage: "ocr_analysis",
+          stage: "context_matching",
           state: "running",
-          progress: 10,
-          message: "Running OCR extraction."
-        )
-      end
-      context = event.send(:build_comment_context)
-      unless skip_media_stage_reporting?
-        report_stage!(
-          stage: "ocr_analysis",
-          state: "completed",
-          progress: 18,
-          message: "OCR extraction completed."
-        )
-        report_stage!(
-          stage: "vision_detection",
-          state: "completed",
-          progress: 24,
-          message: "Vision detection completed."
+          progress: 44,
+          message: "Building prompt context from story intelligence."
         )
         report_stage!(
           stage: "face_recognition",
-          state: "completed",
-          progress: 30,
-          message: "Face recognition completed."
-        )
-        report_stage!(
-          stage: "metadata_extraction",
-          state: "completed",
-          progress: 36,
-          message: "Metadata extraction completed."
+          state: "skipped",
+          progress: 34,
+          message: "Face enrichment is deferred and non-blocking."
         )
       end
+      context = event.send(:build_comment_context, local_story_intelligence: local_story_intelligence)
       local_intelligence = normalize_hash(context[:local_story_intelligence])
       validated_story_insights = normalize_hash(context[:validated_story_insights])
       generation_policy = normalize_hash(validated_story_insights[:generation_policy])
@@ -66,7 +47,7 @@ module LlmComment
 
       event.broadcast_llm_comment_generation_progress(
         stage: "context_ready",
-        message: "Context prepared from local story intelligence.",
+        message: "Context prepared from direct media intelligence.",
         progress: 46,
         stage_statuses: event.llm_processing_stages
       )
@@ -146,7 +127,9 @@ module LlmComment
           selected_comment: selected_comment,
           relevance_score: relevance_score,
           relevance_breakdown: selected_breakdown,
-          ranked_candidates: ranked.first(8)
+          ranked_candidates: ranked.first(8),
+          generation_inputs: build_generation_inputs(context: context, result: result),
+          policy_diagnostics: (result[:policy_diagnostics].is_a?(Hash) ? result[:policy_diagnostics] : {})
         )
       )
 
@@ -154,7 +137,9 @@ module LlmComment
         selected_comment: selected_comment,
         relevance_score: relevance_score,
         relevance_breakdown: selected_breakdown,
-        ranked_candidates: ranked.first(8)
+        ranked_candidates: ranked.first(8),
+        generation_inputs: build_generation_inputs(context: context, result: result),
+        policy_diagnostics: (result[:policy_diagnostics].is_a?(Hash) ? result[:policy_diagnostics] : {})
       )
     end
 
@@ -164,6 +149,10 @@ module LlmComment
 
     def skip_media_stage_reporting?
       @skip_media_stage_reporting
+    end
+
+    def local_story_intelligence
+      @local_story_intelligence
     end
 
     def completed_result
@@ -211,16 +200,6 @@ module LlmComment
     end
 
     def validate_intelligence!(local_intelligence:, generation_policy:)
-      if event.send(:local_story_intelligence_blank?, local_intelligence)
-        reason = local_intelligence[:reason].to_s.presence || "local_story_intelligence_blank"
-        source = local_intelligence[:source].to_s.presence || "unknown"
-        raise InstagramProfileEvent::LocalStoryIntelligence::LocalStoryIntelligenceUnavailableError.new(
-          "Local story intelligence unavailable (reason: #{reason}, source: #{source}).",
-          reason: reason,
-          source: source
-        )
-      end
-
       return if ActiveModel::Type::Boolean.new.cast(generation_policy[:allow_comment])
 
       policy_reason_code = generation_policy[:reason_code].to_s.presence || "policy_blocked"
@@ -289,6 +268,8 @@ module LlmComment
           "generation_policy" => context[:generation_policy],
           "validated_story_insights" => context[:validated_story_insights],
           "scored_context" => context[:scored_context],
+          "generation_inputs" => build_generation_inputs(context: context, result: result),
+          "policy_diagnostics" => (result[:policy_diagnostics].is_a?(Hash) ? result[:policy_diagnostics] : {}),
           "ranked_candidates" => ranked.first(8).map do |row|
             {
               "comment" => row[:comment],
@@ -314,6 +295,29 @@ module LlmComment
           "pipeline" => "validated_story_intelligence_v3"
         )
       )
+    end
+
+    def build_generation_inputs(context:, result:)
+      prompt_inputs = result[:prompt_inputs].is_a?(Hash) ? result[:prompt_inputs] : {}
+      verified_story_facts = context[:verified_story_facts].is_a?(Hash) ? context[:verified_story_facts] : {}
+      profile_topics = Array(context[:profile_topics]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+      media_topics = Array(context[:media_topics]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+      selected_topics = Array(context[:topics]).map(&:to_s).map(&:strip).reject(&:blank?).uniq
+
+      {
+        "selected_topics" => selected_topics.first(12),
+        "media_topics" => media_topics.first(12),
+        "profile_topics" => profile_topics.first(8),
+        "visual_anchors" => Array(prompt_inputs[:visual_anchors] || prompt_inputs["visual_anchors"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(12),
+        "context_keywords" => Array(prompt_inputs[:context_keywords] || prompt_inputs["context_keywords"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(18),
+        "situational_cues" => Array(prompt_inputs[:situational_cues] || prompt_inputs["situational_cues"]).map(&:to_s).map(&:strip).reject(&:blank?).uniq.first(6),
+        "content_mode" => (prompt_inputs[:content_mode] || prompt_inputs["content_mode"]).to_s.presence,
+        "image_description" => context[:image_description].to_s.byteslice(0, 220),
+        "media_type" => context.dig(:post_payload, :post, :media_type).to_s.presence,
+        "signal_score" => verified_story_facts[:signal_score].to_i
+      }.compact
+    rescue StandardError
+      {}
     end
 
     def report_stage!(stage:, state:, progress:, message:, details: nil)

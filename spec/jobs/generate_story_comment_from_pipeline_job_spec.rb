@@ -75,7 +75,8 @@ RSpec.describe GenerateStoryCommentFromPipelineJob do
       event: an_instance_of(InstagramProfileEvent),
       provider: "local",
       model: "llama3.2-vision:11b",
-      skip_media_stage_reporting: true
+      skip_media_stage_reporting: true,
+      local_story_intelligence: { source: "spec", topics: [ "travel" ] }
     )
     expect(generator).to have_received(:call).once
   end

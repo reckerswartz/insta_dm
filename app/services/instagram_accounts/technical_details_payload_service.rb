@@ -13,7 +13,9 @@ module InstagramAccounts
 
       llm_meta = event.llm_comment_metadata.is_a?(Hash) ? event.llm_comment_metadata : {}
       stored_details = llm_meta["technical_details"] || llm_meta[:technical_details]
-      technical_details = hydrate_technical_details(event: event, technical_details: stored_details)
+      technical_details = snapshot_technical_details(technical_details: stored_details)
+      generation_inputs = llm_meta["generation_inputs"].is_a?(Hash) ? llm_meta["generation_inputs"] : {}
+      policy_diagnostics = llm_meta["policy_diagnostics"].is_a?(Hash) ? llm_meta["policy_diagnostics"] : {}
 
       Result.new(
         payload: {
@@ -26,6 +28,9 @@ module InstagramAccounts
           status: event.llm_comment_status,
           relevance_score: event.llm_comment_relevance_score,
           last_error: event.llm_comment_last_error,
+          ranked_candidates: Array(llm_meta["ranked_candidates"]).select { |row| row.is_a?(Hash) }.first(8),
+          generation_inputs: generation_inputs,
+          policy_diagnostics: policy_diagnostics,
           timeline: story_timeline_for(event: event),
           technical_details: technical_details
         },
@@ -43,19 +48,8 @@ module InstagramAccounts
       Result.new(payload: { error: "Event not found or not accessible" }, status: :not_found)
     end
 
-    def hydrate_technical_details(event:, technical_details:)
+    def snapshot_technical_details(technical_details:)
       current = technical_details.is_a?(Hash) ? technical_details.deep_stringify_keys : {}
-      has_required_sections =
-        current["local_story_intelligence"].is_a?(Hash) &&
-        current["analysis"].is_a?(Hash) &&
-        current["prompt_engineering"].is_a?(Hash)
-      return current if has_required_sections
-
-      context = event.send(:build_comment_context)
-      generated = event.send(:capture_technical_details, context)
-      generated_hash = generated.is_a?(Hash) ? generated.deep_stringify_keys : {}
-      generated_hash.deep_merge(current)
-    rescue StandardError
       current
     end
 

@@ -88,4 +88,26 @@ RSpec.describe Ai::CommentPolicyEngine do
     expect(result[:accepted]).not_to include("(Light Question) What's in the bottle? 🔍")
     expect(result[:accepted]).not_to include("Person and sink, an intriguing duo. 🧐")
   end
+
+  it "rejects third-person perspective for story comments when direct address is required" do
+    engine = described_class.new
+    result = engine.evaluate(
+      suggestions: [
+        "That person looks cool.",
+        "You look cool in this outfit.",
+        "Everyone looks great here.",
+        "The vibe across everyone feels real."
+      ],
+      context_keywords: %w[outfit style],
+      max_suggestions: 8,
+      channel: "story",
+      require_direct_address: true
+    )
+
+    expect(result[:accepted]).to include("You look cool in this outfit.")
+    expect(result[:accepted]).not_to include("That person looks cool.")
+    expect(result[:accepted]).not_to include("Everyone looks great here.")
+    expect(result[:accepted]).not_to include("The vibe across everyone feels real.")
+    expect(Array(result[:rejected]).any? { |row| Array(row[:reasons]).include?("third_person_perspective") }).to eq(true)
+  end
 end

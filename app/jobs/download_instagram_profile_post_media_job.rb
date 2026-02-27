@@ -5,6 +5,17 @@ require "stringio"
 class DownloadInstagramProfilePostMediaJob < ApplicationJob
   queue_as :post_downloads
 
+  class BlockedMediaSourceError < StandardError
+    attr_reader :context
+
+    def initialize(context)
+      @context = context.is_a?(Hash) ? context.deep_symbolize_keys : {}
+      reason_code = @context[:reason_code].to_s.presence || "blocked_media_source"
+      marker = @context[:marker].to_s.presence || "unknown"
+      super("Blocked media source: #{reason_code} (#{marker})")
+    end
+  end
+
   MAX_IMAGE_BYTES = 6 * 1024 * 1024
   MAX_VIDEO_BYTES = 80 * 1024 * 1024
   MAX_PREVIEW_IMAGE_BYTES = 3 * 1024 * 1024
@@ -23,7 +34,7 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     analysis_state = { queued: false, reason: "analysis_trigger_disabled" }
     download_state = nil
     post.with_lock do
-      download_state = ensure_media_downloaded!(profile: profile, post: post)
+      download_state = ensure_media_downloaded!(account: account, profile: profile, post: post)
       should_enqueue_analysis =
         trigger_analysis_bool &&
         %w[downloaded already_downloaded].include?(download_state[:status].to_s)
@@ -67,11 +78,21 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
 
   private
 
-  def ensure_media_downloaded!(profile:, post:)
+  def ensure_media_downloaded!(account:, profile:, post:)
     return mark_download_skipped!(profile: profile, post: post, reason: "deleted_from_source") if post_deleted?(post)
 
     media_url = resolve_media_url(post)
     return mark_download_skipped!(profile: profile, post: post, reason: "missing_media_url") if media_url.blank?
+
+    trust_policy = media_download_policy_decision(account: account, profile: profile, media_url: media_url)
+    if ActiveModel::Type::Boolean.new.cast(trust_policy[:blocked])
+      return mark_download_skipped!(
+        profile: profile,
+        post: post,
+        reason: trust_policy[:reason_code].to_s.presence || "blocked_media_source",
+        details: trust_policy
+      )
+    end
 
     attached_and_valid = false
     if post.media.attached?
@@ -118,6 +139,13 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
       )
       record_download_success!(profile: profile, post: post, source: "remote", media_url: media_url)
       { status: "downloaded", source: "remote" }
+    rescue BlockedMediaSourceError => e
+      mark_download_skipped!(
+        profile: profile,
+        post: post,
+        reason: e.context[:reason_code].to_s.presence || "blocked_media_source",
+        details: e.context
+      )
     ensure
       io&.close if io.respond_to?(:close)
     end
@@ -207,14 +235,16 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     )
   end
 
-  def mark_download_skipped!(profile:, post:, reason:)
+  def mark_download_skipped!(profile:, post:, reason:, details: nil)
+    details_payload = normalized_skip_details(details)
     post.update!(
       metadata: merged_metadata(post: post).merge(
         "download_status" => "skipped",
         "download_skip_reason" => reason.to_s,
+        "download_skip_details" => details_payload,
         "download_error" => nil,
         "downloaded_at" => nil
-      )
+      ).compact
     )
     profile.record_event!(
       kind: "profile_post_media_download_skipped",
@@ -224,8 +254,9 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
         source: self.class.name,
         instagram_profile_post_id: post.id,
         shortcode: post.shortcode,
-        reason: reason.to_s
-      }
+        reason: reason.to_s,
+        details: details_payload
+      }.compact
     )
     { status: "skipped", source: reason.to_s }
   end
@@ -455,6 +486,8 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
   end
 
   def download_preview_image(url, redirects_left: 3)
+    return nil if blocked_source_context(url: url).present?
+
     uri = URI.parse(url)
     return nil unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
 
@@ -550,6 +583,9 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
   end
 
   def download_media(url, redirects_left: 4)
+    blocked_context = blocked_source_context(url: url)
+    raise BlockedMediaSourceError, blocked_context if blocked_context.present?
+
     uri = URI.parse(url)
     raise "invalid media URL" unless uri.is_a?(URI::HTTP) || uri.is_a?(URI::HTTPS)
 
@@ -663,5 +699,28 @@ class DownloadInstagramProfilePostMediaJob < ApplicationJob
     when type.start_with?("video/")
       raise "invalid video signature" unless body.bytesize >= 12 && body.byteslice(4, 4) == "ftyp"
     end
+  end
+
+  def blocked_source_context(url:)
+    Instagram::MediaDownloadTrustPolicy.blocked_source_context(url: url)
+  rescue StandardError
+    nil
+  end
+
+  def media_download_policy_decision(account:, profile:, media_url:)
+    Instagram::MediaDownloadTrustPolicy.evaluate(
+      account: account,
+      profile: profile,
+      media_url: media_url
+    )
+  rescue StandardError
+    { blocked: false }
+  end
+
+  def normalized_skip_details(details)
+    value = details.is_a?(Hash) ? details.deep_stringify_keys : {}
+    value.present? ? value : nil
+  rescue StandardError
+    nil
   end
 end

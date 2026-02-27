@@ -56,7 +56,7 @@
     data-technical-details-account-id-value="<%= @account.id %>"
   >
     <h2>Downloaded Story Archive</h2>
-    <p class="meta">Dynamically loads archived story media with infinite scrolling. Cards now show model, live generation progress, and explicit AI/manual rejection reasons so blocked items are easy to understand.</p>
+    <p class="meta">Dynamically loads archived story media with infinite scrolling. Cards highlight current pipeline state, actionable decision reasons, and send status.</p>
 
     <div class="actions-row">
       <button type="button" class="btn" data-story-media-archive-target="loadButton" data-action="story-media-archive#bootstrap">Load Archive</button>
@@ -64,13 +64,41 @@
         Date filter
         <input type="date" data-story-media-archive-target="dateInput" data-action="change->story-media-archive#changeDate" />
       </label>
+      <label>
+        LLM status
+        <select data-story-media-archive-target="statusSelect" data-action="change->story-media-archive#changeStatus">
+          <option value="">All</option>
+          <option value="queued">Queued</option>
+          <option value="running">Running</option>
+          <option value="failed">Failed</option>
+          <option value="skipped">Skipped</option>
+          <option value="completed">Completed</option>
+          <option value="not_requested">Not requested</option>
+        </select>
+      </label>
+      <label>
+        Failure reason code
+        <input
+          type="text"
+          placeholder="e.g. policy_blocked"
+          data-story-media-archive-target="reasonCodeInput"
+          data-action="change->story-media-archive#changeReasonCode"
+          list="story-archive-reason-code-suggestions"
+        />
+      </label>
+      <datalist id="story-archive-reason-code-suggestions">
+        <option value="policy_blocked"></option>
+        <option value="insufficient_verified_signals"></option>
+        <option value="local_microservice_unavailable"></option>
+        <option value="vision_model_error"></option>
+      </datalist>
       <button type="button" class="btn secondary" data-action="story-media-archive#refresh">Refresh</button>
       <span class="meta">Max cycles per continuous run: <strong><%= InstagramAccountsController::CONTINUOUS_STORY_SYNC_CYCLE_LIMIT %></strong></span>
     </div>
 
     <div class="story-media-scroll" data-story-media-archive-target="scroll" data-action="scroll->story-media-archive#onScroll">
       <div class="story-media-grid" data-story-media-archive-target="gallery"></div>
-      <p class="meta" data-story-media-archive-target="empty" hidden>No archived stories found for selected date.</p>
+      <p class="meta" data-story-media-archive-target="empty" hidden>No archived stories found for selected filters.</p>
       <p class="meta" data-story-media-archive-target="loader">Loading story media…</p>
     </div>
     <div id="story_media_archive_refresh_signal" data-story-media-archive-target="refreshSignal" hidden></div>

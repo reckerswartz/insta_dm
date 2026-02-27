@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_23_001500) do
+ActiveRecord::Schema[8.1].define(version: 2026_02_25_121500) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -227,6 +227,42 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_23_001500) do
     t.index ["job_class"], name: "index_background_job_failures_on_job_class"
     t.index ["occurred_at"], name: "index_background_job_failures_on_occurred_at"
     t.index ["retryable", "occurred_at"], name: "idx_background_job_failures_retryable_occurred"
+  end
+
+  create_table "background_job_lifecycles", force: :cascade do |t|
+    t.string "active_job_id", null: false
+    t.datetime "completed_at"
+    t.datetime "created_at", null: false
+    t.datetime "discarded_at"
+    t.string "error_class"
+    t.text "error_message"
+    t.datetime "failed_at"
+    t.bigint "instagram_account_id"
+    t.bigint "instagram_profile_id"
+    t.bigint "instagram_profile_post_id"
+    t.string "job_class", null: false
+    t.datetime "last_transition_at", null: false
+    t.jsonb "metadata", default: {}, null: false
+    t.string "provider_job_id"
+    t.string "queue_name", null: false
+    t.datetime "queued_at"
+    t.bigint "related_model_id"
+    t.string "related_model_type"
+    t.datetime "removed_at"
+    t.string "sidekiq_class"
+    t.string "sidekiq_jid"
+    t.datetime "started_at"
+    t.string "status", null: false
+    t.string "story_id"
+    t.datetime "updated_at", null: false
+    t.index ["active_job_id"], name: "index_background_job_lifecycles_on_active_job_id", unique: true
+    t.index ["instagram_account_id", "last_transition_at"], name: "idx_job_lifecycles_account_transition"
+    t.index ["instagram_profile_id", "last_transition_at"], name: "idx_job_lifecycles_profile_transition"
+    t.index ["job_class", "last_transition_at"], name: "idx_job_lifecycles_class_transition"
+    t.index ["provider_job_id"], name: "index_background_job_lifecycles_on_provider_job_id"
+    t.index ["queue_name", "status", "last_transition_at"], name: "idx_job_lifecycles_queue_status_transition"
+    t.index ["related_model_type", "related_model_id"], name: "idx_job_lifecycles_related_model"
+    t.index ["status", "last_transition_at"], name: "idx_job_lifecycles_status_transition"
   end
 
   create_table "conversation_peers", force: :cascade do |t|
@@ -799,6 +835,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_23_001500) do
   add_foreign_key "app_issues", "background_job_failures"
   add_foreign_key "app_issues", "instagram_accounts"
   add_foreign_key "app_issues", "instagram_profiles"
+  add_foreign_key "background_job_lifecycles", "instagram_accounts"
+  add_foreign_key "background_job_lifecycles", "instagram_profile_posts"
+  add_foreign_key "background_job_lifecycles", "instagram_profiles"
   add_foreign_key "conversation_peers", "instagram_accounts"
   add_foreign_key "instagram_messages", "instagram_accounts"
   add_foreign_key "instagram_messages", "instagram_profiles"

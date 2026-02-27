@@ -67,11 +67,13 @@ module AiDashboard
     end
 
     def build_service_map(health)
-      service_map = health.dig(:details, :microservice, :services) || {}
-      service_map = service_map.merge(
-        "ollama" => Array(health.dig(:details, :ollama, :models)).any?
-      )
-      service_map
+      ollama_payload = health.dig(:details, :ollama)
+      ollama_row = ollama_payload.is_a?(Hash) ? ollama_payload : {}
+      ollama_ok = ollama_row[:ok]
+      ollama_ok = ollama_row["ok"] if ollama_ok.nil?
+      {
+        "ollama" => ActiveModel::Type::Boolean.new.cast(ollama_ok)
+      }
     end
 
     def extract_health_details(health)
@@ -91,7 +93,7 @@ module AiDashboard
       throttle_key = "ops:local_ai_health:refresh_enqueued"
       return if Rails.cache.read(throttle_key)
 
-      job = CheckAiMicroserviceHealthJob.perform_later
+      job = CheckLocalAiHealthJob.perform_later
       Rails.cache.write(throttle_key, job.job_id, expires_in: 45.seconds)
     rescue StandardError
       nil

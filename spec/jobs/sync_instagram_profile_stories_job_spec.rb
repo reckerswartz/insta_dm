@@ -338,6 +338,172 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
     expect(downloaded_event).to be_present
   end
 
+  it "skips story media download when story media URL is promotional" do
+    account = InstagramAccount.create!(username: "story_promo_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_promo_profile_#{SecureRandom.hex(4)}")
+    story_id = "story_promo_#{SecureRandom.hex(4)}"
+    dataset = {
+      profile: { display_name: profile.username, profile_pic_url: nil, ig_user_id: nil, bio: nil, last_post_at: nil },
+      stories: [
+        {
+          story_id: story_id,
+          media_type: "image",
+          media_url: "https://cdn.example.com/story.jpg?campaign_id=400",
+          image_url: "https://cdn.example.com/story.jpg?campaign_id=400",
+          video_url: nil,
+          primary_media_source: "api_image_versions",
+          primary_media_index: 0,
+          media_variants: [],
+          carousel_media: [],
+          can_reply: true,
+          can_reshare: true,
+          owner_user_id: nil,
+          owner_username: profile.username,
+          api_has_external_profile_indicator: false,
+          api_external_profile_reason: nil,
+          api_external_profile_targets: [],
+          api_should_skip: false,
+          caption: nil,
+          permalink: "https://www.instagram.com/stories/#{profile.username}/#{story_id}/",
+          taken_at: Time.current,
+          expiring_at: 12.hours.from_now
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
+
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
+    expect_any_instance_of(SyncInstagramProfileStoriesJob).not_to receive(:download_story_media)
+
+    with_client_stub(client_stub) do
+      SyncInstagramProfileStoriesJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        max_stories: 1
+      )
+    end
+
+    downloaded_event = profile.instagram_profile_events.where(kind: "story_downloaded").order(id: :desc).first
+    expect(downloaded_event).to be_nil
+    skipped_event = profile.instagram_profile_events.where(kind: "story_skipped_debug").order(id: :desc).first
+    expect(skipped_event).to be_present
+    expect(skipped_event.metadata["skip_reason"]).to eq("promotional_media_query")
+  end
+
+  it "does not enqueue analysis when story media attachment fails" do
+    account = InstagramAccount.create!(username: "story_attach_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_attach_profile_#{SecureRandom.hex(4)}")
+    story_id = "3834712783221666506"
+    dataset = {
+      profile: { display_name: profile.username, profile_pic_url: nil, ig_user_id: nil, bio: nil, last_post_at: nil },
+      stories: [
+        {
+          story_id: story_id,
+          media_type: "image",
+          media_url: "https://cdn.example.com/story_attach_fail.jpg",
+          image_url: "https://cdn.example.com/story_attach_fail.jpg",
+          video_url: nil,
+          primary_media_source: "api_image_versions",
+          primary_media_index: 0,
+          media_variants: [],
+          carousel_media: [],
+          can_reply: true,
+          can_reshare: true,
+          owner_user_id: nil,
+          owner_username: profile.username,
+          api_has_external_profile_indicator: false,
+          api_external_profile_reason: nil,
+          api_external_profile_targets: [],
+          api_should_skip: false,
+          caption: nil,
+          permalink: "https://www.instagram.com/stories/#{profile.username}/#{story_id}/",
+          taken_at: Time.current,
+          expiring_at: 12.hours.from_now
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
+
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:download_story_media).and_return([ "bytes", "image/jpeg", "story.jpg" ])
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:attach_media_to_event).and_return(nil)
+
+    enqueued_before = enqueued_jobs.count
+    with_client_stub(client_stub) do
+      SyncInstagramProfileStoriesJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        max_stories: 1
+      )
+    end
+
+    generated_jobs = enqueued_jobs.drop(enqueued_before).select { |row| row[:job] == AnalyzeInstagramStoryEventJob }
+    expect(generated_jobs).to be_empty
+
+    failed_event = profile.instagram_profile_events.where(kind: "story_sync_failed").order(id: :desc).first
+    expect(failed_event).to be_present
+    expect(failed_event.metadata["reason"]).to eq("story_media_attach_failed")
+    expect(failed_event.metadata["failure_category"]).to eq("media_attach")
+  end
+
+  it "marks stale queued story analysis events as failed so they can be re-queued" do
+    account = InstagramAccount.create!(username: "story_stale_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_stale_profile_#{SecureRandom.hex(4)}")
+    story_id = "story_stale_#{SecureRandom.hex(4)}"
+    event = profile.record_event!(
+      kind: "story_analysis_queued",
+      external_id: "story_analysis_queued:#{story_id}",
+      metadata: {
+        story_id: story_id,
+        status: "queued",
+        active_job_id: "missing-job-id",
+        status_updated_at: 30.minutes.ago.iso8601
+      }
+    )
+
+    inspector = instance_double(InstagramAccounts::StoryAnalysisQueueInspector, stale_job?: true)
+    job = SyncInstagramProfileStoriesJob.new
+    allow(job).to receive(:story_analysis_queue_inspector).and_return(inspector)
+
+    result = job.send(:story_analysis_already_queued?, profile: profile, story_id: story_id)
+    expect(result).to eq(false)
+
+    event.reload
+    expect(event.metadata["status"]).to eq("failed")
+    expect(event.metadata["status_reason"]).to eq("stale_or_missing_job")
+    expect(event.metadata["error_message"]).to include("stalled or missing")
+  end
+
+  it "keeps queued story analysis events blocked when they are still active" do
+    account = InstagramAccount.create!(username: "story_active_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_active_profile_#{SecureRandom.hex(4)}")
+    story_id = "story_active_#{SecureRandom.hex(4)}"
+    event = profile.record_event!(
+      kind: "story_analysis_queued",
+      external_id: "story_analysis_queued:#{story_id}",
+      metadata: {
+        story_id: story_id,
+        status: "queued",
+        active_job_id: "active-job-id",
+        status_updated_at: 1.minute.ago.iso8601
+      }
+    )
+
+    inspector = instance_double(InstagramAccounts::StoryAnalysisQueueInspector, stale_job?: false)
+    job = SyncInstagramProfileStoriesJob.new
+    allow(job).to receive(:story_analysis_queue_inspector).and_return(inspector)
+
+    result = job.send(:story_analysis_already_queued?, profile: profile, story_id: story_id)
+    expect(result).to eq(true)
+
+    event.reload
+    expect(event.metadata["status"]).to eq("queued")
+  end
+
   it "records categorized story_sync_failed details when a story media download fails" do
     account = InstagramAccount.create!(username: "story_fail_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "story_fail_profile_#{SecureRandom.hex(4)}")
@@ -390,6 +556,57 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
     expect(failed_event.metadata["failure_category"]).to eq("media_fetch")
     expect(failed_event.metadata["reason"]).to eq("media_download_or_validation_failed")
     expect(failed_event.metadata["retryable"]).to eq(false)
+  end
+
+  it "updates profile and account last_synced_at on successful sync completion" do
+    account = InstagramAccount.create!(username: "story_sync_ts_#{SecureRandom.hex(4)}")
+    profile = account.instagram_profiles.create!(username: "story_sync_ts_profile_#{SecureRandom.hex(4)}")
+    story_id = "story_sync_ts_#{SecureRandom.hex(4)}"
+    dataset = {
+      profile: { display_name: profile.username, profile_pic_url: nil, ig_user_id: nil, bio: nil, last_post_at: nil },
+      stories: [
+        {
+          story_id: story_id,
+          media_type: "image",
+          media_url: "https://cdn.example.com/story_sync_ts.jpg",
+          image_url: "https://cdn.example.com/story_sync_ts.jpg",
+          video_url: nil,
+          primary_media_source: "api_image_versions",
+          primary_media_index: 0,
+          media_variants: [],
+          carousel_media: [],
+          can_reply: true,
+          can_reshare: true,
+          owner_user_id: nil,
+          owner_username: profile.username,
+          api_has_external_profile_indicator: false,
+          api_external_profile_reason: nil,
+          api_external_profile_targets: [],
+          api_should_skip: false,
+          caption: nil,
+          permalink: "https://www.instagram.com/stories/#{profile.username}/#{story_id}/",
+          taken_at: Time.current,
+          expiring_at: 12.hours.from_now
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
+
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:capture_story_html_snapshot)
+    allow_any_instance_of(SyncInstagramProfileStoriesJob).to receive(:download_story_media).and_return([ "bytes", "image/jpeg", "story.jpg" ])
+
+    with_client_stub(client_stub) do
+      SyncInstagramProfileStoriesJob.perform_now(
+        instagram_account_id: account.id,
+        instagram_profile_id: profile.id,
+        max_stories: 1
+      )
+    end
+
+    expect(profile.reload.last_synced_at).to be_present
+    expect(account.reload.last_synced_at).to be_present
   end
 
   private

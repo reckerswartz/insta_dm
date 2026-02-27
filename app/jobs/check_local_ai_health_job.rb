@@ -1,10 +1,15 @@
 require "net/http"
 require "json"
 
-class CheckAiMicroserviceHealthJob < ApplicationJob
+class CheckLocalAiHealthJob < ApplicationJob
   queue_as :maintenance
 
-  THROTTLE_SECONDS = ENV.fetch("AI_MICROSERVICE_HEALTH_CHECK_MIN_INTERVAL_SECONDS", 120).to_i.clamp(30, 900)
+  THROTTLE_SECONDS = ENV.fetch(
+    "AI_HEALTH_CHECK_MIN_INTERVAL_SECONDS",
+    ENV.fetch("AI_MICROSERVICE_HEALTH_CHECK_MIN_INTERVAL_SECONDS", 120)
+  ).to_i.clamp(30, 900)
+  THROTTLE_CACHE_KEY = "ops:check_local_ai_health_job:last_checked_at".freeze
+  LEGACY_THROTTLE_CACHE_KEY = "ops:check_ai_microservice_health_job:last_checked_at".freeze
 
   def perform(force: false)
     return if throttled?(force: force)
@@ -28,7 +33,7 @@ class CheckAiMicroserviceHealthJob < ApplicationJob
   rescue StandardError => e
     Ops::IssueTracker.record_ai_service_check!(
       ok: false,
-      message: "AI microservice health check failed: #{e.message}",
+      message: "Local AI health check failed: #{e.message}",
       metadata: { error_class: e.class.name }
     )
     mark_checked!
@@ -57,11 +62,13 @@ class CheckAiMicroserviceHealthJob < ApplicationJob
   end
 
   def throttle_cache_key
-    "ops:check_ai_microservice_health_job:last_checked_at"
+    THROTTLE_CACHE_KEY
   end
 
   def read_last_checked_at
-    Rails.cache.read(throttle_cache_key) || self.class.instance_variable_get(:@last_checked_at_fallback)
+    Rails.cache.read(throttle_cache_key) ||
+      Rails.cache.read(LEGACY_THROTTLE_CACHE_KEY) ||
+      self.class.instance_variable_get(:@last_checked_at_fallback)
   rescue StandardError
     self.class.instance_variable_get(:@last_checked_at_fallback)
   end

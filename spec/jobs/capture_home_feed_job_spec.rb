@@ -38,7 +38,13 @@ RSpec.describe "CaptureHomeFeedJobTest" do
         updated_posts: 0,
         queued_actions: 1,
         skipped_posts: 0,
-        skipped_reasons: {}
+        skipped_reasons: {},
+        downloaded_media_count: 1,
+        moved_to_action_queue_count: 1,
+        rejected_items_count: 0,
+        downloaded_media_items: [ { shortcode: "abc123", username: "friend" } ],
+        queued_action_items: [ { shortcode: "abc123", username: "friend" } ],
+        rejected_items: []
       }
     )
     allow(Ops::StructuredLogger).to receive(:info)
@@ -60,6 +66,17 @@ RSpec.describe "CaptureHomeFeedJobTest" do
       delay_seconds: 20,
       max_new: 10,
       starting_max_id: nil
+    )
+    expect(FeedCaptureActivityLog).to have_received(:append!).with(
+      hash_including(
+        account: account,
+        status: "succeeded",
+        details: hash_including(
+          downloaded_media_count: 1,
+          moved_to_action_queue_count: 1,
+          downloaded_media_items: include(hash_including(shortcode: "abc123"))
+        )
+      )
     )
   end
 end

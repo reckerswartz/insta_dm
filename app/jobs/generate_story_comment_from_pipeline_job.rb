@@ -84,7 +84,6 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
         ).fetch!
         payload_result = payload
 
-        event.persist_local_story_intelligence!(payload)
         payload_audit_after = Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event.reload)
         record_story_service_output_audit!(
           service_name: LlmComment::StoryIntelligencePayloadResolver.name,
@@ -122,7 +121,8 @@ class GenerateStoryCommentFromPipelineJob < StoryCommentPipelineJob
           event: event,
           provider: provider,
           model: model,
-          skip_media_stage_reporting: true
+          skip_media_stage_reporting: true,
+          local_story_intelligence: payload
         ).call
         generation_audit_after = Ops::ServiceOutputAuditRecorder.event_persistence_snapshot(event.reload)
         record_story_service_output_audit!(

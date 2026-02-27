@@ -4,7 +4,7 @@ require "securerandom"
 RSpec.describe "ProfileAnalysisCollectorTest" do
   it "marks missing posts as deleted and restores when they reappear" do
     account = InstagramAccount.create!(username: "collector_test_account")
-    profile = account.instagram_profiles.create!(username: "collector_profile")
+    profile = account.instagram_profiles.create!(username: "collector_profile", following: true)
 
     existing_kept = profile.instagram_profile_posts.create!(
       instagram_account: account,
@@ -123,7 +123,7 @@ RSpec.describe "ProfileAnalysisCollectorTest" do
   end
   it "skips media re-download when media_id is unchanged" do
     account = InstagramAccount.create!(username: "collector_dedupe_account")
-    profile = account.instagram_profiles.create!(username: "collector_dedupe_profile")
+    profile = account.instagram_profiles.create!(username: "collector_dedupe_profile", following: true)
 
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,
@@ -187,7 +187,10 @@ RSpec.describe "ProfileAnalysisCollectorTest" do
   end
   it "reuses saved post media across accounts by media identifier" do
     source_account = InstagramAccount.create!(username: "collector_source_#{SecureRandom.hex(3)}")
-    source_profile = source_account.instagram_profiles.create!(username: "collector_source_profile_#{SecureRandom.hex(3)}")
+    source_profile = source_account.instagram_profiles.create!(
+      username: "collector_source_profile_#{SecureRandom.hex(3)}",
+      following: true
+    )
     source_post = source_profile.instagram_profile_posts.create!(
       instagram_account: source_account,
       shortcode: "shared_media_1",
@@ -206,7 +209,10 @@ RSpec.describe "ProfileAnalysisCollectorTest" do
     )
 
     target_account = InstagramAccount.create!(username: "collector_target_#{SecureRandom.hex(3)}")
-    target_profile = target_account.instagram_profiles.create!(username: "collector_target_profile_#{SecureRandom.hex(3)}")
+    target_profile = target_account.instagram_profiles.create!(
+      username: "collector_target_profile_#{SecureRandom.hex(3)}",
+      following: true
+    )
 
     dataset = {
       profile: {},
@@ -254,7 +260,7 @@ RSpec.describe "ProfileAnalysisCollectorTest" do
   end
   it "marks updated post as analysis candidate when analysis inputs change" do
     account = InstagramAccount.create!(username: "collector_analysis_account")
-    profile = account.instagram_profiles.create!(username: "collector_analysis_profile")
+    profile = account.instagram_profiles.create!(username: "collector_analysis_profile", following: true)
 
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,
@@ -315,6 +321,102 @@ RSpec.describe "ProfileAnalysisCollectorTest" do
     assert_equal "pending", post.ai_status
     assert_nil post.analyzed_at
     assert_equal "media_new", post.metadata["media_id"]
+  end
+
+  it "skips collector media sync for promotional media URLs" do
+    account = InstagramAccount.create!(username: "collector_promo_account")
+    profile = account.instagram_profiles.create!(username: "collector_promo_profile", following: true)
+
+    dataset = {
+      profile: {},
+      posts: [
+        {
+          shortcode: "promo_skip_1",
+          media_id: "promo_media_1",
+          media_type: 1,
+          taken_at: Time.current,
+          caption: "promo",
+          permalink: "https://instagram.com/p/promo_skip_1/",
+          media_url: "https://cdn.example.com/promo.jpg?campaign_id=111",
+          image_url: nil,
+          likes_count: 1,
+          comments_count: 0,
+          comments: []
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_analysis_dataset!) { |**_kwargs| dataset }
+
+    with_client_stub(client_stub) do
+      collector = Instagram::ProfileAnalysisCollector.new(account: account, profile: profile)
+      collector.define_singleton_method(:download_media) do |_url, **_kwargs|
+        raise "download_media should not be called for blocked promotional URLs"
+      end
+
+      collector.collect_and_persist!(
+        posts_limit: nil,
+        comments_limit: 8,
+        track_missing_as_deleted: false,
+        sync_source: "test_capture"
+      )
+    end
+
+    post = profile.instagram_profile_posts.find_by!(shortcode: "promo_skip_1")
+    refute post.media.attached?
+    assert_equal "skipped", post.metadata["download_status"]
+    assert_equal "promotional_media_query", post.metadata["download_skip_reason"]
+  end
+
+  it "skips collector media sync for profiles outside follow graph" do
+    account = InstagramAccount.create!(username: "collector_outside_account")
+    profile = account.instagram_profiles.create!(
+      username: "collector_outside_profile",
+      following: false,
+      follows_you: false
+    )
+
+    dataset = {
+      profile: {},
+      posts: [
+        {
+          shortcode: "outside_skip_1",
+          media_id: "outside_media_1",
+          media_type: 1,
+          taken_at: Time.current,
+          caption: "outside",
+          permalink: "https://instagram.com/p/outside_skip_1/",
+          media_url: "https://cdn.example.com/normal.jpg",
+          image_url: nil,
+          likes_count: 1,
+          comments_count: 0,
+          comments: []
+        }
+      ]
+    }
+
+    client_stub = Object.new
+    client_stub.define_singleton_method(:fetch_profile_analysis_dataset!) { |**_kwargs| dataset }
+
+    with_client_stub(client_stub) do
+      collector = Instagram::ProfileAnalysisCollector.new(account: account, profile: profile)
+      collector.define_singleton_method(:download_media) do |_url, **_kwargs|
+        raise "download_media should not be called for unconnected profiles"
+      end
+
+      collector.collect_and_persist!(
+        posts_limit: nil,
+        comments_limit: 8,
+        track_missing_as_deleted: false,
+        sync_source: "test_capture"
+      )
+    end
+
+    post = profile.instagram_profile_posts.find_by!(shortcode: "outside_skip_1")
+    refute post.media.attached?
+    assert_equal "skipped", post.metadata["download_status"]
+    assert_equal "profile_not_connected", post.metadata["download_skip_reason"]
   end
 
   private
