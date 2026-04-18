@@ -1,8 +1,23 @@
 # Instagram Client Facade Guidelines
 
-Last updated: 2026-02-20
+Last updated: 2026-02-20 (Playwright port landed in Phase 3 of the 2026-04 migration)
 
 This document defines how `Instagram::Client` is structured and how new behavior should be added without reintroducing a monolith.
+
+> **Driver dispatch.** Post-Phase-3, every support module accepts either a
+> Selenium driver or a Playwright page. Foundational modules
+> (BrowserStateSupport, CoreHelpers, TaskCaptureSupport,
+> SessionRecoverySupport, BrowserAutomation) dispatch per-method via
+> `Instagram::Browser::Config.playwright_driver?`. The long-tail DOM-heavy
+> modules (StoryNavigation, StoryScraper, StoryInteraction, StoryApi,
+> DirectMessaging, CommentPosting, FollowGraph, Profile/Feed fetching,
+> AutoEngagement, StorySignal, MediaDownload, SessionValidation) ride
+> behind `Instagram::Browser::SeleniumApiShim` -- a thin wrapper that
+> presents the Selenium API surface over a `Playwright::Page`. The shim
+> re-raises Playwright errors as their nearest
+> `Selenium::WebDriver::Error::*` subclass so existing `rescue` clauses
+> keep working unchanged. `INSTAGRAM_BROWSER_DRIVER=playwright` (default)
+> or `=selenium` (rollback) selects the backing driver.
 
 ## Core Structure
 
@@ -10,7 +25,11 @@ This document defines how `Instagram::Client` is structured and how new behavior
 `Instagram::Client` is the single entrypoint used by jobs/controllers and delegates feature logic to specialized modules/services.
 
 Included modules and responsibilities:
-- `Instagram::Client::BrowserAutomation`: Selenium driver/session bootstrap, cookie/localStorage persistence, authenticated browser lifecycle.
+- `Instagram::Client::BrowserAutomation`: driver/session bootstrap,
+  cookie/localStorage persistence, authenticated browser lifecycle.
+  Dispatches to Selenium or Playwright (via
+  `Instagram::Browser::AccountContext` + persistent user_data_dir)
+  based on `Instagram::Browser::Config.playwright?`.
 - `Instagram::Client::SessionRecoverySupport`: retry policy for recoverable browser disconnect/session-drop failures.
 - `Instagram::Client::TaskCaptureSupport`: structured HTML/JSON/screenshot task captures for diagnostics.
 - `Instagram::Client::CoreHelpers`: shared low-level helpers (waiters, normalization, parsing).

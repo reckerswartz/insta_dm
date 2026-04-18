@@ -1,10 +1,10 @@
-# Unofficial Instagram Messaging App (Rails + Selenium)
+# Unofficial Instagram Messaging App (Rails + Playwright + NVIDIA Build)
 
 This application manages Instagram outreach workflows in one Rails app:
-- authenticate and maintain account sessions,
+- authenticate and maintain account sessions via a per-account persistent Chromium profile,
 - sync followers/following and profile metadata,
-- run post/story intelligence pipelines,
-- generate AI-assisted comments,
+- run post/story intelligence pipelines on NVIDIA Build (text + vision),
+- generate AI-assisted comments and replies,
 - manage DM delivery and retry state.
 
 ## Important Note
@@ -12,30 +12,59 @@ Use this only for accounts and activity you are authorized to automate. Instagra
 
 ## Stack
 - Ruby on Rails 8
-- PostgreSQL + pgvector
+- PostgreSQL (pgvector optional; the runtime does not require it)
 - Sidekiq + Redis
-- Selenium WebDriver + Chrome/ChromeDriver
-- Local AI microservice + Ollama
+- **Playwright** driving Chromium via `playwright-ruby-client` (with an `Instagram::Browser::SeleniumApiShim` translation layer so the legacy facade keeps working)
+- **NVIDIA Build** for all text, vision, and embedding inference (one API key, five role rows in `ai_provider_settings`)
+- FFmpeg for optional video keyframe extraction
+
+Selenium and the legacy Python AI microservice + Ollama stack have been migrated off; see the `Migration` section below.
 
 ## Quick Start
 
 Prerequisites:
-- Docker (for local Postgres/Redis)
-- Ruby 3.4.1
-- Node + Yarn
-- Google Chrome + ChromeDriver
+- Ruby 3.4.1+
+- Node 20+ and Yarn 1.x (the repo uses Yarn Classic)
+- PostgreSQL 15+ available on `localhost:5432`
+- Redis 7+ available on `localhost:6379`
+- FFmpeg on `$PATH` (used for video keyframe extraction)
 
 Run locally:
 
 ```bash
-docker compose up -d postgres redis
 bundle install
 yarn install
+# Install the Playwright-managed Chromium (first run only; ~112 MB download).
+# NODE_OPTIONS is needed on hosts that rely on the system CA bundle.
+NODE_OPTIONS="--use-system-ca" npx playwright install chromium
 bin/rails db:prepare
 bin/dev
 ```
 
 App URL: `http://localhost:3000`
+
+### NVIDIA API key
+
+The app reads the shared NVIDIA Build key from Rails credentials:
+
+```bash
+bin/rails credentials:edit
+# add:
+# nvidia:
+#   api_key: nvapi-...
+#   base_url: https://integrate.api.nvidia.com/v1   # optional override
+```
+
+Five role rows (`text_fast`, `text_quality`, `vision_primary`, `vision_fallback`, `embedding`) auto-seed in `ai_provider_settings` the first time `Ai::ProviderRegistry.ensure_settings!` runs. With the credential key present they default to `enabled=true`. Enable / disable without a deploy:
+
+```bash
+bin/rails ai:nvidia:enable       # flip every nvidia row enabled
+bin/rails ai:nvidia:disable      # fall back to the legacy local provider
+bin/rails ai:nvidia:test_key     # GET /v1/models for every enabled role
+bin/rails ai:nvidia:smoke        # tiny chat + embedding round-trip
+```
+
+Per-row model and concurrency tuning lives in **Admin → AI Provider Settings** (`/admin/ai_provider_settings`). Paste or rotate keys from that page; blank fields do not clobber saved keys.
 
 ## Core Commands
 
@@ -56,68 +85,28 @@ bin/parallel_rspec
 bin/ai_feature_evidence_report
 ```
 
-Evidence automation:
-- `AnalyzeAiFeatureEvidenceJob` runs on cron (see `config/sidekiq_schedule.yml`) and logs usage/failure recommendations for candidate legacy AI features.
-
-Diagnostics specs:
-
-```bash
-# Full diagnostics suite
-bundle exec rspec spec/diagnostics
-
-# UI diagnostics only (requires running app server)
-bundle exec rspec spec/diagnostics --tag diagnostic_ui
-```
-
 ## Configuration
 
-### Rails Credentials
-Manage app credentials with:
+### Browser driver (Selenium | Playwright)
+
+Post-migration, Playwright is the production driver. The legacy Selenium path is kept behind a feature flag for rollback:
 
 ```bash
-bin/rails credentials:edit
+export INSTAGRAM_BROWSER_DRIVER=playwright   # default post-Phase-3
+export INSTAGRAM_BROWSER_DRIVER=selenium     # emergency rollback
 ```
 
-Common keys:
-- `instagram.username`
-- `instagram.headless`
-- `admin.user`
-- `admin.password`
+Per-account persistent Chromium profiles live under `storage/browser_sessions/<account_id>/`. See `docs/operations/browser-sessions.md` for login, backup/restore, and troubleshooting.
 
-### Local AI Microservice
-`bin/dev` now verifies local AI readiness before workers start when local AI is required.
+### Legacy AI pipeline
 
-Default behavior:
-- `START_LOCAL_AI=auto` (default): if `USE_LOCAL_AI_MICROSERVICE=true` (default), `bin/dev` will attempt to start local AI services and fail fast if they are not healthy.
-- `START_LOCAL_AI=true`: always require and auto-start local AI services.
-- `START_LOCAL_AI=false`: skip auto-start and continue without local AI readiness gating.
-
-Health and lifecycle commands:
+Face detection, Whisper transcription, and PaddleOCR are soft-deprecated. The pipeline step jobs still run but short-circuit to a "skipped" payload. Re-enable the legacy path per-shell with:
 
 ```bash
-# Combined dev health (web + local AI)
-bin/dev health
-
-# Local AI stack only
-bin/local_ai_services status
-bin/local_ai_services restart
-bin/local_ai_services logs
-bin/local_ai_services cleanup-models
+LEGACY_AI_PIPELINE_ENABLED=true bin/dev
 ```
 
-Manual local AI setup:
-
-```bash
-cd ai_microservice
-./setup.sh
-./start_microservice.sh
-```
-
-Useful env vars:
-- `LOCAL_AI_SERVICE_URL` (default `http://localhost:8000`)
-- `OLLAMA_URL` (default `http://localhost:11434`)
-- `OLLAMA_MODEL` (default `llama3.2:3b`)
-- `OLLAMA_VISION_MODEL` (default `llama3.2-vision:11b`)
+The `ai_microservice/` Python stack and YOLOv8 weights have been removed from the repo; turn the flag back on only after standing up those services externally.
 
 ### Active Record Encryption Bootstrap
 
@@ -135,7 +124,8 @@ Use `docs/README.md` as the canonical entrypoint.
   - `docs/architecture/system-overview.md`
   - `docs/architecture/instagram-client-facade-guidelines.md`
   - `docs/architecture/ai-services-architecture.md`
-  - `docs/architecture/face-identity-and-video-pipeline.md`
+  - `docs/architecture/nvidia-provider.md` (Phase 4 provider + router + role model)
+  - `docs/architecture/face-identity-and-video-pipeline.md` (deprecated, retained for rollback)
   - `docs/architecture/data-model-reference.md`
 - Technical workflows:
   - `docs/workflows/account-sync-and-processing.md`
@@ -144,11 +134,24 @@ Use `docs/README.md` as the canonical entrypoint.
   - `docs/workflows/workspace-actions-queue.md`
 - Operations and debugging:
   - `docs/operations/background-jobs-and-schedules.md`
+  - `docs/operations/browser-sessions.md` (Phase 2 persistent profile layout)
   - `docs/operations/debugging-playbook.md`
 - Query/lookups reference:
   - `docs/components/lookups-and-query-surfaces.md`
 - Documentation changelog:
   - `docs/changelog/`
+
+## Migration
+
+The repo went through a multi-phase migration in 2026-04:
+
+- **Phase 1:** NVIDIA Build provider scaffolded alongside LocalProvider.
+- **Phase 2:** Playwright runtime + per-account persistent contexts introduced (additive).
+- **Phase 3:** Instagram::Client facade ported to Playwright (12 sub-steps) with a Selenium-API shim so the DOM-heavy modules kept working.
+- **Phase 4:** AI callers repointed to NVIDIA via the existing `Ai::Runner` + a new `Ai::ChatClientFactory`. Face/OCR/Whisper pipelines soft-deprecated behind `LEGACY_AI_PIPELINE_ENABLED`. Added `Ai::VlmPeopleSummaryService` as a VLM substitute for the face-identity stack.
+- **Phase 5:** Deleted `ai_microservice/`, `yolov8n.pt`, `bin/local_ai_services` + friends, `aws-sdk-rekognition`. `bin/dev` stopped preflighting the Python microservice by default.
+
+See commit messages on `feat/playwright-nvidia-migration` for per-phase detail.
 
 ## Maintenance Rule
 When behavior changes, update the matching workflow/operations/architecture document in the same PR.
