@@ -2,6 +2,7 @@
   "name": "app",
   "private": true,
   "devDependencies": {
+    "@playwright/mcp": "0.0.70",
     "playwright": "1.59.0",
     "terser-webpack-plugin": "^5.3.14",
     "webpack": "^5.105.2",
