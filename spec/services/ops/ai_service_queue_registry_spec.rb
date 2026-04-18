@@ -1,6 +1,10 @@
 require "rails_helper"
 
 RSpec.describe Ops::AiServiceQueueRegistry do
+  before do
+    described_class.reset_nvidia_tier_cache!
+  end
+
   it "maps AI job classes to dedicated service queues" do
     expect(described_class.queue_name_for(:profile_analysis_runner)).to eq("ai_profile_analysis_queue")
     expect(described_class.queue_name_for(:post_analysis_runner)).to eq("ai_post_analysis_queue")
@@ -72,5 +76,75 @@ RSpec.describe Ops::AiServiceQueueRegistry do
         queue_name: "ai_face_secondary_queue"
       )
     )
+  end
+
+  # --- Phase 4.6: NVIDIA concurrency tier --------------------------------
+
+  describe "Phase 4.6 NVIDIA concurrency tier" do
+    let(:service) { described_class.service_for("llm_comment_generation") }
+
+    it "returns the legacy tier when NVIDIA is not active" do
+      Ai::ProviderRegistry.ensure_settings!
+      AiProviderSetting.for_provider("nvidia").update_all(enabled: false, api_key: nil)
+      described_class.reset_nvidia_tier_cache!
+
+      expect(described_class.concurrency_for(service: service)).to eq(service.concurrency_default)
+    end
+
+    it "returns the nvidia tier when any nvidia text role is enabled with a key" do
+      Ai::ProviderRegistry.ensure_settings!
+      AiProviderSetting.for_provider("nvidia").update_all(enabled: false, api_key: nil)
+      AiProviderSetting.for_provider("nvidia")
+                       .for_role("text_quality").first!
+                       .update!(enabled: true, api_key: "nvapi-test")
+      described_class.reset_nvidia_tier_cache!
+
+      expect(described_class.concurrency_for(service: service)).to eq(service.nvidia_concurrency_default)
+    end
+
+    it "clamps to nvidia_concurrency_max when the env var exceeds the tier cap" do
+      Ai::ProviderRegistry.ensure_settings!
+      AiProviderSetting.for_provider("nvidia")
+                       .for_role("text_quality").first!
+                       .update!(enabled: true, api_key: "nvapi-test")
+      described_class.reset_nvidia_tier_cache!
+
+      env_key = service.concurrency_env
+      begin
+        ENV[env_key] = "9999"
+        expect(described_class.concurrency_for(service: service)).to eq(service.nvidia_concurrency_max)
+      ensure
+        ENV.delete(env_key)
+      end
+    end
+
+    it "keeps deprecated lanes (face/OCR/video) at 1 even with NVIDIA enabled" do
+      Ai::ProviderRegistry.ensure_settings!
+      AiProviderSetting.for_provider("nvidia")
+                       .for_role("text_quality").first!
+                       .update!(enabled: true, api_key: "nvapi-test")
+      described_class.reset_nvidia_tier_cache!
+
+      %w[face_analysis face_refresh ocr_analysis video_analysis].each do |key|
+        s = described_class.service_for(key)
+        expect(described_class.concurrency_for(service: s)).to eq(1),
+          "expected #{key} to stay at 1 under NVIDIA tier (Phase 4.5 soft-deprecated it)"
+      end
+    end
+
+    it "defines bumped values for every active AI lane" do
+      active_keys = %w[
+        profile_analysis_runner post_analysis_runner profile_history_build
+        llm_comment_generation post_comment_generation pipeline_orchestration
+        profile_post_image_description visual_analysis metadata_tagging
+        story_analysis
+      ]
+      active_keys.each do |key|
+        s = described_class.service_for(key)
+        expect(s.nvidia_concurrency_default.to_i).to be > s.concurrency_default.to_i,
+          "expected #{key} nvidia_concurrency_default (#{s.nvidia_concurrency_default}) > local (#{s.concurrency_default})"
+        expect(s.nvidia_concurrency_max.to_i).to be >= s.concurrency_max.to_i
+      end
+    end
   end
 end

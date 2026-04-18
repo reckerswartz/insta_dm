@@ -12,6 +12,8 @@ module Ops
       :concurrency_default,
       :concurrency_min,
       :concurrency_max,
+      :nvidia_concurrency_default,
+      :nvidia_concurrency_max,
       keyword_init: true
     ) do
       def queue_name_symbol
@@ -35,7 +37,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_PROFILE_ANALYSIS_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 6
+        concurrency_max: 6,
+        nvidia_concurrency_default: 4,
+        nvidia_concurrency_max: 12
       },
       {
         key: "post_analysis_runner",
@@ -48,7 +52,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_POST_ANALYSIS_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 6
+        concurrency_max: 6,
+        nvidia_concurrency_default: 4,
+        nvidia_concurrency_max: 12
       },
       {
         key: "profile_history_build",
@@ -61,7 +67,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_PROFILE_HISTORY_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 4
+        concurrency_max: 4,
+        nvidia_concurrency_default: 2,
+        nvidia_concurrency_max: 6
       },
       {
         key: "llm_comment_generation",
@@ -74,7 +82,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_LLM_COMMENT_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 6
+        concurrency_max: 6,
+        nvidia_concurrency_default: 8,
+        nvidia_concurrency_max: 16
       },
       {
         key: "post_comment_generation",
@@ -87,7 +97,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_COMMENT_GENERATION_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 6
+        concurrency_max: 6,
+        nvidia_concurrency_default: 8,
+        nvidia_concurrency_max: 16
       },
       {
         key: "pipeline_orchestration",
@@ -100,7 +112,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_PIPELINE_ORCHESTRATION_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 5
+        concurrency_max: 5,
+        nvidia_concurrency_default: 4,
+        nvidia_concurrency_max: 10
       },
       {
         key: "profile_post_image_description",
@@ -113,7 +127,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_PROFILE_IMAGE_DESCRIPTION_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 6
+        concurrency_max: 6,
+        nvidia_concurrency_default: 6,
+        nvidia_concurrency_max: 12
       },
       {
         key: "visual_analysis",
@@ -126,7 +142,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_VISUAL_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 5
+        concurrency_max: 5,
+        nvidia_concurrency_default: 8,
+        nvidia_concurrency_max: 16
       },
       {
         key: "face_analysis",
@@ -139,7 +157,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_FACE_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 5
+        concurrency_max: 5,
+        nvidia_concurrency_default: 1,
+        nvidia_concurrency_max: 5
       },
       {
         key: "face_analysis_secondary",
@@ -152,7 +172,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_FACE_SECONDARY_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 3
+        concurrency_max: 3,
+        nvidia_concurrency_default: 1,
+        nvidia_concurrency_max: 3
       },
       {
         key: "face_refresh",
@@ -165,7 +187,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_FACE_REFRESH_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 3
+        concurrency_max: 3,
+        nvidia_concurrency_default: 1,
+        nvidia_concurrency_max: 3
       },
       {
         key: "ocr_analysis",
@@ -178,7 +202,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_OCR_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 4
+        concurrency_max: 4,
+        nvidia_concurrency_default: 1,
+        nvidia_concurrency_max: 4
       },
       {
         key: "video_analysis",
@@ -191,7 +217,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_VIDEO_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 4
+        concurrency_max: 4,
+        nvidia_concurrency_default: 1,
+        nvidia_concurrency_max: 4
       },
       {
         key: "metadata_tagging",
@@ -204,7 +232,9 @@ module Ops
         concurrency_env: "SIDEKIQ_AI_METADATA_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 4
+        concurrency_max: 4,
+        nvidia_concurrency_default: 4,
+        nvidia_concurrency_max: 10
       },
       {
         key: "story_analysis",
@@ -217,7 +247,9 @@ module Ops
         concurrency_env: "SIDEKIQ_STORY_ANALYSIS_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 4
+        concurrency_max: 4,
+        nvidia_concurrency_default: 4,
+        nvidia_concurrency_max: 10
       },
       {
         key: "story_engagement_actions",
@@ -230,7 +262,9 @@ module Ops
         concurrency_env: "SIDEKIQ_STORY_ENGAGEMENT_ACTIONS_CONCURRENCY",
         concurrency_default: 1,
         concurrency_min: 1,
-        concurrency_max: 4
+        concurrency_max: 4,
+        nvidia_concurrency_default: 1,
+        nvidia_concurrency_max: 4
       }
     ].freeze
 
@@ -283,13 +317,51 @@ module Ops
       end
 
       def concurrency_for(service:)
-        default_value = service.concurrency_default.to_i
+        # Phase 4.6: when the NVIDIA provider is actively serving AI
+        # traffic (remote inference), we can safely run many more
+        # concurrent jobs per lane than the legacy local Ollama stack
+        # could support. Each service row carries both the legacy
+        # concurrency_* and nvidia_concurrency_* tier; we pick the
+        # right tier based on the live AiProviderSetting state.
+        use_nvidia_tier = nvidia_concurrency_tier_active?
+        default_value = (use_nvidia_tier ? service.nvidia_concurrency_default : service.concurrency_default).to_i
         min_value = service.concurrency_min.to_i
-        max_value = service.concurrency_max.to_i
+        max_value = (use_nvidia_tier ? service.nvidia_concurrency_max : service.concurrency_max).to_i
+
+        # Fall back to legacy values when the row doesn't carry an
+        # nvidia_concurrency_* value (e.g. for new services that haven't
+        # been tuned yet).
+        default_value = service.concurrency_default.to_i if default_value.zero?
+        max_value = service.concurrency_max.to_i if max_value.zero?
 
         ENV.fetch(service.concurrency_env.to_s, default_value).to_i.clamp(min_value, max_value)
       rescue StandardError
-        default_value.clamp(min_value, max_value)
+        default_value.to_i.clamp(service.concurrency_min.to_i, service.concurrency_max.to_i)
+      end
+
+      # True once any nvidia text role is enabled with a key. Cached for
+      # the life of the Sidekiq process so capsule construction doesn't
+      # hit the DB on every queue spin-up. The cache is reset on process
+      # reload (e.g. sidekiqctl restart) which is the normal way ops
+      # roll out a provider change.
+      def nvidia_concurrency_tier_active?
+        return @nvidia_tier_cached unless @nvidia_tier_cached.nil?
+
+        @nvidia_tier_cached =
+          begin
+            AiProviderSetting
+              .for_provider("nvidia")
+              .where(role: %w[text_quality text_fast], enabled: true)
+              .any? { |s| s.api_key_present? }
+          rescue StandardError
+            false
+          end
+      end
+
+      # Public reset hook for tests + ops toggling nvidia via
+      # `rake ai:nvidia:enable` during a running process.
+      def reset_nvidia_tier_cache!
+        @nvidia_tier_cached = nil
       end
     end
   end
