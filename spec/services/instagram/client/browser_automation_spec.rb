@@ -58,7 +58,7 @@ RSpec.describe Instagram::Client::BrowserAutomation do
       }.to raise_error(Instagram::AuthenticationRequiredError, /No stored cookies/)
     end
 
-    it "opens a persistent context, ensures auth, yields the page, and refreshes the DB snapshot" do
+    it "opens a persistent context, ensures auth, yields a SeleniumApiShim, and refreshes the DB snapshot" do
       page = double("Playwright::Page")
       allow(page).to receive(:class).and_return(Class.new { def self.name; "Playwright::Page"; end })
       allow(page).to receive(:goto)
@@ -85,9 +85,10 @@ RSpec.describe Instagram::Client::BrowserAutomation do
       allow(client).to receive(:refresh_account_snapshot_playwright!)
 
       yielded = nil
-      client.send(:with_authenticated_driver_playwright) { |p| yielded = p }
+      client.send(:with_authenticated_driver_playwright) { |d| yielded = d }
 
-      expect(yielded).to eq(page)
+      expect(yielded).to be_a(Instagram::Browser::SeleniumApiShim)
+      expect(yielded.page).to eq(page)
       expect(client).to have_received(:refresh_account_snapshot_playwright!).with(page, context)
     end
   end

@@ -206,8 +206,11 @@ module Instagram
 
       def with_driver_playwright(headless: env_headless?, &block)
         account_context = Instagram::Browser::AccountContext.new(account: @account, headless: headless)
-        account_context.with_page do |page, _context|
-          block.call(page)
+        account_context.with_context do |context|
+          page = context.pages.first || context.new_page
+          Instagram::Browser::PageInstrumentation.attach!(page)
+          shim = Instagram::Browser::SeleniumApiShim.new(page: page, context: context)
+          block.call(shim)
         end
       end
 
@@ -220,6 +223,7 @@ module Instagram
         Instagram::Browser::AccountContext.new(account: @account).with_context do |context|
           page = context.pages.first || context.new_page
           Instagram::Browser::PageInstrumentation.attach!(page)
+          shim = Instagram::Browser::SeleniumApiShim.new(page: page, context: context)
 
           # If the on-disk profile is empty but the DB has cookies, seed
           # the context from the DB bundle so the first Playwright-mode
@@ -227,9 +231,9 @@ module Instagram
           apply_session_bundle_playwright!(context) if !has_on_disk_profile && @account.cookies.present?
 
           page.goto("#{INSTAGRAM_BASE_URL}/")
-          ensure_authenticated_playwright!(page)
+          ensure_authenticated_playwright!(shim)
 
-          result = yield(page)
+          result = yield(shim)
           refresh_account_snapshot_playwright!(page, context)
           result
         end
@@ -306,14 +310,17 @@ module Instagram
         @account.auth_snapshot.dig("ig_app_id").to_s.presence || "936619743392459"
       end
 
-      def ensure_authenticated_playwright!(page)
-        with_task_capture(driver: page, task_name: "auth_validate_session") do
-          wait_for(page, css: "body", timeout: 10)
+      def ensure_authenticated_playwright!(driver)
+        # `driver` is an Instagram::Browser::SeleniumApiShim wrapping the
+        # real Playwright page. Calls below use the Selenium-shaped
+        # interface the shim exposes; they forward to Playwright.
+        with_task_capture(driver: driver, task_name: "auth_validate_session") do
+          wait_for(driver, css: "body", timeout: 10)
 
-          page.goto("#{INSTAGRAM_BASE_URL}/direct/inbox/")
-          wait_for(page, css: "body", timeout: 10)
+          driver.navigate.to("#{INSTAGRAM_BASE_URL}/direct/inbox/")
+          wait_for(driver, css: "body", timeout: 10)
 
-          if page.url.to_s.include?("/accounts/login") || logged_out_page?(page)
+          if driver.current_url.to_s.include?("/accounts/login") || logged_out_page?(driver)
             raise Instagram::AuthenticationRequiredError, "Stored cookies are not authenticated. Re-run Manual Browser Login or import fresh cookies."
           end
         end
