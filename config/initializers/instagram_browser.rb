@@ -35,6 +35,23 @@ module Instagram
         def selenium?
           driver == "selenium"
         end
+
+        # True when `obj` looks like a Playwright object (Page, BrowserContext,
+        # Locator, ElementHandle, ...). Used by Instagram::Client support
+        # modules to dispatch between the legacy Selenium path and the
+        # Phase 3 Playwright port without a global mode flag -- a single
+        # module can be consuming both drivers during the rollout if a
+        # caller hands it a mocked Selenium driver.
+        def playwright_driver?(obj)
+          klass = obj&.class&.name.to_s
+          klass.start_with?("Playwright::") ||
+            klass.include?("PlaywrightApi::")
+        end
+
+        def selenium_driver?(obj)
+          klass = obj&.class&.name.to_s
+          klass.start_with?("Selenium::")
+        end
       end
     end
   end
