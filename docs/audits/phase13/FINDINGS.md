@@ -71,18 +71,19 @@
 
 ## Residual risk / follow-up for Phase 14
 
-- **`F-profiles-index-C1`** — Profiles-index summary-vs-grid
-  data-contract mismatch. Needs an `InstagramProfiles::IndexQuery`
-  service extraction + paired spec; deferred because it touches the
-  Tabulator JSON endpoint and warrants its own PR.
+- ~~**`F-profiles-index-C1`**~~ — fixed in Phase 14 (see branch
+  `feat/phase14-profiles-index-query`). Investigation showed the JSON
+  endpoint was already consistent (returned 2 rows) — the "0 rows"
+  observed during the audit was the hard-coded loading placeholder
+  that flickered before the Tabulator ajax fetch resolved. Phase 14
+  extends the shared `shared/_table_meta_bar` partial with an
+  optional `initial_count` local, and the profiles index now passes
+  the server-computed `@total`, so first paint matches truth.
 - **Dashboard banner for deprovisioned-class failures**
   (`F-admin-background-jobs-C1` sibling) — the middleware now captures
   those failures as `failure_kind=deprovisioned_class`, but the
   dashboard has no banner summarising them. Add once a real
   occurrence accumulates in the DB post-Phase-13.
-- Persistent `AnalyzeAiFeatureEvidenceJob` retry (1 payload in retry
-  set, days=14). If the job class still exists, investigate why it's
-  stuck (likely a transient failure). Not a blocker.
 - Dashboard tab split (`F-admin-background-jobs-O1`) — deferred from
   Phase 13 scope.
 - First-run topbar banner promotion (`F-account-show-O1`) — UX pass

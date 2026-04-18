@@ -255,6 +255,15 @@ function installTableMetaBar(controller, table) {
   let loadedOnce = false
   let lastLoadedAt = null
 
+  // If the server pre-rendered a count (Phase 14 F-profiles-index-C1 fix),
+  // preserve it during the pre-ajax phase so the first paint doesn't flicker
+  // from server-truth → 0 → real count. Falls back to 0 for pages that still
+  // use the Tabulator-only loading placeholder.
+  const parsedServerCount = countEl
+    ? Number((countEl.textContent || "").replace(/[,\s]/g, "")) || 0
+    : 0
+  const serverRenderedCount = Number.isFinite(parsedServerCount) ? parsedServerCount : 0
+
   const sync = ({ loading = null, markLoaded = false } = {}) => {
     if (typeof loading === "boolean") isLoading = loading
     if (markLoaded) {
@@ -264,7 +273,10 @@ function installTableMetaBar(controller, table) {
     }
 
     const totalRows = estimateTotalRows(table)
-    if (countEl) countEl.textContent = Number(totalRows || 0).toLocaleString()
+    if (countEl) {
+      const effectiveRows = loadedOnce || Number(totalRows) > 0 ? Number(totalRows || 0) : serverRenderedCount
+      countEl.textContent = Number(effectiveRows || 0).toLocaleString()
+    }
 
     if (updatedEl) {
       if (!loadedOnce && isLoading) {

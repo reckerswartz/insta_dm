@@ -44,7 +44,11 @@
       data-profiles-table-url-value="<%= instagram_profiles_path(format: :json) %>"
       data-profiles-table-account-id-value="<%= @account.id %>"
     >
-      <%= render "shared/table_meta_bar" %>
+      <%= render "shared/table_meta_bar",
+            row_label: "profile".pluralize(@total),
+            initial_count: @total,
+            initial_updated: "from server",
+            initial_state: "Ready" %>
       <div class="tabulator-host" data-profiles-table-target="table"></div>
     </div>
   </section>
