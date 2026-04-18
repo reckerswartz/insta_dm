@@ -100,4 +100,41 @@ RSpec.describe "rake jobs:purge_unresolvable", type: :task do
 
     expect(Sidekiq::Cron::Job.all.map(&:name)).to include(cron_name)
   end
+
+  it "sweeps BackgroundJobExecutionMetric rows whose job_class is no longer loadable" do
+    orphan_class = "VanishedAnalyticsJob_#{SecureRandom.hex(4)}"
+    live_class   = "ApplicationJob"
+
+    3.times do
+      BackgroundJobExecutionMetric.create!(
+        active_job_id: SecureRandom.uuid,
+        job_class: orphan_class,
+        sidekiq_class: "ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper",
+        sidekiq_jid: SecureRandom.hex(12),
+        provider_job_id: SecureRandom.hex(12),
+        queue_name: "maintenance",
+        status: "failed",
+        recorded_at: Time.current
+      )
+    end
+    kept = BackgroundJobExecutionMetric.create!(
+      active_job_id: SecureRandom.uuid,
+      job_class: live_class,
+      sidekiq_class: "ActiveJob::QueueAdapters::SidekiqAdapter::JobWrapper",
+      sidekiq_jid: SecureRandom.hex(12),
+      provider_job_id: SecureRandom.hex(12),
+      queue_name: "default",
+      status: "completed",
+      recorded_at: Time.current
+    )
+
+    Rake::Task["jobs:purge_unresolvable"].reenable
+    expect {
+      Rake::Task["jobs:purge_unresolvable"].invoke
+    }.to change {
+      BackgroundJobExecutionMetric.where(job_class: orphan_class).count
+    }.from(3).to(0)
+
+    expect(BackgroundJobExecutionMetric.where(id: kept.id)).to exist
+  end
 end
