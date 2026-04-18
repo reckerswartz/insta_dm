@@ -171,7 +171,7 @@ module LlmComment
 
     def generator
       @generator ||= Ai::LocalEngagementCommentGenerator.new(
-        ollama_client: Ai::OllamaClient.new,
+        ollama_client: Ai::ChatClientFactory.build,
         model: model
       )
     end
