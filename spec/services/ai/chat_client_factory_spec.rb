@@ -7,9 +7,9 @@ RSpec.describe Ai::ChatClientFactory do
     Ai::ProviderRegistry.ensure_settings!
   end
 
-  it "returns Ai::OllamaClient when no nvidia row is enabled with a key" do
+  it "raises NoProviderAvailable when no nvidia row is enabled with a key" do
     AiProviderSetting.for_provider("nvidia").update_all(enabled: false, api_key: nil)
-    expect(described_class.build).to be_a(Ai::OllamaClient)
+    expect { described_class.build }.to raise_error(described_class::NoProviderAvailable, /NVIDIA provider/)
   end
 
   it "returns Ai::NvidiaOllamaCompatClient once any text role has a key and is enabled" do
@@ -20,12 +20,27 @@ RSpec.describe Ai::ChatClientFactory do
     expect(described_class.build).to be_a(Ai::NvidiaOllamaCompatClient)
   end
 
-  it "returns Ai::OllamaClient when only embedding has a key (embedding is not a text role)" do
+  it "raises NoProviderAvailable when only embedding has a key (embedding is not a text role)" do
     AiProviderSetting.for_provider("nvidia").update_all(enabled: false, api_key: nil)
     AiProviderSetting.for_provider("nvidia")
                      .for_role("embedding").first!
                      .update!(enabled: true, api_key: "nvapi-test")
 
-    expect(described_class.build).to be_a(Ai::OllamaClient)
+    expect { described_class.build }.to raise_error(described_class::NoProviderAvailable)
+  end
+
+  describe ".nvidia_available?" do
+    it "returns false when no nvidia row is enabled with a key" do
+      AiProviderSetting.for_provider("nvidia").update_all(enabled: false, api_key: nil)
+      expect(described_class.nvidia_available?).to be(false)
+    end
+
+    it "returns true once any nvidia text role is enabled with a key" do
+      AiProviderSetting.for_provider("nvidia")
+                       .for_role("text_fast").first!
+                       .update!(enabled: true, api_key: "nvapi-test")
+
+      expect(described_class.nvidia_available?).to be(true)
+    end
   end
 end

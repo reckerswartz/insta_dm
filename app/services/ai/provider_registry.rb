@@ -1,12 +1,12 @@
 module Ai
   class ProviderRegistry
     PROVIDERS = {
-      "local"  => "Ai::Providers::LocalProvider",
       "nvidia" => "Ai::Providers::NvidiaProvider"
     }.freeze
 
-    # Providers listed here create one row per role (see AiProviderSetting::ROLES)
-    # instead of the legacy single-row-per-provider pattern.
+    # Every provider in PROVIDERS is multi-role after the Phase 9 cleanup
+    # removed the single-row LocalProvider. Kept as a constant so a future
+    # single-role provider can still be distinguished cleanly.
     MULTI_ROLE_PROVIDERS = %w[nvidia].freeze
 
     class << self
@@ -70,19 +70,14 @@ module Ai
       # and the admin UI shows the row in a disabled state for opt-in.
       def default_enabled?(provider)
         case provider
-        when "local"  then true
         when "nvidia" then nvidia_credential_key_present?
         else false
         end
       end
 
-      # Lower = tried first by Ai::Runner. NVIDIA now outranks the legacy
-      # local stack so the new provider is the primary path on any account
-      # with it enabled. Local remains as a fallback when NVIDIA errors.
       def default_priority(provider)
         case provider
         when "nvidia" then 2
-        when "local"  then 20
         else 100
         end
       end
