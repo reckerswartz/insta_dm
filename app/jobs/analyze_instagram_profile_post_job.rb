@@ -114,36 +114,6 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       pipeline_state: pipeline_state
     )
 
-    enqueue_step_job!(
-      step: "face",
-      job_class: ProcessPostFaceAnalysisJob,
-      account: account,
-      profile: profile,
-      post: post,
-      run_id: run_id,
-      pipeline_state: pipeline_state
-    )
-
-    enqueue_step_job!(
-      step: "ocr",
-      job_class: ProcessPostOcrAnalysisJob,
-      account: account,
-      profile: profile,
-      post: post,
-      run_id: run_id,
-      pipeline_state: pipeline_state
-    )
-
-    enqueue_step_job!(
-      step: "video",
-      job_class: ProcessPostVideoAnalysisJob,
-      account: account,
-      profile: profile,
-      post: post,
-      run_id: run_id,
-      pipeline_state: pipeline_state
-    )
-
     FinalizePostAnalysisPipelineJob.perform_later(
       instagram_account_id: account.id,
       instagram_profile_id: profile.id,
@@ -238,11 +208,6 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
       )
     end
 
-    if task_flags[:analyze_faces]
-      face_recognition_result = PostFaceRecognitionService.new.process!(post: post)
-      merge_face_summary!(post: post, face_recognition_result: face_recognition_result)
-    end
-
     if task_flags[:run_metadata]
       analysis_hash = post.analysis.is_a?(Hash) ? post.analysis : {}
       Ai::ProfileAutoTagger.sync_from_post_analysis!(profile: profile, analysis: analysis_hash)
@@ -287,27 +252,6 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
     )
   end
 
-  def merge_face_summary!(post:, face_recognition_result:)
-    analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
-    face_meta = post.metadata.is_a?(Hash) ? post.metadata.dig("face_recognition") : nil
-    face_meta = {} unless face_meta.is_a?(Hash)
-    matched_people = Array(face_meta["matched_people"])
-
-    analysis["face_summary"] = {
-      "face_count" => face_meta["face_count"].to_i,
-      "owner_faces_count" => matched_people.count { |row| ActiveModel::Type::Boolean.new.cast(row["owner_match"] || row[:owner_match]) },
-      "recurring_faces_count" => matched_people.count { |row| ActiveModel::Type::Boolean.new.cast(row["recurring_face"] || row[:recurring_face]) },
-      "detection_source" => face_meta["detection_source"].to_s.presence || face_recognition_result[:reason].to_s.presence,
-      "participant_summary" => face_meta["participant_summary"].to_s.presence,
-      "detection_reason" => face_meta["detection_reason"].to_s.presence,
-      "detection_error" => face_meta["detection_error"].to_s.presence
-    }.compact
-
-    post.update!(analysis: analysis)
-  rescue StandardError
-    nil
-  end
-
   def resolve_task_flags(post:, task_flags:)
     flags = DEFAULT_TASK_FLAGS.deep_dup
     incoming = task_flags.is_a?(Hash) ? task_flags : {}
@@ -320,19 +264,22 @@ class AnalyzeInstagramProfilePostJob < ApplicationJob
     end
 
     unless post.media.attached? && post.media.blob&.content_type.to_s.start_with?("video/")
-      flags[:run_video] = false
+      # Phase 12: :run_video is no longer one of the task flags, but
+      # older pipeline rows persisted with the flag on can still come
+      # back in during a retry. Silently drop it to no-op.
+      flags.delete(:run_video)
     end
 
     flags
   end
 
   def inline_provider_options(task_flags:)
+    # Phase 12 removed face / ocr / video routing flags from the NVIDIA
+    # provider options because the step jobs + their backing services
+    # were deleted. The provider now runs a single visual pass.
     {
       visual_only: false,
-      include_faces: ActiveModel::Type::Boolean.new.cast(task_flags[:analyze_faces]),
-      include_ocr: ActiveModel::Type::Boolean.new.cast(task_flags[:run_ocr]),
-      include_comment_generation: false,
-      include_video_analysis: ActiveModel::Type::Boolean.new.cast(task_flags[:run_video])
+      include_comment_generation: false
     }
   end
 

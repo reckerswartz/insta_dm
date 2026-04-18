@@ -4,15 +4,6 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
   MAX_FINALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_FINALIZE_ATTEMPTS", 30).to_i.clamp(5, 120)
   FINALIZER_LOCK_SECONDS = ENV.fetch("AI_PIPELINE_FINALIZER_LOCK_SECONDS", 4).to_i.clamp(2, 30)
   STEP_STALL_TIMEOUT_SECONDS = ENV.fetch("AI_PIPELINE_STEP_STALL_TIMEOUT_SECONDS", 180).to_i.clamp(45, 1800)
-  SECONDARY_FACE_QUEUE = Ops::AiServiceQueueRegistry.queue_name_for(:face_analysis_secondary).presence || "ai_face_secondary_queue"
-  SECONDARY_FACE_MIN_CONFIDENCE = ENV.fetch("AI_SECONDARY_FACE_AMBIGUITY_MIN_CONFIDENCE", "0.35").to_f.clamp(0.0, 1.0)
-  SECONDARY_FACE_MAX_CONFIDENCE = ENV.fetch("AI_SECONDARY_FACE_AMBIGUITY_MAX_CONFIDENCE", "0.68").to_f.clamp(0.0, 1.0)
-  VIDEO_FAILURE_FALLBACK_ENABLED = ActiveModel::Type::Boolean.new.cast(
-    ENV.fetch("AI_PIPELINE_VIDEO_FAILURE_FALLBACK_ENABLED", "true")
-  )
-  VIDEO_FAILURE_FALLBACK_REQUIRE_VISUAL_SUCCESS = ActiveModel::Type::Boolean.new.cast(
-    ENV.fetch("AI_PIPELINE_VIDEO_FAILURE_FALLBACK_REQUIRE_VISUAL_SUCCESS", "true")
-  )
 
   def perform(instagram_account_id:, instagram_profile_id:, instagram_profile_post_id:, pipeline_run_id:, attempts: 0)
     context = load_pipeline_context!(
@@ -44,7 +35,6 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     return unless acquire_finalizer_slot?(post: post, pipeline_run_id: pipeline_run_id, attempts: attempts)
 
     mark_stalled_steps_failed!(context: context, pipeline_run_id: pipeline_run_id)
-    apply_video_failure_fallback!(context: context, pipeline_run_id: pipeline_run_id)
     return if reinitialize_failed_core_steps!(context: context, pipeline_run_id: pipeline_run_id)
     maybe_enqueue_metadata_step!(context: context, pipeline_run_id: pipeline_run_id)
 
@@ -71,7 +61,6 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
       return
     end
 
-    maybe_enqueue_secondary_face_step!(context: context, pipeline_run_id: pipeline_run_id)
 
     pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
     required_steps = Array(pipeline["required_steps"]).map(&:to_s)
@@ -272,98 +261,6 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     false
   end
 
-  def apply_video_failure_fallback!(context:, pipeline_run_id:)
-    return unless VIDEO_FAILURE_FALLBACK_ENABLED
-
-    pipeline_state = context[:pipeline_state]
-    pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
-    return unless pipeline.is_a?(Hash)
-
-    required_steps = Array(pipeline["required_steps"]).map(&:to_s)
-    return unless required_steps.include?("video")
-
-    video_step = pipeline.dig("steps", "video")
-    return unless video_step.is_a?(Hash)
-    return unless video_step["status"].to_s == "failed"
-
-    if VIDEO_FAILURE_FALLBACK_REQUIRE_VISUAL_SUCCESS
-      visual_status = pipeline.dig("steps", "visual", "status").to_s
-      return unless visual_status == "succeeded"
-    end
-
-    fallback_result = build_video_fallback_result(post: context[:post], video_step: video_step)
-    pipeline_state.mark_step_completed!(
-      run_id: pipeline_run_id,
-      step: "video",
-      status: "succeeded",
-      result: fallback_result
-    )
-    persist_video_fallback_metadata!(
-      post: context[:post],
-      fallback_result: fallback_result,
-      previous_error: video_step["error"]
-    )
-
-    Ops::StructuredLogger.warn(
-      event: "ai.pipeline.video_fallback_applied",
-      payload: {
-        active_job_id: job_id,
-        instagram_account_id: context[:account].id,
-        instagram_profile_id: context[:profile].id,
-        instagram_profile_post_id: context[:post].id,
-        pipeline_run_id: pipeline_run_id,
-        fallback_reason: fallback_result[:reason].to_s,
-        reused_existing_context: ActiveModel::Type::Boolean.new.cast(fallback_result[:reused_existing_context]),
-        previous_error: video_step["error"].to_s.byteslice(0, 200)
-      }.compact
-    )
-  rescue StandardError
-    nil
-  end
-
-  def build_video_fallback_result(post:, video_step:)
-    metadata = post.metadata.is_a?(Hash) ? post.metadata : {}
-    video_meta = metadata["video_processing"].is_a?(Hash) ? metadata["video_processing"] : {}
-    reused_existing_context =
-      video_meta["context_summary"].to_s.present? ||
-      video_meta["transcript"].to_s.present? ||
-      Array(video_meta["topics"]).any? ||
-      Array(video_meta["objects"]).any?
-
-    {
-      reason: "video_step_failed_fallback_to_visual_metadata",
-      fallback_applied: true,
-      reused_existing_context: reused_existing_context,
-      previous_error: video_step["error"].to_s.presence,
-      previous_status: video_step["status"].to_s,
-      processing_mode: video_meta["processing_mode"].to_s.presence || "dynamic_video",
-      transcript_present: video_meta["transcript"].to_s.present?
-    }.compact
-  end
-
-  def persist_video_fallback_metadata!(post:, fallback_result:, previous_error:)
-    post.with_lock do
-      post.reload
-      metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
-      video_meta = metadata["video_processing"].is_a?(Hash) ? metadata["video_processing"].deep_dup : {}
-
-      video_meta["skipped"] = true if video_meta["skipped"].nil?
-      video_meta["processing_mode"] = fallback_result[:processing_mode].to_s.presence || "dynamic_video"
-      video_meta["context_summary"] ||= "Video deep analysis was skipped to keep pipeline latency low; visual and metadata signals were used."
-      video_meta["fallback"] = {
-        "applied" => true,
-        "reason" => fallback_result[:reason].to_s,
-        "reused_existing_context" => ActiveModel::Type::Boolean.new.cast(fallback_result[:reused_existing_context]),
-        "previous_error" => previous_error.to_s.presence,
-        "applied_at" => Time.current.iso8601(3)
-      }.compact
-      video_meta["updated_at"] = Time.current.iso8601(3)
-
-      metadata["video_processing"] = video_meta
-      post.update!(metadata: metadata)
-    end
-  end
-
   def finalize_post_record!(post:, pipeline:, overall_status:)
     analysis = post.analysis.is_a?(Hash) ? post.analysis.deep_dup : {}
     metadata = post.metadata.is_a?(Hash) ? post.metadata.deep_dup : {}
@@ -420,86 +317,6 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
         analyzed_at: nil
       )
     end
-  end
-
-  def maybe_enqueue_secondary_face_step!(context:, pipeline_run_id:)
-    pipeline_state = context[:pipeline_state]
-    pipeline = pipeline_state.pipeline_for(run_id: pipeline_run_id)
-    return unless pipeline.is_a?(Hash)
-
-    task_flags = pipeline["task_flags"].is_a?(Hash) ? pipeline["task_flags"] : {}
-    required_steps = Array(pipeline["required_steps"]).map(&:to_s)
-    face_required = required_steps.include?("face")
-    face_state = pipeline.dig("steps", "face").to_h
-    face_status = face_state["status"].to_s
-
-    return if face_required || !face_status.in?(%w[skipped pending])
-    return unless ActiveModel::Type::Boolean.new.cast(task_flags["secondary_face_analysis"])
-
-    primary_confidence = primary_confidence_for(post: context[:post])
-    if secondary_only_on_ambiguous?(task_flags: task_flags) && !ambiguous_primary_confidence?(primary_confidence)
-      pipeline_state.mark_step_completed!(
-        run_id: pipeline_run_id,
-        step: "face",
-        status: "skipped",
-        result: {
-          reason: "secondary_face_not_needed",
-          secondary_face_analysis: true,
-          primary_confidence: primary_confidence
-        }
-      )
-      return
-    end
-
-    guard = Ops::ResourceGuard.allow_ai_task?(task: "face_secondary", queue_name: SECONDARY_FACE_QUEUE, critical: false)
-    unless ActiveModel::Type::Boolean.new.cast(guard[:allow])
-      pipeline_state.mark_step_completed!(
-        run_id: pipeline_run_id,
-        step: "face",
-        status: "skipped",
-        error: "secondary_face_resource_constrained: #{guard[:reason]}",
-        result: {
-          reason: "secondary_face_resource_constrained",
-          secondary_face_analysis: true,
-          primary_confidence: primary_confidence,
-          snapshot: guard[:snapshot]
-        }
-      )
-      return
-    end
-
-    job = ProcessPostFaceAnalysisJob.set(queue: SECONDARY_FACE_QUEUE).perform_later(
-      instagram_account_id: context[:account].id,
-      instagram_profile_id: context[:profile].id,
-      instagram_profile_post_id: context[:post].id,
-      pipeline_run_id: pipeline_run_id,
-      allow_terminal_pipeline: true,
-      secondary_run: true
-    )
-
-    pipeline_state.mark_step_queued!(
-      run_id: pipeline_run_id,
-      step: "face",
-      queue_name: job.queue_name,
-      active_job_id: job.job_id,
-      result: {
-        reason: "secondary_face_enqueued",
-        secondary_face_analysis: true,
-        primary_confidence: primary_confidence,
-        enqueued_by: self.class.name,
-        enqueued_at: Time.current.iso8601(3)
-      }
-    )
-  rescue StandardError => e
-    pipeline_state.mark_step_completed!(
-      run_id: pipeline_run_id,
-      step: "face",
-      status: "skipped",
-      error: "secondary_face_enqueue_failed: #{format_error(e)}",
-      result: {
-        reason: "secondary_face_enqueue_failed"
-      }
-    )
   end
 
   def mark_stalled_steps_failed!(context:, pipeline_run_id:)
@@ -604,11 +421,6 @@ class FinalizePostAnalysisPipelineJob < PostAnalysisPipelineJob
     return true unless task_flags.key?("secondary_only_on_ambiguous")
 
     ActiveModel::Type::Boolean.new.cast(task_flags["secondary_only_on_ambiguous"])
-  end
-
-  def ambiguous_primary_confidence?(value)
-    score = value.to_f.clamp(0.0, 1.0)
-    score >= SECONDARY_FACE_MIN_CONFIDENCE && score <= SECONDARY_FACE_MAX_CONFIDENCE
   end
 
   def primary_confidence_for(post:)

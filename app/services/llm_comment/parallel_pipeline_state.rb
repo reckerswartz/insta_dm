@@ -9,8 +9,10 @@ module LlmComment
     DEFERRED_STEP_KEYS = LlmComment::StepRegistry.deferred_step_keys.freeze
     TERMINAL_STEP_STATUSES = %w[succeeded failed skipped].freeze
     PIPELINE_TERMINAL_STATUSES = %w[completed failed].freeze
+    # Phase 12 dropped face_recognition from STEP_TO_QUEUE_SERVICE_KEY
+    # when the backing step job + service were deleted. The LLM
+    # generation step is the only remaining queue lane.
     STEP_TO_QUEUE_SERVICE_KEY = {
-      "face_recognition" => :face_analysis,
       "llm_generation" => :llm_comment_generation
     }.freeze
     DEFAULT_PENDING_ESTIMATE_SECONDS = ENV.fetch("LLM_PIPELINE_DEFAULT_PENDING_ESTIMATE_SECONDS", "120").to_i.clamp(20, 7_200)

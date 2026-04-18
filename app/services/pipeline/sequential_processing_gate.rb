@@ -4,11 +4,9 @@ module Pipeline
       SyncHomeStoryCarouselJob
       SyncProfileStoriesForAccountJob
       SyncInstagramProfileStoriesJob
-      StoryProcessingJob
       AnalyzeInstagramStoryEventJob
       StoryCommentPipelineJob
       StoryCommentStepJob
-      ProcessStoryCommentFaceJob
       ProcessStoryCommentMetadataJob
       FinalizeStoryCommentPipelineJob
       GenerateStoryCommentFromPipelineJob

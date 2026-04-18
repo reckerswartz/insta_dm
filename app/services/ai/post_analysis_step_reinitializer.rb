@@ -1,14 +1,14 @@
 module Ai
   class PostAnalysisStepReinitializer
+    # Phase 12 collapsed the pipeline to visual + metadata. The face /
+    # ocr / video step jobs + their backing services were deleted
+    # because they only no-op'd after Phase 5 removed the Python
+    # microservice.
     STEP_JOB_MAP = {
       "visual" => ProcessPostVisualAnalysisJob,
-      "face" => ProcessPostFaceAnalysisJob,
-      "ocr" => ProcessPostOcrAnalysisJob,
-      "video" => ProcessPostVideoAnalysisJob,
       "metadata" => ProcessPostMetadataTaggingJob
     }.freeze
     DEFAULT_MAX_REINITIALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_STEP_REINITIALIZE_ATTEMPTS", 2).to_i.clamp(1, 6)
-    VIDEO_MAX_REINITIALIZE_ATTEMPTS = ENV.fetch("AI_PIPELINE_VIDEO_REINITIALIZE_ATTEMPTS", 0).to_i.clamp(0, 6)
 
     class << self
       def reinitialize_failed_steps!(account:, profile:, post:, pipeline_state:, pipeline_run_id:, steps:, source_job_id:)
@@ -71,9 +71,7 @@ module Ai
 
       private
 
-      def max_reinitialize_attempts_for(step)
-        return VIDEO_MAX_REINITIALIZE_ATTEMPTS if step.to_s == "video"
-
+      def max_reinitialize_attempts_for(_step)
         DEFAULT_MAX_REINITIALIZE_ATTEMPTS
       end
     end

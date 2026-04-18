@@ -8,9 +8,6 @@ module Jobs
     DEFAULT_AUTO_COOLDOWN = 10.minutes
     PIPELINE_STEP_BY_JOB_CLASS = {
       "ProcessPostVisualAnalysisJob" => "visual",
-      "ProcessPostFaceAnalysisJob" => "face",
-      "ProcessPostOcrAnalysisJob" => "ocr",
-      "ProcessPostVideoAnalysisJob" => "video",
       "ProcessPostMetadataTaggingJob" => "metadata",
       "FinalizePostAnalysisPipelineJob" => nil
     }.freeze

@@ -5,9 +5,6 @@ const MISSING_TEXT_PATTERN = /loading\s+(captured\s+posts|downloaded\s+stories|m
 const PROFILE_ANALYSIS_JOB_CLASSES = new Set([
   "AnalyzeInstagramProfilePostJob",
   "ProcessPostVisualAnalysisJob",
-  "ProcessPostFaceAnalysisJob",
-  "ProcessPostOcrAnalysisJob",
-  "ProcessPostVideoAnalysisJob",
   "ProcessPostMetadataTaggingJob",
   "FinalizePostAnalysisPipelineJob",
 ])

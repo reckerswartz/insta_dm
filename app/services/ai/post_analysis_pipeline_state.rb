@@ -2,25 +2,27 @@ require "securerandom"
 
 module Ai
   class PostAnalysisPipelineState
-    STEP_KEYS = %w[visual face ocr video metadata].freeze
+    STEP_KEYS = %w[visual metadata].freeze
     TERMINAL_STATUSES = %w[succeeded failed skipped].freeze
     PIPELINE_TERMINAL_STATUSES = %w[completed failed].freeze
     STEP_TO_QUEUE_SERVICE_KEY = {
       "visual" => :visual_analysis,
-      "face" => :face_analysis,
-      "ocr" => :ocr_analysis,
-      "video" => :video_analysis,
       "metadata" => :metadata_tagging
     }.freeze
     DEFAULT_PENDING_ESTIMATE_SECONDS = ENV.fetch("POST_PIPELINE_DEFAULT_PENDING_ESTIMATE_SECONDS", "180").to_i.clamp(20, 7_200)
 
+    # Phase 12 collapsed the post-analysis pipeline to the two steps
+    # the NVIDIA Build hot path actually uses: a single visual pass
+    # that produces the primary analysis payload, plus a metadata pass
+    # that tags/indexes the result. The pre-NVIDIA pipeline used face
+    # detection, OCR, and heavyweight video frame extraction, but those
+    # step jobs were deprecated in Phase 4.5 and their backing services
+    # (PostFaceRecognitionService, Ai::PostOcrService,
+    # PostVideoContextExtractionService) only no-op'd after Phase 5
+    # deleted the Python microservice. Phase 12 removes the dead step
+    # flags + the STEP_JOB_MAP entries + the services entirely.
     DEFAULT_TASK_FLAGS = {
       "analyze_visual" => true,
-      "analyze_faces" => false,
-      "secondary_face_analysis" => true,
-      "secondary_only_on_ambiguous" => true,
-      "run_ocr" => false,
-      "run_video" => true,
       "run_metadata" => true,
       "generate_comments" => true,
       "enforce_comment_evidence_policy" => true,
@@ -29,9 +31,6 @@ module Ai
 
     TASK_TO_STEP = {
       "analyze_visual" => "visual",
-      "analyze_faces" => "face",
-      "run_ocr" => "ocr",
-      "run_video" => "video",
       "run_metadata" => "metadata"
     }.freeze
 

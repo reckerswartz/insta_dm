@@ -202,12 +202,11 @@ module Ai
     end
 
     def ensure_post_face_recognition!(post:)
-      return unless post.media.attached?
-      return unless post.media.blob&.content_type.to_s.start_with?("image/")
-      return if post.instagram_post_faces.exists?
-
-      PostFaceRecognitionService.new.process!(post: post)
-    rescue StandardError
+      # Phase 12 removed PostFaceRecognitionService. Any existing
+      # instagram_post_faces rows are still read by downstream callers
+      # (they're recorded by the NVIDIA-side face detection pass inside
+      # Ai::VlmPeopleSummaryService), but we no longer back-fill them
+      # synchronously from the comment-preparation path.
       nil
     end
 

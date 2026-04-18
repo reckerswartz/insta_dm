@@ -13,17 +13,12 @@ module LlmComment
       keyword_init: true
     )
 
-    STEPS = [
-      Step.new(
-        key: "face_recognition",
-        job_class_name: "ProcessStoryCommentFaceJob",
-        blocking: false,
-        queued_progress: 10,
-        running_progress: 18,
-        completed_progress: 34,
-        failed_progress: 34
-      )
-    ].freeze
+    # Phase 12 removed the only registered step (`face_recognition`)
+    # when ProcessStoryCommentFaceJob + its backing services were
+    # deleted. The registry stays in place as an extension point so a
+    # future step (e.g. a pre-LLM moderation check) can opt back in
+    # without re-wiring every caller.
+    STEPS = [].freeze
 
     class << self
       def steps

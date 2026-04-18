@@ -2,18 +2,22 @@
 
 Last updated: 2026-02-20
 
-> **Status: deprecated (Phase 4.5 of the NVIDIA migration, 2026-04).** The
-> services below are soft-deprecated behind `LEGACY_AI_PIPELINE_ENABLED`.
-> Pipeline step jobs short-circuit to a "skipped" payload by default.
-> The underlying Ruby services, DB tables, and historical data are kept
-> for audit + rollback, but new work flows through
-> `Ai::VlmPeopleSummaryService` (VLM-based people description) and
-> NVIDIA vision_primary frames. See
-> `docs/architecture/nvidia-provider.md` for the replacement contract.
-> To re-enable this pipeline locally:
-> `LEGACY_AI_PIPELINE_ENABLED=true bin/dev`. Note that the Python
-> microservice the services below depend on (`ai_microservice/`) was
-> deleted in Phase 5 and must be re-stood-up externally.
+> **Status: removed (Phase 12 of the NVIDIA migration, 2026-04).** The
+> services documented below (`FaceDetectionService`,
+> `PostFaceRecognitionService`, `Ai::PostOcrService`, the face/OCR/video
+> `ProcessPost*AnalysisJob` step jobs, `RefreshProfilePostFaceIdentityJob`,
+> `ProcessStoryCommentFaceJob`, `StoryProcessingJob`,
+> `StoryProcessingService`, `Ai::LegacyPipelineConfig`) were deleted in
+> Phase 12 after Phase 4's NVIDIA VLM path made them obsolete. This
+> file is retained as a historical reference only. Current face / object
+> summarisation for posts happens inline in `Ai::VlmPeopleSummaryService`
+> on the NVIDIA analysis path; video transcript extraction still runs
+> via `PostVideoContextExtractionService` (which now delegates frame
+> analysis to NVIDIA VLM models).
+>
+> The remainder of this file describes the *removed* architecture. It
+> is kept because audit logs and DB rows for historical runs still
+> reference these service names.
 
 This document covers the face detection → embedding → matching → identity resolution pipeline, post-level face recognition, and all video processing services.
 

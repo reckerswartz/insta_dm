@@ -95,11 +95,10 @@ module Ai
     end
 
     def refresh_post_signals!
-      begin
-        PostFaceRecognitionService.new.process!(post: post)
-      rescue StandardError
-        nil
-      end
+      # Phase 12 removed PostFaceRecognitionService. The face/people
+      # summary is produced inline by Ai::VlmPeopleSummaryService on the
+      # NVIDIA-backed analysis path, so we no longer run a separate
+      # face-recognition pass here.
 
       begin
         analysis = post.analysis.is_a?(Hash) ? post.analysis : {}
