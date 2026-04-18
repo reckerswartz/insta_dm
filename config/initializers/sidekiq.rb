@@ -3,6 +3,7 @@ require "sidekiq/cron/job"
 require Rails.root.join("app/services/ops/ai_service_queue_registry")
 require Rails.root.join("app/services/ops/sidekiq_job_state_tracker")
 require Rails.root.join("app/services/ops/structured_logger")
+require Rails.root.join("app/services/ops/orphaned_job_class_middleware")
 
 redis_url = ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0")
 
@@ -167,6 +168,11 @@ Sidekiq.configure_server do |config|
   end
 
   config.server_middleware do |chain|
+    # OrphanedJobClassMiddleware must wrap SidekiqJobMonitor + the tracker so
+    # that a payload referencing a deleted Active Job class is rescued here
+    # (where we can classify + drop it) instead of escaping to Sidekiq's
+    # retry/dead pipeline and poisoning the dashboard counters.
+    chain.prepend Ops::OrphanedJobClassMiddleware
     chain.add Ops::SidekiqJobStateTracker::ServerMiddleware
     chain.add SidekiqJobMonitor
   end

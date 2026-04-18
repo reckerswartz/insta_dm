@@ -53,7 +53,7 @@ module Ops
           ai_api_calls: account.ai_api_calls.count,
           posts: account.instagram_posts.count,
           sync_runs: account.sync_runs.count,
-          failures_24h: BackgroundJobFailure.where(instagram_account_id: account.id)
+          failures_24h: BackgroundJobFailure.excluding_deprovisioned.where(instagram_account_id: account.id)
             .where("occurred_at >= ?", 24.hours.ago).count,
           visual_analysis_failures_24h: BackgroundJobFailure.where(instagram_account_id: account.id, job_class: "ProcessPostVisualAnalysisJob")
             .where("occurred_at >= ?", 24.hours.ago).count,
