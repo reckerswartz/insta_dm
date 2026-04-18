@@ -158,6 +158,10 @@
 
 # Node.js (if any frontend tools)
 /node_modules/
+/.playwright-mcp/
+# Audit screenshots are large binary artefacts; keep them local-only.
+# Findings (`docs/audits/<phase>/**.md`) stay in git.
+/docs/audits/*/screenshots/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

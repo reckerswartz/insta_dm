@@ -10,6 +10,13 @@ RSpec.describe "Admin::AiProviderSettings", type: :request do
       expect(response.body).to include("NVIDIA Build")
       AiProviderSetting::ROLES.each { |role| expect(response.body).to include(role) }
     end
+
+    it "no longer renders the Phase-4-deprecated Local provider (legacy) block" do
+      get "/admin/ai_provider_settings"
+      expect(response).to have_http_status(:ok)
+      expect(response.body).not_to include("Local provider (legacy)")
+      expect(response.body).not_to include("Phase 4 of the NVIDIA migration")
+    end
   end
 
   describe "PATCH /admin/ai_provider_settings/:id" do

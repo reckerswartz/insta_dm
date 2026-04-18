@@ -72,6 +72,15 @@ class InstagramStoryPeopleController < ApplicationController
 
   private
 
+  # When set_profile fails (bad profile id in URL) we want the 404 breadcrumb
+  # to start at "Profiles"; when set_person fails (bad person id under a real
+  # profile) we want it to also include the owning profile.
+  def record_not_found_breadcrumbs
+    crumbs = [ { label: "Profiles", path: instagram_profiles_path } ]
+    crumbs << { label: "Back to profile", path: instagram_profile_path(@profile) } if @profile.present?
+    crumbs + super
+  end
+
   def set_profile
     @profile = current_account.instagram_profiles.find(params[:instagram_profile_id])
   end
