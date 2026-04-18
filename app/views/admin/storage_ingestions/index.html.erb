@@ -21,7 +21,11 @@
       data-storage-ingestions-table-account-id-value="<%= current_account&.id.to_i %>"
     >
       <%= render "shared/table_meta_bar",
-            realtime_note: "Attachment updates stream live over ActionCable." %>
+            realtime_note: "Attachment updates stream live over ActionCable.",
+            row_label: "ingestion".pluralize(@total),
+            initial_count: @total,
+            initial_updated: "from server",
+            initial_state: "Ready" %>
       <div class="tabulator-host" data-storage-ingestions-table-target="table"></div>
     </div>
   </section>

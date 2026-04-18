@@ -24,6 +24,8 @@ class Admin::BackgroundJobsController < Admin::BaseController
     @q = params[:q].to_s.strip
     result = Admin::BackgroundJobs::FailuresQuery.new(params: params).call
     @failures = result.failures
+    @total = result.total
+    @pages = result.pages
 
     respond_to do |format|
       format.html

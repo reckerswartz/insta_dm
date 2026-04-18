@@ -11,6 +11,8 @@ class Admin::StorageIngestionsController < Admin::BaseController
     total = scope.count
     pages = (total / per_page.to_f).ceil
     @ingestions = scope.offset((page - 1) * per_page).limit(per_page)
+    @total = total
+    @pages = pages
 
     respond_to do |format|
       format.html

@@ -22,7 +22,11 @@
     >
       <%= render "shared/table_meta_bar",
             controls: "row retry actions",
-            realtime_note: "Updates stream live via ActionCable." %>
+            realtime_note: "Updates stream live via ActionCable.",
+            row_label: "failure".pluralize(@total),
+            initial_count: @total,
+            initial_updated: "from server",
+            initial_state: "Ready" %>
       <div class="tabulator-host" data-background-job-failures-table-target="table"></div>
     </div>
   </section>
