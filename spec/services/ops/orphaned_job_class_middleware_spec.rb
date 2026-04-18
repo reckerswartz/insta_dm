@@ -60,3 +60,44 @@ RSpec.describe Ops::OrphanedJobClassMiddleware do
     expect(row.error_class).to eq("ActiveJob::UnknownJobClassError")
   end
 end
+
+RSpec.describe "rake jobs:purge_unresolvable", type: :task do
+  require "rake"
+  require "sidekiq/cron/job"
+  require "sidekiq/api"
+
+  before(:all) do
+    Rails.application.load_tasks unless Rake::Task.task_defined?("jobs:purge_unresolvable")
+  end
+
+  around do |example|
+    # ensure no lingering stale cron entries from earlier specs
+    Sidekiq::Cron::Job.all.each { |j| j.destroy if j.name.to_s.start_with?("spec_purge_") }
+    example.run
+    Sidekiq::Cron::Job.all.each { |j| j.destroy if j.name.to_s.start_with?("spec_purge_") }
+  end
+
+  it "destroys cron entries whose class no longer exists" do
+    created = Sidekiq::Cron::Job.create(
+      name: "spec_purge_orphan_#{SecureRandom.hex(4)}",
+      cron: "*/10 * * * *",
+      klass: "ClassThatNoLongerExistsSpec_#{SecureRandom.hex(4)}"
+    )
+    expect(created).to be_truthy
+
+    Rake::Task["jobs:purge_unresolvable"].reenable
+    expect { Rake::Task["jobs:purge_unresolvable"].invoke }.to output(/Dropped 1 orphaned cron entry/).to_stdout
+
+    expect(Sidekiq::Cron::Job.all.map(&:klass)).not_to include(a_string_starting_with("ClassThatNoLongerExistsSpec_"))
+  end
+
+  it "leaves cron entries pointing at live Active Job classes alone" do
+    cron_name = "spec_purge_live_#{SecureRandom.hex(4)}"
+    Sidekiq::Cron::Job.create(name: cron_name, cron: "*/10 * * * *", klass: "ApplicationJob")
+
+    Rake::Task["jobs:purge_unresolvable"].reenable
+    Rake::Task["jobs:purge_unresolvable"].invoke
+
+    expect(Sidekiq::Cron::Job.all.map(&:name)).to include(cron_name)
+  end
+end
