@@ -22,7 +22,11 @@
     >
       <%= render "shared/table_meta_bar",
             controls: "inline status controls",
-            realtime_note: "Updates stream live." %>
+            realtime_note: "Updates stream live.",
+            row_label: "issue".pluralize(@total),
+            initial_count: @total,
+            initial_updated: "from server",
+            initial_state: "Ready" %>
       <div class="tabulator-host" data-issues-table-target="table"></div>
     </div>
   </section>

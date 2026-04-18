@@ -46,7 +46,11 @@
       data-posts-table-url-value="<%= instagram_posts_path(format: :json) %>"
       data-posts-table-account-id-value="<%= current_account&.id.to_i %>"
     >
-      <%= render "shared/table_meta_bar" %>
+      <%= render "shared/table_meta_bar",
+            row_label: "post".pluralize(@total),
+            initial_count: @total,
+            initial_updated: "from server",
+            initial_state: "Ready" %>
       <div class="tabulator-host" data-posts-table-target="table"></div>
     </div>
   </section>

@@ -31,6 +31,10 @@ class InstagramPostsController < ApplicationController
     pages = (total / per_page.to_f).ceil
     posts = scope.offset((page - 1) * per_page).limit(per_page)
 
+    @total = total
+    @pages = pages
+    @posts = posts
+
     respond_to do |format|
       format.html
       format.json do
