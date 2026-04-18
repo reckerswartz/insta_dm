@@ -15,6 +15,12 @@ Rails.application.routes.draw do
       end
     end
     resources :storage_ingestions, only: [:index]
+
+    resources :ai_provider_settings, only: %i[index update] do
+      member do
+        post :test_key
+      end
+    end
   end
 
   mount MissionControl::Jobs::Engine, at: "/admin/jobs"

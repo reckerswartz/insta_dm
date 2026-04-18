@@ -1,13 +1,23 @@
 class AiProviderSetting < ApplicationRecord
-  SUPPORTED_PROVIDERS = %w[local].freeze
+  SUPPORTED_PROVIDERS = %w[local nvidia].freeze
+
+  # Roles are only used by multi-role providers (nvidia). Legacy single-role
+  # providers (local) leave role = nil.
+  ROLES = %w[text_fast text_quality vision_primary vision_fallback embedding].freeze
+
+  MULTI_ROLE_PROVIDERS = %w[nvidia].freeze
 
   encrypts :api_key
 
   validates :provider, presence: true, inclusion: { in: SUPPORTED_PROVIDERS }
-  validates :provider, uniqueness: true
   validates :priority, numericality: { greater_than_or_equal_to: 0 }
+  validates :role, inclusion: { in: ROLES, allow_nil: true }
+  validate :role_presence_matches_provider
+  validates :provider, uniqueness: { scope: :role }
 
-  scope :enabled_first, -> { order(enabled: :desc, priority: :asc, provider: :asc) }
+  scope :enabled_first, -> { order(enabled: :desc, priority: :asc, provider: :asc, role: :asc) }
+  scope :for_provider, ->(key) { where(provider: key.to_s) }
+  scope :for_role, ->(role) { where(role: role.to_s) }
 
   def config_hash
     value = config
@@ -31,24 +41,58 @@ class AiProviderSetting < ApplicationRecord
   end
 
   def display_name
-    case provider
-    when "local" then "Local AI Microservice"
-    else provider.to_s.humanize
-    end
+    return display_label if display_label.present?
+
+    base =
+      case provider
+      when "local"  then "Local AI Microservice"
+      when "nvidia" then "NVIDIA Build"
+      else provider.to_s.humanize
+      end
+
+    role.present? ? "#{base} (#{role.humanize})" : base
   end
 
   def effective_api_key
     return api_key.to_s if api_key.to_s.present?
-    ""
+
+    # Fall back to Rails credentials for providers that have a canonical
+    # shared key (e.g. nvidia). Per-role keys in the DB always win.
+    case provider
+    when "nvidia" then Rails.application.credentials.dig(:nvidia, :api_key).to_s
+    else ""
+    end
+  end
+
+  def effective_base_url
+    return base_url.to_s if base_url.to_s.present?
+
+    case provider
+    when "nvidia"
+      Rails.application.credentials.dig(:nvidia, :base_url).presence ||
+        "https://integrate.api.nvidia.com/v1"
+    else ""
+    end
   end
 
   def effective_model
-    model = config_value("model").to_s
-    return model if model.present?
+    return model.to_s if model.to_s.present?
+
+    configured = config_value("model").to_s
+    return configured if configured.present?
+
     ""
   end
 
   def api_key_present?
     effective_api_key.present?
+  end
+
+  private
+
+  def role_presence_matches_provider
+    if MULTI_ROLE_PROVIDERS.include?(provider) && role.blank?
+      errors.add(:role, "must be set for provider #{provider}")
+    end
   end
 end

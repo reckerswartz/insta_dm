@@ -26,12 +26,29 @@ RSpec.describe Ai::ProviderRegistry do
     expect(enabled.first.priority).to eq(5)
   end
 
-  it "returns provider settings in enabled-first order" do
+  it "returns provider settings in enabled-first order, including nvidia role rows" do
     described_class.ensure_settings!
 
     settings = described_class.all_settings
-    expect(settings.map(&:provider)).to eq([ "local" ])
-    expect(settings.first.enabled).to eq(true)
+    expect(settings.map(&:provider)).to include("local", "nvidia")
+
+    local_row = settings.find { |s| s.provider == "local" }
+    expect(local_row.enabled).to eq(true)
+
+    nvidia_rows = settings.select { |s| s.provider == "nvidia" }
+    expect(nvidia_rows.map(&:role)).to match_array(AiProviderSetting::ROLES)
+    expect(nvidia_rows).to all(have_attributes(enabled: false))
+  end
+
+  it "builds an Ai::Providers::NvidiaProvider for the nvidia key" do
+    described_class.ensure_settings!
+    AiProviderSetting.for_provider("nvidia").update_all(enabled: true)
+
+    provider = described_class.build_provider("nvidia")
+
+    expect(provider).to be_a(Ai::Providers::NvidiaProvider)
+    expect(provider.key).to eq("nvidia")
+    expect(provider.setting.provider).to eq("nvidia")
   end
 
   it "builds provider instances for supported keys" do
