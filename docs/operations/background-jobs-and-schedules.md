@@ -65,8 +65,6 @@ Key recurring jobs:
 
 - Continuous account processing:
   - `EnqueueContinuousAccountProcessingJob`
-- Local AI health check:
-  - `CheckLocalAiHealthJob`
 - Queue health check:
   - `CheckQueueHealthJob`
 - Automatic retry of failed jobs:

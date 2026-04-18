@@ -36,17 +36,7 @@ module ApplicationHelper
 
   def get_default_test_for_service(service)
     case service.to_s
-    when 'vision'
-      'labels'
-    when 'face'
-      'detection'
-    when 'ocr'
-      'text_extraction'
-    when 'whisper'
-      'transcription'
-    when 'video'
-      'analysis'
-    when 'ollama'
+    when 'nvidia'
       'models'
     else
       nil

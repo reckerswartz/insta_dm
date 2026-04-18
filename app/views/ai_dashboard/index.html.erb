@@ -6,15 +6,14 @@
 <% cleanup_candidates = Array(runtime_audit[:cleanup_candidates]) %>
 <% totals = runtime_audit[:totals].is_a?(Hash) ? runtime_audit[:totals] : {} %>
 <% configured_models = architecture[:configured_models].is_a?(Hash) ? architecture[:configured_models] : {} %>
-<% available_models = Array(architecture[:ollama_available_models]) %>
-<% unused_models = Array(architecture[:unused_ollama_models]) %>
+<% available_models = Array(architecture[:nvidia_available_models]) %>
 <% lightweight_controls = architecture[:lightweight_controls].is_a?(Hash) ? architecture[:lightweight_controls] : {} %>
 
 <div class="page">
   <header class="page-header page-toolbar">
     <div class="page-toolbar-main">
       <h1>AI Services</h1>
-      <p class="meta">Current local AI runtime status, concurrent lanes, and cleanup candidates.</p>
+      <p class="meta">NVIDIA Build status, concurrent lanes, and cleanup candidates.</p>
     </div>
     <div class="page-toolbar-actions">
       <%= link_to "Dashboard", instagram_accounts_path, class: "btn secondary" %>
@@ -23,13 +22,13 @@
   </header>
 
   <section class="card">
-    <h2>Local AI Stack Status</h2>
+    <h2>NVIDIA Build Status</h2>
 
     <div id="service-status" class="service-grid">
       <% if @service_status[:status] == "online" %>
         <div class="status-indicator online">
           <div>
-            <strong>Local AI stack online</strong>
+            <strong>NVIDIA Build online</strong>
             <div class="status-time">
               <%= relative_time_with_tooltip(@service_status[:last_check]) %>
               <% if @service_status[:stale] %>
@@ -46,7 +45,7 @@
           <% default_test = get_default_test_for_service(service) %>
           <div class="service-item <%= active ? "active" : "inactive" %>">
             <div class="service-info">
-              <span class="service-name"><%= service.to_s.capitalize %></span>
+              <span class="service-name"><%= service.to_s.upcase %></span>
               <span class="service-status"><%= active ? "Active" : "Inactive" %></span>
             </div>
             <% if default_test.present? %>
@@ -61,7 +60,7 @@
       <% else %>
         <div class="status-indicator offline">
           <div>
-            <strong>Local AI stack offline</strong>
+            <strong>NVIDIA Build offline</strong>
             <div class="status-time">
               <%= relative_time_with_tooltip(@service_status[:last_check]) %>
               <% if @service_status[:stale] %>
@@ -75,7 +74,7 @@
         </div>
         <div class="error-message">
           <strong>Error:</strong> <%= @service_status[:message] %>
-          <p class="hint mb-0">Verify the local Ollama endpoint is reachable.</p>
+          <p class="hint mb-0">Verify the NVIDIA credential is set and the provider is enabled in Admin &gt; AI Providers.</p>
         </div>
       <% end %>
     </div>
@@ -93,13 +92,13 @@
         <h4>Policy</h4>
         <p class="mb-1">
           Execution mode:
-          <code><%= architecture[:execution_mode].to_s.presence || "ollama_only" %></code>
+          <code><%= architecture[:execution_mode].to_s.presence || "nvidia_build" %></code>
         </p>
         <p class="mb-0">
           Stack status:
           <strong><%= architecture[:stack_status].to_s.presence || "unknown" %></strong>
           |
-          Ollama: <strong><%= architecture[:ollama_ok] ? "reachable" : "unreachable" %></strong>
+          NVIDIA: <strong><%= architecture[:nvidia_ok] ? "reachable" : "unreachable" %></strong>
         </p>
       </div>
 
@@ -115,11 +114,11 @@
           <% end %>
         </p>
         <p class="mb-0">
-          Installed models:
+          Available models:
           <% if available_models.any? %>
-            <%= available_models.join(", ") %>
+            <%= available_models.first(6).join(", ") %><%= "..." if available_models.length > 6 %>
           <% else %>
-            <span class="meta">none detected</span>
+            <span class="meta">none reported</span>
           <% end %>
         </p>
       </div>
@@ -127,7 +126,6 @@
       <div class="info-item">
         <h4>Lightweight Controls</h4>
         <p class="mb-1">
-          <code>local_provider_lightweight=<%= lightweight_controls[:local_provider_lightweight_mode] %></code>
           <code>post_video_lightweight=<%= lightweight_controls[:post_video_lightweight_mode] %></code>
         </p>
         <p class="mb-0">
@@ -137,13 +135,6 @@
         </p>
       </div>
     </div>
-
-    <% if unused_models.any? %>
-      <div class="runtime-note warning mt-2">
-        <strong>Unused local models detected:</strong>
-        <%= unused_models.join(", ") %>
-      </div>
-    <% end %>
   </section>
 
   <section class="card">
@@ -321,9 +312,9 @@
     <h2>Available Tests</h2>
     <div class="test-grid">
       <div class="test-category">
-        <h3>Ollama</h3>
+        <h3>NVIDIA Build</h3>
         <div class="test-list">
-          <button class="btn btn-small test-service-btn" data-service="ollama" data-test="models">List models</button>
+          <button class="btn btn-small test-service-btn" data-service="nvidia" data-test="models">List models</button>
         </div>
       </div>
     </div>
@@ -334,20 +325,20 @@
     <div class="info-grid">
       <div class="info-item">
         <h4>Configuration</h4>
-        <p class="mb-1">Execution mode: <code>ollama_only</code></p>
-        <p class="mb-0">Ollama endpoint: <code><%= Ai::OllamaClient::BASE_URL %></code></p>
+        <p class="mb-1">Execution mode: <code>nvidia_build</code></p>
+        <p class="mb-0">NVIDIA endpoint: <code><%= Ai::NvidiaClient::DEFAULT_BASE_URL %></code></p>
       </div>
 
       <div class="info-item">
         <h4>Performance</h4>
-        <p class="mb-1">Pipelines prioritize lightweight pre-analysis and key-frame sampling.</p>
-        <p class="mb-0">Concurrent Sidekiq lanes are isolated for local hardware stability.</p>
+        <p class="mb-1">Per-role model routing via <code>Ai::NvidiaModelRouter</code> keeps fast vs. quality tiers separated.</p>
+        <p class="mb-0">Concurrent Sidekiq lanes isolate spikes so a single blocked API call can't stall unrelated work.</p>
       </div>
 
       <div class="info-item">
         <h4>Privacy</h4>
-        <p class="mb-1">No external API dependency is required for local runs.</p>
-        <p class="mb-0">Inputs remain inside your own environment.</p>
+        <p class="mb-1">All inference calls go to NVIDIA Build's cloud API over HTTPS.</p>
+        <p class="mb-0">Payloads are authenticated with the per-account NVIDIA credential in Rails encrypted credentials.</p>
       </div>
     </div>
   </section>

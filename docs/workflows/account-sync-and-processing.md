@@ -68,13 +68,18 @@ Entry points:
 Coordinator:
 
 - `Pipeline::AccountProcessingCoordinator` decides due work based on per-account next-run timestamps.
-- Health gate: `Ops::LocalAiHealth.check`.
+- Priority gate: `Pipeline::SequentialProcessingGate` (blocks enqueues while an account backlog is pending).
 - Enqueues when due:
   - stories: `SyncHomeStoryCarouselJob`
   - feed engagement: `AutoEngageHomeFeedJob`
   - profile scan: `EnqueueRecentProfilePostScansForAccountJob`
-  - fallback when AI unhealthy: `SyncNextProfilesForAccountJob`
   - workspace refresh: `Workspace::ActionsTodoQueueService`
+
+Phase 10 removed the `Ops::LocalAiHealth.check` gate that used to
+precede the due-work branches. NVIDIA Build (the cloud provider)
+is the hot path; there's no local stack to probe, so per-job
+failures are surfaced via `EnhancedJobRetryStrategies` and
+`Ops::IssueTracker` instead.
 
 Concurrency and recovery guarantees:
 

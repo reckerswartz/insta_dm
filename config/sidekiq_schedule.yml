@@ -6,11 +6,6 @@ development:
     args:
       - limit: 120
     cron: "0 3 * * *"
-  local_ai_health_check:
-    class: CheckLocalAiHealthJob
-    active_job: true
-    queue: maintenance
-    cron: "*/10 * * * *"
   ai_feature_evidence_snapshot:
     class: AnalyzeAiFeatureEvidenceJob
     active_job: true
@@ -80,11 +75,6 @@ production:
     args:
       - limit: 500
     cron: "0 3 * * *"
-  local_ai_health_check:
-    class: CheckLocalAiHealthJob
-    active_job: true
-    queue: maintenance
-    cron: "*/10 * * * *"
   ai_feature_evidence_snapshot:
     class: AnalyzeAiFeatureEvidenceJob
     active_job: true

@@ -1,7 +1,7 @@
 require "rails_helper"
 
 RSpec.describe AiDashboard::RuntimeAudit do
-  it "builds concurrent lane summary and cleanup candidates" do
+  it "builds concurrent lane summary and cleanup candidates using the NVIDIA service_status shape" do
     allow(Ops::QueueProcessingEstimator).to receive(:snapshot).and_return(
       {
         estimates: [
@@ -16,19 +16,22 @@ RSpec.describe AiDashboard::RuntimeAudit do
       }
     )
 
+    # Phase 10 swapped the service_status payload from an Ollama health
+    # probe to an NVIDIA Build API probe. RuntimeAudit now reads
+    # details[:nvidia][:models] and policy[:execution_mode] = "nvidia_build".
     service_status = {
       status: "online",
       details: {
-        ollama: {
+        nvidia: {
           ok: true,
           models: [
-            Ai::ModelDefaults.base_model,
-            Ai::ModelDefaults.vision_model,
-            "unused-model:1b"
+            "meta/llama-3.3-70b-instruct",
+            "meta/llama-3.2-11b-vision-instruct",
+            "some-other-model"
           ]
         },
         policy: {
-          execution_mode: "ollama_only"
+          execution_mode: "nvidia_build"
         }
       }
     }
@@ -55,9 +58,14 @@ RSpec.describe AiDashboard::RuntimeAudit do
     ).call
 
     expect(result[:queue_backend]).to eq("sidekiq")
-    expect(result.dig(:architecture, :execution_mode)).to eq("ollama_only")
+    expect(result.dig(:architecture, :execution_mode)).to eq("nvidia_build")
+    expect(result.dig(:architecture, :nvidia_ok)).to eq(true)
+    expect(result.dig(:architecture, :nvidia_available_models)).to include(
+      "meta/llama-3.3-70b-instruct",
+      "meta/llama-3.2-11b-vision-instruct"
+    )
     expect(result.dig(:totals, :total_lanes).to_i).to be > 0
-    expect(result[:host_services]).not_to include(hash_including(service_key: "local_microservice"))
+    expect(result[:host_services].map { |row| row[:service_key] }).not_to include("ollama")
     expect(result[:concurrent_services]).to include(
       hash_including(service_key: "llm_comment_generation", queue_pending: 2)
     )
@@ -67,8 +75,8 @@ RSpec.describe AiDashboard::RuntimeAudit do
       eta_queue_drain_seconds: 88.0,
       eta_confidence: "medium"
     )
-    expect(result[:cleanup_candidates]).to include(
-      hash_including(id: "unused_ollama_models", status: "safe_to_remove")
-    )
+    # Phase 10 removed the "unused_ollama_models" cleanup candidate since
+    # NVIDIA models are cloud-hosted.
+    expect(result[:cleanup_candidates].map { |row| row[:id] }).not_to include("unused_ollama_models")
   end
 end
