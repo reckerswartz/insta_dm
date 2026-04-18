@@ -57,7 +57,9 @@ module Ai
     # OpenAI-compatible chat completion.
     # messages: Array of { role: "user"|"system"|"assistant", content: String | Array<Hash> }
     # Vision: content can be [ { type: "text", text: "..." }, { type: "image_url", image_url: { url: "data:..." } } ]
-    def chat!(model:, messages:, temperature: nil, max_tokens: nil, top_p: nil, stream: false, extra: {})
+    # response_format: NVIDIA-compatible structured-output hint,
+    #   e.g. { "type" => "json_object" } to force JSON replies.
+    def chat!(model:, messages:, temperature: nil, max_tokens: nil, top_p: nil, response_format: nil, stream: false, extra: {})
       raise ConfigurationError, "chat streaming is not supported yet" if stream
 
       body = {
@@ -68,6 +70,7 @@ module Ai
       body[:temperature] = temperature unless temperature.nil?
       body[:max_tokens] = max_tokens unless max_tokens.nil?
       body[:top_p] = top_p unless top_p.nil?
+      body[:response_format] = response_format unless response_format.nil?
       body.merge!(extra.compact) if extra.is_a?(Hash)
 
       request_json!(:post, "/chat/completions", body: body)
