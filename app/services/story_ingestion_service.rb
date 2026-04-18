@@ -1,7 +1,11 @@
 class StoryIngestionService
-  def initialize(account:, profile:, enqueue_processing: true)
+  def initialize(account:, profile:, enqueue_processing: false)
     @account = account
     @profile = profile
+    # Phase 12 removed StoryProcessingJob (the whisper / face / OCR
+    # pipeline that this used to trigger). The remaining enqueue call
+    # is a no-op; we keep the constructor arg so callers that pass it
+    # explicitly stay source-compatible until they're updated.
     @enqueue_processing = enqueue_processing
   end
 
@@ -87,10 +91,10 @@ class StoryIngestionService
   end
 
   def enqueue_processing!(record:, force_reprocess:)
-    return unless @enqueue_processing
-    return if record.processing_status == "processing"
-    return if record.processed? && !force_reprocess
-
-    StoryProcessingJob.perform_later(instagram_story_id: record.id, force: force_reprocess)
+    # Phase 12 retired the legacy StoryProcessingJob chain. Story
+    # analysis now flows through AnalyzeInstagramStoryEventJob which
+    # is enqueued directly from SyncInstagramProfileStoriesJob, so
+    # there's nothing to do here any more.
+    nil
   end
 end

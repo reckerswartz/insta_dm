@@ -679,54 +679,11 @@ module Ai
     end
 
     def enqueue_face_refresh_for_post(post:)
-      # Phase 4.5: legacy face identity pipeline is soft-deprecated. Skip
-      # the enqueue unless an operator has opted in via
-      # LEGACY_AI_PIPELINE_ENABLED. Existing queued jobs and DB records
-      # are untouched.
-      return { queued: false, reason: "legacy_pipeline_disabled" } if Ai::LegacyPipelineConfig.disabled?
-
-      queued_at = Time.current
-      reservation = reserve_face_refresh_slot!(post: post, queued_at: queued_at)
-      return reservation unless reservation[:queued]
-
-      job = RefreshProfilePostFaceIdentityJob.perform_later(
-        instagram_account_id: @account.id,
-        instagram_profile_id: @profile.id,
-        instagram_profile_post_id: post.id,
-        trigger_source: "profile_history_build"
-      )
-      mark_history_build_metadata!(
-        post: post,
-        attributes: {
-          "face_refresh" => {
-            "status" => "queued",
-            "job_id" => job.job_id,
-            "queue_name" => job.queue_name,
-            "queued_at" => queued_at.iso8601(3),
-            "requested_by" => self.class.name
-          }
-        }
-      )
-
-      { queued: true, job_id: job.job_id, queue_name: job.queue_name }
-    rescue StandardError => e
-      mark_history_build_metadata!(
-        post: post,
-        attributes: {
-          "face_refresh" => {
-            "status" => "failed",
-            "failed_at" => Time.current.iso8601(3),
-            "error_class" => e.class.name,
-            "error_message" => e.message.to_s.byteslice(0, 220)
-          }
-        }
-      ) if reservation&.dig(:queued)
-
-      {
-        queued: false,
-        error_class: e.class.name,
-        error_message: e.message.to_s
-      }
+      # Phase 12 removed RefreshProfilePostFaceIdentityJob and the
+      # face identity pipeline behind it. This method stays as a
+      # public seam so callers on `build_history` don't branch, but
+      # it's a permanent no-op now.
+      { queued: false, reason: "face_pipeline_removed" }
     end
 
     def reserve_face_refresh_slot!(post:, queued_at:)

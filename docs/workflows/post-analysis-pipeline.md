@@ -11,12 +11,16 @@ Primary code surfaces:
 - `DownloadInstagramProfilePostMediaJob`
 - `AnalyzeInstagramProfilePostJob`
 - `ProcessPostVisualAnalysisJob`
-- `ProcessPostFaceAnalysisJob`
-- `ProcessPostOcrAnalysisJob`
-- `ProcessPostVideoAnalysisJob`
 - `ProcessPostMetadataTaggingJob`
 - `FinalizePostAnalysisPipelineJob`
 - `Ai::PostAnalysisPipelineState`
+
+> **Phase 12 note:** The `ProcessPostFaceAnalysisJob`,
+> `ProcessPostOcrAnalysisJob`, and `ProcessPostVideoAnalysisJob` step
+> jobs were deleted once the NVIDIA VLM path in `Ai::Runner` subsumed
+> their output. The pipeline now runs a single visual step plus a
+> metadata tagging step. The historical face / OCR / video step
+> documentation below is kept for audit-log readers.
 
 ## 1) Media Download and Queue Gate
 

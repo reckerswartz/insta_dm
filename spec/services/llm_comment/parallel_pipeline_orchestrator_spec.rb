@@ -20,7 +20,6 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     event = create_story_event
     generation_job = instance_double(ActiveJob::Base, job_id: "generation-job-1", queue_name: "ai_llm_comment_queue")
 
-    allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
     allow(GenerateStoryCommentFromPipelineJob).to receive(:perform_later).and_return(generation_job)
     allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later)
 
@@ -37,7 +36,6 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     expect(result[:generation_job_id]).to eq("generation-job-1")
     expect(result[:finalizer_job_id]).to be_nil
 
-    expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
     expect(GenerateStoryCommentFromPipelineJob).to have_received(:perform_later).once
     expect(FinalizeStoryCommentPipelineJob).not_to have_received(:perform_later)
 
@@ -46,7 +44,6 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     expect(pipeline["run_id"]).to eq(result[:run_id])
     expect(pipeline["status"]).to eq("running")
     expect(result[:stage_jobs_requested]).to eq([])
-    expect(pipeline.dig("steps", "face_recognition", "status")).to eq("pending")
   end
 
   it "reuses the active pipeline run when one is already running" do
@@ -94,7 +91,6 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     )
 
     generation_job = instance_double(ActiveJob::Base, job_id: "generation-resume-1", queue_name: "ai_llm_comment_queue")
-    allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
     allow(GenerateStoryCommentFromPipelineJob).to receive(:perform_later).and_return(generation_job)
     allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later)
 
@@ -113,7 +109,6 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     expect(result[:generation_job_id]).to eq("generation-resume-1")
     expect(GenerateStoryCommentFromPipelineJob).to have_received(:perform_later).once
     expect(FinalizeStoryCommentPipelineJob).not_to have_received(:perform_later)
-    expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
   end
 
   it "skips stage job enqueue entirely when all analysis steps are already complete" do
@@ -130,7 +125,6 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
       }
     )
 
-    allow(ProcessStoryCommentFaceJob).to receive(:perform_later)
     generation_job = instance_double(ActiveJob::Base, job_id: "generation-only-1", queue_name: "ai_llm_comment_queue")
     allow(GenerateStoryCommentFromPipelineJob).to receive(:perform_later).and_return(generation_job)
     allow(FinalizeStoryCommentPipelineJob).to receive(:perform_later)
@@ -148,6 +142,5 @@ RSpec.describe LlmComment::ParallelPipelineOrchestrator do
     expect(result[:generation_job_id]).to eq("generation-only-1")
     expect(GenerateStoryCommentFromPipelineJob).to have_received(:perform_later).once
     expect(FinalizeStoryCommentPipelineJob).not_to have_received(:perform_later)
-    expect(ProcessStoryCommentFaceJob).not_to have_received(:perform_later)
   end
 end

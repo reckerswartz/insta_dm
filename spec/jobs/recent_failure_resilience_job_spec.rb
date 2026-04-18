@@ -33,14 +33,6 @@ RSpec.describe "RecentFailureResilienceJobTest" do
     end.not_to raise_error
   end
 
-  it "skips story processing when the story no longer exists" do
-    expect(StoryProcessingService).not_to receive(:new)
-
-    expect do
-      StoryProcessingJob.perform_now(instagram_story_id: 99_999_999)
-    end.not_to raise_error
-  end
-
   it "falls back to split profile fetch + messageability when combined client method is unavailable" do
     account = InstagramAccount.create!(username: "acct_#{SecureRandom.hex(4)}")
     profile = account.instagram_profiles.create!(username: "profile_#{SecureRandom.hex(4)}", display_name: "Before")

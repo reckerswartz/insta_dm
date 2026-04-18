@@ -32,12 +32,11 @@ RSpec.describe Ops::AiServiceQueueRegistry do
     expect(AnalyzeInstagramProfilePostJob.queue_name).to eq("ai_pipeline_orchestration_queue")
     expect(FinalizePostAnalysisPipelineJob.queue_name).to eq("ai_pipeline_orchestration_queue")
     expect(ProcessPostVisualAnalysisJob.queue_name).to eq("ai_visual_queue")
-    expect(ProcessPostFaceAnalysisJob.queue_name).to eq("ai_face_queue")
-    expect(ProcessPostOcrAnalysisJob.queue_name).to eq("ai_ocr_queue")
-    expect(ProcessPostVideoAnalysisJob.queue_name).to eq("video_processing_queue")
     expect(ProcessPostMetadataTaggingJob.queue_name).to eq("ai_metadata_queue")
-    expect(RefreshProfilePostFaceIdentityJob.queue_name).to eq("ai_face_refresh_queue")
     expect(WorkspaceProcessActionsTodoPostJob.queue_name).to eq("workspace_actions_queue")
+    # face_analysis_secondary is kept as a placeholder lane after Phase 12
+    # so AiServiceQueueMetrics snapshots still find the key; no jobs route
+    # to it any more.
     expect(described_class.queue_name_for(:face_analysis_secondary)).to eq("ai_face_secondary_queue")
   end
 
@@ -119,17 +118,13 @@ RSpec.describe Ops::AiServiceQueueRegistry do
     end
 
     it "keeps deprecated lanes (face/OCR/video) at 1 even with NVIDIA enabled" do
-      Ai::ProviderRegistry.ensure_settings!
-      AiProviderSetting.for_provider("nvidia")
-                       .for_role("text_quality").first!
-                       .update!(enabled: true, api_key: "nvapi-test")
-      described_class.reset_nvidia_tier_cache!
-
-      %w[face_analysis face_refresh ocr_analysis video_analysis].each do |key|
-        s = described_class.service_for(key)
-        expect(described_class.concurrency_for(service: s)).to eq(1),
-          "expected #{key} to stay at 1 under NVIDIA tier (Phase 4.5 soft-deprecated it)"
-      end
+      # Phase 12 deleted the face_analysis / face_refresh / ocr_analysis
+      # / video_analysis lanes outright. The only survivor is the
+      # placeholder `face_analysis_secondary` key which we keep so
+      # queue-metrics snapshots from earlier deploys don't raise -- it
+      # has `job_classes: []` and nothing routes to it.
+      s = described_class.service_for("face_analysis_secondary")
+      expect(described_class.concurrency_for(service: s)).to eq(1)
     end
 
     it "defines bumped values for every active AI lane" do

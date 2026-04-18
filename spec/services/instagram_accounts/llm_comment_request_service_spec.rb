@@ -197,43 +197,6 @@ RSpec.describe InstagramAccounts::LlmCommentRequestService do
     expect(result.payload[:llm_last_stage]).to include("stage" => "llm_generation")
   end
 
-  it "includes pipeline step timing in status responses when available" do
-    event = create_story_event(
-      profile: profile,
-      llm_comment_status: "running",
-      llm_comment_metadata: {
-        "parallel_pipeline" => {
-          "run_id" => "run-42",
-          "status" => "running",
-          "created_at" => 2.minutes.ago.iso8601,
-          "steps" => {
-            "face_recognition" => {
-              "status" => "completed",
-              "queue_wait_ms" => 1200,
-              "run_duration_ms" => 3400,
-              "total_duration_ms" => 4600,
-              "attempts" => 1
-            }
-          }
-        }
-      }
-    )
-
-    result = described_class.new(
-      account: account,
-      event_id: event.id,
-      provider: "local",
-      model: nil,
-      status_only: true,
-      queue_inspector: queue_inspector
-    ).call
-
-    expect(result.status).to eq(:accepted)
-    expect(result.payload[:llm_pipeline_step_rollup]).to be_a(Hash)
-    expect(result.payload[:llm_pipeline_step_rollup]["face_recognition"]).to include(status: "completed", total_duration_ms: 4600)
-    expect(result.payload[:llm_pipeline_timing]).to include(run_id: "run-42", status: "running")
-  end
-
   it "queues generation job when no comment exists and status_only is false" do
     event = create_story_event(profile: profile, llm_comment_status: "failed")
     job = instance_double(ActiveJob::Base, job_id: "job-123")
