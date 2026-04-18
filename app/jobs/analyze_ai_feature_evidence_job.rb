@@ -3,8 +3,23 @@
 class AnalyzeAiFeatureEvidenceJob < ApplicationJob
   queue_as :maintenance
 
-  def perform(days: nil)
-    resolved_days = (days || ENV.fetch("AI_FEATURE_EVIDENCE_DAYS", "14")).to_i
+  # Accept both positional-hash and keyword-arg forms. Sidekiq-cron serialises
+  # `args: [{ days: 14 }]` through ActiveJob without `_aj_symbol_keys`, which
+  # lands as a positional Hash rather than kwargs under Ruby ≥ 3.0 kwarg
+  # separation rules. Without this shim the job retries forever with
+  # `ArgumentError: wrong number of arguments (given 1, expected 0)`.
+  def perform(opts_or_days = nil, days: nil)
+    days_input =
+      case opts_or_days
+      when Hash
+        opts_or_days[:days] || opts_or_days["days"] || days
+      when Numeric, String
+        opts_or_days
+      else
+        days
+      end
+
+    resolved_days = (days_input || ENV.fetch("AI_FEATURE_EVIDENCE_DAYS", "14")).to_i
     report = Ops::AiFeatureEvidenceService.new(days: resolved_days).call
 
     Ops::StructuredLogger.info(

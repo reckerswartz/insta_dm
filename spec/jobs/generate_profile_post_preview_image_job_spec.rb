@@ -40,4 +40,31 @@ RSpec.describe "GenerateProfilePostPreviewImageJobTest" do
     assert_equal "active_storage_preview_job", post.metadata["preview_image_source"]
     assert post.metadata["preview_image_attached_at"].present?
   end
+
+  it "discards the job when ActiveStorage has no previewer for the blob (was retrying forever before Phase 13)" do
+    account = InstagramAccount.create!(username: "preview_discard_acct_#{SecureRandom.hex(3)}")
+    profile = account.instagram_profiles.create!(username: "preview_discard_profile_#{SecureRandom.hex(3)}")
+    post = profile.instagram_profile_posts.create!(
+      instagram_account: account,
+      shortcode: "preview_discard_shortcode_#{SecureRandom.hex(3)}",
+      source_media_url: "https://cdn.example.com/source.mp4",
+      metadata: { "media_type" => 2 }
+    )
+    post.media.attach(
+      io: StringIO.new("....ftypisom....video".b),
+      filename: "unpreviewable.mp4",
+      content_type: "video/mp4"
+    )
+    allow_any_instance_of(ActiveStorage::Blob)
+      .to receive(:preview)
+      .with(resize_to_limit: [ 640, 640 ])
+      .and_raise(ActiveStorage::UnpreviewableError, "No previewer found for blob with ID=#{post.media.blob.id} and content_type=video/mp4")
+
+    expect {
+      GenerateProfilePostPreviewImageJob.perform_now(instagram_profile_post_id: post.id)
+    }.not_to raise_error
+
+    post.reload
+    expect(post.preview_image.attached?).to eq(false)
+  end
 end

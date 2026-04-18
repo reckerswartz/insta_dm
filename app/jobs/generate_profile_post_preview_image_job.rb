@@ -1,6 +1,19 @@
 class GenerateProfilePostPreviewImageJob < ApplicationJob
   queue_as :frame_generation
 
+  # `UnpreviewableError` is raised when no previewer is registered for the
+  # blob's content_type (e.g. video/mp4 without an ffmpeg previewer). It is a
+  # terminal condition — retrying will not register a previewer — so we
+  # discard rather than loop indefinitely in the retry set.
+  # See docs/audits/phase13/FINDINGS.md#F-admin-failures-I3.
+  discard_on ActiveStorage::UnpreviewableError do |job, error|
+    Rails.logger.warn(
+      "[GenerateProfilePostPreviewImageJob] discarded unpreviewable blob " \
+      "(post_id=#{job.arguments.first&.dig(:instagram_profile_post_id)}): " \
+      "#{error.class}: #{error.message}"
+    )
+  end
+
   retry_on ActiveStorage::PreviewError, wait: :polynomially_longer, attempts: 3
   retry_on StandardError, wait: 10.seconds, attempts: 2
 
