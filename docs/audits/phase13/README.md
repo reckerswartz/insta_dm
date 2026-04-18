@@ -51,14 +51,28 @@ emitted from per-page files. Status moves `open → fixed | follow-up | accepted
 
 | Phase | Note file | State |
 |---|---|---|
-| 1 — UI exploration | `phase-notes/01-exploration.md` | pending |
-| 2 — Interaction coverage | `phase-notes/02-interactions.md` | pending |
-| 3 — Background jobs | `phase-notes/03-jobs.md` | pending |
-| 4 — LLM integration | `phase-notes/04-llm.md` | pending |
-| 5 — Data / storage | `phase-notes/05-data.md` | pending |
-| 6 — Gap analysis | `FINDINGS.md` | pending |
-| 7 — Implementation | commits on `feat/phase13-application-audit` | pending |
-| 8 — Reporting & iteration | this README + `screenshots/after/` | pending |
+| 1 — UI exploration | `phase-notes/01-exploration.md` | complete (15 pages + overlays) |
+| 2 — Interaction coverage | `phase-notes/02-interactions.md` | complete (destructive actions inventoried only) |
+| 3 — Background jobs | `phase-notes/03-jobs.md` | complete — purge rake verified, 30 stale payloads dropped |
+| 4 — LLM integration | `phase-notes/04-llm.md` | complete — NVIDIA `test_service` round-trip 200 OK in 647 ms |
+| 5 — Data / storage | `phase-notes/05-data.md` | complete (Sidekiq retry/dead/scheduled snapshots + `BackgroundJobFailure` counts) |
+| 6 — Gap analysis | `FINDINGS.md` | complete |
+| 7 — Implementation | commits on `feat/phase13-application-audit` | 5 commits (see below) |
+| 8 — Reporting & iteration | this README + `FINDINGS.md` status matrix + `screenshots/after/` | complete |
+
+## Phase 7 commit trail
+
+| Commit | Summary |
+|---|---|
+| `5eb65c6` | Scaffold audit (README, FINDINGS, pages, phase-notes) |
+| `a1876f2` | Fix `F-overlays-I2` — add `public/favicon.ico` to kill dev-log 404 noise |
+| `1276601` | Fix `F-story-people-show-C1` + `F-post-show-C1` — `ApplicationController#rescue_from ActiveRecord::RecordNotFound` → styled 404 |
+| `98db273` | Fix `F-dashboard-C1` + `F-admin-background-jobs-C1` — `Ops::OrphanedJobClassMiddleware` + `rake jobs:purge_unresolvable` + `excluding_deprovisioned` scope |
+| `1eb8e42` | Fix `F-admin-ai-provider-I1` — remove dead "Local provider (legacy)" view block |
+
+Status matrix: 4 of 5 Critical findings fixed in this branch (1 deferred
+to Phase 14); 3 Improvement findings fixed; 25+ Improvement/Optional
+findings tagged `follow-up` for a Phase 14 UX polish sweep.
 
 ## Operator notes
 
