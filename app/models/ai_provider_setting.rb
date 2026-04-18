@@ -1,8 +1,10 @@
 class AiProviderSetting < ApplicationRecord
-  SUPPORTED_PROVIDERS = %w[local nvidia].freeze
+  SUPPORTED_PROVIDERS = %w[nvidia].freeze
 
-  # Roles are only used by multi-role providers (nvidia). Legacy single-role
-  # providers (local) leave role = nil.
+  # Role values that the NVIDIA provider's router understands. Every
+  # supported provider after the Phase 9 cleanup is role-aware; a future
+  # single-role provider would introduce a new constant rather than
+  # branching on nil.
   ROLES = %w[text_fast text_quality vision_primary vision_fallback embedding].freeze
 
   MULTI_ROLE_PROVIDERS = %w[nvidia].freeze
@@ -45,7 +47,6 @@ class AiProviderSetting < ApplicationRecord
 
     base =
       case provider
-      when "local"  then "Local AI Microservice"
       when "nvidia" then "NVIDIA Build"
       else provider.to_s.humanize
       end
@@ -57,7 +58,7 @@ class AiProviderSetting < ApplicationRecord
     return api_key.to_s if api_key.to_s.present?
 
     # Fall back to Rails credentials for providers that have a canonical
-    # shared key (e.g. nvidia). Per-role keys in the DB always win.
+    # shared key (nvidia). Per-role keys in the DB always win.
     case provider
     when "nvidia" then Rails.application.credentials.dig(:nvidia, :api_key).to_s
     else ""
@@ -96,3 +97,4 @@ class AiProviderSetting < ApplicationRecord
     end
   end
 end
+

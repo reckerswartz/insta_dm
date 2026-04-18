@@ -16,7 +16,7 @@ RSpec.describe Ai::Runner, type: :service do
   end
 
   describe "#analyze! routing" do
-    it "tries NVIDIA before LocalProvider and short-circuits when NVIDIA succeeds" do
+    it "invokes NVIDIA and records a successful AiAnalysis when it returns a result" do
       nvidia_provider = instance_double(Ai::Providers::NvidiaProvider,
                                         key: "nvidia",
                                         display_name: "NVIDIA Build (Text Quality)",
@@ -26,24 +26,9 @@ RSpec.describe Ai::Runner, type: :service do
       allow(nvidia_provider).to receive(:supports_post_image?).and_return(true)
       allow(nvidia_provider).to receive(:supports_post_video?).and_return(true)
 
-      local_provider = instance_double(Ai::Providers::LocalProvider,
-                                       key: "local",
-                                       display_name: "Local AI Microservice",
-                                       preferred_model: "local-rules",
-                                       available?: true)
-      allow(local_provider).to receive(:supports_profile?).and_return(true)
-      allow(local_provider).to receive(:supports_post_image?).and_return(true)
-      allow(local_provider).to receive(:supports_post_video?).and_return(true)
-
-      allow(Ai::ProviderRegistry).to receive(:build_provider) do |key, setting: nil|
-        case key
-        when "nvidia" then nvidia_provider
-        when "local"  then local_provider
-        end
-      end
+      allow(Ai::ProviderRegistry).to receive(:build_provider).with("nvidia", setting: anything).and_return(nvidia_provider)
 
       expect(nvidia_provider).to receive(:analyze_profile!).and_return(minimal_profile_result)
-      expect(local_provider).not_to receive(:analyze_profile!)
 
       result = described_class.new(account: account).analyze!(
         purpose: "profile",
@@ -56,7 +41,10 @@ RSpec.describe Ai::Runner, type: :service do
       expect(AiAnalysis.last.status).to eq("succeeded")
     end
 
-    it "falls back to LocalProvider when NVIDIA raises" do
+    it "marks the analysis failed and raises when NVIDIA is the only enabled provider and it errors" do
+      # Phase 9 deleted LocalProvider so there is no longer a fallback
+      # candidate. The runner must surface the NVIDIA error to the caller
+      # instead of silently returning a cached/fallback payload.
       nvidia_provider = instance_double(Ai::Providers::NvidiaProvider,
                                         key: "nvidia",
                                         display_name: "NVIDIA Build",
@@ -66,34 +54,18 @@ RSpec.describe Ai::Runner, type: :service do
       allow(nvidia_provider).to receive(:supports_post_image?).and_return(true)
       allow(nvidia_provider).to receive(:supports_post_video?).and_return(true)
 
-      local_provider = instance_double(Ai::Providers::LocalProvider,
-                                       key: "local",
-                                       display_name: "Local AI Microservice",
-                                       preferred_model: "local-rules",
-                                       available?: true)
-      allow(local_provider).to receive(:supports_profile?).and_return(true)
-      allow(local_provider).to receive(:supports_post_image?).and_return(true)
-      allow(local_provider).to receive(:supports_post_video?).and_return(true)
-
-      allow(Ai::ProviderRegistry).to receive(:build_provider) do |key, setting: nil|
-        case key
-        when "nvidia" then nvidia_provider
-        when "local"  then local_provider
-        end
-      end
-
+      allow(Ai::ProviderRegistry).to receive(:build_provider).with("nvidia", setting: anything).and_return(nvidia_provider)
       allow(nvidia_provider).to receive(:analyze_profile!).and_raise("NVIDIA down")
-      expect(local_provider).to receive(:analyze_profile!).and_return(minimal_profile_result)
 
-      result = described_class.new(account: account).analyze!(
-        purpose: "profile",
-        analyzable: profile,
-        payload: { bio: "hi", can_message: true }
-      )
+      expect do
+        described_class.new(account: account).analyze!(
+          purpose: "profile",
+          analyzable: profile,
+          payload: { bio: "hi", can_message: true }
+        )
+      end.to raise_error(/All enabled AI providers failed.*NVIDIA down/)
 
-      expect(result[:provider]).to eq(local_provider)
       expect(AiAnalysis.where(provider: "nvidia").last.status).to eq("failed")
-      expect(AiAnalysis.where(provider: "local").last.status).to eq("succeeded")
     end
   end
 
