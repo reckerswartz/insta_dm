@@ -1,4 +1,5 @@
 require "rails_helper"
+require "playwright"
 
 RSpec.describe Instagram::Browser::SeleniumApiShim do
   # Build a fake Page/Context/Locator/Keyboard so we don't need a real
@@ -145,6 +146,20 @@ RSpec.describe Instagram::Browser::SeleniumApiShim do
       expect(el.displayed?).to be(true)
 
       expect(calls).to include(:click, [:attr, "disabled"], [:attr, "data-x"])
+    end
+
+    it "#click translates Playwright errors into their Selenium equivalents" do
+      locator = fake_locator(click: ->(**_) { raise Playwright::TimeoutError.new(message: "Timeout 5000ms exceeded.") })
+      el = described_class::WebElement.new(locator: locator, page: fake_page)
+
+      expect { el.click }.to raise_error(Selenium::WebDriver::Error::TimeoutError)
+    end
+
+    it "#click translates 'intercepts pointer events' into ElementClickInterceptedError" do
+      locator = fake_locator(click: ->(**_) { raise Playwright::Error.new(message: "click intercepted by overlay") })
+      el = described_class::WebElement.new(locator: locator, page: fake_page)
+
+      expect { el.click }.to raise_error(Selenium::WebDriver::Error::ElementClickInterceptedError)
     end
 
     it "#send_keys on a Symbol calls page.keyboard.press with a mapped key name" do

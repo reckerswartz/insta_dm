@@ -99,6 +99,32 @@ module Instagram
         ActionChain.new(@page)
       end
 
+      # Runs `block` and re-raises Playwright errors as the closest
+      # Selenium equivalents. This keeps existing rescue clauses in the
+      # facade (rescue Selenium::WebDriver::Error::TimeoutError, ...) working
+      # after the shim swap. Unknown Playwright errors pass through as-is.
+      def self.translate_playwright_error
+        yield
+      rescue Playwright::TimeoutError => e
+        raise Selenium::WebDriver::Error::TimeoutError, e.message
+      rescue Playwright::Error => e
+        msg = e.message.to_s.downcase
+        case msg
+        when /element is not visible/, /is not attached to the dom/, /element was hidden/
+          raise Selenium::WebDriver::Error::StaleElementReferenceError, e.message
+        when /no element found/, /no elements match/, /strict mode violation/
+          raise Selenium::WebDriver::Error::NoSuchElementError, e.message
+        when /click intercepted/, /intercepts pointer events/
+          raise Selenium::WebDriver::Error::ElementClickInterceptedError, e.message
+        when /element is disabled/, /is not editable/, /element is not enabled/
+          raise Selenium::WebDriver::Error::InvalidElementStateError, e.message
+        when /element is not receiving pointer events/, /is outside of the viewport/
+          raise Selenium::WebDriver::Error::ElementNotInteractableError, e.message
+        else
+          raise
+        end
+      end
+
       # ---- JavaScript execution ------------------------------------------
 
       # Selenium: execute_script("return arguments[0] + arguments[1]", a, b)
@@ -109,7 +135,9 @@ module Instagram
       # Selenium-era scripts work unchanged.
       def execute_script(script, *args)
         wrapped = "(arguments) => {\n#{script}\n}"
-        @page.evaluate(wrapped, arg: normalize_script_args(args))
+        self.class.translate_playwright_error do
+          @page.evaluate(wrapped, arg: normalize_script_args(args))
+        end
       end
 
       # Selenium supports execute_async_script: the script receives a
@@ -213,22 +241,24 @@ module Instagram
         end
 
         def click
-          @__locator.click(timeout: 5_000)
-          true
-        rescue StandardError
-          false
+          SeleniumApiShim.translate_playwright_error do
+            @__locator.click(timeout: 5_000)
+            true
+          end
         end
 
         def send_keys(*keys)
-          keys.flatten.each do |key|
-            case key
-            when Symbol
-              @page.keyboard.press(symbol_to_key(key))
-            else
-              @__locator.type(key.to_s)
+          SeleniumApiShim.translate_playwright_error do
+            keys.flatten.each do |key|
+              case key
+              when Symbol
+                @page.keyboard.press(symbol_to_key(key))
+              else
+                @__locator.type(key.to_s)
+              end
             end
+            true
           end
-          true
         end
 
         def text
