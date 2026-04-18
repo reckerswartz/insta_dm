@@ -1,23 +1,60 @@
 module Instagram
   class Client
+    # Facade entry point into browser automation. Dispatches to either the
+    # legacy Selenium path or the Phase 3 Playwright path based on
+    # Instagram::Browser::Config.playwright?.
+    #
+    # Playwright mode:
+    #   * Uses Instagram::Browser::AccountContext -> one persistent context
+    #     per InstagramAccount on disk at storage/browser_sessions/<id>/.
+    #   * The yielded "driver" is a Playwright::Page (with PageInstrumentation
+    #     attached by AccountContext#with_page) rather than a Selenium driver.
+    #   * apply_session_bundle! / persist_session_bundle! go through
+    #     Instagram::Browser::SessionExporter for DB <-> storage_state sync.
+    #   * manual_login! opens a non-headless page and polls for the
+    #     sessionid cookie just like before.
+    #
+    # Selenium mode (unchanged): Selenium::WebDriver.for(:chrome, ...).
     module BrowserAutomation
-      def with_authenticated_driver
+      def with_authenticated_driver(&block)
+        if Instagram::Browser::Config.playwright?
+          with_authenticated_driver_playwright(&block)
+        else
+          with_authenticated_driver_selenium(&block)
+        end
+      end
+
+      def with_driver(headless: env_headless?, &block)
+        if Instagram::Browser::Config.playwright?
+          with_driver_playwright(headless: headless, &block)
+        else
+          with_driver_selenium(headless: headless, &block)
+        end
+      end
+
+      def env_headless?
+        Rails.application.config.x.instagram.headless == true
+      end
+
+      # --- Selenium implementations (legacy; removed in Phase 5) -----------
+
+      def with_authenticated_driver_selenium
         if @account.cookies.blank?
           raise AuthenticationRequiredError, "No stored cookies. Use manual login or import cookies first."
         end
 
-        with_driver do |driver|
-          apply_session_bundle!(driver)
+        with_driver_selenium do |driver|
+          apply_session_bundle_selenium!(driver)
           driver.navigate.to("#{INSTAGRAM_BASE_URL}/")
-          ensure_authenticated!(driver)
+          ensure_authenticated_selenium!(driver)
 
           result = yield(driver)
-          refresh_account_snapshot!(driver)
+          refresh_account_snapshot_selenium!(driver)
           result
         end
       end
 
-      def with_driver(headless: env_headless?)
+      def with_driver_selenium(headless: env_headless?)
         driver = Selenium::WebDriver.for(:chrome, options: chrome_options(headless: headless))
         yield(driver)
       ensure
@@ -53,11 +90,7 @@ module Instagram
         options
       end
 
-      def env_headless?
-        Rails.application.config.x.instagram.headless == true
-      end
-
-      def wait_for_manual_login!(driver:, timeout_seconds:)
+      def wait_for_manual_login_selenium!(driver:, timeout_seconds:)
         timeout_at = Time.now + timeout_seconds
 
         loop do
@@ -70,18 +103,18 @@ module Instagram
         end
       end
 
-      def persist_cookies!(driver)
+      def persist_cookies_selenium!(driver)
         @account.cookies = driver.manage.all_cookies.map { |cookie| cookie.transform_keys(&:to_s) }
       end
 
-      def persist_session_bundle!(driver)
+      def persist_session_bundle_selenium!(driver)
         # Capture after successful 2FA and redirect to authenticated session.
         @account.user_agent = safe_driver_value(driver) { driver.execute_script("return navigator.userAgent") }
 
-        persist_cookies!(driver)
+        persist_cookies_selenium!(driver)
         @account.local_storage = read_web_storage(driver, "localStorage")
         @account.session_storage = read_web_storage(driver, "sessionStorage")
-        ig_app_id = detect_ig_app_id(driver)
+        ig_app_id = detect_ig_app_id_selenium(driver)
 
         @account.auth_snapshot = {
           captured_at: Time.current.utc.iso8601(3),
@@ -95,43 +128,24 @@ module Instagram
         }
       end
 
-      def refresh_account_snapshot!(driver)
-        persist_session_bundle!(driver)
+      def refresh_account_snapshot_selenium!(driver)
+        persist_session_bundle_selenium!(driver)
         @account.save! if @account.changed?
       rescue StandardError => e
         Rails.logger.warn("Instagram snapshot refresh skipped: #{e.class}: #{e.message}")
       end
 
-      def apply_session_bundle!(driver)
+      def apply_session_bundle_selenium!(driver)
         # Need a base navigation first so Chrome is on the correct domain for cookies + storage.
         driver.navigate.to(INSTAGRAM_BASE_URL)
 
-        apply_cookies!(driver)
+        apply_cookies_selenium!(driver)
         write_web_storage(driver, "localStorage", @account.local_storage)
         write_web_storage(driver, "sessionStorage", @account.session_storage)
       end
 
-      def detect_ig_app_id(driver)
-        script = <<~JS
-          const candidates = []
-          const push = (value) => {
-            if (value === null || typeof value === "undefined") return
-            const text = String(value)
-            const match = text.match(/\\d{8,}/)
-            if (match) candidates.push(match[0])
-          }
-
-          try { push(document.documentElement?.getAttribute("data-app-id")) } catch (e) {}
-          try { push(window._sharedData?.config?.app_id) } catch (e) {}
-          try { push(window.__initialData?.config?.app_id) } catch (e) {}
-          try { push(window.localStorage?.getItem("ig_app_id")) } catch (e) {}
-          try { push(window.localStorage?.getItem("app_id")) } catch (e) {}
-          try { push(window.sessionStorage?.getItem("ig_app_id")) } catch (e) {}
-
-          return candidates[0] || null
-        JS
-
-        detected = safe_driver_value(driver) { driver.execute_script(script) }.to_s.strip
+      def detect_ig_app_id_selenium(driver)
+        detected = safe_driver_value(driver) { driver.execute_script(ig_app_id_probe_script) }.to_s.strip
         return detected if detected.present?
 
         @account.auth_snapshot.dig("ig_app_id").to_s.presence || "936619743392459"
@@ -139,7 +153,7 @@ module Instagram
         @account.auth_snapshot.dig("ig_app_id").to_s.presence || "936619743392459"
       end
 
-      def apply_cookies!(driver)
+      def apply_cookies_selenium!(driver)
         driver.navigate.to(INSTAGRAM_BASE_URL)
 
         @account.cookies.each do |cookie|
@@ -174,7 +188,7 @@ module Instagram
         end
       end
 
-      def ensure_authenticated!(driver)
+      def ensure_authenticated_selenium!(driver)
         with_task_capture(driver: driver, task_name: "auth_validate_session") do
           wait_for(driver, css: "body", timeout: 10)
 
@@ -188,6 +202,147 @@ module Instagram
         end
       end
 
+      # --- Playwright implementations (Phase 3 port) -----------------------
+
+      def with_driver_playwright(headless: env_headless?, &block)
+        account_context = Instagram::Browser::AccountContext.new(account: @account, headless: headless)
+        account_context.with_page do |page, _context|
+          block.call(page)
+        end
+      end
+
+      def with_authenticated_driver_playwright
+        has_on_disk_profile = Instagram::Browser::AccountContext.new(account: @account).exists_on_disk?
+        if !has_on_disk_profile && @account.cookies.blank?
+          raise Instagram::AuthenticationRequiredError, "No stored cookies and no persistent browser profile. Use manual login or import cookies first."
+        end
+
+        Instagram::Browser::AccountContext.new(account: @account).with_context do |context|
+          page = context.pages.first || context.new_page
+          Instagram::Browser::PageInstrumentation.attach!(page)
+
+          # If the on-disk profile is empty but the DB has cookies, seed
+          # the context from the DB bundle so the first Playwright-mode
+          # run works without a manual_login!.
+          apply_session_bundle_playwright!(context) if !has_on_disk_profile && @account.cookies.present?
+
+          page.goto("#{INSTAGRAM_BASE_URL}/")
+          ensure_authenticated_playwright!(page)
+
+          result = yield(page)
+          refresh_account_snapshot_playwright!(page, context)
+          result
+        end
+      end
+
+      def apply_session_bundle_playwright!(context)
+        state = Instagram::Browser::SessionExporter.new(account: @account).storage_state
+        cookies = state[:cookies].to_a
+        context.add_cookies(cookies) if cookies.any?
+
+        # localStorage can only be written once the page is on the origin.
+        # Navigate to each origin and replay its entries via page.evaluate.
+        state[:origins].each do |origin_entry|
+          origin = origin_entry[:origin].to_s
+          entries = origin_entry[:localStorage].to_a
+          next if origin.blank? || entries.empty?
+
+          page = context.pages.first || context.new_page
+          page.goto(origin)
+          write_web_storage_playwright(page, "localStorage", entries.map { |e| { key: e[:name], value: e[:value] } })
+        end
+      rescue StandardError => e
+        Rails.logger.warn("Instagram apply_session_bundle_playwright skipped: #{e.class}: #{e.message}")
+      end
+
+      def wait_for_manual_login_playwright!(context:, timeout_seconds:)
+        timeout_at = Time.now + timeout_seconds
+
+        loop do
+          cookie_names = context.cookies.map { |c| (c[:name] || c["name"]).to_s }
+          return if cookie_names.include?("sessionid")
+
+          raise "Timed out waiting for manual Instagram login" if Time.now > timeout_at
+
+          sleep(1)
+        end
+      end
+
+      def persist_session_bundle_playwright!(page, context)
+        exporter = Instagram::Browser::SessionExporter.new(account: @account)
+        exporter.export!(context)
+
+        # Extra metadata beyond what SessionExporter writes: page-derived
+        # user agent + ig_app_id probe + auth_snapshot timestamps.
+        @account.user_agent =
+          safe_driver_value(page) { page.evaluate("() => navigator.userAgent") } || @account.user_agent
+        ig_app_id = detect_ig_app_id_playwright(page)
+
+        snapshot = (@account.auth_snapshot || {}).merge(
+          "captured_at" => Time.current.utc.iso8601(3),
+          "current_url" => safe_driver_value(page) { page.url },
+          "page_title" => safe_driver_value(page) { page.title },
+          "ig_app_id" => ig_app_id,
+          "sessionid_present" => @account.cookies.any? { |c| c["name"].to_s == "sessionid" && c["value"].to_s.present? },
+          "cookie_names" => @account.cookies.map { |c| c["name"] }.compact.uniq.sort,
+          "local_storage_keys" => @account.local_storage.map { |e| e["key"] || e[:key] }.compact.uniq.sort
+        )
+        @account.auth_snapshot = snapshot
+      end
+
+      def refresh_account_snapshot_playwright!(page, context)
+        persist_session_bundle_playwright!(page, context)
+        @account.save! if @account.changed?
+      rescue StandardError => e
+        Rails.logger.warn("Instagram snapshot refresh skipped: #{e.class}: #{e.message}")
+      end
+
+      def detect_ig_app_id_playwright(page)
+        detected = safe_driver_value(page) { page.evaluate(ig_app_id_probe_script) }.to_s.strip
+        return detected if detected.present?
+
+        @account.auth_snapshot.dig("ig_app_id").to_s.presence || "936619743392459"
+      rescue StandardError
+        @account.auth_snapshot.dig("ig_app_id").to_s.presence || "936619743392459"
+      end
+
+      def ensure_authenticated_playwright!(page)
+        with_task_capture(driver: page, task_name: "auth_validate_session") do
+          wait_for(page, css: "body", timeout: 10)
+
+          page.goto("#{INSTAGRAM_BASE_URL}/direct/inbox/")
+          wait_for(page, css: "body", timeout: 10)
+
+          if page.url.to_s.include?("/accounts/login") || logged_out_page?(page)
+            raise Instagram::AuthenticationRequiredError, "Stored cookies are not authenticated. Re-run Manual Browser Login or import fresh cookies."
+          end
+        end
+      end
+
+      # --- Shared probes (used by both paths via dispatch above) ----------
+
+      def ig_app_id_probe_script
+        <<~JS
+          () => {
+            const candidates = []
+            const push = (value) => {
+              if (value === null || typeof value === "undefined") return
+              const text = String(value)
+              const match = text.match(/\\d{8,}/)
+              if (match) candidates.push(match[0])
+            }
+
+            try { push(document.documentElement?.getAttribute("data-app-id")) } catch (e) {}
+            try { push(window._sharedData?.config?.app_id) } catch (e) {}
+            try { push(window.__initialData?.config?.app_id) } catch (e) {}
+            try { push(window.localStorage?.getItem("ig_app_id")) } catch (e) {}
+            try { push(window.localStorage?.getItem("app_id")) } catch (e) {}
+            try { push(window.sessionStorage?.getItem("ig_app_id")) } catch (e) {}
+
+            return candidates[0] || null
+          }
+        JS
+      end
     end
   end
 end

@@ -43,15 +43,41 @@ module Instagram
     end
 
     def manual_login!(timeout_seconds: 180)
-      with_driver(headless: false) do |driver|
-        driver.navigate.to("#{INSTAGRAM_BASE_URL}/accounts/login/")
-        wait_for_manual_login!(driver: driver, timeout_seconds: timeout_seconds)
+      if Instagram::Browser::Config.playwright?
+        manual_login_playwright!(timeout_seconds: timeout_seconds)
+      else
+        manual_login_selenium!(timeout_seconds: timeout_seconds)
+      end
+    end
 
-        persist_session_bundle!(driver)
+    private
+
+    def manual_login_selenium!(timeout_seconds:)
+      with_driver_selenium(headless: false) do |driver|
+        driver.navigate.to("#{INSTAGRAM_BASE_URL}/accounts/login/")
+        wait_for_manual_login_selenium!(driver: driver, timeout_seconds: timeout_seconds)
+
+        persist_session_bundle_selenium!(driver)
         @account.login_state = "authenticated"
         @account.save!
       end
     end
+
+    def manual_login_playwright!(timeout_seconds:)
+      account_context = Instagram::Browser::AccountContext.new(account: @account, headless: false)
+      account_context.with_context do |context|
+        page = context.pages.first || context.new_page
+        Instagram::Browser::PageInstrumentation.attach!(page)
+        page.goto("#{INSTAGRAM_BASE_URL}/accounts/login/")
+        wait_for_manual_login_playwright!(context: context, timeout_seconds: timeout_seconds)
+
+        persist_session_bundle_playwright!(page, context)
+        @account.login_state = "authenticated"
+        @account.save!
+      end
+    end
+
+    public
 
     def validate_session!
       SessionValidationService.new(
