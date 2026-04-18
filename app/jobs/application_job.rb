@@ -353,6 +353,7 @@ class ApplicationJob < ActiveJob::Base
       "Errno::ECONNRESET",
       "Errno::ECONNREFUSED",
       "Selenium::WebDriver::Error::TimeoutError",
+      "Playwright::TimeoutError",
       "Timeout::Error",
       "ActiveRecord::ConnectionTimeoutError",
       "ActiveRecord::LockWaitTimeout",
