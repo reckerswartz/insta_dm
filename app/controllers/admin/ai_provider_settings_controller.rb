@@ -4,7 +4,6 @@ class Admin::AiProviderSettingsController < Admin::BaseController
 
   def index
     @nvidia_rows = AiProviderSetting.for_provider("nvidia").order(:role)
-    @local_rows  = AiProviderSetting.for_provider("local").order(:id)
     @credential_key_present = Rails.application.credentials.dig(:nvidia, :api_key).to_s.present?
   end
 

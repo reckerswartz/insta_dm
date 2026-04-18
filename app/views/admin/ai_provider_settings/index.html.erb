@@ -76,23 +76,4 @@
       </tbody>
     </table>
   </section>
-
-  <section class="card">
-    <h2>Local provider (legacy)</h2>
-    <p class="meta">These rows are scheduled for soft-deprecation in Phase 4 of the NVIDIA migration.</p>
-    <table class="table">
-      <thead>
-        <tr><th>Provider</th><th>Enabled</th><th>Priority</th></tr>
-      </thead>
-      <tbody>
-        <% @local_rows.each do |row| %>
-          <tr>
-            <td><%= row.provider %></td>
-            <td><%= row.enabled ? "yes" : "no" %></td>
-            <td><%= row.priority %></td>
-          </tr>
-        <% end %>
-      </tbody>
-    </table>
-  </section>
 </div>
