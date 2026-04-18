@@ -91,6 +91,34 @@ class ApplicationJob < ActiveJob::Base
         instagram_profile_post_id: context[:instagram_profile_post_id]
       }
     )
+    # Persist a non-retryable BackgroundJobFailure row so the deleted-record
+    # pattern is visible on /admin/background_jobs/failures instead of only
+    # existing in the Ops::StructuredLogger stream. Implements Phase 13
+    # finding F-admin-failures-I3.
+    begin
+      BackgroundJobFailure.create!(
+        job_class: job.class.name,
+        queue_name: job.queue_name,
+        failure_kind: "deleted_record",
+        retryable: false,
+        error_class: error.class.name,
+        error_message: error.message.to_s.first(2_000),
+        active_job_id: job.job_id,
+        arguments_json: job.arguments.to_json,
+        occurred_at: Time.current,
+        instagram_account_id: context[:instagram_account_id],
+        instagram_profile_id: context[:instagram_profile_id],
+        metadata: {
+          captured_by: "ApplicationJob#discard_on(ActiveRecord::RecordNotFound)",
+          discard_reason: "record_not_found"
+        }
+      )
+    rescue StandardError => record_error
+      Rails.logger.warn(
+        "[jobs.deleted_record] failed to record BackgroundJobFailure for " \
+        "#{job.class.name}: #{record_error.class}: #{record_error.message}"
+      )
+    end
   end
 
   around_perform do |job, block|

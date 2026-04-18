@@ -4,7 +4,14 @@ class BackgroundJobFailure < ApplicationRecord
   # deleted job class). `Ops::OrphanedJobClassMiddleware` emits these rows with
   # `retryable: false` so they can be excluded from the dashboard's live
   # counters. See `docs/audits/phase13/FINDINGS.md#F-admin-background-jobs-C1`.
-  FAILURE_KINDS = %w[authentication transient runtime deprovisioned_class].freeze
+  #
+  # `deleted_record` captures jobs whose arguments reference an
+  # ActiveRecord that has since been deleted. `ApplicationJob`'s
+  # `discard_on ActiveRecord::RecordNotFound` emits these rows so operators
+  # can see the pattern on /admin/background_jobs/failures without the job
+  # looping through retries. See
+  # `docs/audits/phase13/FINDINGS.md#F-admin-failures-I3`.
+  FAILURE_KINDS = %w[authentication transient runtime deprovisioned_class deleted_record].freeze
 
   belongs_to :instagram_account, optional: true
   belongs_to :instagram_profile, optional: true
@@ -30,8 +37,12 @@ class BackgroundJobFailure < ApplicationRecord
     failure_kind == "deprovisioned_class"
   end
 
+  def deleted_record_failure?
+    failure_kind == "deleted_record"
+  end
+
   def retryable_now?
-    retryable? && !auth_failure? && !deprovisioned_class_failure?
+    retryable? && !auth_failure? && !deprovisioned_class_failure? && !deleted_record_failure?
   end
 
   def retryable?
