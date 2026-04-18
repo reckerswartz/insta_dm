@@ -135,6 +135,7 @@ Use `docs/README.md` as the canonical entrypoint.
 - Operations and debugging:
   - `docs/operations/background-jobs-and-schedules.md`
   - `docs/operations/browser-sessions.md` (Phase 2 persistent profile layout)
+  - `docs/operations/playwright-mcp-sidecar.md` (Phase 7 operator MCP tool)
   - `docs/operations/debugging-playbook.md`
 - Query/lookups reference:
   - `docs/components/lookups-and-query-surfaces.md`
@@ -150,6 +151,7 @@ The repo went through a multi-phase migration in 2026-04:
 - **Phase 3:** Instagram::Client facade ported to Playwright (12 sub-steps) with a Selenium-API shim so the DOM-heavy modules kept working.
 - **Phase 4:** AI callers repointed to NVIDIA via the existing `Ai::Runner` + a new `Ai::ChatClientFactory`. Face/OCR/Whisper pipelines soft-deprecated behind `LEGACY_AI_PIPELINE_ENABLED`. Added `Ai::VlmPeopleSummaryService` as a VLM substitute for the face-identity stack.
 - **Phase 5:** Deleted `ai_microservice/`, `yolov8n.pt`, `bin/local_ai_services` + friends, `aws-sdk-rekognition`. `bin/dev` stopped preflighting the Python microservice by default.
+- **Phase 7:** Operator-facing `@playwright/mcp` sidecar (`Instagram::Browser::McpBridge` + `rake playwright:mcp:*`) for debug and AI-assistant sessions, sharing the same per-account profile dirs. Not wired into production jobs.
 
 See commit messages on `feat/playwright-nvidia-migration` for per-phase detail.
 
