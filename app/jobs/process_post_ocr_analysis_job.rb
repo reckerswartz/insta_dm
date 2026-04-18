@@ -36,6 +36,13 @@ class ProcessPostOcrAnalysisJob < PostAnalysisStepJob
   end
 
   def perform_step!(context:, pipeline_run_id:, options: {})
+    # Phase 4.5: legacy OCR pipeline (PaddleOCR via the Python microservice)
+    # is soft-deprecated in favour of VLM-driven OCR from NvidiaProvider's
+    # analyze_post! call. Keep running the step so the pipeline state
+    # machine completes, but skip the actual microservice work unless
+    # LEGACY_AI_PIPELINE_ENABLED is set.
+    return Ai::LegacyPipelineConfig.skip_result(step: step_key) if Ai::LegacyPipelineConfig.disabled?
+
     account = context[:account]
     post = context[:post]
 

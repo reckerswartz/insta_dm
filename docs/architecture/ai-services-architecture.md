@@ -1,6 +1,14 @@
 # AI Services Architecture
 
-Last updated: 2026-02-20
+Last updated: 2026-02-20 (migrated to NVIDIA Build in 2026-04; see `nvidia-provider.md`)
+
+> **Post-Phase-4 summary.** NVIDIA Build is the primary AI provider. The
+> legacy `Ai::LocalMicroserviceClient` + `Ai::OllamaClient` stack is
+> retained as a Runner fallback (`LocalProvider`) but the Python
+> microservice it depends on was removed from the repo in Phase 5. The
+> service map and flow diagrams below still describe the legacy path;
+> `docs/architecture/nvidia-provider.md` is the canonical reference for
+> the active path.
 
 This document covers the AI service layer: how analysis runs are orchestrated, which providers are called, how results are cached and materialized, and how comment generation is gated.
 

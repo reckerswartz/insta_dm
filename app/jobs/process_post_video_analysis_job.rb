@@ -36,6 +36,14 @@ class ProcessPostVideoAnalysisJob < PostAnalysisStepJob
   end
 
   def perform_step!(context:, pipeline_run_id:, options: {})
+    # Phase 4.5: legacy video pipeline (ffmpeg keyframes + Whisper
+    # transcript + local vision understanding) is soft-deprecated. Video
+    # posts are now analysed via NvidiaProvider#analyze_post! with
+    # sampled keyframes sent to the vision_primary model. Keep the
+    # pipeline step running so state-machine bookkeeping is honest, but
+    # skip the heavy local work unless LEGACY_AI_PIPELINE_ENABLED is set.
+    return Ai::LegacyPipelineConfig.skip_result(step: step_key) if Ai::LegacyPipelineConfig.disabled?
+
     profile = context[:profile]
     post = context[:post]
 

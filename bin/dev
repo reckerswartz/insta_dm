@@ -55,11 +55,15 @@ def bool_env(value, default: false)
 end
 
 def local_ai_mode
-  raw = ENV.fetch("START_LOCAL_AI", "auto").to_s.strip.downcase
+  # Phase 5 of the NVIDIA migration flips the default from "auto" to
+  # "disabled": the legacy Python microservice and Ollama are not
+  # required to start the app. Operators who still want to run them
+  # locally can opt in with START_LOCAL_AI=true.
+  raw = ENV.fetch("START_LOCAL_AI", "disabled").to_s.strip.downcase
   return "enabled" if %w[1 true yes on].include?(raw)
-  return "disabled" if %w[0 false no off].include?(raw)
+  return "auto" if raw == "auto"
 
-  "auto"
+  "disabled"
 end
 
 def local_ai_required?
@@ -67,6 +71,8 @@ def local_ai_required?
   return false if mode == "disabled"
   return true if mode == "enabled"
 
+  # "auto" retains the original semantics: follow USE_LOCAL_AI_MICROSERVICE,
+  # which itself defaults to false post-migration.
   bool_env(ENV.fetch("USE_LOCAL_AI_MICROSERVICE", "false"), default: false)
 end
 

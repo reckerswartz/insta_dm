@@ -1,7 +1,12 @@
 class SyncFollowGraphJob < ApplicationJob
   queue_as :sync
 
+  # Browser automation can throw transient DOM/navigation errors. Both
+  # drivers are covered: the Selenium-on-Playwright shim re-raises as
+  # Selenium classes, but we also accept raw Playwright errors in case
+  # they escape the shim boundary.
   retry_on Selenium::WebDriver::Error::StaleElementReferenceError, wait: 3.seconds, attempts: 3
+  retry_on Playwright::TimeoutError, wait: 3.seconds, attempts: 3 if defined?(Playwright::TimeoutError)
 
   def perform(instagram_account_id:, sync_run_id:)
     account = InstagramAccount.find(instagram_account_id)

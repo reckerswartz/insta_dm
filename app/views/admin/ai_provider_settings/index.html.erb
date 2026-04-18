@@ -1,0 +1,98 @@
+<% content_for :title, "AI Provider Settings" %>
+
+<div class="page">
+  <header class="page-header page-toolbar">
+    <div class="page-toolbar-main">
+      <h1>AI Provider Settings</h1>
+      <p class="meta">
+        Configure the providers behind the Ai::ProviderRegistry. NVIDIA Build uses one row per semantic role (fast/quality/vision/embedding) so callers pick models via Ai::NvidiaModelRouter without redeploying.
+      </p>
+    </div>
+    <div class="page-toolbar-actions">
+      <%= link_to "AI Dashboard", ai_dashboard_index_path, class: "btn secondary" %>
+      <%= link_to "Jobs Dashboard", admin_background_jobs_path, class: "btn secondary" %>
+    </div>
+  </header>
+
+  <% if flash[:notice].present? %><div class="flash flash-notice"><%= flash[:notice] %></div><% end %>
+  <% if flash[:alert].present? %><div class="flash flash-alert"><%= flash[:alert] %></div><% end %>
+
+  <section class="card">
+    <h2>NVIDIA Build</h2>
+    <p class="meta">
+      <% if @credential_key_present %>
+        A shared API key is present in Rails credentials (<code>:nvidia :api_key</code>) and will be used for any row whose own <code>api_key</code> is blank.
+      <% else %>
+        <strong>No shared NVIDIA key is configured in Rails credentials.</strong>
+        Either set <code>bin/rails credentials:edit</code> <code>nvidia.api_key</code>, or paste a key per-row below.
+      <% end %>
+    </p>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Role</th>
+          <th>Enabled</th>
+          <th>Model</th>
+          <th>Base URL</th>
+          <th>API key</th>
+          <th>Priority</th>
+          <th>RPM</th>
+          <th>Timeout</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @nvidia_rows.each do |row| %>
+          <tr>
+            <%= form_with(model: row, url: admin_ai_provider_setting_path(row), method: :patch, local: true, html: { class: "inline-form" }) do |f| %>
+              <td><%= row.role %></td>
+              <td><%= f.check_box :enabled %></td>
+              <td><%= f.text_field :model, value: row.model, size: 48, placeholder: Ai::NvidiaModelRouter::DEFAULT_MODELS[row.role] %></td>
+              <td><%= f.text_field :base_url, value: row.base_url, size: 36, placeholder: "https://integrate.api.nvidia.com/v1" %></td>
+              <td>
+                <%= f.password_field :api_key,
+                      value: "",
+                      size: 18,
+                      autocomplete: "off",
+                      placeholder: row.api_key.to_s.present? ? "•••• (saved)" : (@credential_key_present ? "(uses credentials)" : "nvapi-...") %>
+              </td>
+              <td><%= f.number_field :priority, value: row.priority, min: 0, step: 1, style: "width: 4em;" %></td>
+              <td><%= f.number_field :rate_limit_rpm, value: row.rate_limit_rpm, min: 0, step: 1, style: "width: 5em;" %></td>
+              <td><%= f.number_field :request_timeout_seconds, value: row.request_timeout_seconds, min: 1, step: 1, style: "width: 5em;" %></td>
+              <td>
+                <%= f.submit "Save", class: "btn small" %>
+              </td>
+            <% end %>
+            <td>
+              <%= button_to "Test key",
+                    test_key_admin_ai_provider_setting_path(row),
+                    method: :post,
+                    class: "btn small secondary",
+                    form_class: "inline-form" %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Local provider (legacy)</h2>
+    <p class="meta">These rows are scheduled for soft-deprecation in Phase 4 of the NVIDIA migration.</p>
+    <table class="table">
+      <thead>
+        <tr><th>Provider</th><th>Enabled</th><th>Priority</th></tr>
+      </thead>
+      <tbody>
+        <% @local_rows.each do |row| %>
+          <tr>
+            <td><%= row.provider %></td>
+            <td><%= row.enabled ? "yes" : "no" %></td>
+            <td><%= row.priority %></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  </section>
+</div>

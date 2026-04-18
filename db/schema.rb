@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_02_25_121500) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_18_050437) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -134,14 +134,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_02_25_121500) do
 
   create_table "ai_provider_settings", force: :cascade do |t|
     t.text "api_key"
+    t.string "base_url"
     t.json "config"
     t.datetime "created_at", null: false
+    t.string "display_label"
     t.boolean "enabled", default: false, null: false
+    t.string "model"
     t.integer "priority", default: 100, null: false
     t.string "provider", null: false
+    t.integer "rate_limit_rpm"
+    t.integer "request_timeout_seconds"
+    t.string "role"
     t.datetime "updated_at", null: false
     t.index ["enabled", "priority"], name: "index_ai_provider_settings_on_enabled_and_priority"
-    t.index ["provider"], name: "index_ai_provider_settings_on_provider", unique: true
+    t.index ["provider", "role"], name: "index_ai_provider_settings_on_provider_and_role", unique: true
+    t.index ["role"], name: "index_ai_provider_settings_on_role"
   end
 
   create_table "app_issues", force: :cascade do |t|

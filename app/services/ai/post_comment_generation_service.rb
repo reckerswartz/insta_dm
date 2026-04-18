@@ -213,7 +213,7 @@ module Ai
     def comment_generator
       @comment_generator ||=
         Ai::LocalEngagementCommentGenerator.new(
-          ollama_client: Ai::OllamaClient.new,
+          ollama_client: Ai::ChatClientFactory.build,
           model: preferred_model
         )
     end

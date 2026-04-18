@@ -6,8 +6,15 @@ class SyncHomeStoryCarouselJob < ApplicationJob
 
   retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 3
   retry_on Errno::ECONNRESET, Errno::ECONNREFUSED, wait: :polynomially_longer, attempts: 3
+  # Browser-driver timeouts (both Selenium and Playwright). The Selenium-
+  # on-Playwright shim re-raises Playwright::TimeoutError as
+  # Selenium::WebDriver::Error::TimeoutError already, but we register
+  # both so raw Playwright errors that escape the shim boundary are also
+  # retried.
   selenium_timeout_error = "Selenium::WebDriver::Error::TimeoutError".safe_constantize
   retry_on selenium_timeout_error, wait: :polynomially_longer, attempts: 2 if selenium_timeout_error
+  playwright_timeout_error = "Playwright::TimeoutError".safe_constantize
+  retry_on playwright_timeout_error, wait: :polynomially_longer, attempts: 2 if playwright_timeout_error
 
   def perform(instagram_account_id:, story_limit: STORY_BATCH_LIMIT, auto_reply_only: false)
     lock_acquired = false

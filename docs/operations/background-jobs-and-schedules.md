@@ -28,22 +28,34 @@ Dedicated capsules (`config/initializers/sidekiq.rb`):
 
 ## Development Startup Guardrails
 
-- `bin/dev` validates local AI availability before worker startup when local AI is required.
-- Default mode is `START_LOCAL_AI=auto` with `USE_LOCAL_AI_MICROSERVICE=true`, so the dev supervisor will attempt `bin/local_ai_services start` and fail fast if health checks do not pass.
-- `bin/dev stop` / `bin/dev restart` only stop local AI services when they were started by that `bin/dev` session (ownership-safe shutdown).
+- `bin/dev` no longer preflights the legacy Python AI microservice. The
+  default `START_LOCAL_AI=disabled` skips that check entirely. Operators
+  who still run the microservice locally can opt in with
+  `START_LOCAL_AI=true bin/dev` (see Phase 5 migration notes in the
+  top-level README).
+- `bin/dev stop` / `bin/dev restart` only stop local AI services when
+  they were started by that `bin/dev` session (ownership-safe shutdown).
 
 ## Local Worker Capacity Baseline
 
-- Baseline Sidekiq concurrency defaults now target about **34 worker threads total** across the default pool and dedicated capsules.
-- This profile is tuned for a local machine with ~20+ CPU threads and ~16 GB RAM, while keeping headroom for Rails web, local AI microservice, and Ollama.
-- `bin/jobs` and the `worker` process in `Procfile.dev` now default `RAILS_MAX_THREADS=40` so Active Record pool capacity can keep pace with Sidekiq worker concurrency.
-- Override any lane with `SIDEKIQ_*_CONCURRENCY` env vars when your machine is smaller/larger.
+- Baseline Sidekiq concurrency defaults target about **34 worker threads
+  total** across the default pool and dedicated capsules when running
+  on the legacy Ollama path.
+- When NVIDIA Build is enabled, `Ops::AiServiceQueueRegistry` switches
+  to a bumped "nvidia" concurrency tier (visual / LLM-comment lanes
+  default to 8, analysis lanes to 4). See
+  `docs/architecture/nvidia-provider.md#concurrency-tier` for per-lane
+  values. Override any lane with `SIDEKIQ_*_CONCURRENCY`; values are
+  clamped against the active tier's min/max.
+- `bin/jobs` and the `worker` process in `Procfile.dev` default
+  `RAILS_MAX_THREADS=40` so Active Record pool capacity can keep pace
+  with Sidekiq worker concurrency.
 
 Useful checks:
 
-- `bin/dev health` for combined supervisor/web/local-AI readiness.
-- `bin/local_ai_services status` for AI-only health.
-- `bin/local_ai_services restart` to restart AI independently without restarting web workers.
+- `bin/dev health` for combined supervisor/web readiness.
+- `bin/rails ai:nvidia:test_key` for NVIDIA-side health.
+- `bin/rails ai:nvidia:smoke` for an end-to-end chat + embedding round-trip.
 
 ## Recurring Schedule Source
 

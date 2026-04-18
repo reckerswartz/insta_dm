@@ -2,6 +2,19 @@
 
 Last updated: 2026-02-20
 
+> **Status: deprecated (Phase 4.5 of the NVIDIA migration, 2026-04).** The
+> services below are soft-deprecated behind `LEGACY_AI_PIPELINE_ENABLED`.
+> Pipeline step jobs short-circuit to a "skipped" payload by default.
+> The underlying Ruby services, DB tables, and historical data are kept
+> for audit + rollback, but new work flows through
+> `Ai::VlmPeopleSummaryService` (VLM-based people description) and
+> NVIDIA vision_primary frames. See
+> `docs/architecture/nvidia-provider.md` for the replacement contract.
+> To re-enable this pipeline locally:
+> `LEGACY_AI_PIPELINE_ENABLED=true bin/dev`. Note that the Python
+> microservice the services below depend on (`ai_microservice/`) was
+> deleted in Phase 5 and must be re-stood-up externally.
+
 This document covers the face detection → embedding → matching → identity resolution pipeline, post-level face recognition, and all video processing services.
 
 ## Pipeline Overview

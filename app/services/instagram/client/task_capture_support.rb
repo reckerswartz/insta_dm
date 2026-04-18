@@ -1,5 +1,10 @@
 module Instagram
   class Client
+    # Writes HTML + screenshot + JSON metadata artifacts for every Instagram
+    # operation we want diagnosable. Works with either a Selenium driver
+    # or a Playwright page; console + performance logs are only captured
+    # on the Playwright path when Instagram::Browser::PageInstrumentation
+    # has been attached to the page (done by AccountContext at launch).
     module TaskCaptureSupport
       private
 
@@ -32,8 +37,10 @@ module Instagram
         json_path = root.join("#{base}.json")
         png_path = root.join("#{base}.png")
 
+        playwright = Instagram::Browser::Config.playwright_driver?(driver)
+
         html = begin
-          driver.page_source.to_s
+          playwright ? driver.content.to_s : driver.page_source.to_s
         rescue StandardError => e
           "<!-- unable to capture page_source: #{e.class}: #{e.message} -->"
         end
@@ -43,36 +50,23 @@ module Instagram
           task_name: task_name,
           status: status,
           account_username: @account.username,
-          current_url: safe_driver_value(driver) { driver.current_url },
+          current_url: safe_driver_value(driver) { playwright ? driver.url : driver.current_url },
           page_title: safe_driver_value(driver) { driver.title }
         }.merge(meta)
 
-        # Best-effort capture of browser console logs. Not all driver builds support this.
         logs =
-          safe_driver_value(driver) do
-            next nil unless driver.respond_to?(:logs)
-            types = driver.logs.available_types
-            next nil unless types.include?(:browser) || types.include?("browser")
-
-            driver.logs.get(:browser).map do |entry|
-              {
-                timestamp: entry.timestamp,
-                level: entry.level,
-                message: entry.message.to_s.byteslice(0, 2000)
-              }
-            end.last(200)
+          if playwright
+            capture_playwright_browser_logs(driver)
+          else
+            capture_selenium_browser_logs(driver)
           end
         metadata[:browser_console] = logs if logs.present?
 
         perf =
-          safe_driver_value(driver) do
-            next nil unless driver.respond_to?(:logs)
-            types = driver.logs.available_types
-            next nil unless types.include?(:performance) || types.include?("performance")
-
-            driver.logs.get(:performance).map do |entry|
-              { timestamp: entry.timestamp, message: entry.message.to_s.byteslice(0, 20_000) }
-            end.last(300)
+          if playwright
+            capture_playwright_performance_logs(driver)
+          else
+            capture_selenium_performance_logs(driver)
           end
         if perf.present?
           metadata[:performance_summary] = summarize_performance_logs(perf)
@@ -81,7 +75,11 @@ module Instagram
 
         # Screenshot helps catch transient toasts/overlays that aren't obvious from HTML.
         safe_driver_value(driver) do
-          driver.save_screenshot(png_path.to_s)
+          if playwright
+            driver.screenshot(path: png_path.to_s)
+          else
+            driver.save_screenshot(png_path.to_s)
+          end
           true
         end
         metadata[:screenshot] = png_path.to_s if File.exist?(png_path)
@@ -161,6 +159,60 @@ module Instagram
 
       def safe_driver_value(driver)
         yield
+      rescue StandardError
+        nil
+      end
+
+      # --- Selenium log extractors (legacy) --------------------------------
+
+      def capture_selenium_browser_logs(driver)
+        safe_driver_value(driver) do
+          next nil unless driver.respond_to?(:logs)
+          types = driver.logs.available_types
+          next nil unless types.include?(:browser) || types.include?("browser")
+
+          driver.logs.get(:browser).map do |entry|
+            {
+              timestamp: entry.timestamp,
+              level: entry.level,
+              message: entry.message.to_s.byteslice(0, 2000)
+            }
+          end.last(200)
+        end
+      end
+
+      def capture_selenium_performance_logs(driver)
+        safe_driver_value(driver) do
+          next nil unless driver.respond_to?(:logs)
+          types = driver.logs.available_types
+          next nil unless types.include?(:performance) || types.include?("performance")
+
+          driver.logs.get(:performance).map do |entry|
+            { timestamp: entry.timestamp, message: entry.message.to_s.byteslice(0, 20_000) }
+          end.last(300)
+        end
+      end
+
+      # --- Playwright log extractors (Phase 3 port) ------------------------
+
+      def capture_playwright_browser_logs(page)
+        instrumentation = page_instrumentation_for(page)
+        return nil unless instrumentation
+
+        instrumentation.selenium_shaped_browser_entries.last(200)
+      end
+
+      def capture_playwright_performance_logs(page)
+        instrumentation = page_instrumentation_for(page)
+        return nil unless instrumentation
+
+        instrumentation.selenium_shaped_performance_entries.last(300)
+      end
+
+      def page_instrumentation_for(page)
+        return nil unless page.respond_to?(:instrumentation)
+
+        page.instrumentation
       rescue StandardError
         nil
       end

@@ -37,6 +37,12 @@ class ProcessPostFaceAnalysisJob < PostAnalysisStepJob
   end
 
   def perform_step!(context:, pipeline_run_id:, options: {})
+    # Phase 4.5: legacy face pipeline is deprecated. The step still runs
+    # so the pipeline state machine sees it complete, but the actual
+    # face recognition / vector matching work is skipped unless an
+    # operator has explicitly opted in via LEGACY_AI_PIPELINE_ENABLED.
+    return Ai::LegacyPipelineConfig.skip_result(step: step_key) if Ai::LegacyPipelineConfig.disabled?
+
     PostFaceRecognitionService.new.process!(post: context[:post])
   end
 
