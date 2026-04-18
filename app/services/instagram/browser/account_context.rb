@@ -89,9 +89,13 @@ module Instagram
       end
 
       # Convenience: opens a context, yields the first (or a new) page.
+      # Instagram::Browser::PageInstrumentation is attached so downstream
+      # TaskCaptureSupport / detect_websocket_tls_issue have console +
+      # network logs available.
       def with_page(&block)
         with_context do |context|
           page = context.pages.first || context.new_page
+          Instagram::Browser::PageInstrumentation.attach!(page)
           yield page, context
         end
       end

@@ -157,10 +157,24 @@ RSpec.describe Instagram::Client::CoreHelpers do
   end
 
   describe "#detect_websocket_tls_issue" do
-    it "returns { found: false, reason: 'tls_probe_unavailable_on_playwright' } on Playwright" do
+    it "returns the stub when a Playwright page has no instrumentation attached" do
       page = fake_playwright_page
       expect(client.send(:detect_websocket_tls_issue, page))
         .to include(found: false, reason: "tls_probe_unavailable_on_playwright")
+    end
+
+    it "consumes instrumentation console entries on the Playwright path and flags the IG WS TLS failure" do
+      instrumentation = double(
+        "PageInstrumentation",
+        selenium_shaped_browser_entries: [
+          { timestamp: 1, level: "SEVERE",
+            message: "gateway.instagram.com/ws/streamcontroller net::ERR_CERT_AUTHORITY_INVALID something" }
+        ]
+      )
+      page = fake_playwright_page(instrumentation: instrumentation)
+      result = client.send(:detect_websocket_tls_issue, page)
+      expect(result[:found]).to be(true)
+      expect(result[:reason]).to eq("ERR_CERT_AUTHORITY_INVALID")
     end
 
     it "returns { found: false } when the Selenium driver has no logs" do

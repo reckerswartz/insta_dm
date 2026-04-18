@@ -280,12 +280,23 @@ module Instagram
         true
       end
 
-      # Playwright has no equivalent of Selenium's driver.logs.get(:browser).
-      # TaskCaptureSupport (Phase 3 step 3) will wire up a per-context
-      # page.on("console") accumulator we can introspect here. Until that
-      # lands, the TLS-issue probe is a safe no-op on the Playwright path.
-      def detect_websocket_tls_issue_playwright(_page)
-        { found: false, reason: "tls_probe_unavailable_on_playwright" }
+      # Consumes console messages accumulated by
+      # Instagram::Browser::PageInstrumentation. Returns the same shape as
+      # the Selenium path so callers don't branch. If the page has no
+      # instrumentation attached we return a best-effort stub.
+      def detect_websocket_tls_issue_playwright(page)
+        instrumentation = page.respond_to?(:instrumentation) ? page.instrumentation : nil
+        return { found: false, reason: "tls_probe_unavailable_on_playwright" } unless instrumentation
+
+        messages = instrumentation.selenium_shaped_browser_entries.map { |e| e[:message].to_s }
+
+        bad = messages.find { |m| m.include?("gateway.instagram.com/ws/streamcontroller") && m.include?("ERR_CERT_AUTHORITY_INVALID") }
+        return { found: true, reason: "ERR_CERT_AUTHORITY_INVALID", message: bad.to_s.byteslice(0, 2000) } if bad
+
+        other = messages.find { |m| m.include?("ERR_CERT_AUTHORITY_INVALID") }
+        return { found: true, reason: "ERR_CERT_AUTHORITY_INVALID", message: other.to_s.byteslice(0, 2000) } if other
+
+        { found: false }
       rescue StandardError => e
         { found: false, error: "#{e.class}: #{e.message}" }
       end
