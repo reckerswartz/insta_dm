@@ -624,4 +624,69 @@ RSpec.describe "SyncInstagramProfileStoriesJobTest" do
       remove_method :__story_sync_test_original_new
     end
   end
+
+  describe "Phase 11 engagement gate (auto_reply=true)" do
+    # When auto_reply is off the engagement gate stays out of the way so
+    # operators can still keep the story archive fresh for pages they
+    # don't auto-reply to. When auto_reply is on, the gate refuses to
+    # scan pages / skip-tagged profiles before any network call is
+    # made. The client must not be invoked in that path.
+    it "skips the sync entirely when auto_reply is true and the profile looks like a page" do
+      account = InstagramAccount.create!(username: "engage_gate_#{SecureRandom.hex(4)}")
+      profile = account.instagram_profiles.create!(
+        username: "brand_#{SecureRandom.hex(4)}",
+        is_business: true,
+        followers_count: 80_000
+      )
+      never_called_client = Object.new
+      never_called_client.define_singleton_method(:fetch_profile_story_dataset!) do |**_kwargs|
+        raise "ProfileFetchingService should not be invoked for skipped profiles"
+      end
+
+      with_client_stub(never_called_client) do
+        SyncInstagramProfileStoriesJob.perform_now(
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          max_stories: 1,
+          auto_reply: true
+        )
+      end
+
+      last_log = profile.instagram_profile_action_logs.where(action: "auto_story_reply").order(id: :desc).first
+      expect(last_log.status).to eq("succeeded")
+      expect(last_log.metadata).to include("reason" => "profile_likely_page", "skipped" => true)
+    end
+
+    it "scans the profile normally when auto_reply is true and the profile is friend-tagged" do
+      account = InstagramAccount.create!(username: "engage_ok_#{SecureRandom.hex(4)}")
+      profile = account.instagram_profiles.create!(
+        username: "friend_#{SecureRandom.hex(4)}",
+        followers_count: 200
+      )
+      ProfileTag.find_or_create_by!(name: "friend").tap { |tag| profile.profile_tags << tag }
+
+      dataset = {
+        profile: { display_name: profile.username, profile_pic_url: nil, ig_user_id: nil, bio: nil, last_post_at: nil },
+        stories: []
+      }
+      client_stub = Object.new
+      client_stub.define_singleton_method(:fetch_profile_story_dataset!) { |**_kwargs| dataset }
+
+      with_client_stub(client_stub) do
+        SyncInstagramProfileStoriesJob.perform_now(
+          instagram_account_id: account.id,
+          instagram_profile_id: profile.id,
+          max_stories: 1,
+          auto_reply: true
+        )
+      end
+
+      last_log = profile.instagram_profile_action_logs.where(action: "auto_story_reply").order(id: :desc).first
+      metadata = last_log.metadata.is_a?(Hash) ? last_log.metadata : {}
+      # A skipped engagement-gate run writes a "reason" + "skipped: true"
+      # into the action log metadata. Normal runs leave those keys unset.
+      expect(metadata["skipped"]).to be_falsey
+      expect(metadata["reason"]).to be_blank
+    end
+  end
 end

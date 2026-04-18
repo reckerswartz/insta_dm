@@ -41,6 +41,34 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
       action_log.mark_succeeded!(log_text: "Skipped: automatic_reply tag not present", extra_metadata: { skipped: true, reason: "missing_automatic_reply_tag" })
       return
     end
+
+    # Phase 11 engagement gate: when auto_reply is on, bail out early
+    # for profiles flagged as pages (business/verified/high-follower)
+    # or explicitly skip-tagged by the operator. Sync-without-reply
+    # runs (auto_reply_enabled=false) skip the gate so the story
+    # archive stays usable for those profiles.
+    if auto_reply_enabled
+      eligibility = profile.engagement_eligibility
+      unless eligibility.eligible?
+        Ops::StructuredLogger.info(
+          event: "story_auto_reply.skipped_engagement_gate",
+          payload: {
+            instagram_account_id: account.id,
+            instagram_profile_id: profile.id,
+            profile_username: profile.username,
+            reason: eligibility.reason,
+            is_business: profile.is_business,
+            is_verified: profile.is_verified,
+            followers_count: profile.followers_count
+          }
+        )
+        action_log.mark_succeeded!(
+          log_text: "Skipped auto reply: #{eligibility.reason}",
+          extra_metadata: { skipped: true, reason: eligibility.reason }
+        )
+        return
+      end
+    end
     action_log.mark_running!(extra_metadata: {
       queue_name: queue_name,
       active_job_id: job_id,
@@ -404,13 +432,25 @@ class SyncInstagramProfileStoriesJob < ApplicationJob
   end
 
   def sync_profile_snapshot!(profile:, details:)
-    profile.update!(
+    attrs = {
       display_name: details[:display_name].presence || profile.display_name,
       profile_pic_url: details[:profile_pic_url].presence || profile.profile_pic_url,
       ig_user_id: details[:ig_user_id].presence || profile.ig_user_id,
       bio: details[:bio].presence || profile.bio,
       last_post_at: details[:last_post_at].presence || profile.last_post_at
-    )
+    }
+
+    # Phase 11: persist the page signals fetched by
+    # Instagram::Client::ProfileFetchingService so the engagement
+    # candidate filter has a stable read path. `nil` means "this fetch
+    # didn't report a value" -- preserve the existing DB flag in that
+    # case rather than clobbering it to false.
+    attrs[:is_business] = details[:is_business_account] unless details[:is_business_account].nil?
+    attrs[:is_verified] = details[:is_verified] unless details[:is_verified].nil?
+    attrs[:is_private] = details[:is_private] unless details[:is_private].nil?
+    attrs[:followers_count] = details[:followers_count] unless details[:followers_count].nil?
+
+    profile.update!(attrs)
     profile.recompute_last_active!
     profile.save!
   end

@@ -1,6 +1,27 @@
 class InstagramProfile < ApplicationRecord
   DM_AUTO_MODES = %w[draft_only autonomous].freeze
 
+  # Phase 11: engagement candidate filter thresholds. These are
+  # deliberately lenient; adjust via ENV to fit the operator's taste.
+  LIKELY_PAGE_FOLLOWER_THRESHOLD = ENV.fetch("LIKELY_PAGE_FOLLOWER_THRESHOLD", "10000").to_i
+
+  # Tag names that flag a profile as a "page / irrelevant content source"
+  # even when the is_business / is_verified signals aren't set. Mirrors
+  # the list in Workspace::ActionsTodoQueueService#engagement_eligible?
+  # so we have one canonical skip set.
+  PAGE_PROFILE_TAGS = %w[page brand business company publisher].freeze
+
+  # Tag names the operator uses to mark a profile as "friend-like",
+  # meaning the story-reply / comment-generation pipeline should
+  # prioritise it over neutral profiles. Derived from the existing
+  # Instagram::ProfileScanPolicy::PERSONAL_OVERRIDE_TAGS list so one
+  # set of tags drives both scan and engagement policies.
+  FRIEND_PROFILE_TAGS = %w[friend female_friend male_friend personal_user relative].freeze
+
+  # Explicit exclusion tag set by the operator (or the scan policy) to
+  # mean "never engage with this profile", regardless of other signals.
+  SKIP_PROFILE_TAGS = %w[profile_scan_excluded engagement_excluded].freeze
+
   belongs_to :instagram_account
   has_many :instagram_messages, dependent: :destroy
   has_many :instagram_profile_events, dependent: :destroy
@@ -74,6 +95,45 @@ class InstagramProfile < ApplicationRecord
     profile_tags.where(name: %w[automatic_reply automatic\ reply auto_reply auto\ reply]).exists?
   end
 
+  # Phase 11 engagement-candidate predicates.
+  # `likely_page?` returns true when the profile looks like a brand /
+  # news / celebrity account -- one of the three signals configured in
+  # Phase 11 (business, verified, follower count). Used by the story
+  # auto-reply + feed-comment pipelines to avoid engaging with accounts
+  # where a generated reply would be off-tone or spammy.
+  def likely_page?
+    is_business? || is_verified? || followers_count.to_i >= LIKELY_PAGE_FOLLOWER_THRESHOLD || page_tagged?
+  end
+
+  def friend_tagged?
+    _engagement_tag_names.any? { |name| FRIEND_PROFILE_TAGS.include?(name) }
+  end
+
+  def skip_tagged?
+    _engagement_tag_names.any? { |name| SKIP_PROFILE_TAGS.include?(name) }
+  end
+
+  def page_tagged?
+    _engagement_tag_names.any? { |name| PAGE_PROFILE_TAGS.include?(name) }
+  end
+
+  # Combined eligibility for autonomous engagement (story reply / feed
+  # comment). Returns a struct so callers can log the reason in addition
+  # to the boolean. `friend_tagged?` never overrides a skip/page gate --
+  # the operator's explicit skip tag wins over the friend tag.
+  EngagementEligibility = Struct.new(:eligible, :reason, :priority, keyword_init: true) do
+    def eligible?
+      eligible
+    end
+  end
+
+  def engagement_eligibility
+    return EngagementEligibility.new(eligible: false, reason: "profile_skip_tagged", priority: -1) if skip_tagged?
+    return EngagementEligibility.new(eligible: false, reason: "profile_likely_page", priority: -1) if likely_page?
+
+    EngagementEligibility.new(eligible: true, reason: nil, priority: friend_tagged? ? 1 : 0)
+  end
+
   def record_event!(kind:, external_id:, occurred_at: nil, metadata: {})
     eid = external_id.to_s.strip
     raise ArgumentError, "external_id is required for profile events" if eid.blank?
@@ -129,6 +189,17 @@ class InstagramProfile < ApplicationRecord
   end
 
   private
+
+  def _engagement_tag_names
+    @_engagement_tag_names ||=
+      if association(:profile_tags).loaded?
+        profile_tags.map { |tag| tag.name.to_s.strip.downcase }
+      else
+        profile_tags.pluck(:name).map { |value| value.to_s.strip.downcase }
+      end
+  rescue StandardError
+    []
+  end
 
   def broadcast_profiles_table_refresh
     Ops::LiveUpdateBroadcaster.broadcast!(

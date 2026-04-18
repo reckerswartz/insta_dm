@@ -506,10 +506,11 @@ module Workspace
       decision = cached_profile_decision(profile: profile)
       return false if ActiveModel::Type::Boolean.new.cast(decision[:skip_post_analysis])
 
-      tag_names = profile.profile_tags.map { |tag| tag.name.to_s.downcase }
-      return false if tag_names.any? { |name| %w[page brand business company publisher].include?(name) }
-
-      true
+      # Phase 11: delegate the "page / brand / skip-tagged" check to the
+      # canonical InstagramProfile#engagement_eligibility so the feed
+      # comment path, the story auto-reply path, and the admin UI all
+      # read the same signals.
+      profile.engagement_eligibility.eligible?
     rescue StandardError
       false
     end

@@ -123,6 +123,14 @@
     <h2>Sync & Workload</h2>
     <% capture_locked = feed_capture_enqueue_locked?(account: @account) %>
     <% next_allowed_at = feed_capture_next_allowed_at(account: @account) %>
+    <% network_profile_count = @account.instagram_profiles.where("following = ? OR follows_you = ?", true, true).count %>
+    <% if network_profile_count.zero? %>
+      <div class="runtime-note warning">
+        <strong>First-run hint:</strong>
+        No followed / follower profiles have been synced yet, so the story auto-reply pipeline has nothing to engage with.
+        Click <em>Sync Followers/Following</em> once to populate the local profile graph before expecting the auto-reply jobs to do anything.
+      </div>
+    <% end %>
 
     <div class="actions-row">
       <%= button_to "Sync Followers/Following (Background)", follow_graph_sync_path, method: :post %>

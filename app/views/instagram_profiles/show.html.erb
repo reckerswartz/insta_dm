@@ -168,6 +168,22 @@
               <span class="muted">none</span>
             <% end %>
           </p>
+          <% eligibility = @profile.engagement_eligibility %>
+          <p class="meta profile-meta-row engagement-policy-row">
+            Engagement policy:
+            <% if eligibility.eligible? %>
+              <strong class="pill engagement-pill-eligible">Eligible<%= " (friend priority)" if eligibility.priority.to_i.positive? %></strong>
+            <% else %>
+              <strong class="pill engagement-pill-skip">Skipped &mdash; <%= eligibility.reason.to_s.humanize %></strong>
+            <% end %>
+            <br />
+            <span class="muted">
+              Business: <%= @profile.is_business ? "yes" : "no" %>,
+              Verified: <%= @profile.is_verified ? "yes" : "no" %>,
+              Followers: <%= number_with_delimiter(@profile.followers_count.to_i) %>,
+              Friend-tagged: <%= @profile.friend_tagged? ? "yes" : "no" %>
+            </span>
+          </p>
         </div>
 
         <p class="meta profile-action-note">Actions below run as background jobs.</p>
