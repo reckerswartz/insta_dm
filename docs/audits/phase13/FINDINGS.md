@@ -37,11 +37,11 @@
 | `F-admin-background-jobs-I1` | 10 admin-background-jobs | Dashboard has no banner for the deprovisioned-class retry loop. | background jobs dashboard view | Banner + purge CTA | follow-up | — |
 | `F-admin-failures-I1` | 11 admin-failures | No summary tile row by failure_kind. | failures index view | Add tile row | follow-up | — |
 | `F-admin-failures-I2` | 11 admin-failures | Failure detail page doesn't group by fingerprint. | failure detail view | Related-failures block | follow-up | — |
-| `F-admin-failures-I3` | 11 admin-failures | Need `failure_kind=deleted_record` classification. | `ApplicationJob` around-hook | Classify + retryable=false | follow-up | — |
+| `F-admin-failures-I3` | 11 admin-failures | Need `failure_kind=deleted_record` classification. | `ApplicationJob` around-hook | Classify + retryable=false | **fixed** | `64b158c` |
 | `F-admin-issues-I1` | 12 admin-issues | No severity tile row. | issues index view | Add tile row | follow-up | — |
 | `F-admin-issues-I2` | 12 admin-issues | Issues don't link to matching failures by fingerprint. | issues payload builder | Include related_failure_count + link | follow-up | — |
 | `F-admin-storage-I1` | 13 admin-storage | No summary row (bytes, count by content-type). | storage index view | Add summary row | follow-up | — |
-| `F-admin-ai-provider-I1` | 14 admin-ai-provider | "Local provider (legacy)" section references a provider deleted in Phase 9. | ai provider settings view | Delete dead block | follow-up | — |
+| `F-admin-ai-provider-I1` | 14 admin-ai-provider | "Local provider (legacy)" section references a provider deleted in Phase 9. | ai provider settings view | Delete dead block | **fixed** | `1eb8e42` |
 | `F-admin-ai-provider-I2` | 14 admin-ai-provider | `Test key` button lacks a loading indicator. | ai provider settings view | Stimulus + spinner | follow-up | — |
 | `F-mission-control-I1` | 15 admin-mission-control | Always-empty queues in `config/sidekiq.yml`. | `config/sidekiq.yml` | Remove unused queues | follow-up | — |
 | `F-mission-control-I2` | 15 admin-mission-control | MC "Failed jobs (30)" vs app-level `BackgroundJobFailure=196` divergence not explained. | admin failures copy | Add clarifying line | follow-up | — |
@@ -95,3 +95,14 @@
   copy corrections (Build History references Phase-12-deleted face
   identity mapping), duplicate-metric collapse, Tabulator console
   errors, etc.
+tale sidekiq-cron entries (dropped `local_ai_health_check`) |
+| `1142ea1` | Fix the 2 jobs that were looping in the retry set forever (AnalyzeAiFeatureEvidenceJob kwargs, GenerateProfilePostPreviewImageJob `discard_on UnpreviewableError`) |
+| `64b158c` | Implement `F-admin-failures-I3` — persist `deleted_record` BackgroundJobFailure rows on `discard_on RecordNotFound` |
+| `ca55677` | Extend `rake jobs:purge_unresolvable` to sweep orphaned BackgroundJobExecutionMetric rows (one-shot dropped 301 rows: 299 CheckLocalAiHealthJob + 1 ProcessPostFaceAnalysisJob + 1 ProcessPostVideoAnalysisJob) |
+
+Final status: **4 of 5 Critical findings fixed** in this branch
+(`F-profiles-index-C1` still deferred); **4 Improvement findings
+fixed** (`F-overlays-I2`, `F-admin-ai-provider-I1`,
+`F-story-people-show-I1`, `F-admin-failures-I3`). Full regression
+sweep: 25 Phase-13 specs green; broader suite has 17 pre-existing
+failures matching `main` baseline (zero Phase-13 regressions).

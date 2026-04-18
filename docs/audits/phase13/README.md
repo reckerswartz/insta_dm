@@ -69,10 +69,18 @@ emitted from per-page files. Status moves `open → fixed | follow-up | accepted
 | `1276601` | Fix `F-story-people-show-C1` + `F-post-show-C1` — `ApplicationController#rescue_from ActiveRecord::RecordNotFound` → styled 404 |
 | `98db273` | Fix `F-dashboard-C1` + `F-admin-background-jobs-C1` — `Ops::OrphanedJobClassMiddleware` + `rake jobs:purge_unresolvable` + `excluding_deprovisioned` scope |
 | `1eb8e42` | Fix `F-admin-ai-provider-I1` — remove dead "Local provider (legacy)" view block |
+| `cb42381` | Post-merge: extend `jobs:purge_unresolvable` to also drop stale sidekiq-cron entries (dropped `local_ai_health_check`) |
+| `1142ea1` | Post-merge: fix the 2 jobs looping in the retry set (AnalyzeAiFeatureEvidenceJob kwargs, GenerateProfilePostPreviewImageJob `discard_on UnpreviewableError`) |
+| `64b158c` | Post-merge: fix `F-admin-failures-I3` — persist `deleted_record` BackgroundJobFailure rows on `discard_on RecordNotFound` |
+| `ca55677` | Post-merge: extend `jobs:purge_unresolvable` to sweep orphaned BackgroundJobExecutionMetric rows (one-shot dropped 301 rows) |
 
-Status matrix: 4 of 5 Critical findings fixed in this branch (1 deferred
-to Phase 14); 3 Improvement findings fixed; 25+ Improvement/Optional
-findings tagged `follow-up` for a Phase 14 UX polish sweep.
+Status matrix: **4 of 5 Critical findings fixed** in this branch
+(`F-profiles-index-C1` deferred); **4 Improvement findings fixed**
+(`F-overlays-I2`, `F-admin-ai-provider-I1`, `F-story-people-show-I1`,
+`F-admin-failures-I3`); 26+ Improvement/Optional findings tagged
+`follow-up` for a Phase 14 UX polish sweep. Broader suite runs with
+17 pre-existing failures (same as `main` baseline, zero regressions);
+25 Phase-13 specs 100% green.
 
 ## Operator notes
 
