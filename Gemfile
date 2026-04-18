@@ -43,6 +43,10 @@ gem "thruster", require: false
 gem "image_processing", "~> 1.2"
 gem "ruby-vips", "~> 2.2", require: false
 gem "selenium-webdriver", "~> 4.30"
+# Browser automation migration (Phase 2): replacing selenium-webdriver with
+# Playwright driving Chromium. Both gems coexist until Phase 3 ports the
+# Instagram::Client facade; selenium-webdriver is removed in Phase 5.
+gem "playwright-ruby-client", "~> 1.51"
 gem "aws-sdk-rekognition", require: false
 
 group :development, :test do
