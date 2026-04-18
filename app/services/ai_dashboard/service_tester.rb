@@ -1,7 +1,10 @@
 # frozen_string_literal: true
 
 module AiDashboard
-  # Service for testing local AI runtime endpoints.
+  # Service for poking the NVIDIA Build API from the admin dashboard.
+  # Phase 10 swapped the Ollama probe for a `list_models!` auth check
+  # against the operator's NVIDIA account so operators can verify the
+  # credential without enqueuing a full analysis.
   class ServiceTester
     def initialize(service_name:, test_type:)
       @service_name = service_name.to_s
@@ -10,10 +13,10 @@ module AiDashboard
 
     def call
       case @service_name
-      when "ollama"
-        test_ollama_service
+      when "nvidia"
+        test_nvidia_service
       else
-        { error: "Unknown service: #{@service_name}" }
+        { error: "Unknown service: #{@service_name}. Supported: nvidia." }
       end
     rescue StandardError => e
       { error: e.message }
@@ -21,7 +24,7 @@ module AiDashboard
 
     def self.test_all_services
       {
-        ollama: new(service_name: "ollama", test_type: "models").call
+        nvidia: new(service_name: "nvidia", test_type: "models").call
       }
     rescue StandardError => e
       { error: "Service testing failed: #{e.message}" }
@@ -29,41 +32,28 @@ module AiDashboard
 
     private
 
-    def test_ollama_service(test_type = @test_type)
-      case test_type
+    def test_nvidia_service
+      case @test_type
       when "", "models", "connection"
-        payload = Ai::OllamaClient.new.test_connection!
-        ok = extract_ok(payload)
-        return { success: false, error: payload_message(payload) } unless ok
+        return { success: false, error: "No enabled NVIDIA provider row." } unless Ai::ChatClientFactory.nvidia_available?
 
-        models = Array(payload_value(payload, :models))
-        default_model = payload_value(payload, :default_model).to_s
+        setting = AiProviderSetting.for_provider("nvidia").where(enabled: true).where.not(api_key: [nil, ""]).first
+        setting ||= AiProviderSetting.for_provider("nvidia").where(enabled: true).first
+
+        response = Ai::NvidiaClient.new(setting: setting).list_models!
+        models = Array(response["data"]).map { |row| row["id"].to_s }.reject(&:blank?)
 
         {
           success: true,
           result: {
             models: models,
-            default_model: default_model
+            default_model: setting.effective_model
           },
-          message: "Ollama reachable - #{models.length} model(s) available"
+          message: "NVIDIA Build reachable - #{models.length} model(s) available"
         }
       else
-        { error: "Unknown test type: #{test_type}" }
+        { error: "Unknown test type: #{@test_type}" }
       end
-    end
-
-    def extract_ok(payload)
-      ActiveModel::Type::Boolean.new.cast(payload_value(payload, :ok))
-    end
-
-    def payload_message(payload)
-      payload_value(payload, :message).to_s.presence || "Ollama unavailable"
-    end
-
-    def payload_value(payload, key)
-      return nil unless payload.is_a?(Hash)
-
-      payload[key] || payload[key.to_s]
     end
   end
 end

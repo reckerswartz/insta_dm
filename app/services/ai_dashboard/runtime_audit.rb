@@ -29,14 +29,6 @@ module AiDashboard
         port: 6379,
         process_pattern: "redis-server",
         impact: "Queue backend and short-lived cache coordination."
-      },
-      {
-        key: "ollama",
-        service_name: "Ollama",
-        required: true,
-        port: 11434,
-        process_pattern: "ollama serve",
-        impact: "Primary local LLM inference engine."
       }
     ].freeze
 
@@ -152,27 +144,19 @@ module AiDashboard
 
     def architecture_snapshot
       details = @service_status[:details].is_a?(Hash) ? @service_status[:details].deep_symbolize_keys : {}
-      ollama = details[:ollama].is_a?(Hash) ? details[:ollama] : {}
+      nvidia = details[:nvidia].is_a?(Hash) ? details[:nvidia] : {}
       policy = details[:policy].is_a?(Hash) ? details[:policy] : {}
 
-      available_models = normalize_string_array(ollama[:models])
-      configured_models = {
-        base: Ai::ModelDefaults.base_model,
-        fast: Ai::ModelDefaults.fast_model,
-        quality: Ai::ModelDefaults.quality_model,
-        comment: Ai::ModelDefaults.comment_model,
-        vision: Ai::ModelDefaults.vision_model
-      }.transform_values { |value| value.to_s.strip }
+      available_models = normalize_string_array(nvidia[:models])
+      configured_models = Ai::NvidiaModelRouter::DEFAULT_MODELS.transform_keys(&:to_sym).transform_values(&:to_s)
 
       {
         stack_status: @service_status[:status].to_s,
-        execution_mode: policy[:execution_mode].to_s.presence || "ollama_only",
-        ollama_ok: ActiveModel::Type::Boolean.new.cast(extract_ok(ollama)),
-        ollama_available_models: available_models,
+        execution_mode: policy[:execution_mode].to_s.presence || "nvidia_build",
+        nvidia_ok: ActiveModel::Type::Boolean.new.cast(extract_ok(nvidia)),
+        nvidia_available_models: available_models,
         configured_models: configured_models,
-        unused_ollama_models: available_models - configured_models.values,
         lightweight_controls: {
-          local_provider_lightweight_mode: env_boolean("LOCAL_PROVIDER_LIGHTWEIGHT_MODE", default: true),
           post_video_lightweight_mode: env_boolean("POST_VIDEO_LIGHTWEIGHT_MODE", default: true),
           skip_dynamic_vision_when_audio_present: env_boolean("POST_VIDEO_SKIP_DYNAMIC_VISION_WHEN_AUDIO_PRESENT", default: true),
           post_video_frame_sample_limit: env_integer("POST_VIDEO_VISION_FRAME_SAMPLE_LIMIT", default: 3),
@@ -185,7 +169,6 @@ module AiDashboard
       rows = []
       rows << secondary_face_queue_candidate(metrics_by_key: metrics_by_key)
       rows << deprecated_queue_config_candidate
-      rows << unused_models_candidate(architecture: architecture)
       rows.concat(host_service_candidates(host_services: host_services))
       rows.concat(idle_lane_candidates(concurrent_services: concurrent_services))
       rows.concat(high_failure_lane_candidates(concurrent_services: concurrent_services))
@@ -238,21 +221,6 @@ module AiDashboard
         recommended_action: @queue_backend == "sidekiq" ?
           "Remove or heavily trim `config/queue.yml`; Sidekiq queue topology is controlled via `config/sidekiq.yml` and `Ops::AiServiceQueueRegistry`." :
           "Keep only if Solid Queue is still used in this environment."
-      }
-    end
-
-    def unused_models_candidate(architecture:)
-      unused_models = normalize_string_array(architecture[:unused_ollama_models])
-      return nil if unused_models.empty?
-
-      commands = unused_models.first(3).map { |name| "ollama rm #{name}" }
-
-      {
-        id: "unused_ollama_models",
-        status: "safe_to_remove",
-        title: "Installed Ollama models not referenced by current defaults",
-        evidence: unused_models.join(", "),
-        recommended_action: "Remove unused models to save RAM/disk. Example: #{commands.join(' ; ')}"
       }
     end
 
