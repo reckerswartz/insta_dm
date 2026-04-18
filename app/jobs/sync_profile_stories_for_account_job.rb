@@ -37,7 +37,22 @@ class SyncProfileStoriesForAccountJob < ApplicationJob
       scope = scope.where(id: tagged_profiles)
     end
 
-    profiles = scope.limit(limit)
+    profiles = scope.limit(limit).to_a
+
+    # Phase 11: when an auto-reply run is requested, hoist friend-tagged
+    # profiles to the front of the batch so they get scanned first
+    # before the limit is reached. Non-auto-reply sync runs keep the
+    # staleness-first ordering above since they're just refreshing the
+    # archive, not generating replies.
+    if auto_reply
+      friend_ids = account.instagram_profiles
+        .joins(:profile_tags)
+        .where(profile_tags: { name: InstagramProfile::FRIEND_PROFILE_TAGS })
+        .where(id: profiles.map(&:id))
+        .pluck(:id)
+        .to_set
+      profiles = profiles.sort_by.with_index { |profile, i| [ friend_ids.include?(profile.id) ? 0 : 1, i ] } if friend_ids.any?
+    end
 
     profiles.each do |profile|
       action = auto_reply ? "auto_story_reply" : "sync_stories"

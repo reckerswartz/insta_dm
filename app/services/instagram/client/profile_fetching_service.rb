@@ -93,6 +93,8 @@ module Instagram
         followers_count = web_user.is_a?(Hash) ? normalize_count(web_user["follower_count"]) : nil
         category_name = web_user.is_a?(Hash) ? web_user["category_name"].to_s.strip.presence : nil
         is_business_account = web_user.is_a?(Hash) ? ActiveModel::Type::Boolean.new.cast(web_user["is_business_account"]) : nil
+        is_verified = web_user.is_a?(Hash) ? ActiveModel::Type::Boolean.new.cast(web_user["is_verified"]) : nil
+        is_private = web_user.is_a?(Hash) ? ActiveModel::Type::Boolean.new.cast(web_user["is_private"]) : nil
 
         post = extract_latest_post_from_profile_http(username, web_info: web_info, driver: driver)
         post = extract_latest_post_from_profile_dom(driver) if post[:taken_at].blank? && post[:shortcode].blank?
@@ -106,6 +108,8 @@ module Instagram
           followers_count: followers_count,
           category_name: category_name,
           is_business_account: is_business_account,
+          is_verified: is_verified,
+          is_private: is_private,
           last_post_at: post[:taken_at],
           latest_post_shortcode: post[:shortcode]
         }
@@ -132,6 +136,8 @@ module Instagram
         followers_count: normalize_count(user["follower_count"]),
         category_name: user["category_name"].to_s.strip.presence,
         is_business_account: ActiveModel::Type::Boolean.new.cast(user["is_business_account"]),
+        is_verified: ActiveModel::Type::Boolean.new.cast(user["is_verified"]),
+        is_private: ActiveModel::Type::Boolean.new.cast(user["is_private"]),
         last_post_at: latest[:taken_at],
         latest_post_shortcode: latest[:shortcode]
       }

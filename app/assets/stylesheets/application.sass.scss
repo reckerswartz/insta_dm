@@ -702,6 +702,18 @@ button.icon-only svg {
   color: #dbe8ff;
 }
 
+.engagement-pill-eligible {
+  border-color: rgba(112, 210, 162, 0.55);
+  background: rgba(55, 150, 107, 0.22);
+  color: #c8f0dc;
+}
+
+.engagement-pill-skip {
+  border-color: rgba(224, 148, 108, 0.55);
+  background: rgba(176, 96, 56, 0.22);
+  color: #f7d8bd;
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;

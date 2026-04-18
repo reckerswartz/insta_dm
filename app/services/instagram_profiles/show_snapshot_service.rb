@@ -1,6 +1,6 @@
 module InstagramProfiles
   class ShowSnapshotService
-    AVAILABLE_TAGS = %w[personal_user friend female_friend male_friend relative page excluded automatic_reply].freeze
+    AVAILABLE_TAGS = %w[personal_user friend female_friend male_friend relative page excluded engagement_excluded automatic_reply].freeze
 
     def initialize(account:, profile:, mutual_limit: 36)
       @account = account

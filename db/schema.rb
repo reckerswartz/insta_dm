@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_18_052227) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_18_055923) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -685,6 +685,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_18_052227) do
     t.boolean "follows_you", default: false, null: false
     t.string "ig_user_id"
     t.bigint "instagram_account_id", null: false
+    t.boolean "is_business", default: false, null: false
+    t.boolean "is_private", default: false, null: false
+    t.boolean "is_verified", default: false, null: false
     t.datetime "last_active_at"
     t.datetime "last_post_at"
     t.datetime "last_story_seen_at"
@@ -705,6 +708,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_18_052227) do
     t.index ["ig_user_id"], name: "index_instagram_profiles_on_ig_user_id"
     t.index ["instagram_account_id", "ai_last_analyzed_at"], name: "idx_instagram_profiles_account_last_analyzed"
     t.index ["instagram_account_id", "following", "follows_you"], name: "idx_on_instagram_account_id_following_follows_you_34f570e7b6"
+    t.index ["instagram_account_id", "is_business"], name: "idx_instagram_profiles_account_is_business"
+    t.index ["instagram_account_id", "is_verified"], name: "idx_instagram_profiles_account_is_verified"
     t.index ["instagram_account_id", "username"], name: "index_instagram_profiles_on_instagram_account_id_and_username", unique: true
     t.index ["instagram_account_id"], name: "index_instagram_profiles_on_instagram_account_id"
     t.index ["story_interaction_retry_after_at"], name: "index_instagram_profiles_on_story_interaction_retry_after_at"
