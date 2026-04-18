@@ -679,6 +679,12 @@ module Ai
     end
 
     def enqueue_face_refresh_for_post(post:)
+      # Phase 4.5: legacy face identity pipeline is soft-deprecated. Skip
+      # the enqueue unless an operator has opted in via
+      # LEGACY_AI_PIPELINE_ENABLED. Existing queued jobs and DB records
+      # are untouched.
+      return { queued: false, reason: "legacy_pipeline_disabled" } if Ai::LegacyPipelineConfig.disabled?
+
       queued_at = Time.current
       reservation = reserve_face_refresh_slot!(post: post, queued_at: queued_at)
       return reservation unless reservation[:queued]

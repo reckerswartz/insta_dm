@@ -115,6 +115,11 @@ RSpec.describe Ai::ProfileHistoryBuildService do
   end
 
   it "queues face refresh work instead of running full face analysis inline" do
+    # Phase 4.5 soft-deprecated the face-refresh enqueue. This spec
+    # exercises the legacy behaviour and opts back in explicitly.
+    allow(Ai::LegacyPipelineConfig).to receive(:disabled?).and_return(false)
+    allow(Ai::LegacyPipelineConfig).to receive(:enabled?).and_return(true)
+
     account, profile = build_account_profile
     post = profile.instagram_profile_posts.create!(
       instagram_account: account,

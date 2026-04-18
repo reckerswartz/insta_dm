@@ -8,6 +8,11 @@ RSpec.describe "ProcessPostVideoAnalysisJobTest" do
   before do
     clear_enqueued_jobs
     clear_performed_jobs
+    # Phase 4.5 soft-deprecated the legacy video extraction pipeline.
+    # These specs exercise the full local-pipeline behaviour, so we
+    # explicitly opt into it per-test via Ai::LegacyPipelineConfig.
+    allow(Ai::LegacyPipelineConfig).to receive(:disabled?).and_return(false)
+    allow(Ai::LegacyPipelineConfig).to receive(:enabled?).and_return(true)
     allow(Ops::ResourceGuard).to receive(:allow_ai_task?).and_return(
       {
         allow: true,
