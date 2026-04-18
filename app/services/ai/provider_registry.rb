@@ -63,20 +63,34 @@ module Ai
 
       private
 
+      # Seed-time defaults. NVIDIA rows auto-enable when the shared
+      # credential key is present -- in that case the operator has already
+      # opted in by configuring credentials, so we shouldn't make them
+      # re-enable rows manually. Without the key, nvidia stays dormant
+      # and the admin UI shows the row in a disabled state for opt-in.
       def default_enabled?(provider)
         case provider
-        when "local"  then true  # Local provider is always available if services are running
-        when "nvidia" then false # Disabled until keys/roles are configured via admin
+        when "local"  then true
+        when "nvidia" then nvidia_credential_key_present?
         else false
         end
       end
 
+      # Lower = tried first by Ai::Runner. NVIDIA now outranks the legacy
+      # local stack so the new provider is the primary path on any account
+      # with it enabled. Local remains as a fallback when NVIDIA errors.
       def default_priority(provider)
         case provider
-        when "local"  then 1  # Highest priority for local processing
         when "nvidia" then 2
+        when "local"  then 20
         else 100
         end
+      end
+
+      def nvidia_credential_key_present?
+        Rails.application.credentials.dig(:nvidia, :api_key).to_s.present?
+      rescue StandardError
+        false
       end
     end
   end

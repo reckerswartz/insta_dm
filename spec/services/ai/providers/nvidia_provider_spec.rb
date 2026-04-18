@@ -1,7 +1,14 @@
 require "rails_helper"
 
 RSpec.describe Ai::Providers::NvidiaProvider do
-  before { Ai::ProviderRegistry.ensure_settings! }
+  # Phase 4.2: nvidia rows auto-enable when a credential key is present.
+  # Force no-credentials so specs start with disabled rows and opt-in
+  # explicitly with enable_all_nvidia_rows_with_key!.
+  before do
+    allow(Rails.application.credentials).to receive(:dig).and_call_original
+    allow(Rails.application.credentials).to receive(:dig).with(:nvidia, :api_key).and_return(nil)
+    Ai::ProviderRegistry.ensure_settings!
+  end
 
   def enable_all_nvidia_rows_with_key!
     AiProviderSetting.for_provider("nvidia").each do |row|

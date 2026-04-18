@@ -52,5 +52,22 @@ namespace :ai do
                     .dig("data", 0, "embedding").to_a.length
       puts "#{dim}-dimensional vector"
     end
+
+    desc "Enable every nvidia role row (idempotent)"
+    task enable: :environment do
+      Ai::ProviderRegistry.ensure_settings!
+      count = AiProviderSetting.for_provider("nvidia").where(enabled: false).update_all(enabled: true)
+      puts "Enabled #{count} nvidia row(s)."
+      AiProviderSetting.for_provider("nvidia").order(:role).each do |row|
+        puts format("  %-16s enabled=%-5s priority=%-3s model=%s", row.role, row.enabled, row.priority, row.effective_model)
+      end
+    end
+
+    desc "Disable every nvidia role row (falls back to the legacy local provider)"
+    task disable: :environment do
+      Ai::ProviderRegistry.ensure_settings!
+      count = AiProviderSetting.for_provider("nvidia").where(enabled: true).update_all(enabled: false)
+      puts "Disabled #{count} nvidia row(s)."
+    end
   end
 end
