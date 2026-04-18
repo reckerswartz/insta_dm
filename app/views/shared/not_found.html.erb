@@ -1,0 +1,23 @@
+<% content_for :title, "Not found (404)" %>
+
+<section class="empty-state" role="region" aria-labelledby="not-found-heading">
+  <div class="empty-state-inner">
+    <h1 id="not-found-heading" class="empty-state-title"><%= @not_found_title || "We couldn't find that record" %></h1>
+    <p class="empty-state-body">
+      <%= @not_found_message || "The record you were looking for has been removed or never existed. Use the links below to get back to something useful." %>
+    </p>
+
+    <% if flash[:notice].blank? && @not_found_hint.present? %>
+      <p class="muted"><%= @not_found_hint %></p>
+    <% end %>
+
+    <div class="empty-state-actions">
+      <% if local_assigns.fetch(:not_found_breadcrumbs, nil).is_a?(Array) %>
+        <% not_found_breadcrumbs.each do |crumb| %>
+          <%= link_to crumb[:label], crumb[:path], class: "btn small secondary" %>
+        <% end %>
+      <% end %>
+      <%= link_to "Dashboard", instagram_accounts_path, class: "btn small" %>
+    </div>
+  </div>
+</section>

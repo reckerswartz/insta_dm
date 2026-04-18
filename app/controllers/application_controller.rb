@@ -1,7 +1,46 @@
 class ApplicationController < ActionController::Base
   helper_method :queue_health_warning
 
+  rescue_from ActiveRecord::RecordNotFound, with: :render_record_not_found
+
   private
+
+  # Renders the shared 404 page with layout + breadcrumb context instead of
+  # letting ActiveRecord::RecordNotFound bubble up to a 500 in production.
+  # Falls through for ActiveStorage / Turbo-Frame requests that are better
+  # served by a plain 404 body (no layout).
+  def render_record_not_found(error)
+    Rails.logger.warn("[record_not_found] #{self.class.name}##{action_name}: #{error.message}")
+
+    @not_found_title = t(:"not_found.title", default: "We couldn't find that record")
+    @not_found_message = t(
+      :"not_found.message",
+      default: "The record you were looking for has been removed or never existed."
+    )
+    @not_found_hint = t(
+      :"not_found.hint.#{controller_name}",
+      default: nil
+    )
+
+    respond_to do |format|
+      format.turbo_stream { head :not_found }
+      format.json { render json: { error: "not_found" }, status: :not_found }
+      format.html { render "shared/not_found", status: :not_found, locals: { not_found_breadcrumbs: record_not_found_breadcrumbs } }
+      format.any { head :not_found }
+    end
+  end
+
+  # Best-effort breadcrumbs so the operator always has a way back.
+  # Subclasses may override this if a more specific breadcrumb trail is
+  # appropriate (e.g. the owning profile for a missing story person).
+  def record_not_found_breadcrumbs
+    crumbs = []
+    account = current_account
+    if account.present?
+      crumbs << { label: "Account dashboard", path: instagram_account_path(account) }
+    end
+    crumbs
+  end
 
   def current_account
     return @current_account if defined?(@current_account)
