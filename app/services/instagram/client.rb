@@ -57,6 +57,11 @@ module Instagram
         driver.navigate.to("#{INSTAGRAM_BASE_URL}/accounts/login/")
         wait_for_manual_login_selenium!(driver: driver, timeout_seconds: timeout_seconds)
 
+        # Navigate to DM page to establish DM scope in cookies
+        puts "🔄 Establishing DM access scope..."
+        driver.navigate.to("#{INSTAGRAM_BASE_URL}/direct/inbox/")
+        sleep(3) # Allow page to load and establish DM permissions
+
         persist_session_bundle_selenium!(driver)
         @account.login_state = "authenticated"
         @account.save!
@@ -70,6 +75,11 @@ module Instagram
         Instagram::Browser::PageInstrumentation.attach!(page)
         page.goto("#{INSTAGRAM_BASE_URL}/accounts/login/")
         wait_for_manual_login_playwright!(context: context, timeout_seconds: timeout_seconds)
+
+        # Navigate to DM page to establish DM scope in cookies
+        puts "🔄 Establishing DM access scope..."
+        page.goto("#{INSTAGRAM_BASE_URL}/direct/inbox/")
+        sleep(3) # Allow page to load and establish DM permissions
 
         persist_session_bundle_playwright!(page, context)
         @account.login_state = "authenticated"
