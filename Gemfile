@@ -21,7 +21,7 @@ gem "webrick"
 gem "tzinfo-data", platforms: %i[ windows jruby ]
 
 # Background jobs
-gem "sidekiq", "~> 7.3"
+gem "sidekiq", "~> 8.0"
 gem "sidekiq-cron", "~> 2.3"
 gem "redis", "~> 5.3"
 # Sidekiq 7.3.x is not compatible with connection_pool 3.x keyword-only pop API.
