@@ -25,7 +25,7 @@ gem "sidekiq", "~> 7.3"
 gem "sidekiq-cron", "~> 2.3"
 gem "redis", "~> 5.3"
 # Sidekiq 7.3.x is not compatible with connection_pool 3.x keyword-only pop API.
-gem "connection_pool", ">= 2.5.0", "< 3.0"
+gem "connection_pool", ">= 2.5.0", "< 4.0"
 
 # Keep Mission Control dashboard for job visibility
 gem "mission_control-jobs"
